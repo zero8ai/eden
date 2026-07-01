@@ -79,17 +79,27 @@ eden/
 └── public/
 ```
 
+**Code — M0 step 2 done (control-plane data model):**
+- Drizzle + `postgres` installed. `app/db/schema.ts` = 9 tenant-scoped tables keyed by WorkOS
+  org/user IDs (D2), no agent config stored (D3): `orgs`, `users`, `memberships`, `projects`,
+  `environments`, `releases`, `deployments`, `secrets_metadata`, `runs`.
+- `app/db/client.server.ts` (HMR-safe pooled client), `app/db/queries.server.ts` (org-scoped
+  access — tenant-isolation invariant in one place), `drizzle.config.ts`, generated
+  `drizzle/0000_*.sql`, `db:generate|migrate|push|studio` scripts, `.env.example`.
+- **Verified:** `drizzle-kit generate` emits all 9 tables; `npm run typecheck` green.
+- Not yet run against a live DB — needs `DATABASE_URL` in `.env.local` then `npm run db:migrate`.
+
 **NOT done yet:**
-- **Not a git repo** — `git init` + first commit still to do.
-- **AuthKit not installed** — requires an interactive WorkOS login (see §6).
-- No org/project model, no GitHub App, no editors, no deploy, no observability code — all ahead.
+- **AuthKit not installed** — requires an interactive WorkOS login (see §6, Step 1). Blocks
+  wiring org/user rows to real sessions and gating routes.
+- No GitHub App, no editors, no deploy, no observability code — all ahead.
 
 ---
 
 ## 5. Milestones (PRD §11)
 
-- **M0 — Foundations:** RR7 skeleton ✅ · WorkOS AuthKit + org/project model ⏳ · GitHub App (connect,
-  parse, read) ⏳ · read-only visualization of an agent's config surface ⏳
+- **M0 — Foundations:** RR7 skeleton ✅ · control-plane data model ✅ · WorkOS AuthKit ⏳ · GitHub App
+  (connect, parse, read) ⏳ · read-only visualization of an agent's config surface ⏳
 - **M1 — Author:** structured editors for all config concepts · working-branch + PR flow · Pi
   assistant (generate/edit tool TS, sandbox test-run) · secrets UI · `eve init` for new repos
 - **M2 — Deploy + versioning:** deploy controller + `DeployTarget` · Container+Postgres adapter ·

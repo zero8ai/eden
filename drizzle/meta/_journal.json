@@ -8,6 +8,13 @@
       "when": 1782923682615,
       "tag": "0000_remarkable_lionheart",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782930241794,
+      "tag": "0001_living_the_professor",
+      "breakpoints": true
     }
   ]
 }

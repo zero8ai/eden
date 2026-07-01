@@ -19,6 +19,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -167,11 +168,9 @@ export const secretsMetadata = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [
-    uniqueIndex("secrets_scope_key_uq").on(
-      t.projectId,
-      t.environmentId,
-      t.key,
-    ),
+    unique("secrets_scope_key_uq")
+      .on(t.projectId, t.environmentId, t.key)
+      .nullsNotDistinct(),
   ],
 );
 
@@ -213,4 +212,74 @@ export const runs = pgTable(
     index("runs_release_idx").on(t.releaseId),
     uniqueIndex("runs_external_uq").on(t.projectId, t.externalRunId),
   ],
+);
+
+/**
+ * Encrypted secret VALUES for the OSS local SecretsProvider. Managed uses KMS/Vault instead
+ * (same seam), so this table is only populated by the local provider. Values are AES-256-GCM
+ * encrypted with `EDEN_SECRETS_KEY`; we store ciphertext + iv + auth tag, never plaintext.
+ * `secrets_metadata` remains the name/audit index; this is the value store behind the seam.
+ */
+export const secretValues = pgTable(
+  "secret_values",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    environmentId: uuid("environment_id").references(() => environments.id, {
+      onDelete: "cascade",
+    }),
+    key: text("key").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    iv: text("iv").notNull(),
+    authTag: text("auth_tag").notNull(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique("secret_values_scope_key_uq")
+      .on(t.projectId, t.environmentId, t.key)
+      .nullsNotDistinct(),
+  ],
+);
+
+/**
+ * Registered schedules for the Scheduler seam. OSS persists them for visibility; managed's
+ * scheduler reads this to wake scaled-to-zero instances at cron time (ARCH §3.3).
+ */
+export const schedules = pgTable(
+  "schedules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    deploymentId: uuid("deployment_id")
+      .notNull()
+      .references(() => deployments.id, { onDelete: "cascade" }),
+    cron: text("cron").notNull(),
+    name: text("name"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("schedules_deployment_idx").on(t.deploymentId)],
+);
+
+/**
+ * Raw usage events (MeteringSink seam). OSS records them locally for visibility; managed
+ * aggregates and pushes Stripe usage records (ARCH §3.4). Kept append-only.
+ */
+export const usageEvents = pgTable(
+  "usage_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    deploymentId: uuid("deployment_id").references(() => deployments.id, {
+      onDelete: "set null",
+    }),
+    // model_tokens | compute_seconds | sandbox_exec
+    kind: text("kind").notNull(),
+    quantity: integer("quantity").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull(),
+    meta: jsonb("meta").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+  },
+  (t) => [index("usage_events_org_at_idx").on(t.orgId, t.at)],
 );

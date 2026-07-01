@@ -18,6 +18,7 @@
     "@workos-inc/authkit-react-router": "^0.12.1",
     "drizzle-orm": "^0.45.2",
     "isbot": "^5.1.36",
+    "octokit": "^5.0.5",
     "postgres": "^3.4.9",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

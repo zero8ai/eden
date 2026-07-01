@@ -76,6 +76,18 @@ match).
 
 Visit `/dashboard` to sign in (it redirects to WorkOS) and see your org-scoped workspace.
 
+### 6. (Optional) Connect a GitHub repo
+
+To use the Connect pillar (link an eve repo and view its config), register a **GitHub App**:
+
+- Permissions: **Contents** (read/write), **Pull requests** (read/write).
+- **Setup URL**: `http://localhost:5173/connect` (so installs redirect back into the app).
+- Generate a private key and note the App ID, slug, client id/secret.
+
+Put the `GITHUB_APP_*` values into `.env.local` (see `.env.example`). Then from `/connect` you can
+install the App, pick an eve repo, and view its parsed agent surface at `/projects/:id`. Until the App
+is configured, `/connect` shows an "unconfigured" notice.
+
 ## Common scripts
 
 | Command | What it does |
@@ -94,9 +106,11 @@ Visit `/dashboard` to sign in (it redirects to WorkOS) and see your org-scoped w
 ```
 eden/
 ├── app/
-│   ├── routes/           # RR7 routes (home, dashboard, login, signup, callback)
+│   ├── routes/           # RR7 routes (home, dashboard, connect, projects.$id, auth)
 │   ├── auth/             # session ↔ tenant sync (WorkOS → control-plane tables)
 │   ├── db/               # Drizzle schema, server-only client, org-scoped queries
+│   ├── github/           # GitHub App client + repo reads (Connect pillar)
+│   ├── eve/              # pure eve-repo parser → normalized AgentConfig
 │   ├── root.tsx          # AuthKit-wrapped root loader
 │   └── routes.ts         # route config
 ├── drizzle/              # generated SQL migrations

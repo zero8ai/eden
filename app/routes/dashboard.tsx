@@ -77,31 +77,55 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
         <section className="mt-10">
           <div className="flex items-baseline justify-between">
             <h2 className="text-lg font-semibold">Projects</h2>
-            <span className="text-xs font-medium text-gray-400">
-              {projects.length} total
-            </span>
+            <div className="flex items-center gap-4">
+              <span className="text-xs font-medium text-gray-400">
+                {projects.length} total
+              </span>
+              {org && (
+                <Link
+                  to="/connect"
+                  className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
+                >
+                  Connect a repo
+                </Link>
+              )}
+            </div>
           </div>
 
           {projects.length === 0 ? (
             <div className="mt-4 rounded-xl border border-dashed border-gray-300 p-8 text-center dark:border-gray-700">
               <p className="text-sm text-gray-600 dark:text-gray-300">
-                No projects yet. Connecting an eve repo (the Connect pillar)
-                lands next in M0.
+                No projects yet.{" "}
+                {org ? (
+                  <>
+                    <Link
+                      to="/connect"
+                      className="underline underline-offset-4"
+                    >
+                      Connect an eve repo
+                    </Link>{" "}
+                    to get started.
+                  </>
+                ) : (
+                  "Join an organization to connect a repo."
+                )}
               </p>
             </div>
           ) : (
             <ul className="mt-4 grid gap-3 sm:grid-cols-2">
               {projects.map((p) => (
-                <li
-                  key={p.id}
-                  className="rounded-xl border border-gray-200 p-4 dark:border-gray-800"
-                >
-                  <div className="font-medium">{p.name}</div>
-                  <div className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                    {p.repoOwner && p.repoName
-                      ? `${p.repoOwner}/${p.repoName}`
-                      : "no repo connected"}
-                  </div>
+                <li key={p.id}>
+                  <Link
+                    to={`/projects/${p.id}`}
+                    className="block rounded-xl border border-gray-200 p-4 hover:border-gray-400 dark:border-gray-800 dark:hover:border-gray-600"
+                  >
+                    <div className="font-medium">{p.name}</div>
+                    <div className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                      {p.repoOwner && p.repoName
+                        ? `${p.repoOwner}/${p.repoName}`
+                        : "no repo connected"}
+                    </div>
+                  </Link>
                 </li>
               ))}
             </ul>

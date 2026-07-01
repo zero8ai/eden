@@ -9,6 +9,42 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "./client.server";
 import { projects, releases } from "./schema";
 
+export type Project = typeof projects.$inferSelect;
+type NewProject = typeof projects.$inferInsert;
+
+/** Turn a repo name into a URL-safe slug. */
+export function slugify(input: string): string {
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
+/**
+ * Create a project (a connected eve repo) for a tenant. `slug` is unique per org; on
+ * collision we suffix `-2`, `-3`, … so connecting two repos with similar names doesn't fail.
+ */
+export async function createProject(input: Omit<NewProject, "slug"> & { slug?: string }) {
+  const base = slugify(input.slug ?? input.name);
+  let slug = base || "agent";
+  for (let n = 2; ; n++) {
+    const existing = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.orgId, input.orgId), eq(projects.slug, slug)))
+      .limit(1);
+    if (existing.length === 0) break;
+    slug = `${base}-${n}`;
+  }
+  const [row] = await db
+    .insert(projects)
+    .values({ ...input, slug })
+    .returning();
+  return row;
+}
+
 /** List a tenant's projects, newest first. */
 export function listProjects(orgId: string) {
   return db

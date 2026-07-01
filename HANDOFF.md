@@ -103,18 +103,36 @@ eden/
   org-scoped queries + cross-tenant isolation; dev server boots, `/` → 200, `/dashboard` → 302 to
   WorkOS sign-in. Note: log in on **port 5173** (matches the configured redirect URI).
 
-**NOT done yet:**
-- **`.env.local` WorkOS keys are real but org context depends on the WorkOS org setup** — a user with
-  no org sees the dashboard's "not scoped to an organization" state. Confirm org provisioning flow.
-- No GitHub App, no editors, no deploy, no observability code — all ahead. **Next: Step 3 (GitHub App).**
+**Code — GitHub App (Connect) + read-only agent visualization built (M0 Steps 3–4):**
+- `octokit` installed (added `.npmrc` `legacy-peer-deps=true` — authkit peers RR7 `^7.2.0` but we run
+  8.0.0; needed for any future installs too).
+- `app/github/client.server.ts` — GitHub App auth (JWT → per-installation tokens), lazy env config,
+  `getInstallUrl`. `app/github/repo.server.ts` — `listInstallationRepos`, `fetchAgentSource` (default-
+  branch recursive tree + eager-reads `agent/instructions.md`, `agent/agent.ts`). Read-only (writes = M1).
+- `app/eve/types.ts` + `app/eve/parse.ts` — pure, unit-tested parser: repo file list + known files →
+  normalized `AgentConfig` (model heuristic, instructions, tools/skills/subagents/channels/schedules/
+  connections). `isEveRepo` gate. Filters test/spec/dotfiles.
+- Routes: `/connect` (install App → pick repo → validate eve → create project) and
+  `/projects/:projectId` (renders the read-only config surface). Dashboard has a "Connect a repo"
+  button and project cards link through.
+- `createProject` (unique-slug-per-org) in queries. `.env.example` documents `GITHUB_APP_*` vars.
+- **Verified:** parser unit test passes; `npm run typecheck` + `npm run build` green. NOT runtime-tested
+  against GitHub yet — needs a registered GitHub App + its env vars, and a real eve repo.
+
+**NOT done yet (needs your interactive setup before runtime testing):**
+- **Register the GitHub App** (repo Contents R/W + Pull requests; Setup URL `http://localhost:5173/connect`),
+  then put `GITHUB_APP_*` into `.env.local`. Until then `/connect` shows an "unconfigured" state.
+- **Org context** still depends on the WorkOS org setup (no-org users see the empty state).
+- No editors, no deploy, no observability code — all ahead. **Next: M1 (Author) — structured editors +
+  working-branch/PR flow + Pi assistant**, or finish any GitHub runtime testing first.
 
 ---
 
 ## 5. Milestones (PRD §11)
 
 - **M0 — Foundations:** RR7 skeleton ✅ · control-plane data model ✅ · WorkOS AuthKit + org/project
-  sync + protected dashboard ✅ · GitHub App (connect, parse, read) ⏳ · read-only visualization of an
-  agent's config surface ⏳
+  sync + protected dashboard ✅ · GitHub App (connect, parse, read) ✅ *(code; needs App registration to
+  test)* · read-only visualization of an agent's config surface ✅ — **M0 code-complete**
 - **M1 — Author:** structured editors for all config concepts · working-branch + PR flow · Pi
   assistant (generate/edit tool TS, sandbox test-run) · secrets UI · `eve init` for new repos
 - **M2 — Deploy + versioning:** deploy controller + `DeployTarget` · Container+Postgres adapter ·

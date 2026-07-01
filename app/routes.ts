@@ -7,6 +7,10 @@ export default [
   route("projects/:projectId", "routes/projects.$projectId.tsx"),
   route("projects/:projectId/edit", "routes/projects.$projectId.edit.tsx"),
   route(
+    "projects/:projectId/edit/agent",
+    "routes/projects.$projectId.edit.agent.tsx",
+  ),
+  route(
     "projects/:projectId/edit/instructions",
     "routes/projects.$projectId.edit.instructions.tsx",
   ),

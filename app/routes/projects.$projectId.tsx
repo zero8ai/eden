@@ -101,9 +101,17 @@ function AgentSurface({
       <section className="rounded-xl border border-gray-200 p-5 dark:border-gray-800">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Agent</h2>
-          <span className="text-xs font-medium text-gray-400">
-            {config.hasAgentModule ? "agent.ts present" : "no agent.ts"}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-medium text-gray-400">
+              {config.hasAgentModule ? "agent.ts present" : "no agent.ts"}
+            </span>
+            <Link
+              to={`/projects/${projectId}/edit/agent`}
+              className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+            >
+              Edit
+            </Link>
+          </div>
         </div>
         <dl className="mt-3 text-sm">
           <div className="flex gap-2">

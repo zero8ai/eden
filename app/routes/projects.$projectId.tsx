@@ -71,11 +71,19 @@ export default function ProjectDetail({ loaderData }: Route.ComponentProps) {
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">
           {project.name}
         </h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          {project.repoOwner && project.repoName
-            ? `${project.repoOwner}/${project.repoName} · ${project.defaultBranch}`
-            : "no repo connected"}
-        </p>
+        <div className="mt-1 flex items-center justify-between">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            {project.repoOwner && project.repoName
+              ? `${project.repoOwner}/${project.repoName} · ${project.defaultBranch}`
+              : "no repo connected"}
+          </p>
+          <Link
+            to={`/projects/${project.id}/secrets`}
+            className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+          >
+            Secrets
+          </Link>
+        </div>
 
         {error && (
           <p className="mt-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200">

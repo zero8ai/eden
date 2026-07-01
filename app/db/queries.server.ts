@@ -4,13 +4,17 @@
  * cross-table reads here rather than inline in loaders, so the org-scoping invariant lives in
  * one place.
  */
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 
 import { db } from "./client.server";
-import { projects, releases } from "./schema";
+import { environments, projects, releases } from "./schema";
 
 export type Project = typeof projects.$inferSelect;
+export type Environment = typeof environments.$inferSelect;
 type NewProject = typeof projects.$inferInsert;
+
+/** Environments every new project gets, in display order. */
+export const DEFAULT_ENVIRONMENTS = ["production", "preview", "development"] as const;
 
 /** Turn a repo name into a URL-safe slug. */
 export function slugify(input: string): string {
@@ -42,7 +46,23 @@ export async function createProject(input: Omit<NewProject, "slug"> & { slug?: s
     .insert(projects)
     .values({ ...input, slug })
     .returning();
+
+  // Seed default environments so deploys and secrets have a scope from day one.
+  await db
+    .insert(environments)
+    .values(DEFAULT_ENVIRONMENTS.map((name) => ({ projectId: row.id, name })))
+    .onConflictDoNothing();
+
   return row;
+}
+
+/** Environments for a project, in creation order. */
+export function listEnvironments(projectId: string) {
+  return db
+    .select()
+    .from(environments)
+    .where(eq(environments.projectId, projectId))
+    .orderBy(asc(environments.createdAt));
 }
 
 /** List a tenant's projects, newest first. */

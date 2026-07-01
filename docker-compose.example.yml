@@ -1,0 +1,33 @@
+# Eden local development dependencies.
+#
+# Copy this to docker-compose.yml (gitignored, so you can tweak it locally) and run:
+#   docker compose up -d
+#
+# The control plane standardizes on Postgres (HANDOFF §2 / D7) — it's also the engine
+# that backs the eve Workflow World, so we run one database for everything.
+#
+# Add future local deps (object store, model gateway, etc.) as new services here.
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: eden-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: eden
+      POSTGRES_PASSWORD: eden
+      POSTGRES_DB: eden
+    # Host port 5442 (not the default 5432) to avoid clashing with other local
+    # Postgres instances. The container still listens on 5432 internally.
+    ports:
+      - "5442:5432"
+    volumes:
+      - eden-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eden -d eden"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  eden-postgres-data:

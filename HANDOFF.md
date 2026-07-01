@@ -89,17 +89,32 @@ eden/
 - **Verified:** `drizzle-kit generate` emits all 9 tables; `npm run typecheck` green.
 - Not yet run against a live DB — needs `DATABASE_URL` in `.env.local` then `npm run db:migrate`.
 
+**Code — WorkOS AuthKit installed + wired to the data model:**
+- `@workos-inc/authkit-react-router` installed (chose "React Router v7 – Framework mode"). Routes:
+  `/login`, `/signup`, `/callback`, plus `authkitLoader` in `root.tsx`. Committed on its own branch
+  by the installer, then merged to `main` (fast-forward).
+- `app/auth/tenant.server.ts` — `syncTenant(auth)` idempotently mirrors the WorkOS user/org/membership
+  into our tables (enriches org name via `getWorkOS()`), called from authenticated loaders.
+- `app/routes/dashboard.tsx` — protected (`ensureSignedIn: true`), org-scoped, lists the org's projects
+  via `listProjects`. Home shows a Dashboard link when signed in.
+- **Local infra:** `docker-compose.example.yml` (Postgres on host port **5442**; copy to gitignored
+  `docker-compose.yml`, `docker compose up -d`). README rewritten with full setup steps.
+- **Verified against live Postgres:** migration applied (9 tables); a throwaway script confirmed
+  org-scoped queries + cross-tenant isolation; dev server boots, `/` → 200, `/dashboard` → 302 to
+  WorkOS sign-in. Note: log in on **port 5173** (matches the configured redirect URI).
+
 **NOT done yet:**
-- **AuthKit not installed** — requires an interactive WorkOS login (see §6, Step 1). Blocks
-  wiring org/user rows to real sessions and gating routes.
-- No GitHub App, no editors, no deploy, no observability code — all ahead.
+- **`.env.local` WorkOS keys are real but org context depends on the WorkOS org setup** — a user with
+  no org sees the dashboard's "not scoped to an organization" state. Confirm org provisioning flow.
+- No GitHub App, no editors, no deploy, no observability code — all ahead. **Next: Step 3 (GitHub App).**
 
 ---
 
 ## 5. Milestones (PRD §11)
 
-- **M0 — Foundations:** RR7 skeleton ✅ · control-plane data model ✅ · WorkOS AuthKit ⏳ · GitHub App
-  (connect, parse, read) ⏳ · read-only visualization of an agent's config surface ⏳
+- **M0 — Foundations:** RR7 skeleton ✅ · control-plane data model ✅ · WorkOS AuthKit + org/project
+  sync + protected dashboard ✅ · GitHub App (connect, parse, read) ⏳ · read-only visualization of an
+  agent's config surface ⏳
 - **M1 — Author:** structured editors for all config concepts · working-branch + PR flow · Pi
   assistant (generate/edit tool TS, sandbox test-run) · secrets UI · `eve init` for new repos
 - **M2 — Deploy + versioning:** deploy controller + `DeployTarget` · Container+Postgres adapter ·

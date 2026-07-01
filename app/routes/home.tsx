@@ -68,6 +68,12 @@ export default function Home({ loaderData }: Route.ComponentProps) {
                 <span className="text-sm text-gray-600 dark:text-gray-300">
                   {user.email}
                 </span>
+                <Link
+                  to="/dashboard"
+                  className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
+                >
+                  Dashboard
+                </Link>
                 <Form method="post">
                   <button
                     type="submit"

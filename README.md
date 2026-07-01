@@ -1,87 +1,112 @@
-# Welcome to React Router!
+# Eden
 
-A modern, production-ready template for building full-stack React applications using React Router.
+A web app for building, managing, and deploying [eve](https://github.com/vercel/eve) agents
+without hand-writing code. Eden puts a guided web UI + an embedded coding assistant over an eve
+repo so **product managers** can author agents, then ships and operates the result. Open source +
+self-hostable, and also a commercial managed service.
 
-[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/remix-run/react-router-templates/tree/main/default)
+New here? Read [`HANDOFF.md`](./HANDOFF.md) first (state + plan), then [`PRD.md`](./PRD.md)
+(product) and [`ARCHITECTURE.md`](./ARCHITECTURE.md) (managed-service infra).
 
-## Features
+**Stack:** React Router 7 (framework mode, SSR) · TypeScript · Tailwind 4 · Drizzle + Postgres ·
+WorkOS AuthKit (auth & tenancy).
 
-- 🚀 Server-side rendering
-- ⚡️ Hot Module Replacement (HMR)
-- 📦 Asset bundling and optimization
-- 🔄 Data loading and mutations
-- 🔒 TypeScript by default
-- 🎉 TailwindCSS for styling
-- 📖 [React Router docs](https://reactrouter.com/)
+## Local setup
 
-## Getting Started
+### Prerequisites
 
-### Installation
+- **Node 20+** (22 recommended)
+- **Docker** (for local Postgres via Docker Compose)
+- A **WorkOS account** (for auth)
 
-Install the dependencies:
+### 1. Install dependencies
 
 ```bash
 npm install
 ```
 
-### Development
+### 2. Start local dependencies (Postgres)
 
-Start the development server with HMR:
+Copy the example compose file to your own (gitignored, so you can tweak it) and bring it up:
+
+```bash
+cp docker-compose.example.yml docker-compose.yml
+docker compose up -d
+```
+
+This runs Postgres on host port **5442** (not the default 5432, to avoid clashing with other
+local databases). Data persists in a named Docker volume.
+
+### 3. Configure environment
+
+```bash
+cp .env.example .env.local
+```
+
+`.env.local` is gitignored. Fill in:
+
+- `DATABASE_URL` — already points at the local Postgres above.
+- **WorkOS keys** — run the installer, which logs into WorkOS, configures the dashboard
+  (redirect URIs, CORS), and writes `WORKOS_*` keys into `.env.local`:
+
+  ```bash
+  npx workos@latest install
+  ```
+
+  When prompted for framework, choose **React Router v7 – Framework mode**.
+
+### 4. Run migrations
+
+Apply the schema to your database:
+
+```bash
+npm run db:migrate
+```
+
+### 5. Start the dev server
 
 ```bash
 npm run dev
 ```
 
-Your application will be available at `http://localhost:5173`.
+The app is at `http://localhost:5173`. **Use port 5173** — the WorkOS redirect URI is configured
+for `http://localhost:5173/callback`, so signing in on another port will fail the callback. If 5173
+is taken, free it (or update `WORKOS_REDIRECT_URI` in `.env.local` and the WorkOS dashboard to
+match).
 
-## Building for Production
+Visit `/dashboard` to sign in (it redirects to WorkOS) and see your org-scoped workspace.
 
-Create a production build:
+## Common scripts
 
-```bash
-npm run build
+| Command | What it does |
+|---|---|
+| `npm run dev` | Dev server with HMR (port 5173) |
+| `npm run build` | Production build |
+| `npm run start` | Serve the production build |
+| `npm run typecheck` | Route typegen + `tsc` |
+| `npm run db:generate` | Generate a SQL migration from `app/db/schema.ts` |
+| `npm run db:migrate` | Apply pending migrations |
+| `npm run db:push` | Push schema directly (dev only, no migration file) |
+| `npm run db:studio` | Open Drizzle Studio |
+
+## Project layout
+
+```
+eden/
+├── app/
+│   ├── routes/           # RR7 routes (home, dashboard, login, signup, callback)
+│   ├── auth/             # session ↔ tenant sync (WorkOS → control-plane tables)
+│   ├── db/               # Drizzle schema, server-only client, org-scoped queries
+│   ├── root.tsx          # AuthKit-wrapped root loader
+│   └── routes.ts         # route config
+├── drizzle/              # generated SQL migrations
+├── docker-compose.example.yml   # local deps (copy to docker-compose.yml)
+├── PRD.md · ARCHITECTURE.md · HANDOFF.md
+└── Dockerfile
 ```
 
 ## Deployment
 
-### Docker Deployment
-
-To build and run using Docker:
-
-```bash
-docker build -t my-app .
-
-# Run the container
-docker run -p 3000:3000 my-app
-```
-
-The containerized application can be deployed to any platform that supports Docker, including:
-
-- AWS ECS
-- Google Cloud Run
-- Azure Container Apps
-- Digital Ocean App Platform
-- Fly.io
-- Railway
-
-### DIY Deployment
-
-If you're familiar with deploying Node applications, the built-in app server is production-ready.
-
-Make sure to deploy the output of `npm run build`
-
-```
-├── package.json
-├── package-lock.json (or pnpm-lock.yaml, or bun.lockb)
-├── build/
-│   ├── client/    # Static assets
-│   └── server/    # Server-side code
-```
-
-## Styling
-
-This template comes with [Tailwind CSS](https://tailwindcss.com/) already configured for a simple default starting experience. You can use whatever CSS framework you prefer.
-
----
-
-Built with ❤️ using React Router.
+`npm run build` emits a standard Node server build under `build/` (client + server). The included
+`Dockerfile` containerizes it — deployable to any Docker host. See `ARCHITECTURE.md` for the
+managed-service infrastructure.

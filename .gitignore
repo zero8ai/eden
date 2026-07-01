@@ -8,3 +8,6 @@
 /.react-router/
 /build/
 .env.local
+
+# Local Docker Compose (copy of docker-compose.example.yml; tweak freely)
+docker-compose.yml

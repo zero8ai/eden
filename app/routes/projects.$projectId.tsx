@@ -83,13 +83,19 @@ export default function ProjectDetail({ loaderData }: Route.ComponentProps) {
           </p>
         )}
 
-        {config && <AgentSurface config={config} />}
+        {config && <AgentSurface config={config} projectId={project.id} />}
       </div>
     </main>
   );
 }
 
-function AgentSurface({ config }: { config: AgentConfig }) {
+function AgentSurface({
+  config,
+  projectId,
+}: {
+  config: AgentConfig;
+  projectId: string;
+}) {
   return (
     <div className="mt-8 space-y-8">
       <section className="rounded-xl border border-gray-200 p-5 dark:border-gray-800">
@@ -108,7 +114,15 @@ function AgentSurface({ config }: { config: AgentConfig }) {
       </section>
 
       <section>
-        <h2 className="text-lg font-semibold">Instructions</h2>
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-lg font-semibold">Instructions</h2>
+          <Link
+            to={`/projects/${projectId}/edit/instructions`}
+            className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+          >
+            Edit
+          </Link>
+        </div>
         {config.instructions ? (
           <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm dark:border-gray-800 dark:bg-gray-900/40">
             {config.instructions}

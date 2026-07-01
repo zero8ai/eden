@@ -133,8 +133,9 @@ eden/
 - **M0 — Foundations:** RR7 skeleton ✅ · control-plane data model ✅ · WorkOS AuthKit + org/project
   sync + protected dashboard ✅ · GitHub App (connect, parse, read) ✅ *(code; needs App registration to
   test)* · read-only visualization of an agent's config surface ✅ — **M0 code-complete**
-- **M1 — Author:** structured editors for all config concepts · working-branch + PR flow · Pi
-  assistant (generate/edit tool TS, sandbox test-run) · secrets UI · `eve init` for new repos
+- **M1 — Author:** working-branch + PR flow ✅ *(`app/github/write.server.ts` `proposeChange`)* ·
+  first structured editor (instructions → PR) ✅ · remaining editors (tools/skills/channels/…) ⏳ ·
+  Pi assistant (generate/edit tool TS, sandbox test-run) ⏳ · secrets UI ⏳ · `eve init` for new repos ⏳
 - **M2 — Deploy + versioning:** deploy controller + `DeployTarget` · Container+Postgres adapter ·
   **Releases + rollback** · **multi-version live + traffic splitter** · environments · merge→deploy
 - **M3 — Observe:** OTel + event-log ingestion · authenticated OTLP for BYO · runs store · Run list +

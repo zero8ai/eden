@@ -91,6 +91,21 @@ export async function fetchAgentSource(
 
 type InstallationOctokit = Awaited<ReturnType<typeof getInstallationOctokit>>;
 
+/**
+ * Read one text file from the repo (default branch unless `ref` given). Public entry for
+ * editors that need a single file's current contents; returns null if missing/binary.
+ */
+export async function readAgentFile(
+  installationId: string | number,
+  { owner, repo, ref }: RepoRef,
+  path: string,
+): Promise<string | null> {
+  const octokit = await getInstallationOctokit(installationId);
+  const branch =
+    ref ?? (await octokit.rest.repos.get({ owner, repo })).data.default_branch;
+  return readTextFile(octokit, { owner, repo, ref: branch }, path);
+}
+
 /** Read a single text file's contents, or null if missing/binary. */
 async function readTextFile(
   octokit: InstallationOctokit,

@@ -5,10 +5,14 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  type LoaderFunctionArgs,
 } from "react-router";
+import { authkitLoader } from "@workos-inc/authkit-react-router";
 
 import type { Route } from "./+types/root";
 import "./app.css";
+
+export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },

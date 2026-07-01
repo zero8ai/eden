@@ -1,5 +1,13 @@
 import type { Route } from "./+types/home";
-import { Link } from "react-router";
+import { Link, Form, useRouteLoaderData } from "react-router";
+import { signOut, authkitLoader } from "@workos-inc/authkit-react-router";
+import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
+
+export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
+
+export async function action({ request }: ActionFunctionArgs) {
+  return await signOut(request);
+}
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -44,13 +52,49 @@ const pillars = [
   },
 ];
 
-export default function Home() {
+export default function Home({ loaderData }: Route.ComponentProps) {
+  const { user } = loaderData;
+
   return (
     <main className="min-h-screen px-6 py-16 text-gray-900 dark:text-gray-100">
       <div className="mx-auto max-w-4xl">
-        <p className="text-sm font-medium uppercase tracking-widest text-gray-500 dark:text-gray-400">
-          Eden
-        </p>
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium uppercase tracking-widest text-gray-500 dark:text-gray-400">
+            Eden
+          </p>
+          <div className="flex items-center gap-4">
+            {user ? (
+              <>
+                <span className="text-sm text-gray-600 dark:text-gray-300">
+                  {user.email}
+                </span>
+                <Form method="post">
+                  <button
+                    type="submit"
+                    className="rounded-md bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                  >
+                    Sign out
+                  </button>
+                </Form>
+              </>
+            ) : (
+              <>
+                <Link
+                  to="/login"
+                  className="text-sm font-medium text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+                >
+                  Sign in
+                </Link>
+                <Link
+                  to="/signup"
+                  className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
+                >
+                  Sign up
+                </Link>
+              </>
+            )}
+          </div>
+        </div>
         <h1 className="mt-2 text-4xl font-semibold tracking-tight">
           Build, manage, and deploy eve agents from the web.
         </h1>

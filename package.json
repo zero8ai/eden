@@ -15,6 +15,7 @@
   "dependencies": {
     "@react-router/node": "8.0.0",
     "@react-router/serve": "8.0.0",
+    "@workos-inc/authkit-react-router": "^0.12.1",
     "drizzle-orm": "^0.45.2",
     "isbot": "^5.1.36",
     "postgres": "^3.4.9",

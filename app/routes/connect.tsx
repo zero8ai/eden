@@ -25,6 +25,7 @@ import {
 import { createProject } from "~/db/queries.server";
 import { syncTenant, type Org } from "~/auth/tenant.server";
 import { getInstallUrl } from "~/github/client.server";
+import { createEveRepo } from "~/github/create.server";
 import {
   fetchAgentSource,
   listInstallationRepos,
@@ -96,13 +97,36 @@ export async function action(args: ActionFunctionArgs) {
 
   const form = await args.request.formData();
   const installationId = String(form.get("installationId") ?? "");
+  if (!installationId) return { error: "Missing installation." };
+  const intent = String(form.get("intent") ?? "connect");
+
+  // ── Create a new repo + scaffold (eve init) ──
+  if (intent === "create") {
+    const owner = String(form.get("owner") ?? "").trim();
+    const name = String(form.get("name") ?? "").trim();
+    if (!owner || !name) return { error: "Owner and repo name are required." };
+    try {
+      const repo = await createEveRepo(installationId, { owner, name });
+      const project = await createProject({
+        orgId: org.id,
+        name,
+        repoOwner: repo.owner,
+        repoName: repo.repo,
+        repoInstallationId: installationId,
+        defaultBranch: repo.defaultBranch,
+      });
+      throw redirect(`/projects/${project.id}`);
+    } catch (error) {
+      if (error instanceof Response) throw error;
+      return { error: (error as Error).message };
+    }
+  }
+
+  // ── Connect an existing repo ──
   const owner = String(form.get("owner") ?? "");
   const repo = String(form.get("repo") ?? "");
   const defaultBranch = String(form.get("defaultBranch") ?? "main");
-
-  if (!installationId || !owner || !repo) {
-    return { error: "Missing repo selection." };
-  }
+  if (!owner || !repo) return { error: "Missing repo selection." };
 
   // Validate it's an eve project before we persist anything.
   let source;
@@ -224,6 +248,42 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                 ))}
               </ul>
             )}
+
+            {/* Create a new eve repo (eve init) */}
+            <div className="mt-8 rounded-xl border border-dashed border-gray-300 p-5 dark:border-gray-700">
+              <h2 className="text-sm font-semibold">Or create a new eve agent</h2>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Creates a repo in your organization and scaffolds an eve{" "}
+                <span className="font-mono">agent/</span> skeleton.
+              </p>
+              <Form method="post" className="mt-3 flex flex-wrap items-center gap-2">
+                <input type="hidden" name="intent" value="create" />
+                <input
+                  type="hidden"
+                  name="installationId"
+                  value={github.installationId}
+                />
+                <input
+                  name="owner"
+                  defaultValue={github.repos[0]?.owner ?? ""}
+                  placeholder="org"
+                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-900"
+                />
+                <span className="text-gray-400">/</span>
+                <input
+                  name="name"
+                  placeholder="my-agent"
+                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 font-mono text-sm dark:border-gray-700 dark:bg-gray-900"
+                />
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
+                >
+                  {submitting ? "Creating…" : "Create & scaffold"}
+                </button>
+              </Form>
+            </div>
           </div>
         )}
       </div>

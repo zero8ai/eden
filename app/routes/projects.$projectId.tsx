@@ -144,9 +144,19 @@ function AgentSurface({
             >
               <div className="flex items-baseline justify-between">
                 <h3 className="font-semibold">{cat.label}</h3>
-                <span className="text-xs font-medium text-gray-400">
-                  {items.length}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-medium text-gray-400">
+                    {items.length}
+                  </span>
+                  <Link
+                    to={`/projects/${projectId}/edit?path=${encodeURIComponent(
+                      `agent/${cat.dir}/`,
+                    )}`}
+                    className="text-xs font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+                  >
+                    New
+                  </Link>
+                </div>
               </div>
               {items.length === 0 ? (
                 <p className="mt-2 text-sm text-gray-400">None</p>
@@ -154,9 +164,20 @@ function AgentSurface({
                 <ul className="mt-2 space-y-1 text-sm">
                   {items.map((item) => (
                     <li key={item.path} className="font-mono">
-                      {item.name}
-                      {item.isDirectory && (
-                        <span className="ml-1 text-gray-400">/</span>
+                      {item.isDirectory ? (
+                        <span>
+                          {item.name}
+                          <span className="ml-1 text-gray-400">/</span>
+                        </span>
+                      ) : (
+                        <Link
+                          to={`/projects/${projectId}/edit?path=${encodeURIComponent(
+                            item.path,
+                          )}`}
+                          className="underline underline-offset-4 hover:text-gray-900 dark:hover:text-white"
+                        >
+                          {item.name}
+                        </Link>
                       )}
                     </li>
                   ))}

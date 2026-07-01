@@ -5,6 +5,7 @@ export default [
   route("dashboard", "routes/dashboard.tsx"),
   route("connect", "routes/connect.tsx"),
   route("projects/:projectId", "routes/projects.$projectId.tsx"),
+  route("projects/:projectId/edit", "routes/projects.$projectId.edit.tsx"),
   route(
     "projects/:projectId/edit/instructions",
     "routes/projects.$projectId.edit.instructions.tsx",

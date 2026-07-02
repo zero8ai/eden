@@ -74,10 +74,27 @@ build → Postgres World → containerized run → durable session). This de-ris
    runs-store ingester can read the event log **directly from the instance database** — no OTLP
    hop needed for v1. The authenticated OTLP/ingest endpoint remains the BYO path.
 
-## Still open (needs credentials / later work)
+## Update 2026-07-02 (later): real model turns verified via OpenRouter
 
-- **A real model turn end-to-end** — needs `AI_GATEWAY_API_KEY` (create at
-  vercel.com/dashboard/ai/api-keys). Everything up to the provider call is proven.
+With `OPENROUTER_API_KEY` (in .env.local) and the OpenRouter provider wiring
+(docs/RESEARCH-OPENROUTER.md), a **real turn completed end-to-end on the host**: POST session →
+queue → flow → OpenRouter (claude-sonnet-4.5) → `message.completed: "pineapple"`, all durable
+state in the Postgres World. Follow-up note: POSTing with `continuationToken` returned a NEW
+session id and the reply lacked prior context — the multi-turn continuation contract needs
+study before Eden's chat UI relies on it.
+
+**Open issue — queue execution inside Docker:** the same image serves HTTP, reaches Postgres
+and openrouter.ai, and creates sessions, but the *flow jobs* (graphile-worker → self-POST
+`/.well-known/workflow/v1/flow`) die with a bare `TypeError: fetch failed` (no cause surfaced).
+Eliminated: base URL resolution (PORT/`WORKFLOW_LOCAL_BASE_URL` both correct; manual fetch of
+the exact URL+headers from inside the container succeeds), node/undici version skew (host and
+image both v24.18.0/undici 7.28.0), WASM SIMD (`UNDICI_NO_WASM_SIMD=1` no effect). One flow
+fetch was observed succeeding under `NODE_DEBUG=fetch` (session → running) while the turn's
+job still failed silently via a *bundled* undici copy. Next steps: test non-slim base image,
+then minimal repro against the eve/workflow repos (likely upstream bug report). Dev flow is
+not blocked (host runs work); containerized instance turns are blocked on this.
+
+## Still open (needs credentials / later work)
 - **OTel span fidelity** (`agent/instrumentation.ts`) — not yet exercised; less urgent now that
   the event log covers structure, but still wanted for token/latency detail.
 - **Gateway interception** for managed metering (point instances at our proxy) — blocked on

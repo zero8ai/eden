@@ -29,6 +29,13 @@
       "when": 1782959508755,
       "tag": "0003_light_overlord",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1782971380481,
+      "tag": "0004_square_the_spike",
+      "breakpoints": true
     }
   ]
 }

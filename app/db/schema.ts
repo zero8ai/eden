@@ -142,6 +142,8 @@ export const deployments = pgTable(
     status: text("status").notNull().default("pending"),
     trafficWeight: integer("traffic_weight").notNull().default(100),
     url: text("url"),
+    /** Why the deployment failed (build/deploy error surface for the UI). */
+    errorDetail: text("error_detail"),
     createdBy: text("created_by").references(() => users.id),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -393,4 +395,30 @@ export const usageEvents = pgTable(
     meta: jsonb("meta").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
   },
   (t) => [index("usage_events_org_at_idx").on(t.orgId, t.at)],
+);
+
+/**
+ * Durable background jobs (control-plane work queue). Builds/deploys run here, not in HTTP
+ * request handlers: GitHub webhooks time out at ~10s while an `eve build` takes minutes, and
+ * a queued job survives a server restart. Claimed with FOR UPDATE SKIP LOCKED (single-worker
+ * semantics per job, N workers safe).
+ */
+export const jobs = pgTable(
+  "jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // e.g. deploy_release
+    kind: text("kind").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    // queued | running | done | failed
+    status: text("status").notNull().default("queued"),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    /** Earliest time the job may run (backoff on retry). */
+    runAt: timestamp("run_at", { withTimezone: true }).defaultNow().notNull(),
+    error: text("error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("jobs_status_run_at_idx").on(t.status, t.runAt)],
 );

@@ -16,13 +16,13 @@ import {
 
 import {
   createRelease,
-  deployRelease,
   listDeployments,
-  rollbackTo,
   setTrafficSplit,
 } from "~/deploy/controller.server";
 import { listEnvironments, listReleases } from "~/db/queries.server";
 import { getBranchHead } from "~/github/repo.server";
+import { enqueue } from "~/jobs/queue.server";
+import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.deployments";
 
@@ -84,14 +84,10 @@ export async function action(args: ActionFunctionArgs) {
         changelog: `Cut from ${head.branch} @ ${head.sha.slice(0, 7)}`,
         createdBy: auth.user.id,
       });
-    } else if (intent === "deploy") {
-      await deployRelease({
-        environmentId: String(form.get("environmentId")),
-        releaseId: String(form.get("releaseId")),
-        createdBy: auth.user.id,
-      });
-    } else if (intent === "rollback") {
-      await rollbackTo({
+    } else if (intent === "deploy" || intent === "rollback") {
+      // Builds take minutes — enqueue and let the worker run it; the list shows progress.
+      ensureWorkerStarted();
+      await enqueue(intent === "deploy" ? "deploy_release" : "rollback_release", {
         environmentId: String(form.get("environmentId")),
         releaseId: String(form.get("releaseId")),
         createdBy: auth.user.id,
@@ -204,6 +200,14 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
                         </td>
                         <td>
                           <StatusBadge status={d.status} />
+                          {d.status === "failed" && d.errorDetail && (
+                            <span
+                              className="ml-1 cursor-help text-xs text-red-500"
+                              title={d.errorDetail}
+                            >
+                              why?
+                            </span>
+                          )}
                         </td>
                         <td>
                           <input

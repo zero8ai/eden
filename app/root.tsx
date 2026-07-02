@@ -9,10 +9,15 @@ import {
 } from "react-router";
 import { authkitLoader } from "@workos-inc/authkit-react-router";
 
+import { ensureWorkerStarted } from "~/jobs/worker.server";
 import type { Route } from "./+types/root";
 import "./app.css";
 
-export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
+export const loader = (args: LoaderFunctionArgs) => {
+  // Boot the background job worker with the first server render (per-process singleton).
+  ensureWorkerStarted();
+  return authkitLoader(args);
+};
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },

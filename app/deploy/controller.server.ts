@@ -32,6 +32,8 @@ async function nextVersionLabel(projectId: string): Promise<string> {
 /**
  * Record an immutable Release for a project at a git commit. Image is built lazily at deploy
  * time (imageRef stays null until then). Immutability is inherited from git + image digests.
+ * Concurrent creates (e.g. two webhook deliveries) race on the label; the unique
+ * (project, version) constraint catches it and we retry with a fresh count.
  */
 export async function createRelease(input: {
   projectId: string;
@@ -39,18 +41,26 @@ export async function createRelease(input: {
   changelog?: string | null;
   createdBy?: string | null;
 }): Promise<Release> {
-  const version = await nextVersionLabel(input.projectId);
-  const [row] = await db
-    .insert(releases)
-    .values({
-      projectId: input.projectId,
-      version,
-      gitSha: input.gitSha,
-      changelog: input.changelog ?? null,
-      createdBy: input.createdBy ?? null,
-    })
-    .returning();
-  return row;
+  for (let attempt = 0; ; attempt++) {
+    const version = await nextVersionLabel(input.projectId);
+    try {
+      const [row] = await db
+        .insert(releases)
+        .values({
+          projectId: input.projectId,
+          version,
+          gitSha: input.gitSha,
+          changelog: input.changelog ?? null,
+          createdBy: input.createdBy ?? null,
+        })
+        .returning();
+      return row;
+    } catch (err) {
+      const isUniqueViolation =
+        err instanceof Error && /releases_project_version_uq/.test(err.message);
+      if (!isUniqueViolation || attempt >= 3) throw err;
+    }
+  }
 }
 
 /** Deployments for an environment, newest first, joined to their release version. */
@@ -61,6 +71,7 @@ export async function listDeployments(environmentId: string) {
       status: deployments.status,
       trafficWeight: deployments.trafficWeight,
       url: deployments.url,
+      errorDetail: deployments.errorDetail,
       createdAt: deployments.createdAt,
       releaseId: deployments.releaseId,
       version: releases.version,
@@ -137,7 +148,12 @@ export async function deployRelease(input: {
     });
     const [updated] = await db
       .update(deployments)
-      .set({ status: health.status, url: health.url ?? null, updatedAt: new Date() })
+      .set({
+        status: health.status,
+        url: health.url ?? null,
+        errorDetail: health.status === "failed" ? (health.detail ?? null) : null,
+        updatedAt: new Date(),
+      })
       .where(eq(deployments.id, dep.id))
       .returning();
     if (project) {
@@ -150,10 +166,13 @@ export async function deployRelease(input: {
       });
     }
     return updated;
-  } catch {
+  } catch (error) {
+    // Record WHY it failed — a bare `failed` row is undebuggable (and while the eve
+    // toolchain is young, build failures are the expected failure mode).
+    const detail = error instanceof Error ? error.message : String(error);
     const [failed] = await db
       .update(deployments)
-      .set({ status: "failed", updatedAt: new Date() })
+      .set({ status: "failed", errorDetail: detail, updatedAt: new Date() })
       .where(eq(deployments.id, dep.id))
       .returning();
     return failed;
@@ -189,17 +208,20 @@ export async function setTrafficSplit(
   environmentId: string,
   weights: { deploymentId: string; weight: number }[],
 ): Promise<void> {
-  for (const w of weights) {
-    await db
-      .update(deployments)
-      .set({ trafficWeight: Math.max(0, Math.round(w.weight)), updatedAt: new Date() })
-      .where(
-        and(
-          eq(deployments.id, w.deploymentId),
-          eq(deployments.environmentId, environmentId),
-        ),
-      );
-  }
+  // One transaction: a crash mid-way must not leave the environment on a partial split.
+  await db.transaction(async (tx) => {
+    for (const w of weights) {
+      await tx
+        .update(deployments)
+        .set({ trafficWeight: Math.max(0, Math.round(w.weight)), updatedAt: new Date() })
+        .where(
+          and(
+            eq(deployments.id, w.deploymentId),
+            eq(deployments.environmentId, environmentId),
+          ),
+        );
+    }
+  });
 }
 
 /** Find the project connected to a repo (for webhook-driven deploys). */

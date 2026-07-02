@@ -11,6 +11,7 @@ import { and, asc, eq, lte, sql } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import { jobs } from "~/db/schema";
+import { planFailure } from "./policy";
 
 export type Job = typeof jobs.$inferSelect;
 
@@ -77,13 +78,13 @@ export async function markDone(jobId: string): Promise<void> {
 
 /** Retry with linear backoff while attempts remain; park as `failed` after the last one. */
 export async function markFailed(job: Job, error: string): Promise<void> {
-  const retry = job.attempts < job.maxAttempts;
+  const plan = planFailure(job, new Date());
   await db
     .update(jobs)
     .set({
-      status: retry ? "queued" : "failed",
+      status: plan.status,
       error,
-      ...(retry ? { runAt: new Date(Date.now() + job.attempts * 30_000) } : {}),
+      ...(plan.runAt ? { runAt: plan.runAt } : {}),
       updatedAt: new Date(),
     })
     .where(eq(jobs.id, job.id));

@@ -16,6 +16,7 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import { deployments } from "~/db/schema";
+import { pickWeighted } from "./split";
 
 const PORT = Number(process.env.EDEN_SPLITTER_PORT ?? 8787);
 const COOKIE = "eden_split";
@@ -34,18 +35,6 @@ async function liveDeployments(environmentId: string): Promise<LiveDeployment[]>
       and(eq(deployments.environmentId, environmentId), eq(deployments.status, "live")),
     );
   return rows.filter((r): r is LiveDeployment => !!r.url);
-}
-
-/** Weighted random pick across live deployments (weights are relative integers). */
-function pick(rows: LiveDeployment[]): LiveDeployment | null {
-  const total = rows.reduce((s, r) => s + Math.max(0, r.trafficWeight), 0);
-  if (total <= 0) return rows[0] ?? null;
-  let roll = Math.random() * total;
-  for (const r of rows) {
-    roll -= Math.max(0, r.trafficWeight);
-    if (roll < 0) return r;
-  }
-  return rows[rows.length - 1] ?? null;
 }
 
 function readCookie(req: http.IncomingMessage, env: string): string | null {
@@ -73,7 +62,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
   const pinned = readCookie(req, environmentId);
   let target = live.find((d) => d.id === pinned) ?? null;
   if (!target) {
-    target = pick(live);
+    target = pickWeighted(live);
     if (!target) {
       res.writeHead(503).end("No routable deployment.");
       return;

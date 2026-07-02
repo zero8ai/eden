@@ -2,54 +2,17 @@
  * OSS SecretsProvider: AES-256-GCM encrypted values in Postgres. Managed swaps this for
  * KMS/Vault behind the same seam. Plaintext never touches the repo or logs (PRD §7.2).
  */
-import crypto from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import { secretsMetadata, secretValues } from "~/db/schema";
 import type { SecretRef, SecretsProvider } from "../types";
+import { decodeKey, open, seal } from "./secretbox";
 
-function getKey(): Buffer {
-  const raw = process.env.EDEN_SECRETS_KEY;
-  if (!raw) {
-    throw new Error(
-      "EDEN_SECRETS_KEY is not set. Provide a 32-byte key as 64 hex chars or base64 " +
-        "(e.g. `openssl rand -hex 32`) to use the local secrets store.",
-    );
-  }
-  const buf =
-    raw.length === 64 && /^[0-9a-fA-F]+$/.test(raw)
-      ? Buffer.from(raw, "hex")
-      : Buffer.from(raw, "base64");
-  if (buf.length !== 32) {
-    throw new Error("EDEN_SECRETS_KEY must decode to exactly 32 bytes.");
-  }
-  return buf;
-}
-
-function encrypt(plaintext: string) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", getKey(), iv);
-  const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  return {
-    ciphertext: ct.toString("base64"),
-    iv: iv.toString("base64"),
-    authTag: cipher.getAuthTag().toString("base64"),
-  };
-}
-
-function decrypt(row: { ciphertext: string; iv: string; authTag: string }): string {
-  const decipher = crypto.createDecipheriv(
-    "aes-256-gcm",
-    getKey(),
-    Buffer.from(row.iv, "base64"),
-  );
-  decipher.setAuthTag(Buffer.from(row.authTag, "base64"));
-  return Buffer.concat([
-    decipher.update(Buffer.from(row.ciphertext, "base64")),
-    decipher.final(),
-  ]).toString("utf8");
-}
+const getKey = () => decodeKey(process.env.EDEN_SECRETS_KEY);
+const encrypt = (plaintext: string) => seal(getKey(), plaintext);
+const decrypt = (row: { ciphertext: string; iv: string; authTag: string }) =>
+  open(getKey(), row);
 
 /** Scope predicate that treats a null environment as project-wide. */
 function scope(ref: SecretRef) {

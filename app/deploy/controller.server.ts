@@ -16,23 +16,10 @@ import { db } from "~/db/client.server";
 import { deployments, environments, projects, releases } from "~/db/schema";
 import { recordAudit } from "~/managed/audit.server";
 import { getRuntime } from "~/seams/index.server";
+import { isVersionLabelCollision, versionLabel } from "./versioning";
 
 export type Release = typeof releases.$inferSelect;
 export type Deployment = typeof deployments.$inferSelect;
-
-/**
- * Unique-violation (SQLSTATE 23505) on the (project, version) label constraint. Drizzle wraps
- * the driver error, so walk the cause chain rather than matching the top-level message.
- */
-function isVersionLabelCollision(err: unknown): boolean {
-  for (let e = err; e instanceof Error; e = e.cause as Error) {
-    const pg = e as Error & { code?: string; constraint_name?: string };
-    if (pg.code === "23505" && pg.constraint_name === "releases_project_version_uq") {
-      return true;
-    }
-  }
-  return false;
-}
 
 /** Next `vN` label for a project (1-based on existing release count). */
 async function nextVersionLabel(projectId: string): Promise<string> {
@@ -40,7 +27,7 @@ async function nextVersionLabel(projectId: string): Promise<string> {
     .select({ c: sql<number>`count(*)::int` })
     .from(releases)
     .where(eq(releases.projectId, projectId));
-  return `v${(c ?? 0) + 1}`;
+  return versionLabel(c ?? 0);
 }
 
 /**

@@ -48,6 +48,13 @@ export const drizzleDataStore: DataStore = {
     async setImageRef(id, imageRef) {
       await db.update(releases).set({ imageRef }).where(eq(releases.id, id));
     },
+    async listByProject(projectId) {
+      return db
+        .select()
+        .from(releases)
+        .where(eq(releases.projectId, projectId))
+        .orderBy(desc(releases.createdAt));
+    },
   },
 
   deployments: {
@@ -127,6 +134,19 @@ export const drizzleDataStore: DataStore = {
         .limit(1);
       return row ?? null;
     },
+    async listByProject(projectId) {
+      return db
+        .select()
+        .from(environments)
+        .where(eq(environments.projectId, projectId))
+        .orderBy(asc(environments.createdAt));
+    },
+    async seedDefaults(projectId, names) {
+      await db
+        .insert(environments)
+        .values(names.map((name) => ({ projectId, name })))
+        .onConflictDoNothing();
+    },
   },
 
   projects: {
@@ -141,6 +161,33 @@ export const drizzleDataStore: DataStore = {
         .where(and(eq(projects.repoOwner, owner), eq(projects.repoName, repo)))
         .limit(1);
       return row ?? null;
+    },
+    async getByOrg(orgId, id) {
+      const [row] = await db
+        .select()
+        .from(projects)
+        .where(and(eq(projects.orgId, orgId), eq(projects.id, id)))
+        .limit(1);
+      return row ?? null;
+    },
+    async listByOrg(orgId) {
+      return db
+        .select()
+        .from(projects)
+        .where(eq(projects.orgId, orgId))
+        .orderBy(desc(projects.createdAt));
+    },
+    async slugExists(orgId, slug) {
+      const rows = await db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(eq(projects.orgId, orgId), eq(projects.slug, slug)))
+        .limit(1);
+      return rows.length > 0;
+    },
+    async create(input) {
+      const [row] = await db.insert(projects).values(input).returning();
+      return row;
     },
   },
 

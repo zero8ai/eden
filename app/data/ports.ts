@@ -30,6 +30,8 @@ export interface DeploymentWithRelease {
 
 export interface ReleaseRepo {
   countByProject(projectId: string): Promise<number>;
+  /** A project's releases, newest first (version history). */
+  listByProject(projectId: string): Promise<Release[]>;
   /** Insert a release; throws a (project, version) unique-violation like Postgres would. */
   insert(input: {
     projectId: string;
@@ -67,11 +69,29 @@ export interface DeploymentRepo {
 
 export interface EnvironmentRepo {
   findById(id: string): Promise<Environment | null>;
+  listByProject(projectId: string): Promise<Environment[]>;
+  /** Seed named environments for a new project (idempotent). */
+  seedDefaults(projectId: string, names: readonly string[]): Promise<void>;
 }
 
 export interface ProjectRepo {
   findById(id: string): Promise<Project | null>;
   findByRepo(owner: string, repo: string): Promise<Project | null>;
+  /** Tenant-scoped read: returns the project only if it belongs to `orgId` (D2). */
+  getByOrg(orgId: string, id: string): Promise<Project | null>;
+  /** A tenant's projects, newest first. */
+  listByOrg(orgId: string): Promise<Project[]>;
+  /** Does this org already have a project with this slug? (uniqueness within a tenant). */
+  slugExists(orgId: string, slug: string): Promise<boolean>;
+  create(input: {
+    orgId: string;
+    name: string;
+    slug: string;
+    repoOwner?: string | null;
+    repoName?: string | null;
+    repoInstallationId?: string | null;
+    defaultBranch?: string;
+  }): Promise<Project>;
 }
 
 export interface JobRepo {

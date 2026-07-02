@@ -117,6 +117,11 @@ export function makeFakeStore(): FakeStore {
         const r = releases.get(rid);
         if (r) releases.set(rid, { ...r, imageRef });
       },
+      async listByProject(projectId) {
+        return [...releases.values()]
+          .filter((r) => r.projectId === projectId)
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      },
     },
 
     deployments: {
@@ -183,6 +188,17 @@ export function makeFakeStore(): FakeStore {
       async findById(eid) {
         return environments.get(eid) ?? null;
       },
+      async listByProject(projectId) {
+        return [...environments.values()]
+          .filter((e) => e.projectId === projectId)
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      },
+      async seedDefaults(projectId, names) {
+        for (const name of names) {
+          const eid = id("env");
+          environments.set(eid, { id: eid, projectId, name, createdAt: new Date(++seq) });
+        }
+      },
     },
 
     projects: {
@@ -195,6 +211,34 @@ export function makeFakeStore(): FakeStore {
             (p) => p.repoOwner === owner && p.repoName === repo,
           ) ?? null
         );
+      },
+      async getByOrg(orgId, pid) {
+        const p = projects.get(pid);
+        return p && p.orgId === orgId ? p : null;
+      },
+      async listByOrg(orgId) {
+        return [...projects.values()]
+          .filter((p) => p.orgId === orgId)
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      },
+      async slugExists(orgId, slug) {
+        return [...projects.values()].some((p) => p.orgId === orgId && p.slug === slug);
+      },
+      async create(input) {
+        const row: Project = {
+          id: id("proj"),
+          orgId: input.orgId,
+          name: input.name,
+          slug: input.slug,
+          repoOwner: input.repoOwner ?? null,
+          repoName: input.repoName ?? null,
+          repoInstallationId: input.repoInstallationId ?? null,
+          defaultBranch: input.defaultBranch ?? "main",
+          createdAt: new Date(++seq),
+          updatedAt: new Date(seq),
+        };
+        projects.set(row.id, row);
+        return row;
       },
     },
 

@@ -1,17 +1,14 @@
 /**
- * Tenant-scoped data access. Every query takes an `orgId` (the WorkOS org from the session)
- * and filters by it, so a loader physically cannot read another tenant's rows (D2). Keep all
- * cross-table reads here rather than inline in loaders, so the org-scoping invariant lives in
- * one place.
+ * Tenant-scoped data access. Every read takes an `orgId` (the WorkOS org from the session) and
+ * filters by it, so a loader physically cannot read another tenant's rows (D2). These are thin
+ * wrappers over the DataStore seam (app/data/ports.ts) — the org-scoping and slug-uniqueness
+ * logic lives here in one place; the SQL lives in the Drizzle store; both are unit-testable
+ * against an in-memory fake.
  */
-import { and, asc, desc, eq } from "drizzle-orm";
+import type { DataStore, Environment, Project } from "~/data/ports";
+import { getRuntime } from "~/seams/index.server";
 
-import { db } from "./client.server";
-import { environments, projects, releases } from "./schema";
-
-export type Project = typeof projects.$inferSelect;
-export type Environment = typeof environments.$inferSelect;
-type NewProject = typeof projects.$inferInsert;
+export type { Project, Environment } from "~/data/ports";
 
 /** Environments every new project gets, in display order. */
 export const DEFAULT_ENVIRONMENTS = ["production", "preview", "development"] as const;
@@ -27,68 +24,70 @@ export function slugify(input: string): string {
 }
 
 /**
- * Create a project (a connected eve repo) for a tenant. `slug` is unique per org; on
- * collision we suffix `-2`, `-3`, … so connecting two repos with similar names doesn't fail.
+ * Resolve a slug that's unique within the org: start from `base`, then suffix `-2`, `-3`, …
+ * until `exists` reports it free. Pure but for the injected predicate, so it's unit-testable.
  */
-export async function createProject(input: Omit<NewProject, "slug"> & { slug?: string }) {
-  const base = slugify(input.slug ?? input.name);
-  let slug = base || "agent";
-  for (let n = 2; ; n++) {
-    const existing = await db
-      .select({ id: projects.id })
-      .from(projects)
-      .where(and(eq(projects.orgId, input.orgId), eq(projects.slug, slug)))
-      .limit(1);
-    if (existing.length === 0) break;
-    slug = `${base}-${n}`;
+export async function resolveUniqueSlug(
+  base: string,
+  exists: (slug: string) => Promise<boolean>,
+): Promise<string> {
+  const root = base || "agent";
+  let slug = root;
+  for (let n = 2; await exists(slug); n++) {
+    slug = `${root}-${n}`;
   }
-  const [row] = await db
-    .insert(projects)
-    .values({ ...input, slug })
-    .returning();
+  return slug;
+}
 
-  // Seed default environments so deploys and secrets have a scope from day one.
-  await db
-    .insert(environments)
-    .values(DEFAULT_ENVIRONMENTS.map((name) => ({ projectId: row.id, name })))
-    .onConflictDoNothing();
-
-  return row;
+/**
+ * Create a project (a connected eve repo) for a tenant, seeding its default environments.
+ * `slug` is unique per org; on collision we suffix so connecting similarly-named repos doesn't
+ * fail.
+ */
+export async function createProject(
+  input: {
+    orgId: string;
+    name: string;
+    slug?: string;
+    repoOwner?: string | null;
+    repoName?: string | null;
+    repoInstallationId?: string | null;
+    defaultBranch?: string;
+  },
+  store: DataStore = getRuntime().data,
+): Promise<Project> {
+  const slug = await resolveUniqueSlug(slugify(input.slug ?? input.name), (s) =>
+    store.projects.slugExists(input.orgId, s),
+  );
+  const { slug: _ignore, ...rest } = input;
+  const project = await store.projects.create({ ...rest, slug });
+  await store.environments.seedDefaults(project.id, DEFAULT_ENVIRONMENTS);
+  return project;
 }
 
 /** Environments for a project, in creation order. */
-export function listEnvironments(projectId: string) {
-  return db
-    .select()
-    .from(environments)
-    .where(eq(environments.projectId, projectId))
-    .orderBy(asc(environments.createdAt));
+export function listEnvironments(
+  projectId: string,
+  store: DataStore = getRuntime().data,
+): Promise<Environment[]> {
+  return store.environments.listByProject(projectId);
 }
 
 /** List a tenant's projects, newest first. */
-export function listProjects(orgId: string) {
-  return db
-    .select()
-    .from(projects)
-    .where(eq(projects.orgId, orgId))
-    .orderBy(desc(projects.createdAt));
+export function listProjects(orgId: string, store: DataStore = getRuntime().data) {
+  return store.projects.listByOrg(orgId);
 }
 
 /** Fetch one project by id, scoped to the tenant. Returns undefined if not found/not owned. */
-export async function getProject(orgId: string, projectId: string) {
-  const [row] = await db
-    .select()
-    .from(projects)
-    .where(and(eq(projects.orgId, orgId), eq(projects.id, projectId)))
-    .limit(1);
-  return row;
+export async function getProject(
+  orgId: string,
+  projectId: string,
+  store: DataStore = getRuntime().data,
+): Promise<Project | undefined> {
+  return (await store.projects.getByOrg(orgId, projectId)) ?? undefined;
 }
 
 /** Releases for a project, newest first (D9 version history). */
-export function listReleases(projectId: string) {
-  return db
-    .select()
-    .from(releases)
-    .where(eq(releases.projectId, projectId))
-    .orderBy(desc(releases.createdAt));
+export function listReleases(projectId: string, store: DataStore = getRuntime().data) {
+  return store.releases.listByProject(projectId);
 }

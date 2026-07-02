@@ -21,15 +21,28 @@ export const loader = (args: LoaderFunctionArgs) => {
   return authkitLoader(args);
 };
 
-/** Sync shadcn's `.dark` class with the OS preference before first paint (no FOUC). */
+/**
+ * Resolve the `.dark` class before first paint (no FOUC). Preference order:
+ *   explicit cookie ("light"/"dark") wins; otherwise follow the OS. The OS
+ *   listener only steers the theme while in "system" mode. Keep this in sync
+ *   with THEME_COOKIE / applyTheme in app/components/theme-toggle.tsx.
+ */
 const darkModeScript = `
 (function () {
   var mql = window.matchMedia("(prefers-color-scheme: dark)");
+  var read = function () {
+    var m = document.cookie.match(/(?:^|; )eden-theme=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : "system";
+  };
   var apply = function () {
-    document.documentElement.classList.toggle("dark", mql.matches);
+    var pref = read();
+    var dark = pref === "dark" || (pref !== "light" && mql.matches);
+    document.documentElement.classList.toggle("dark", dark);
   };
   apply();
-  mql.addEventListener("change", apply);
+  mql.addEventListener("change", function () {
+    if (read() === "system") apply();
+  });
 })();
 `;
 

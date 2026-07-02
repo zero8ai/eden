@@ -7,6 +7,7 @@
  */
 import { Form, Link, NavLink } from "react-router";
 
+import { ThemeToggle } from "~/components/theme-toggle";
 import { Button } from "~/components/ui/button";
 import { Separator } from "~/components/ui/separator";
 import { TooltipProvider } from "~/components/ui/tooltip";
@@ -42,12 +43,13 @@ export function AppShell({
             <HeaderLink to="/connect">Connect</HeaderLink>
             <HeaderLink to="/org/settings">Settings</HeaderLink>
           </nav>
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-2">
             {userEmail && (
               <span className="hidden text-sm text-muted-foreground sm:inline">
                 {userEmail}
               </span>
             )}
+            <ThemeToggle />
             <Form method="post" action="/dashboard">
               <Button variant="ghost" size="sm" type="submit">
                 Sign out

@@ -37,7 +37,9 @@ export async function syncTenant(
   const displayName =
     [auth.user.firstName, auth.user.lastName].filter(Boolean).join(" ") || null;
 
-  await db
+  // Start the user upsert but only await it where it's needed, so the org-less
+  // path doesn't block on it and the org path overlaps it with the org lookup.
+  const userSync = db
     .insert(users)
     .values({ id: auth.user.id, email: auth.user.email, name: displayName })
     .onConflictDoUpdate({
@@ -46,14 +48,17 @@ export async function syncTenant(
     });
 
   if (!auth.organizationId) {
+    await userSync;
     return { org: null };
   }
 
-  let [org] = await db
-    .select()
-    .from(orgs)
-    .where(eq(orgs.id, auth.organizationId))
-    .limit(1);
+  // The membership insert below FKs users(id), so userSync must settle first —
+  // but the org lookup is independent and can run concurrently with it.
+  const [, [orgRow]] = await Promise.all([
+    userSync,
+    db.select().from(orgs).where(eq(orgs.id, auth.organizationId)).limit(1),
+  ]);
+  let org = orgRow;
 
   if (!org) {
     // First time we've seen this org — resolve its display name from WorkOS.

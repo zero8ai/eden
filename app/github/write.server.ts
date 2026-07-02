@@ -71,27 +71,64 @@ async function ensureBranch(
   }
 }
 
-/** Current blob sha of `path` on `ref`, or undefined if the file doesn't exist yet. */
-async function fileShaOnBranch(
+/**
+ * Commit `files` to `branch` as ONE commit via the Git Data API: blobs upload concurrently
+ * (independent), then a single tree + commit + ref update. One change-set == one commit, and
+ * no per-file sequential round-trips.
+ */
+export async function commitFiles(
   octokit: InstallationOctokit,
   { owner, repo }: RepoRef,
-  path: string,
-  ref: string,
-): Promise<string | undefined> {
-  try {
-    const res = await octokit.rest.repos.getContent({ owner, repo, path, ref });
-    const d = res.data;
-    return Array.isArray(d) || !("sha" in d) ? undefined : d.sha;
-  } catch (error) {
-    if (statusOf(error) === 404) return undefined;
-    throw error;
-  }
+  branch: string,
+  files: FileChange[],
+  message: string,
+): Promise<string> {
+  const [blobs, head] = await Promise.all([
+    Promise.all(
+      files.map((f) =>
+        octokit.rest.git.createBlob({
+          owner,
+          repo,
+          content: Buffer.from(f.content, "utf8").toString("base64"),
+          encoding: "base64",
+        }),
+      ),
+    ),
+    octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` }),
+  ]);
+  const headSha = head.data.object.sha;
+  const headCommit = await octokit.rest.git.getCommit({ owner, repo, commit_sha: headSha });
+  const tree = await octokit.rest.git.createTree({
+    owner,
+    repo,
+    base_tree: headCommit.data.tree.sha,
+    tree: files.map((f, i) => ({
+      path: f.path,
+      mode: "100644" as const,
+      type: "blob" as const,
+      sha: blobs[i].data.sha,
+    })),
+  });
+  const commit = await octokit.rest.git.createCommit({
+    owner,
+    repo,
+    message,
+    tree: tree.data.sha,
+    parents: [headSha],
+  });
+  await octokit.rest.git.updateRef({
+    owner,
+    repo,
+    ref: `heads/${branch}`,
+    sha: commit.data.sha,
+  });
+  return commit.data.sha;
 }
 
 /**
- * Create a working branch, commit `files`, and open (or reuse) a PR back to the base branch.
- * Idempotent per branch name: calling again with the same branch stacks commits and reuses
- * the open PR.
+ * Create a working branch, commit `files` (one commit), and open (or reuse) a PR back to the
+ * base branch. Idempotent per branch name: calling again with the same branch stacks commits
+ * and reuses the open PR.
  */
 export async function proposeChange(
   installationId: string | number,
@@ -111,19 +148,7 @@ export async function proposeChange(
     ref: `heads/${base}`,
   });
   await ensureBranch(octokit, ref, input.branch, baseRef.data.object.sha);
-
-  for (const file of input.files) {
-    const sha = await fileShaOnBranch(octokit, ref, file.path, input.branch);
-    await octokit.rest.repos.createOrUpdateFileContents({
-      owner,
-      repo,
-      path: file.path,
-      message: input.commitMessage ?? input.title,
-      content: Buffer.from(file.content, "utf8").toString("base64"),
-      branch: input.branch,
-      ...(sha ? { sha } : {}),
-    });
-  }
+  await commitFiles(octokit, ref, input.branch, input.files, input.commitMessage ?? input.title);
 
   return openOrReusePullRequest(octokit, ref, {
     base,

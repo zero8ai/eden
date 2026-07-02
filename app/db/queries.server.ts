@@ -11,10 +11,10 @@ import { getRuntime } from "~/seams/index.server";
 export type { Project, Environment } from "~/data/ports";
 
 /** Environments every new project gets, in display order. */
-export const DEFAULT_ENVIRONMENTS = ["production", "preview", "development"] as const;
+const DEFAULT_ENVIRONMENTS = ["production", "preview", "development"] as const;
 
 /** Turn a repo name into a URL-safe slug. */
-export function slugify(input: string): string {
+function slugify(input: string): string {
   return input
     .toLowerCase()
     .trim()

@@ -74,7 +74,7 @@ function stripExtension(filename: string): string {
  * literal (e.g. `model: 'anthropic/claude-...'`); we grab the first such literal. This is a
  * heuristic for the read-only view, not a substitute for executing the module.
  */
-export function extractModel(agentModuleSource: string | undefined): string | null {
+function extractModel(agentModuleSource: string | undefined): string | null {
   if (!agentModuleSource) return null;
   const match = agentModuleSource.match(
     /\bmodel\s*:\s*(['"`])([^'"`]+)\1/,

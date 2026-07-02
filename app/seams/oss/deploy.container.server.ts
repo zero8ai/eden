@@ -17,7 +17,7 @@ import type {
 } from "../types";
 
 /** Thrown when a deploy operation needs toolchain/infra not present in this environment. */
-export class DeployToolingUnavailableError extends Error {
+class DeployToolingUnavailableError extends Error {
   constructor(step: string) {
     super(
       `Deploy step "${step}" needs the eve/docker toolchain, which isn't available here yet. ` +

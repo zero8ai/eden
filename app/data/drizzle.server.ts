@@ -117,18 +117,23 @@ export const drizzleDataStore: DataStore = {
         );
     },
     async setWeights(environmentId, weights) {
+      // One transaction so a crash mid-way can't leave a partial split; the per-row
+      // updates hit distinct rows and are order-independent, so they run concurrently
+      // (pipelined on the transaction's connection).
       await db.transaction(async (tx) => {
-        for (const w of weights) {
-          await tx
-            .update(deployments)
-            .set({ trafficWeight: Math.max(0, Math.round(w.weight)), updatedAt: new Date() })
-            .where(
-              and(
-                eq(deployments.id, w.deploymentId),
-                eq(deployments.environmentId, environmentId),
+        await Promise.all(
+          weights.map((w) =>
+            tx
+              .update(deployments)
+              .set({ trafficWeight: Math.max(0, Math.round(w.weight)), updatedAt: new Date() })
+              .where(
+                and(
+                  eq(deployments.id, w.deploymentId),
+                  eq(deployments.environmentId, environmentId),
+                ),
               ),
-            );
-        }
+          ),
+        );
       });
     },
   },

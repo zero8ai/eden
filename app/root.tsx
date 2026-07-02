@@ -1,5 +1,4 @@
 import {
-  isRouteErrorResponse,
   Links,
   Meta,
   Outlet,
@@ -11,8 +10,9 @@ import { authkitLoader } from "@workos-inc/authkit-react-router";
 
 import { ensureSplitterStarted } from "~/deploy/splitter.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
-import type { Route } from "./+types/root";
 import "./app.css";
+
+export { ErrorBoundary } from "~/components/error-boundary";
 
 export const loader = (args: LoaderFunctionArgs) => {
   // Boot the background singletons with the first server render (per-process guards).
@@ -67,33 +67,4 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return <Outlet />;
-}
-
-export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  let message = "Oops!";
-  let details = "An unexpected error occurred.";
-  let stack: string | undefined;
-
-  if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? "404" : "Error";
-    details =
-      error.status === 404
-        ? "The requested page could not be found."
-        : error.statusText || details;
-  } else if (import.meta.env.DEV && error && error instanceof Error) {
-    details = error.message;
-    stack = error.stack;
-  }
-
-  return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center gap-3 px-6 py-16">
-      <h1 className="text-3xl font-semibold tracking-tight">{message}</h1>
-      <p className="text-muted-foreground">{details}</p>
-      {stack && (
-        <pre className="mt-4 overflow-x-auto rounded-lg border bg-muted p-4 text-xs">
-          <code>{stack}</code>
-        </pre>
-      )}
-    </main>
-  );
 }

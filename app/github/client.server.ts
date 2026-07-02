@@ -37,9 +37,7 @@ function readConfig(): GitHubAppConfig {
     GITHUB_APP_CLIENT_ID,
     GITHUB_APP_CLIENT_SECRET,
     GITHUB_APP_SLUG,
-  })
-    .filter(([, v]) => !v)
-    .map(([k]) => k);
+  }).flatMap(([k, v]) => (v ? [] : [k]));
 
   if (missing.length) {
     throw new Error(
@@ -62,12 +60,12 @@ function readConfig(): GitHubAppConfig {
 let cachedApp: App | undefined;
 let cachedConfig: GitHubAppConfig | undefined;
 
-export function getGitHubConfig(): GitHubAppConfig {
+function getGitHubConfig(): GitHubAppConfig {
   return (cachedConfig ??= readConfig());
 }
 
 /** The App-level Octokit client (app JWT auth). */
-export function getGitHubApp(): App {
+function getGitHubApp(): App {
   if (cachedApp) return cachedApp;
   const cfg = getGitHubConfig();
   cachedApp = new App({

@@ -114,9 +114,11 @@ export async function action(args: ActionFunctionArgs) {
       });
     } else if (intent === "split") {
       const environmentId = String(form.get("environmentId"));
-      const weights = [...form.entries()]
-        .filter(([k]) => k.startsWith("weight:"))
-        .map(([k, v]) => ({ deploymentId: k.slice("weight:".length), weight: Number(v) || 0 }));
+      const weights = [...form.entries()].flatMap(([k, v]) =>
+        k.startsWith("weight:")
+          ? [{ deploymentId: k.slice("weight:".length), weight: Number(v) || 0 }]
+          : [],
+      );
       await setTrafficSplit(environmentId, weights);
     }
   } catch (error) {

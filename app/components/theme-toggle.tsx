@@ -6,7 +6,7 @@
  * Setting it here applies the class immediately — no navigation/round-trip.
  */
 import { Monitor, Moon, Sun } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -32,6 +32,18 @@ function applyTheme(pref: Theme) {
   const dark = pref === "dark" || (pref === "system" && prefersDark);
   document.documentElement.classList.toggle("dark", dark);
   document.cookie = `${THEME_COOKIE}=${pref}; path=/; max-age=31536000; SameSite=Lax`;
+  emit();
+}
+
+// Tiny external store over the theme cookie: the server snapshot is "system" (matching SSR
+// markup) and the client snapshot re-reads the cookie whenever applyTheme() emits.
+const listeners = new Set<() => void>();
+function subscribe(cb: () => void) {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+function emit() {
+  for (const cb of listeners) cb();
 }
 
 const OPTIONS: { value: Theme; label: string; icon: typeof Monitor }[] = [
@@ -41,10 +53,9 @@ const OPTIONS: { value: Theme; label: string; icon: typeof Monitor }[] = [
 ];
 
 export function ThemeToggle() {
-  // Start as "system" for a stable SSR/first-client render, then hydrate the
-  // real cookie value in an effect to avoid a hydration mismatch.
-  const [theme, setTheme] = useState<Theme>("system");
-  useEffect(() => setTheme(readTheme()), []);
+  // Cookie state via useSyncExternalStore: hydration-safe (server snapshot is
+  // "system") without an extra state+effect round trip.
+  const theme = useSyncExternalStore(subscribe, readTheme, () => "system" as Theme);
 
   const Active = OPTIONS.find((o) => o.value === theme)?.icon ?? Monitor;
 
@@ -59,10 +70,7 @@ export function ThemeToggle() {
         {OPTIONS.map(({ value, label, icon: Icon }) => (
           <DropdownMenuItem
             key={value}
-            onSelect={() => {
-              setTheme(value);
-              applyTheme(value);
-            }}
+            onSelect={() => applyTheme(value)}
             className={theme === value ? "font-medium" : undefined}
           >
             <Icon className="mr-2 h-4 w-4" />

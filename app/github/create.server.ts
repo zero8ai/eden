@@ -12,7 +12,7 @@
  * clear error pointing the user at "connect an existing repo".
  */
 import { scaffoldAgentModule } from "~/eve/agentModule";
-import type { FileChange } from "./write.server";
+import { commitFiles, type FileChange } from "./write.server";
 import { getInstallationOctokit } from "./client.server";
 
 export interface CreateRepoInput {
@@ -105,19 +105,15 @@ export async function createEveRepo(
   const branch = repo.default_branch;
 
   // Commit the skeleton directly to the default branch — a brand-new repo needs no PR.
+  // One commit for the whole scaffold via the Git Data API (blobs upload in parallel).
   const files = scaffoldFiles(input.name, input.model ?? DEFAULT_MODEL);
-  for (const file of files) {
-    const sha = await currentFileSha(octokit, input.owner, input.name, file.path, branch);
-    await octokit.rest.repos.createOrUpdateFileContents({
-      owner: input.owner,
-      repo: input.name,
-      path: file.path,
-      message: `chore: scaffold ${file.path}`,
-      content: Buffer.from(file.content, "utf8").toString("base64"),
-      branch,
-      ...(sha ? { sha } : {}),
-    });
-  }
+  await commitFiles(
+    octokit,
+    { owner: input.owner, repo: input.name },
+    branch,
+    files,
+    "chore: scaffold eve agent",
+  );
 
   return {
     owner: input.owner,
@@ -125,22 +121,4 @@ export async function createEveRepo(
     defaultBranch: branch,
     htmlUrl: repo.html_url,
   };
-}
-
-type InstallationOctokit = Awaited<ReturnType<typeof getInstallationOctokit>>;
-
-async function currentFileSha(
-  octokit: InstallationOctokit,
-  owner: string,
-  repo: string,
-  path: string,
-  ref: string,
-): Promise<string | undefined> {
-  try {
-    const res = await octokit.rest.repos.getContent({ owner, repo, path, ref });
-    const d = res.data;
-    return Array.isArray(d) || !("sha" in d) ? undefined : d.sha;
-  } catch {
-    return undefined;
-  }
 }

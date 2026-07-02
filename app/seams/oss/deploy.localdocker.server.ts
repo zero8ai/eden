@@ -239,8 +239,3 @@ export const localDockerTarget: DeployTarget = {
   },
 };
 
-/** Full teardown for a deployment (container + its database). Used by the controller/tests. */
-export async function destroyInstance(deploymentId: string): Promise<void> {
-  await removeIfExists(containerName(deploymentId));
-  await dropInstanceDb(deploymentId);
-}

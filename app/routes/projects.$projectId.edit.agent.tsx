@@ -191,6 +191,7 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
           </select>
           <input
             name="customModel"
+            aria-label="Custom model id"
             defaultValue={knownSelected ? "" : current}
             hidden={knownSelected}
             placeholder="provider/model-id"

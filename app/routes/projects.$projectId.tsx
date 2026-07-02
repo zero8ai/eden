@@ -224,13 +224,12 @@ function AgentSurface({
         {AGENT_CATEGORIES.map((cat) => {
           const repoItems = config[cat.key];
           // Staged NEW files (drafts not yet in the repo) still belong in their category.
-          const stagedNew = draftPaths
-            .filter(
-              (p) =>
-                p.startsWith(`agent/${cat.dir}/`) &&
-                !repoItems.some((i) => i.path === p),
-            )
-            .map((p) => ({ path: p, name: p.split("/").pop()!, isDirectory: false }));
+          const stagedNew = draftPaths.flatMap((p) =>
+            p.startsWith(`agent/${cat.dir}/`) &&
+            !repoItems.some((i) => i.path === p)
+              ? [{ path: p, name: p.split("/").pop()!, isDirectory: false }]
+              : [],
+          );
           const items = [...repoItems, ...stagedNew];
           return (
             <Card key={cat.key}>

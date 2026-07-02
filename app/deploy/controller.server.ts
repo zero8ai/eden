@@ -48,16 +48,19 @@ export async function createRelease(
   },
   store: DataStore = getRuntime().data,
 ): Promise<Release> {
-  for (let attempt = 0; ; attempt++) {
+  // Each attempt depends on the previous one failing (fresh count after a collision), so
+  // retries recurse rather than loop. N concurrent creates resolve one winner per round —
+  // allow N-ish rounds.
+  const attempt = async (round: number): Promise<Release> => {
     const count = await store.releases.countByProject(input.projectId);
-    const version = versionLabel(count);
     try {
-      return await store.releases.insert({ ...input, version });
+      return await store.releases.insert({ ...input, version: versionLabel(count) });
     } catch (err) {
-      // N concurrent creates resolve one winner per round — allow N-ish rounds.
-      if (!isVersionLabelCollision(err) || attempt >= 8) throw err;
+      if (!isVersionLabelCollision(err) || round >= 8) throw err;
+      return attempt(round + 1);
     }
-  }
+  };
+  return attempt(0);
 }
 
 /**
@@ -101,19 +104,24 @@ export async function deployRelease(
   deps: DeployDeps = deployDeps(),
 ): Promise<Deployment> {
   const { store, deployTarget, secrets } = deps;
-  const release = await store.releases.findById(input.releaseId);
+  // Release and environment lookups are independent — fetch them together.
+  const [release, env] = await Promise.all([
+    store.releases.findById(input.releaseId),
+    store.environments.findById(input.environmentId),
+  ]);
   if (!release) throw new Error("Release not found.");
-  const env = await store.environments.findById(input.environmentId);
   if (!env) throw new Error("Environment not found.");
-  const project = await store.projects.findById(release.projectId);
-
-  const dep = await store.deployments.insert({
-    environmentId: input.environmentId,
-    releaseId: input.releaseId,
-    status: "building",
-    trafficWeight: input.trafficWeight ?? 100,
-    createdBy: input.createdBy ?? null,
-  });
+  // The project lookup and the building-row insert don't depend on each other.
+  const [project, dep] = await Promise.all([
+    store.projects.findById(release.projectId),
+    store.deployments.insert({
+      environmentId: input.environmentId,
+      releaseId: input.releaseId,
+      status: "building",
+      trafficWeight: input.trafficWeight ?? 100,
+      createdBy: input.createdBy ?? null,
+    }),
+  ]);
 
   try {
     let imageRef = release.imageRef;

@@ -154,6 +154,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                   type="checkbox"
                   name="killSwitch"
                   defaultChecked={limit?.killSwitch ?? false}
+                  aria-label="Kill-switch (block all model calls for this tenant)"
                 />
                 Kill-switch (block all model calls for this tenant)
               </Label>

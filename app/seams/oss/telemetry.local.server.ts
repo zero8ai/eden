@@ -55,7 +55,3 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
   ) as Partial<T>;
 }
 
-/** Convenience for callers that just have the runs table row shape. */
-export async function upsertRun(event: NormalizedRunEvent) {
-  return localTelemetrySink.ingest(event);
-}

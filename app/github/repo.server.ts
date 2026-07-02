@@ -81,21 +81,25 @@ export async function fetchAgentSource(
   });
 
   const agentPrefix = `${AGENT_ROOT}/`;
-  const paths = tree.data.tree
-    .filter(
-      (e) =>
-        e.type === "blob" &&
-        typeof e.path === "string" &&
-        (e.path === AGENT_ROOT || e.path.startsWith(agentPrefix)),
-    )
-    .map((e) => e.path as string);
+  const paths = tree.data.tree.flatMap((e) =>
+    e.type === "blob" &&
+    typeof e.path === "string" &&
+    (e.path === AGENT_ROOT || e.path.startsWith(agentPrefix))
+      ? [e.path]
+      : [],
+  );
 
   const files: Record<string, string> = {};
   await Promise.all(
-    EAGER_FILES.filter((p) => paths.includes(p)).map(async (path) => {
-      const content = await readTextFile(octokit, { owner, repo, ref: branch }, path);
-      if (content !== null) files[path] = content;
-    }),
+    EAGER_FILES.flatMap((path) =>
+      paths.includes(path)
+        ? [
+            readTextFile(octokit, { owner, repo, ref: branch }, path).then((content) => {
+              if (content !== null) files[path] = content;
+            }),
+          ]
+        : [],
+    ),
   );
 
   return { paths, files, ref: branch, truncated: Boolean(tree.data.truncated) };

@@ -133,17 +133,25 @@ eden/
 - **M0 — Foundations:** RR7 skeleton ✅ · control-plane data model ✅ · WorkOS AuthKit + org/project
   sync + protected dashboard ✅ · GitHub App (connect, parse, read) ✅ *(code; needs App registration to
   test)* · read-only visualization of an agent's config surface ✅ — **M0 code-complete**
-- **M1 — Author:** working-branch + PR flow ✅ *(`app/github/write.server.ts` `proposeChange`)* ·
-  instructions editor ✅ · generic file editor (any `agent/` file: view/edit/create → PR; visualization
-  links every file to it, per-category "New") ✅ · Pi assistant (generate/edit tool TS, sandbox
-  test-run) ⏳ · secrets UI ⏳ · `eve init` for new repos ⏳
-- **M2 — Deploy + versioning:** deploy controller + `DeployTarget` · Container+Postgres adapter ·
-  **Releases + rollback** · **multi-version live + traffic splitter** · environments · merge→deploy
-- **M3 — Observe:** OTel + event-log ingestion · authenticated OTLP for BYO · runs store · Run list +
-  transcript · compare-by-version · access control + retention
-- **M4 — Managed:** managed credential pool + multi-tenant isolation · metering + billing · governance
-- **M5 — Breadth:** more `DeployTarget` adapters · evals-as-gate · richer observability · optional
-  progressive rollout · SSO
+- **M1 — Author:** ✅ working-branch→PR flow (`proposeChange`) · instructions + generic-file + `agent.ts`
+  (model) editors · secrets UI (SecretsProvider seam) · `eve init` create-repo scaffold · authoring
+  assistant (AuthoringAssistant seam: Claude generator + Pi adapter behind it)
+- **M2 — Deploy + versioning:** ✅ deploy controller over `DeployTarget` seam · release registry
+  (immutable vN = commit+image) · deploy/rollback · weighted session-sticky traffic split · environments ·
+  merge→deploy webhook. *(ContainerPostgres/Nomad/Vercel adapters are seam stubs until a build host.)*
+- **M3 — Observe:** ✅ sessions/runs/steps store · authenticated per-project ingest tokens (BYO OTLP) ·
+  Run list + transcript · compare-by-version · Release-commit link for system-prompt reconstruction
+- **M4 — Managed:** ✅ EDEN_MODE seam switch · managed ModelGateway (spend cap + kill-switch) · Stripe
+  metering sink + reconcile · operational audit log · governance UI. *(gateway proxy/KMS are infra.)*
+- **M5 — Breadth:** ✅ Nomad + Vercel `DeployTarget` adapters (seam) · evals-as-gate scaffold ·
+  progressive-rollout helper over the splitter (real run-health). SSO delegated to WorkOS.
+
+> **Build state (2026-07-02):** all five milestones are code-complete as an OSS control plane with the
+> §8 seams and their local/reference implementations. Everything typechecks, builds, and each layer is
+> runtime-verified against live Postgres. The pieces that are genuine infrastructure — the eve/docker
+> build host, gVisor/Nomad substrate, the model-gateway proxy process, Stripe keys — sit behind seams
+> that degrade gracefully (clear errors / skipped / no-op) until configured. GitHub- and model-key-
+> dependent flows need a registered GitHub App + `ANTHROPIC_API_KEY` to exercise end-to-end.
 
 ---
 

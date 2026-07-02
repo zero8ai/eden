@@ -13,6 +13,8 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.109.0",
+    "@earendil-works/pi-coding-agent": "^0.80.3",
     "@react-router/node": "8.0.0",
     "@react-router/serve": "8.0.0",
     "@workos-inc/authkit-react-router": "^0.12.1",

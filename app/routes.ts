@@ -6,6 +6,10 @@ export default [
   route("connect", "routes/connect.tsx"),
   route("projects/:projectId", "routes/projects.$projectId.tsx"),
   route("projects/:projectId/secrets", "routes/projects.$projectId.secrets.tsx"),
+  route(
+    "projects/:projectId/assistant",
+    "routes/projects.$projectId.assistant.tsx",
+  ),
   route("projects/:projectId/edit", "routes/projects.$projectId.edit.tsx"),
   route(
     "projects/:projectId/edit/agent",

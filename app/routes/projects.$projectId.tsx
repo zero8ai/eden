@@ -77,12 +77,20 @@ export default function ProjectDetail({ loaderData }: Route.ComponentProps) {
               ? `${project.repoOwner}/${project.repoName} · ${project.defaultBranch}`
               : "no repo connected"}
           </p>
-          <Link
-            to={`/projects/${project.id}/secrets`}
-            className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-          >
-            Secrets
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link
+              to={`/projects/${project.id}/assistant`}
+              className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+            >
+              Assistant
+            </Link>
+            <Link
+              to={`/projects/${project.id}/secrets`}
+              className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+            >
+              Secrets
+            </Link>
+          </div>
         </div>
 
         {error && (

@@ -83,16 +83,24 @@ state in the Postgres World. Follow-up note: POSTing with `continuationToken` re
 session id and the reply lacked prior context — the multi-turn continuation contract needs
 study before Eden's chat UI relies on it.
 
-**Open issue — queue execution inside Docker:** the same image serves HTTP, reaches Postgres
-and openrouter.ai, and creates sessions, but the *flow jobs* (graphile-worker → self-POST
-`/.well-known/workflow/v1/flow`) die with a bare `TypeError: fetch failed` (no cause surfaced).
-Eliminated: base URL resolution (PORT/`WORKFLOW_LOCAL_BASE_URL` both correct; manual fetch of
-the exact URL+headers from inside the container succeeds), node/undici version skew (host and
-image both v24.18.0/undici 7.28.0), WASM SIMD (`UNDICI_NO_WASM_SIMD=1` no effect). One flow
-fetch was observed succeeding under `NODE_DEBUG=fetch` (session → running) while the turn's
-job still failed silently via a *bundled* undici copy. Next steps: test non-slim base image,
-then minimal repro against the eve/workflow repos (likely upstream bug report). Dev flow is
-not blocked (host runs work); containerized instance turns are blocked on this.
+**RESOLVED — containerized turns work (5/5 + stock image).** The `fetch failed` flow-job
+failures were **not a container or eve bug**: a zombie *host* spike server (an earlier
+`node .output/server/index.mjs` that survived port-based kills) stayed connected to the same
+`eden_spike` Workflow World DB. Both processes polled the same graphile-worker queue; whenever
+the zombie won the job claim, its self-callback (`http://localhost:<dead port>/.well-known/
+workflow/v1/flow`) failed instantly → job dead after 3 attempts, with the error logged only to
+the zombie's long-gone stdout. The claim lottery explained every "intermittent" symptom.
+Killing the zombie → 5/5 consecutive real model turns from the container, zero failed jobs,
+confirmed again on the unmodified image.
+
+**Architectural rule this hardens (write it in stone):** a Workflow World database belongs to
+exactly ONE running instance. Two instances sharing a World DB steal each other's queue jobs
+and execute flows meant for the other (same-box dev against a container, blue/green, or a
+drained-but-alive old Release are all real ways to hit this). Eden's deploy path already
+enforces DB-per-deployment (`provisionInstanceDb`), and `deploy()` `docker rm -f`s the old
+container for a deploymentId before starting the new one — keep both invariants. Debugging
+lesson for ops: `graphile_worker._private_jobs` failures with nothing in the instance's logs
+means *another process* failed them — check `pg_stat_activity` before blaming the code.
 
 ## Still open (needs credentials / later work)
 - **OTel span fidelity** (`agent/instrumentation.ts`) — not yet exercised; less urgent now that

@@ -8,12 +8,31 @@
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import {
   Form,
-  Link,
   redirect,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import { Input } from "~/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "~/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "~/components/ui/tooltip";
 import {
   createRelease,
   listDeployments,
@@ -111,132 +130,135 @@ export function meta() {
 
 export default function Deployments({ loaderData, actionData }: Route.ComponentProps) {
   const { project, releases, envs } = loaderData;
+  const base = `/projects/${project.id}`;
 
   return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-4xl">
-        <Link
-          to={`/projects/${project.id}`}
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-        >
-          ← {project.name}
-        </Link>
-        <div className="mt-2 flex items-center justify-between">
-          <h1 className="text-2xl font-semibold tracking-tight">Deployments</h1>
+    <AppShell>
+      <PageHeader
+        title="Deployments"
+        description="Immutable releases from the default branch, deployed across environments behind a session-sticky traffic split."
+        actions={
           <Form method="post">
             <input type="hidden" name="intent" value="cut-release" />
-            <button
-              type="submit"
-              className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-            >
+            <Button type="submit">
               Cut release from {project.defaultBranch}
-            </button>
+            </Button>
           </Form>
-        </div>
+        }
+      />
+      <AgentNav base={base} />
 
-        {actionData?.error && (
-          <p className="mt-6 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200">
-            {actionData.error}
-          </p>
-        )}
+      {actionData?.error && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertTitle>Action failed</AlertTitle>
+          <AlertDescription>{actionData.error}</AlertDescription>
+        </Alert>
+      )}
 
-        {/* Releases */}
-        <section className="mt-8">
-          <h2 className="text-lg font-semibold">Releases</h2>
+      {/* Releases */}
+      <Card className="mb-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Releases</CardTitle>
+        </CardHeader>
+        <CardContent>
           {releases.length === 0 ? (
-            <p className="mt-2 text-sm text-gray-400">
+            <p className="text-sm text-muted-foreground">
               No releases yet. Cut one from the default branch to deploy.
             </p>
           ) : (
-            <ul className="mt-2 divide-y divide-gray-200 rounded-xl border border-gray-200 text-sm dark:divide-gray-800 dark:border-gray-800">
+            <ul className="divide-y rounded-lg border text-sm">
               {releases.map((r) => (
-                <li key={r.id} className="flex items-center justify-between px-4 py-2">
-                  <span>
-                    <span className="font-semibold">{r.version}</span>{" "}
-                    <span className="font-mono text-gray-500">{r.gitSha.slice(0, 7)}</span>
-                    {r.changelog && (
-                      <span className="ml-2 text-gray-500 dark:text-gray-400">
-                        {r.changelog}
-                      </span>
-                    )}
-                  </span>
+                <li key={r.id} className="flex items-center gap-2 px-4 py-2">
+                  <span className="font-semibold">{r.version}</span>
+                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                    {r.gitSha.slice(0, 7)}
+                  </code>
+                  {r.changelog && (
+                    <span className="truncate text-muted-foreground">
+                      {r.changelog}
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>
           )}
-        </section>
+        </CardContent>
+      </Card>
 
-        {/* Environments */}
-        {envs.map(({ env, deployments }) => (
-          <section
-            key={env.id}
-            className="mt-8 rounded-xl border border-gray-200 p-5 dark:border-gray-800"
-          >
-            <h2 className="text-lg font-semibold capitalize">{env.name}</h2>
-
+      {/* Environments */}
+      <div className="space-y-6">
+      {envs.map(({ env, deployments }) => (
+          <Card key={env.id}>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base capitalize">{env.name}</CardTitle>
+            </CardHeader>
+            <CardContent>
             {deployments.length === 0 ? (
-              <p className="mt-2 text-sm text-gray-400">No deployments.</p>
+              <p className="text-sm text-muted-foreground">No deployments.</p>
             ) : (
-              <Form method="post" className="mt-3">
+              <Form method="post">
                 <input type="hidden" name="intent" value="split" />
                 <input type="hidden" name="environmentId" value={env.id} />
-                <table className="w-full text-sm">
-                  <thead className="text-left text-xs uppercase text-gray-400">
-                    <tr>
-                      <th className="py-1">Release</th>
-                      <th>Status</th>
-                      <th>Weight</th>
-                      <th>URL</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Release</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Weight</TableHead>
+                      <TableHead>URL</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {deployments.map((d) => (
-                      <tr key={d.id} className="border-t border-gray-100 dark:border-gray-800">
-                        <td className="py-1.5 font-semibold">
+                      <TableRow key={d.id}>
+                        <TableCell className="font-semibold">
                           {d.version}{" "}
-                          <span className="font-mono font-normal text-gray-400">
+                          <code className="font-mono text-xs font-normal text-muted-foreground">
                             {d.gitSha.slice(0, 7)}
+                          </code>
+                        </TableCell>
+                        <TableCell>
+                          <span className="flex items-center gap-1">
+                            <StatusBadge status={d.status} />
+                            {d.status === "failed" && d.errorDetail && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="cursor-help text-xs text-destructive underline underline-offset-2">
+                                    why?
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-sm">
+                                  {d.errorDetail}
+                                </TooltipContent>
+                              </Tooltip>
+                            )}
                           </span>
-                        </td>
-                        <td>
-                          <StatusBadge status={d.status} />
-                          {d.status === "failed" && d.errorDetail && (
-                            <span
-                              className="ml-1 cursor-help text-xs text-red-500"
-                              title={d.errorDetail}
-                            >
-                              why?
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <input
+                        </TableCell>
+                        <TableCell>
+                          <Input
                             name={`weight:${d.id}`}
                             type="number"
                             min={0}
                             defaultValue={d.trafficWeight}
-                            className="w-16 rounded border border-gray-300 bg-white px-2 py-0.5 dark:border-gray-700 dark:bg-gray-900"
+                            className="h-8 w-20"
                           />
-                        </td>
-                        <td className="text-gray-500">
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
                           {d.url ? (
-                            <a href={d.url} className="underline">
+                            <a href={d.url} className="underline underline-offset-4">
                               open
                             </a>
                           ) : (
                             "—"
                           )}
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
-                <button
-                  type="submit"
-                  className="mt-2 rounded-md bg-gray-200 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200"
-                >
+                  </TableBody>
+                </Table>
+                <Button type="submit" size="sm" variant="secondary" className="mt-3">
                   Save split
-                </button>
+                </Button>
               </Form>
             )}
 
@@ -247,7 +269,7 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
                   <input type="hidden" name="environmentId" value={env.id} />
                   <select
                     name="releaseId"
-                    className="rounded-md border border-gray-300 bg-white px-2 py-1 text-sm dark:border-gray-700 dark:bg-gray-900"
+                    className="h-9 rounded-md border bg-background px-2 text-sm"
                   >
                     {releases.map((r) => (
                       <option key={r.id} value={r.id}>
@@ -255,19 +277,16 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
                       </option>
                     ))}
                   </select>
-                  <button
-                    type="submit"
-                    className="rounded-md bg-gray-900 px-3 py-1 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-                  >
+                  <Button type="submit" size="sm">
                     Deploy
-                  </button>
+                  </Button>
                 </Form>
                 <Form method="post" className="flex items-center gap-2">
                   <input type="hidden" name="intent" value="rollback" />
                   <input type="hidden" name="environmentId" value={env.id} />
                   <select
                     name="releaseId"
-                    className="rounded-md border border-gray-300 bg-white px-2 py-1 text-sm dark:border-gray-700 dark:bg-gray-900"
+                    className="h-9 rounded-md border bg-background px-2 text-sm"
                   >
                     {releases.map((r) => (
                       <option key={r.id} value={r.id}>
@@ -275,32 +294,30 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
                       </option>
                     ))}
                   </select>
-                  <button
-                    type="submit"
-                    className="rounded-md bg-gray-200 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200"
-                  >
+                  <Button type="submit" size="sm" variant="secondary">
                     Rollback to
-                  </button>
+                  </Button>
                 </Form>
               </div>
             )}
-          </section>
+            </CardContent>
+          </Card>
         ))}
       </div>
-    </main>
+    </AppShell>
   );
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const color =
+  const variant =
     status === "live"
-      ? "bg-green-100 text-green-700 dark:bg-green-950/50 dark:text-green-300"
+      ? "default"
       : status === "failed"
-        ? "bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300"
-        : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300";
+        ? "destructive"
+        : "secondary";
   return (
-    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${color}`}>
+    <Badge variant={variant} className="capitalize">
       {status}
-    </span>
+    </Badge>
   );
 }

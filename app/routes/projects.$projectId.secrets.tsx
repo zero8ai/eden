@@ -16,6 +16,13 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
 import {
   listEnvironments,
   type Environment,
@@ -130,115 +137,135 @@ export default function Secrets({ loaderData, actionData }: Route.ComponentProps
   const busy = navigation.state === "submitting";
   const envValue = scope.environmentId ?? ALL;
 
+  const base = `/projects/${project.id}`;
+
   return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-2xl">
-        <Link
-          to={`/projects/${project.id}`}
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
+    <AppShell workspaceName={project.name}>
+      <PageHeader
+        title="Secrets"
+        description="Stored encrypted, never in the repo. Reference them by name in tools and connections; values are injected at deploy time."
+        actions={
+          <Button variant="outline" asChild>
+            <Link to={base}>← {project.name}</Link>
+          </Button>
+        }
+      />
+      <AgentNav base={base} />
+
+      {/* Scope selector */}
+      <Form method="get" className="flex items-center gap-2">
+        <Label htmlFor="secret-scope">Scope</Label>
+        <select
+          id="secret-scope"
+          name="env"
+          defaultValue={envValue}
+          className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          ← {project.name}
-        </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">Secrets</h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          Stored encrypted, never in the repo. Reference them by name in tools and
-          connections; values are injected at deploy time.
-        </p>
+          <option value={ALL}>All environments</option>
+          {envs.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.name}
+            </option>
+          ))}
+        </select>
+        <Button type="submit" variant="secondary">
+          Switch
+        </Button>
+      </Form>
 
-        {/* Scope selector */}
-        <Form method="get" className="mt-6 flex items-center gap-2">
-          <label className="text-sm text-gray-600 dark:text-gray-300">Scope</label>
-          <select
-            name="env"
-            defaultValue={envValue}
-            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-900"
-          >
-            <option value={ALL}>All environments</option>
-            {envs.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="submit"
-            className="rounded-md bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200"
-          >
-            Switch
-          </button>
-        </Form>
+      {!configured && (
+        <Alert className="mt-6">
+          <AlertTitle>Secrets store not configured.</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      {actionData?.error && (
+        <Alert variant="destructive" className="mt-6">
+          <AlertDescription>{actionData.error}</AlertDescription>
+        </Alert>
+      )}
 
-        {!configured && (
-          <div className="mt-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200">
-            <p className="font-medium">Secrets store not configured.</p>
-            <p className="mt-1 opacity-80">{error}</p>
-          </div>
-        )}
-        {actionData?.error && (
-          <p className="mt-6 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200">
-            {actionData.error}
-          </p>
-        )}
-
-        {/* Existing secrets */}
-        <div className="mt-8">
-          <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
+      {/* Existing secrets */}
+      <Card className="mt-8">
+        <CardHeader>
+          <CardTitle className="text-sm font-semibold text-muted-foreground">
             {scope.label} · {names.length} secret{names.length === 1 ? "" : "s"}
-          </h2>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
           {names.length === 0 ? (
-            <p className="mt-2 text-sm text-gray-400">None in this scope.</p>
+            <p className="text-sm text-muted-foreground">None in this scope.</p>
           ) : (
-            <ul className="mt-2 divide-y divide-gray-200 rounded-xl border border-gray-200 dark:divide-gray-800 dark:border-gray-800">
+            <ul className="divide-y divide-border rounded-xl border">
               {names.map((name) => (
                 <li
                   key={name}
-                  className="flex items-center justify-between px-4 py-3"
+                  className="flex items-center justify-between gap-2 px-4 py-3"
                 >
-                  <span className="font-mono text-sm">{name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-sm">{name}</span>
+                    <Badge variant={scope.environmentId ? "secondary" : "outline"}>
+                      {scope.environmentId ? scope.label : "project-wide"}
+                    </Badge>
+                  </div>
                   <Form method="post">
                     <input type="hidden" name="intent" value="delete" />
                     <input type="hidden" name="env" value={envValue} />
                     <input type="hidden" name="key" value={name} />
-                    <button
+                    <Button
                       type="submit"
+                      variant="ghost"
+                      size="sm"
                       disabled={busy}
-                      className="text-sm text-red-600 hover:text-red-800 disabled:opacity-50 dark:text-red-400"
+                      className="text-destructive hover:text-destructive"
                     >
                       Delete
-                    </button>
+                    </Button>
                   </Form>
                 </li>
               ))}
             </ul>
           )}
-        </div>
+        </CardContent>
+      </Card>
 
-        {/* Add / update */}
-        <Form method="post" className="mt-8 space-y-3">
-          <h2 className="text-sm font-semibold">Add or update a secret</h2>
-          <input type="hidden" name="intent" value="set" />
-          <input type="hidden" name="env" value={envValue} />
-          <input
-            name="key"
-            placeholder="API_KEY"
-            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm dark:border-gray-700 dark:bg-gray-900"
-          />
-          <input
-            name="value"
-            type="password"
-            placeholder="value (write-only)"
-            autoComplete="off"
-            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm dark:border-gray-700 dark:bg-gray-900"
-          />
-          <button
-            type="submit"
-            disabled={busy || !configured}
-            className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-          >
-            {busy ? "Saving…" : "Save secret"}
-          </button>
-        </Form>
-      </div>
-    </main>
+      {/* Add / update */}
+      <Card className="mt-8">
+        <CardHeader>
+          <CardTitle className="text-sm font-semibold">
+            Add or update a secret
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Form method="post" className="space-y-3">
+            <input type="hidden" name="intent" value="set" />
+            <input type="hidden" name="env" value={envValue} />
+            <div className="space-y-1.5">
+              <Label htmlFor="secret-key">Key</Label>
+              <Input
+                id="secret-key"
+                name="key"
+                placeholder="API_KEY"
+                className="font-mono"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="secret-value">Value</Label>
+              <Input
+                id="secret-value"
+                name="value"
+                type="password"
+                placeholder="value (write-only)"
+                autoComplete="off"
+                className="font-mono"
+              />
+            </div>
+            <Button type="submit" disabled={busy || !configured}>
+              {busy ? "Saving…" : "Save secret"}
+            </Button>
+          </Form>
+        </CardContent>
+      </Card>
+    </AppShell>
   );
 }

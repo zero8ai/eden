@@ -1,13 +1,16 @@
-import {
-  authkitLoader,
-  signOut,
-} from "@workos-inc/authkit-react-router";
-import type {
-  ActionFunctionArgs,
-  LoaderFunctionArgs,
-} from "react-router";
-import { Form, Link } from "react-router";
+import { authkitLoader, signOut } from "@workos-inc/authkit-react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { Link } from "react-router";
 
+import { AppShell, PageHeader } from "~/components/shell";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import {
+  Card,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
 import { listProjects } from "~/db/queries.server";
 import { syncTenant } from "~/auth/tenant.server";
 import { ensureWorkspace } from "~/auth/workspace.server";
@@ -33,116 +36,64 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Dashboard · Eden" }];
+  return [{ title: "Agents · Eden" }];
 }
 
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
   const { user, org, projects } = loaderData;
 
   return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-4xl">
-        <header className="flex items-center justify-between">
-          <div>
-            <Link
-              to="/"
-              className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-            >
-              Eden
+    <AppShell workspaceName={org?.name} userEmail={user.email}>
+      <PageHeader
+        title="Agents"
+        description="Each agent is an eve repository — its instructions, tools, and subagents live in git."
+        actions={
+          <Button asChild>
+            <Link to="/connect">New agent</Link>
+          </Button>
+        }
+      />
+
+      {projects.length === 0 ? (
+        <Card className="border-dashed">
+          <CardHeader className="items-center py-12 text-center">
+            <CardTitle className="text-lg">No agents yet</CardTitle>
+            <CardDescription>
+              Connect an existing eve repository or create a new one to get started.
+            </CardDescription>
+            <Button asChild className="mt-4">
+              <Link to="/connect">Connect a repository</Link>
+            </Button>
+          </CardHeader>
+        </Card>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {projects.map((p) => (
+            <Link key={p.id} to={`/projects/${p.id}`} className="group">
+              <Card className="h-full transition-colors group-hover:border-ring/60">
+                <CardHeader>
+                  <div className="flex items-center justify-between gap-2">
+                    <CardTitle className="truncate text-base">{p.name}</CardTitle>
+                    {p.repoOwner ? (
+                      <Badge variant="secondary" className="shrink-0 font-mono text-xs">
+                        {p.repoOwner}/{p.repoName}
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="shrink-0">
+                        no repo
+                      </Badge>
+                    )}
+                  </div>
+                  <CardDescription>
+                    Default branch{" "}
+                    <span className="font-mono">{p.defaultBranch}</span>
+                  </CardDescription>
+                </CardHeader>
+              </Card>
             </Link>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-              {org ? org.name : "Your workspace"}
-            </h1>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-600 dark:text-gray-300">
-              {user.email}
-            </span>
-            {org && (
-              <Link
-                to="/org/settings"
-                className="text-sm font-medium text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-              >
-                Settings
-              </Link>
-            )}
-            <Form method="post">
-              <button
-                type="submit"
-                className="rounded-md bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
-              >
-                Sign out
-              </button>
-            </Form>
-          </div>
-        </header>
-
-        {!org && (
-          <p className="mt-8 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200">
-            You&rsquo;re signed in but not scoped to an organization yet. Eden
-            uses a WorkOS Organization as a tenant &mdash; once you belong to
-            one, your projects show up here.
-          </p>
-        )}
-
-        <section className="mt-10">
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-lg font-semibold">Projects</h2>
-            <div className="flex items-center gap-4">
-              <span className="text-xs font-medium text-gray-400">
-                {projects.length} total
-              </span>
-              {org && (
-                <Link
-                  to="/connect"
-                  className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-                >
-                  Connect a repo
-                </Link>
-              )}
-            </div>
-          </div>
-
-          {projects.length === 0 ? (
-            <div className="mt-4 rounded-xl border border-dashed border-gray-300 p-8 text-center dark:border-gray-700">
-              <p className="text-sm text-gray-600 dark:text-gray-300">
-                No projects yet.{" "}
-                {org ? (
-                  <>
-                    <Link
-                      to="/connect"
-                      className="underline underline-offset-4"
-                    >
-                      Connect an eve repo
-                    </Link>{" "}
-                    to get started.
-                  </>
-                ) : (
-                  "Join an organization to connect a repo."
-                )}
-              </p>
-            </div>
-          ) : (
-            <ul className="mt-4 grid gap-3 sm:grid-cols-2">
-              {projects.map((p) => (
-                <li key={p.id}>
-                  <Link
-                    to={`/projects/${p.id}`}
-                    className="block rounded-xl border border-gray-200 p-4 hover:border-gray-400 dark:border-gray-800 dark:hover:border-gray-600"
-                  >
-                    <div className="font-medium">{p.name}</div>
-                    <div className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                      {p.repoOwner && p.repoName
-                        ? `${p.repoOwner}/${p.repoName}`
-                        : "no repo connected"}
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </div>
-    </main>
+          ))}
+        </div>
+      )}
+    </AppShell>
   );
 }

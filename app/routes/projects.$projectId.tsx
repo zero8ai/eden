@@ -7,6 +7,16 @@
 import { authkitLoader } from "@workos-inc/authkit-react-router";
 import { Link, data, type LoaderFunctionArgs } from "react-router";
 
+import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
 import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
 import { buildAgentConfig } from "~/eve/parse";
@@ -58,64 +68,50 @@ export function meta() {
 
 export default function ProjectDetail({ loaderData }: Route.ComponentProps) {
   const { project, config, error } = loaderData;
+  const base = `/projects/${project.id}`;
 
   return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-4xl">
-        <Link
-          to="/dashboard"
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-        >
-          ← Dashboard
-        </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          {project.name}
-        </h1>
-        <div className="mt-1 flex items-center justify-between">
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {project.repoOwner && project.repoName
-              ? `${project.repoOwner}/${project.repoName} · ${project.defaultBranch}`
-              : "no repo connected"}
-          </p>
-          <div className="flex items-center gap-4">
-            <Link
-              to={`/projects/${project.id}/deployments`}
-              className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-            >
-              Deployments
-            </Link>
-            <Link
-              to={`/projects/${project.id}/runs`}
-              className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-            >
-              Runs
-            </Link>
-            <Link
-              to={`/projects/${project.id}/assistant`}
-              className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-            >
-              Assistant
-            </Link>
-            <Link
-              to={`/projects/${project.id}/secrets`}
-              className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-            >
-              Secrets
-            </Link>
-          </div>
-        </div>
+    <AppShell>
+      <PageHeader
+        title={project.name}
+        description={
+          project.repoOwner && project.repoName ? (
+            <span className="font-mono">
+              {project.repoOwner}/{project.repoName} · {project.defaultBranch}
+            </span>
+          ) : (
+            "no repo connected"
+          )
+        }
+        actions={
+          <Button asChild>
+            <Link to={`${base}/deployments`}>Deploy</Link>
+          </Button>
+        }
+      />
+      <AgentNav base={base} />
 
-        {error && (
-          <p className="mt-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200">
-            {error}
-          </p>
-        )}
+      {error && (
+        <Alert className="mb-6">
+          <AlertTitle>Couldn&rsquo;t read the repo</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
-        {config && <AgentSurface config={config} projectId={project.id} />}
-      </div>
-    </main>
+      {config && <AgentSurface config={config} projectId={project.id} />}
+    </AppShell>
   );
 }
+
+/** One-line hint per category, so the config surface teaches the eve model as you scan it. */
+const CATEGORY_HINTS: Record<string, string> = {
+  tools: "TypeScript functions the agent can call",
+  skills: "On-demand Markdown playbooks",
+  subagents: "Specialist child agents this one delegates to",
+  channels: "Entry points — HTTP, Slack, web chat",
+  schedules: "Recurring cron-triggered runs",
+  connections: "Typed external integrations",
+};
 
 function AgentSurface({
   config,
@@ -124,102 +120,100 @@ function AgentSurface({
   config: AgentConfig;
   projectId: string;
 }) {
+  const base = `/projects/${projectId}`;
   return (
-    <div className="mt-8 space-y-8">
-      <section className="rounded-xl border border-gray-200 p-5 dark:border-gray-800">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Agent</h2>
+    <div className="space-y-6">
+      {/* The root agent: model + instructions. One repo == one root agent. */}
+      <Card>
+        <CardHeader className="flex-row items-center justify-between space-y-0">
           <div className="flex items-center gap-3">
-            <span className="text-xs font-medium text-gray-400">
-              {config.hasAgentModule ? "agent.ts present" : "no agent.ts"}
-            </span>
-            <Link
-              to={`/projects/${projectId}/edit/agent`}
-              className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-            >
-              Edit
-            </Link>
+            <CardTitle>Agent</CardTitle>
+            <Badge variant={config.hasAgentModule ? "secondary" : "outline"}>
+              {config.hasAgentModule ? "agent.ts" : "no agent.ts"}
+            </Badge>
           </div>
-        </div>
-        <dl className="mt-3 text-sm">
-          <div className="flex gap-2">
-            <dt className="text-gray-500 dark:text-gray-400">Model</dt>
-            <dd className="font-mono">{config.model ?? "—"}</dd>
+          <Button variant="outline" size="sm" asChild>
+            <Link to={`${base}/edit/agent`}>Edit config</Link>
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Model</span>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono">
+              {config.model ?? "—"}
+            </code>
           </div>
-        </dl>
-      </section>
+        </CardContent>
+      </Card>
 
-      <section>
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-lg font-semibold">Instructions</h2>
-          <Link
-            to={`/projects/${projectId}/edit/instructions`}
-            className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-          >
-            Edit
-          </Link>
-        </div>
-        {config.instructions ? (
-          <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm dark:border-gray-800 dark:bg-gray-900/40">
-            {config.instructions}
-          </pre>
-        ) : (
-          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-            No instructions.md found.
-          </p>
-        )}
-      </section>
+      <Card>
+        <CardHeader className="flex-row items-center justify-between space-y-0">
+          <CardTitle>Instructions</CardTitle>
+          <Button variant="outline" size="sm" asChild>
+            <Link to={`${base}/edit/instructions`}>Edit</Link>
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {config.instructions ? (
+            <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg border bg-muted/40 p-4 text-sm">
+              {config.instructions}
+            </pre>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No instructions.md found.
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 sm:grid-cols-2">
         {AGENT_CATEGORIES.map((cat) => {
           const items = config[cat.key];
           return (
-            <section
-              key={cat.key}
-              className="rounded-xl border border-gray-200 p-5 dark:border-gray-800"
-            >
-              <div className="flex items-baseline justify-between">
-                <h3 className="font-semibold">{cat.label}</h3>
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-medium text-gray-400">
-                    {items.length}
-                  </span>
-                  <Link
-                    to={`/projects/${projectId}/edit?path=${encodeURIComponent(
-                      `agent/${cat.dir}/`,
-                    )}`}
-                    className="text-xs font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-                  >
-                    New
-                  </Link>
+            <Card key={cat.key}>
+              <CardHeader className="space-y-1 pb-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <CardTitle className="text-base">{cat.label}</CardTitle>
+                    <Badge variant="secondary">{items.length}</Badge>
+                  </div>
+                  <Button variant="ghost" size="sm" asChild>
+                    <Link
+                      to={`${base}/edit?path=${encodeURIComponent(`agent/${cat.dir}/`)}`}
+                    >
+                      New
+                    </Link>
+                  </Button>
                 </div>
-              </div>
-              {items.length === 0 ? (
-                <p className="mt-2 text-sm text-gray-400">None</p>
-              ) : (
-                <ul className="mt-2 space-y-1 text-sm">
-                  {items.map((item) => (
-                    <li key={item.path} className="font-mono">
-                      {item.isDirectory ? (
-                        <span>
-                          {item.name}
-                          <span className="ml-1 text-gray-400">/</span>
-                        </span>
-                      ) : (
-                        <Link
-                          to={`/projects/${projectId}/edit?path=${encodeURIComponent(
-                            item.path,
-                          )}`}
-                          className="underline underline-offset-4 hover:text-gray-900 dark:hover:text-white"
-                        >
-                          {item.name}
-                        </Link>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
+                <p className="text-xs text-muted-foreground">
+                  {CATEGORY_HINTS[cat.key]}
+                </p>
+              </CardHeader>
+              <CardContent className="pt-0">
+                {items.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">None</p>
+                ) : (
+                  <ul className="space-y-1 text-sm">
+                    {items.map((item) => (
+                      <li key={item.path}>
+                        {item.isDirectory ? (
+                          <span className="font-mono text-muted-foreground">
+                            {item.name}/
+                          </span>
+                        ) : (
+                          <Link
+                            to={`${base}/edit?path=${encodeURIComponent(item.path)}`}
+                            className="font-mono underline-offset-4 hover:underline"
+                          >
+                            {item.name}
+                          </Link>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
           );
         })}
       </div>

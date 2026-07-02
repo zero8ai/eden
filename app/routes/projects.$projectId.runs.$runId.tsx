@@ -4,8 +4,13 @@
  * exact system prompt is reconstructable from the Release commit shown here (link, not snapshot).
  */
 import { authkitLoader } from "@workos-inc/authkit-react-router";
+import type { ReactNode } from "react";
 import { Link, data, type LoaderFunctionArgs } from "react-router";
 
+import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
 import { getRunWithSteps } from "~/observability/store.server";
 import { requireProject } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.runs.$runId";
@@ -29,104 +34,116 @@ export function meta() {
   return [{ title: "Run · Eden" }];
 }
 
+/** Map a run status to a shadcn Badge variant: failed→destructive, completed→secondary, else outline. */
+function statusVariant(
+  status: string,
+): "secondary" | "outline" | "destructive" {
+  if (status === "failed") return "destructive";
+  if (status === "completed" || status === "success") return "secondary";
+  return "outline";
+}
+
 export default function RunTranscript({ loaderData }: Route.ComponentProps) {
   const { project, run, steps, release } = loaderData;
+  const base = `/projects/${project.id}`;
 
   return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-3xl">
-        <Link
-          to={`/projects/${project.id}/runs`}
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-        >
-          ← Runs
-        </Link>
-        <h1 className="mt-2 font-mono text-xl font-semibold tracking-tight">
-          {run.externalRunId ?? run.id}
-        </h1>
+    <AppShell>
+      <PageHeader
+        title={run.externalRunId ?? run.id}
+        description="Progressive-disclosure timeline of each model and tool step."
+        actions={
+          <Button variant="outline" asChild>
+            <Link to={`${base}/runs`}>← Runs</Link>
+          </Button>
+        }
+      />
+      <AgentNav base={base} />
 
-        {/* Summary */}
-        <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-          <Metric label="Status" value={run.status} />
-          <Metric
-            label="Tokens"
-            value={String((run.tokensInput ?? 0) + (run.tokensOutput ?? 0) || "—")}
-          />
-          <Metric
-            label="Wall clock"
-            value={run.wallClockMs == null ? "—" : `${(run.wallClockMs / 1000).toFixed(1)}s`}
-          />
-          <Metric label="Version" value={release?.version ?? "—"} />
-        </dl>
-        {release && (
-          <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-            Ran against commit{" "}
-            <span className="font-mono">{release.gitSha.slice(0, 12)}</span> — the exact
-            system prompt (instructions, tools, skills) is reconstructable from the repo at
-            this commit.
-          </p>
-        )}
-        {run.error && (
-          <p className="mt-3 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200">
-            {run.error}
-          </p>
-        )}
+      {/* Summary */}
+      <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+        <Metric label="Status">
+          <Badge variant={statusVariant(run.status)}>{run.status}</Badge>
+        </Metric>
+        <Metric label="Tokens">
+          {String((run.tokensInput ?? 0) + (run.tokensOutput ?? 0) || "—")}
+        </Metric>
+        <Metric label="Wall clock">
+          {run.wallClockMs == null
+            ? "—"
+            : `${(run.wallClockMs / 1000).toFixed(1)}s`}
+        </Metric>
+        <Metric label="Version">{release?.version ?? "—"}</Metric>
+      </dl>
+      {release && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Ran against commit{" "}
+          <span className="font-mono">{release.gitSha.slice(0, 12)}</span> — the
+          exact system prompt (instructions, tools, skills) is reconstructable
+          from the repo at this commit.
+        </p>
+      )}
+      {run.error && (
+        <Alert variant="destructive" className="mt-3">
+          <AlertTitle>Run failed</AlertTitle>
+          <AlertDescription>{run.error}</AlertDescription>
+        </Alert>
+      )}
 
-        {/* Timeline */}
-        <h2 className="mt-8 text-lg font-semibold">Timeline</h2>
-        {steps.length === 0 ? (
-          <p className="mt-2 text-sm text-gray-400">
-            No steps recorded for this run.
-          </p>
-        ) : (
-          <ol className="mt-3 space-y-3">
-            {steps.map((s) => (
-              <li
-                key={s.id}
-                className="rounded-xl border border-gray-200 p-4 dark:border-gray-800"
-              >
-                <div className="flex items-center justify-between text-sm">
-                  <span className="font-medium">
-                    {s.type === "tool_call" && s.toolName
-                      ? `tool: ${s.toolName}`
-                      : s.type === "model_call" && s.model
-                        ? `model: ${s.model}`
-                        : s.type}
-                    {s.isError && (
-                      <span className="ml-2 text-red-600 dark:text-red-400">error</span>
-                    )}
-                    {s.approvalGated && (
-                      <span className="ml-2 text-amber-600 dark:text-amber-400">
-                        approval
-                      </span>
-                    )}
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    {s.durationMs != null ? `${s.durationMs}ms` : ""}
-                    {(s.tokensInput ?? s.tokensOutput) != null
-                      ? ` · ${(s.tokensInput ?? 0) + (s.tokensOutput ?? 0)} tok`
-                      : ""}
-                  </span>
-                </div>
-                {s.data && Object.keys(s.data).length > 0 && (
-                  <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-gray-50 p-3 text-xs dark:bg-gray-900/40">
-                    {JSON.stringify(s.data, null, 2)}
-                  </pre>
-                )}
-              </li>
-            ))}
-          </ol>
-        )}
-      </div>
-    </main>
+      {/* Timeline */}
+      <h2 className="mt-8 text-lg font-semibold">Timeline</h2>
+      {steps.length === 0 ? (
+        <p className="mt-2 text-sm text-muted-foreground">
+          No steps recorded for this run.
+        </p>
+      ) : (
+        <ol className="mt-3 space-y-3">
+          {steps.map((s) => (
+            <li
+              key={s.id}
+              className="rounded-xl border bg-card p-4 text-card-foreground"
+            >
+              <div className="flex items-center justify-between text-sm">
+                <span className="flex items-center gap-2 font-medium">
+                  {s.type === "tool_call" && s.toolName
+                    ? `tool: ${s.toolName}`
+                    : s.type === "model_call" && s.model
+                      ? `model: ${s.model}`
+                      : s.type}
+                  {s.isError && <Badge variant="destructive">error</Badge>}
+                  {s.approvalGated && <Badge variant="outline">approval</Badge>}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {s.durationMs != null ? `${s.durationMs}ms` : ""}
+                  {(s.tokensInput ?? s.tokensOutput) != null
+                    ? ` · ${(s.tokensInput ?? 0) + (s.tokensOutput ?? 0)} tok`
+                    : ""}
+                </span>
+              </div>
+              {s.data && Object.keys(s.data).length > 0 && (
+                <pre className="mt-2 max-h-64 overflow-auto rounded-lg border bg-muted/40 p-3 text-xs">
+                  {JSON.stringify(s.data, null, 2)}
+                </pre>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+    </AppShell>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
   return (
-    <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-800">
-      <dt className="text-xs uppercase text-gray-400">{label}</dt>
-      <dd className="mt-0.5 font-medium">{value}</dd>
+    <div className="rounded-lg border px-3 py-2">
+      <dt className="text-xs uppercase text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 font-medium">{children}</dd>
     </div>
   );
 }

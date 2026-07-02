@@ -12,6 +12,27 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "~/components/ui/table";
 import { listReleases } from "~/db/queries.server";
 import {
   createIngestToken,
@@ -71,27 +92,36 @@ function ms(n: number | null) {
   return n == null ? "—" : n < 1000 ? `${n}ms` : `${(n / 1000).toFixed(1)}s`;
 }
 
+/** Map a run status to a shadcn Badge variant: failed→destructive, completed→secondary, else outline. */
+function statusVariant(
+  status: string,
+): "secondary" | "outline" | "destructive" {
+  if (status === "failed") return "destructive";
+  if (status === "completed" || status === "success") return "secondary";
+  return "outline";
+}
+
 export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
   const { project, runs, releases, tokens, releaseId } = loaderData;
+  const base = `/projects/${project.id}`;
 
   return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-5xl">
-        <Link
-          to={`/projects/${project.id}`}
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-        >
-          ← {project.name}
-        </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">Runs</h1>
+    <AppShell>
+      <PageHeader
+        title="Runs"
+        description="Per-run summary metrics, filterable by release to compare versions."
+      />
+      <AgentNav base={base} />
 
-        {/* Compare-by-version filter */}
-        <Form method="get" className="mt-4 flex items-center gap-2">
-          <label className="text-sm text-gray-600 dark:text-gray-300">Version</label>
+      {/* Compare-by-version filter */}
+      <Form method="get" className="mb-6 flex items-end gap-2">
+        <div className="grid gap-1.5">
+          <Label htmlFor="release">Version</Label>
           <select
+            id="release"
             name="release"
             defaultValue={releaseId ?? ""}
-            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-900"
+            className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <option value="">All</option>
             {releases.map((r) => (
@@ -100,109 +130,115 @@ export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
               </option>
             ))}
           </select>
-          <button
-            type="submit"
-            className="rounded-md bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200"
-          >
-            Filter
-          </button>
-        </Form>
+        </div>
+        <Button type="submit" variant="secondary">
+          Filter
+        </Button>
+      </Form>
 
-        {runs.length === 0 ? (
-          <p className="mt-6 text-sm text-gray-400">
-            No runs recorded yet. Point an instance at{" "}
-            <span className="font-mono">/api/ingest/runs</span> with an ingest token.
-          </p>
-        ) : (
-          <table className="mt-6 w-full text-sm">
-            <thead className="text-left text-xs uppercase text-gray-400">
-              <tr>
-                <th className="py-1">Run</th>
-                <th>Version</th>
-                <th>Status</th>
-                <th>Tokens</th>
-                <th>Duration</th>
-                <th>Started</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((r) => (
-                <tr key={r.id} className="border-t border-gray-100 dark:border-gray-800">
-                  <td className="py-1.5">
-                    <Link
-                      to={`/projects/${project.id}/runs/${r.id}`}
-                      className="font-mono underline"
-                    >
-                      {r.externalRunId?.slice(0, 12) ?? r.id.slice(0, 8)}
-                    </Link>
-                    {r.channel && (
-                      <span className="ml-2 text-gray-400">{r.channel}</span>
-                    )}
-                  </td>
-                  <td>{r.version ?? "—"}</td>
-                  <td>
-                    <span
-                      className={
-                        r.status === "failed"
-                          ? "text-red-600 dark:text-red-400"
-                          : r.status === "completed"
-                            ? "text-green-600 dark:text-green-400"
-                            : "text-gray-500"
-                      }
-                    >
-                      {r.status}
-                    </span>
-                  </td>
-                  <td className="text-gray-500">
-                    {(r.tokensInput ?? 0) + (r.tokensOutput ?? 0) || "—"}
-                  </td>
-                  <td className="text-gray-500">{ms(r.wallClockMs)}</td>
-                  <td className="text-gray-500">
-                    {new Date(r.startedAt).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      {runs.length === 0 ? (
+        <Card className="border-dashed">
+          <CardHeader className="items-center py-12 text-center">
+            <CardTitle className="text-lg">No runs yet</CardTitle>
+            <CardDescription>
+              Point an instance at{" "}
+              <span className="font-mono">/api/ingest/runs</span> with an ingest
+              token to start recording runs.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Run</TableHead>
+                  <TableHead>Version</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Tokens</TableHead>
+                  <TableHead>Duration</TableHead>
+                  <TableHead>Started</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {runs.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell>
+                      <Link
+                        to={`/projects/${project.id}/runs/${r.id}`}
+                        className="font-mono underline-offset-4 hover:underline"
+                      >
+                        {r.externalRunId?.slice(0, 12) ?? r.id.slice(0, 8)}
+                      </Link>
+                      {r.channel && (
+                        <span className="ml-2 text-muted-foreground">
+                          {r.channel}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell>{r.version ?? "—"}</TableCell>
+                    <TableCell>
+                      <Badge variant={statusVariant(r.status)}>{r.status}</Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {(r.tokensInput ?? 0) + (r.tokensOutput ?? 0) || "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {ms(r.wallClockMs)}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {new Date(r.startedAt).toLocaleString()}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
-        {/* Ingest tokens */}
-        <section className="mt-12 border-t border-gray-200 pt-6 dark:border-gray-800">
-          <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
-            Ingest tokens
-          </h2>
+      {/* Ingest tokens */}
+      <Card className="mt-8">
+        <CardHeader>
+          <CardTitle className="text-base">Ingest tokens</CardTitle>
+          <CardDescription>
+            BYO instances use these tokens to ship telemetry back to Eden.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
           {actionData?.token && (
-            <p className="mt-2 rounded-lg border border-green-300 bg-green-50 px-4 py-3 text-sm dark:border-green-800/60 dark:bg-green-950/40">
-              New token (copy now — shown once):{" "}
-              <code className="font-mono">{actionData.token}</code>
-            </p>
+            <Alert>
+              <AlertTitle>New token — copy now, shown once</AlertTitle>
+              <AlertDescription>
+                <code className="font-mono">{actionData.token}</code>
+              </AlertDescription>
+            </Alert>
           )}
-          <ul className="mt-2 text-sm text-gray-500">
-            {tokens.map((t) => (
-              <li key={t.id}>
-                {t.name} · created {new Date(t.createdAt).toLocaleDateString()}
-                {t.lastUsedAt
-                  ? ` · last used ${new Date(t.lastUsedAt).toLocaleDateString()}`
-                  : " · never used"}
-              </li>
-            ))}
-          </ul>
-          <Form method="post" className="mt-3 flex items-center gap-2">
+          {tokens.length > 0 && (
+            <ul className="space-y-1 text-sm text-muted-foreground">
+              {tokens.map((t) => (
+                <li key={t.id}>
+                  {t.name} · created{" "}
+                  {new Date(t.createdAt).toLocaleDateString()}
+                  {t.lastUsedAt
+                    ? ` · last used ${new Date(t.lastUsedAt).toLocaleDateString()}`
+                    : " · never used"}
+                </li>
+              ))}
+            </ul>
+          )}
+          <Form method="post" className="flex items-center gap-2">
             <input type="hidden" name="intent" value="create-token" />
-            <input
+            <Input
               name="name"
               placeholder="production instance"
-              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-900"
+              className="max-w-xs"
             />
-            <button
-              type="submit"
-              className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-            >
-              Create ingest token
-            </button>
+            <Button type="submit">Create ingest token</Button>
           </Form>
-        </section>
-      </div>
-    </main>
+        </CardContent>
+      </Card>
+    </AppShell>
   );
 }

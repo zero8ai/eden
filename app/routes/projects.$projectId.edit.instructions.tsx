@@ -16,6 +16,10 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Button } from "~/components/ui/button";
+import { Textarea } from "~/components/ui/textarea";
 import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
 import { readAgentFile } from "~/github/repo.server";
@@ -106,33 +110,33 @@ export default function EditInstructions({
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
 
+  const base = `/projects/${project.id}`;
+
   return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-3xl">
-        <Link
-          to={`/projects/${project.id}`}
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-        >
-          ← {project.name}
-        </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          Agent instructions
-        </h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          Saving opens a pull request against{" "}
-          <span className="font-mono">{project.defaultBranch}</span>. Merge it to
-          ship.
-        </p>
+    <AppShell>
+      <PageHeader
+        title="Edit instructions"
+        description={
+          <>
+            Saving opens a pull request against{" "}
+            <span className="font-mono">{project.defaultBranch}</span>. Merge it
+            to ship.
+          </>
+        }
+      />
+      <AgentNav base={base} />
 
-        {actionData?.error && (
-          <p className="mt-6 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200">
-            {actionData.error}
-          </p>
-        )}
+      {actionData?.error && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertTitle>Couldn&rsquo;t open the pull request</AlertTitle>
+          <AlertDescription>{actionData.error}</AlertDescription>
+        </Alert>
+      )}
 
-        {actionData?.ok && (
-          <p className="mt-6 rounded-lg border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800 dark:border-green-800/60 dark:bg-green-950/40 dark:text-green-200">
-            Pull request opened:{" "}
+      {actionData?.ok && (
+        <Alert className="mb-6">
+          <AlertTitle>Pull request opened</AlertTitle>
+          <AlertDescription>
             <a
               className="font-medium underline underline-offset-4"
               href={actionData.pullRequestUrl}
@@ -141,34 +145,26 @@ export default function EditInstructions({
             >
               #{actionData.pullRequestNumber}
             </a>
-          </p>
-        )}
+          </AlertDescription>
+        </Alert>
+      )}
 
-        <Form method="post" className="mt-6">
-          <textarea
-            name="content"
-            defaultValue={instructions}
-            rows={20}
-            spellCheck={false}
-            className="w-full rounded-xl border border-gray-300 bg-white p-4 font-mono text-sm text-gray-900 focus:border-gray-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-          />
-          <div className="mt-4 flex items-center gap-3">
-            <button
-              type="submit"
-              disabled={saving}
-              className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-            >
-              {saving ? "Opening PR…" : "Save as pull request"}
-            </button>
-            <Link
-              to={`/projects/${project.id}`}
-              className="text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-            >
-              Cancel
-            </Link>
-          </div>
-        </Form>
-      </div>
-    </main>
+      <Form method="post">
+        <Textarea
+          name="content"
+          defaultValue={instructions}
+          spellCheck={false}
+          className="min-h-[28rem] font-mono text-sm"
+        />
+        <div className="mt-4 flex items-center gap-3">
+          <Button type="submit" disabled={saving}>
+            {saving ? "Opening PR…" : "Save as pull request"}
+          </Button>
+          <Button variant="ghost" asChild>
+            <Link to={base}>Cancel</Link>
+          </Button>
+        </div>
+      </Form>
+    </AppShell>
   );
 }

@@ -18,6 +18,12 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Input } from "~/components/ui/input";
+import { Textarea } from "~/components/ui/textarea";
 import { readAgentFile } from "~/github/repo.server";
 import { proposeChange } from "~/github/write.server";
 import {
@@ -121,65 +127,60 @@ export default function EditFile({ loaderData, actionData }: Route.ComponentProp
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
 
+  const base = `/projects/${project.id}`;
+
   return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-3xl">
-        <Link
-          to={`/projects/${project.id}`}
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-        >
-          ← {project.name}
-        </Link>
-
-        {!path ? (
-          <>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-              New file
-            </h1>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              Enter a path under <span className="font-mono">agent/</span> to
-              create or open a file.
-            </p>
-            <Form method="get" className="mt-6 flex gap-2">
-              <input
-                name="path"
-                defaultValue="agent/tools/"
-                spellCheck={false}
-                className="flex-1 rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm dark:border-gray-700 dark:bg-gray-900"
-              />
-              <button
-                type="submit"
-                className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-              >
-                Open
-              </button>
-            </Form>
-          </>
-        ) : (
-          <>
-            <div className="mt-2 flex items-center gap-3">
-              <h1 className="text-2xl font-semibold tracking-tight">
+    <AppShell>
+      {!path ? (
+        <>
+          <PageHeader
+            title="New file"
+            description={
+              <>
+                Enter a path under <span className="font-mono">agent/</span> to
+                create or open a file.
+              </>
+            }
+          />
+          <AgentNav base={base} />
+          <Form method="get" className="flex max-w-2xl gap-2">
+            <Input
+              name="path"
+              defaultValue="agent/tools/"
+              spellCheck={false}
+              className="flex-1 font-mono text-sm"
+            />
+            <Button type="submit">Open</Button>
+          </Form>
+        </>
+      ) : (
+        <>
+          <PageHeader
+            title={
+              <span className="flex items-center gap-3">
                 <span className="font-mono text-xl">{path}</span>
-              </h1>
-              {!exists && (
-                <span className="rounded bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
-                  new
-                </span>
-              )}
-            </div>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              Saving opens a pull request against{" "}
-              <span className="font-mono">{project.defaultBranch}</span>.
-            </p>
+                {!exists && <Badge variant="secondary">new</Badge>}
+              </span>
+            }
+            description={
+              <>
+                Saving opens a pull request against{" "}
+                <span className="font-mono">{project.defaultBranch}</span>.
+              </>
+            }
+          />
+          <AgentNav base={base} />
 
-            {actionData?.error && (
-              <p className="mt-6 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200">
-                {actionData.error}
-              </p>
-            )}
-            {actionData?.ok && (
-              <p className="mt-6 rounded-lg border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800 dark:border-green-800/60 dark:bg-green-950/40 dark:text-green-200">
-                Pull request opened:{" "}
+          {actionData?.error && (
+            <Alert variant="destructive" className="mb-6">
+              <AlertTitle>Couldn&rsquo;t open the pull request</AlertTitle>
+              <AlertDescription>{actionData.error}</AlertDescription>
+            </Alert>
+          )}
+          {actionData?.ok && (
+            <Alert className="mb-6">
+              <AlertTitle>Pull request opened</AlertTitle>
+              <AlertDescription>
                 <a
                   className="font-medium underline underline-offset-4"
                   href={actionData.pullRequestUrl}
@@ -188,37 +189,29 @@ export default function EditFile({ loaderData, actionData }: Route.ComponentProp
                 >
                   #{actionData.pullRequestNumber}
                 </a>
-              </p>
-            )}
+              </AlertDescription>
+            </Alert>
+          )}
 
-            <Form method="post" className="mt-6">
-              <input type="hidden" name="path" value={path} />
-              <textarea
-                name="content"
-                defaultValue={content}
-                rows={22}
-                spellCheck={false}
-                className="w-full rounded-xl border border-gray-300 bg-white p-4 font-mono text-sm text-gray-900 focus:border-gray-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-              />
-              <div className="mt-4 flex items-center gap-3">
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-                >
-                  {saving ? "Opening PR…" : "Save as pull request"}
-                </button>
-                <Link
-                  to={`/projects/${project.id}`}
-                  className="text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-                >
-                  Cancel
-                </Link>
-              </div>
-            </Form>
-          </>
-        )}
-      </div>
-    </main>
+          <Form method="post">
+            <input type="hidden" name="path" value={path} />
+            <Textarea
+              name="content"
+              defaultValue={content}
+              spellCheck={false}
+              className="min-h-[28rem] font-mono text-sm"
+            />
+            <div className="mt-4 flex items-center gap-3">
+              <Button type="submit" disabled={saving}>
+                {saving ? "Opening PR…" : "Save as pull request"}
+              </Button>
+              <Button variant="ghost" asChild>
+                <Link to={base}>Cancel</Link>
+              </Button>
+            </div>
+          </Form>
+        </>
+      )}
+    </AppShell>
   );
 }

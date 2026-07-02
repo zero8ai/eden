@@ -11,6 +11,17 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { AppShell, PageHeader } from "~/components/shell";
+import { Button } from "~/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
 import { syncTenant, type Org } from "~/auth/tenant.server";
 import { listAudit, recordAudit } from "~/managed/audit.server";
 import {
@@ -82,99 +93,107 @@ export function meta() {
 }
 
 export default function OrgSettings({ loaderData }: Route.ComponentProps) {
-  const { org, mode, limit, used, audit } = loaderData;
+  const { user, org, mode, limit, used, audit } = loaderData;
 
   if (!org) {
     return (
-      <main className="min-h-screen px-6 py-12">
-        <div className="mx-auto max-w-3xl">
-          <Link to="/dashboard" className="text-sm text-gray-500 underline">
-            ← Dashboard
-          </Link>
-          <p className="mt-6 text-sm text-gray-600 dark:text-gray-300">
-            You&rsquo;re not scoped to an organization.
-          </p>
-        </div>
-      </main>
+      <AppShell userEmail={user?.email}>
+        <PageHeader
+          title="Settings"
+          description="You're not scoped to an organization."
+        />
+        <Button variant="outline" asChild>
+          <Link to="/dashboard">Back to dashboard</Link>
+        </Button>
+      </AppShell>
     );
   }
 
   return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-3xl">
-        <Link
-          to="/dashboard"
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-        >
-          ← Dashboard
-        </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          {org.name} — settings
-        </h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          Mode: <span className="font-mono">{mode}</span>. Roles &amp; SSO are managed in
-          WorkOS.
-        </p>
+    <AppShell workspaceName={org.name} userEmail={user?.email}>
+      <PageHeader
+        title={`${org.name} — settings`}
+        description={
+          <>
+            Mode: <span className="font-mono">{mode}</span>. Roles &amp; SSO are
+            managed in WorkOS.
+          </>
+        }
+      />
 
+      <div className="space-y-6">
         {/* Spend controls */}
-        <section className="mt-8 rounded-xl border border-gray-200 p-5 dark:border-gray-800">
-          <h2 className="text-lg font-semibold">Spend controls</h2>
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            Tokens used (last 30 days):{" "}
-            <span className="font-medium">{used.toLocaleString()}</span>
-            {limit?.monthlyTokenCap != null && ` / ${limit.monthlyTokenCap.toLocaleString()}`}
-          </p>
-          <Form method="post" className="mt-4 space-y-3">
-            <div>
-              <label className="block text-sm font-medium">Monthly token cap</label>
-              <input
-                name="monthlyTokenCap"
-                type="number"
-                min={0}
-                defaultValue={limit?.monthlyTokenCap ?? ""}
-                placeholder="unlimited"
-                className="mt-1 w-48 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
-              />
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                name="killSwitch"
-                defaultChecked={limit?.killSwitch ?? false}
-              />
-              Kill-switch (block all model calls for this tenant)
-            </label>
-            <button
-              type="submit"
-              className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-            >
-              Save
-            </button>
-          </Form>
-        </section>
+        <Card>
+          <CardHeader>
+            <CardTitle>Spend controls</CardTitle>
+            <CardDescription>
+              Tokens used (last 30 days):{" "}
+              <span className="font-medium text-foreground">
+                {used.toLocaleString()}
+              </span>
+              {limit?.monthlyTokenCap != null &&
+                ` / ${limit.monthlyTokenCap.toLocaleString()}`}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Form method="post" className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="monthlyTokenCap">Monthly token cap</Label>
+                <Input
+                  id="monthlyTokenCap"
+                  name="monthlyTokenCap"
+                  type="number"
+                  min={0}
+                  defaultValue={limit?.monthlyTokenCap ?? ""}
+                  placeholder="unlimited"
+                  className="w-48"
+                />
+              </div>
+              <Label className="flex items-center gap-2 font-normal">
+                <input
+                  type="checkbox"
+                  name="killSwitch"
+                  defaultChecked={limit?.killSwitch ?? false}
+                />
+                Kill-switch (block all model calls for this tenant)
+              </Label>
+              <Button type="submit">Save</Button>
+            </Form>
+          </CardContent>
+        </Card>
 
         {/* Audit log */}
-        <section className="mt-8">
-          <h2 className="text-lg font-semibold">Audit log</h2>
-          {audit.length === 0 ? (
-            <p className="mt-2 text-sm text-gray-400">No operations recorded yet.</p>
-          ) : (
-            <ul className="mt-2 divide-y divide-gray-200 rounded-xl border border-gray-200 text-sm dark:divide-gray-800 dark:border-gray-800">
-              {audit.map((a) => (
-                <li key={a.id} className="flex justify-between px-4 py-2">
-                  <span>
-                    <span className="font-medium">{a.action}</span>
-                    {a.target && <span className="ml-2 font-mono text-gray-500">{a.target}</span>}
-                  </span>
-                  <span className="text-gray-400">
-                    {new Date(a.createdAt).toLocaleString()}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <Card>
+          <CardHeader>
+            <CardTitle>Audit log</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {audit.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No operations recorded yet.
+              </p>
+            ) : (
+              <ul className="divide-y rounded-lg border text-sm">
+                {audit.map((a) => (
+                  <li key={a.id} className="flex justify-between px-4 py-2">
+                    <span>
+                      <span className="font-medium">{a.action}</span>
+                      {a.target && (
+                        <span className="ml-2 font-mono text-muted-foreground">
+                          {a.target}
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {new Date(a.createdAt).toLocaleString()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
       </div>
-    </main>
+    </AppShell>
   );
 }

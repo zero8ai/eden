@@ -15,6 +15,12 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import { Textarea } from "~/components/ui/textarea";
 import { getAuthoringAssistant } from "~/assistant/index.server";
 import { proposeChange } from "~/github/write.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
@@ -113,31 +119,30 @@ export default function Assistant({ loaderData, actionData }: Route.ComponentPro
   const busy = navigation.state === "submitting";
   const generated = actionData?.kind === "generated" ? actionData : null;
 
-  return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-3xl">
-        <Link
-          to={`/projects/${project.id}`}
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-        >
-          ← {project.name}
-        </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          Authoring assistant
-        </h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          Describe a tool in plain language. The assistant writes the TypeScript;
-          you review it and open a pull request.
-        </p>
+  const base = `/projects/${project.id}`;
 
-        {actionData?.kind === "error" && (
-          <p className="mt-6 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200">
-            {actionData.message}
-          </p>
-        )}
-        {actionData?.kind === "saved" && (
-          <p className="mt-6 rounded-lg border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800 dark:border-green-800/60 dark:bg-green-950/40 dark:text-green-200">
-            Pull request opened:{" "}
+  return (
+    <AppShell workspaceName={project.name}>
+      <PageHeader
+        title="Authoring assistant"
+        description="Describe a tool in plain language. The assistant writes the TypeScript; you review it and open a pull request."
+        actions={
+          <Button variant="outline" asChild>
+            <Link to={base}>← {project.name}</Link>
+          </Button>
+        }
+      />
+      <AgentNav base={base} />
+
+      {actionData?.kind === "error" && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertDescription>{actionData.message}</AlertDescription>
+        </Alert>
+      )}
+      {actionData?.kind === "saved" && (
+        <Alert className="mb-6">
+          <AlertTitle>Pull request opened</AlertTitle>
+          <AlertDescription>
             <a
               className="font-medium underline underline-offset-4"
               href={actionData.pullRequestUrl}
@@ -146,37 +151,41 @@ export default function Assistant({ loaderData, actionData }: Route.ComponentPro
             >
               #{actionData.pullRequestNumber}
             </a>
-          </p>
-        )}
+          </AlertDescription>
+        </Alert>
+      )}
 
-        <Form method="post" className="mt-6">
-          <input type="hidden" name="intent" value="generate" />
-          <textarea
-            name="instruction"
-            rows={3}
-            placeholder="e.g. Look up an order by ID in our Postgres and return its status."
-            className="w-full rounded-xl border border-gray-300 bg-white p-4 text-sm dark:border-gray-700 dark:bg-gray-900"
-          />
-          <button
-            type="submit"
-            disabled={busy}
-            className="mt-3 rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-          >
-            {busy ? "Generating…" : "Generate tool"}
-          </button>
-        </Form>
+      <Card>
+        <CardHeader>
+          <CardTitle>Describe a tool</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Form method="post">
+            <input type="hidden" name="intent" value="generate" />
+            <Textarea
+              name="instruction"
+              rows={3}
+              placeholder="e.g. Look up an order by ID in our Postgres and return its status."
+            />
+            <Button type="submit" disabled={busy} className="mt-3">
+              {busy ? "Generating…" : "Generate tool"}
+            </Button>
+          </Form>
+        </CardContent>
+      </Card>
 
-        {generated && (
-          <section className="mt-8">
-            <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200">
+      {generated && (
+        <section className="mt-8 space-y-3">
+          <Alert>
+            <AlertDescription>
               {generated.explanation}
               {generated.secretsNeeded.length > 0 && (
                 <p className="mt-2">
                   Secrets needed:{" "}
                   {generated.secretsNeeded.map((s) => (
-                    <code key={s} className="mr-1 rounded bg-blue-100 px-1 dark:bg-blue-900/50">
+                    <Badge key={s} variant="secondary" className="mr-1 font-mono">
                       {s}
-                    </code>
+                    </Badge>
                   ))}
                   —{" "}
                   <Link className="underline" to={`/projects/${project.id}/secrets`}>
@@ -185,30 +194,26 @@ export default function Assistant({ loaderData, actionData }: Route.ComponentPro
                   .
                 </p>
               )}
-            </div>
+            </AlertDescription>
+          </Alert>
 
-            <div className="mt-3 text-xs font-medium text-gray-500 dark:text-gray-400">
-              {generated.path}
-            </div>
-            <pre className="mt-1 max-h-96 overflow-auto rounded-xl border border-gray-200 bg-gray-50 p-4 text-xs dark:border-gray-800 dark:bg-gray-900/40">
-              {generated.content}
-            </pre>
+          <div className="text-xs font-medium text-muted-foreground">
+            {generated.path}
+          </div>
+          <pre className="max-h-96 overflow-auto rounded-xl border bg-muted/40 p-4 text-xs">
+            {generated.content}
+          </pre>
 
-            <Form method="post" className="mt-3">
-              <input type="hidden" name="intent" value="save" />
-              <input type="hidden" name="path" value={generated.path} />
-              <input type="hidden" name="content" value={generated.content} />
-              <button
-                type="submit"
-                disabled={busy}
-                className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-              >
-                {busy ? "Opening PR…" : "Save as pull request"}
-              </button>
-            </Form>
-          </section>
-        )}
-      </div>
-    </main>
+          <Form method="post">
+            <input type="hidden" name="intent" value="save" />
+            <input type="hidden" name="path" value={generated.path} />
+            <input type="hidden" name="content" value={generated.content} />
+            <Button type="submit" disabled={busy}>
+              {busy ? "Opening PR…" : "Save as pull request"}
+            </Button>
+          </Form>
+        </section>
+      )}
+    </AppShell>
   );
 }

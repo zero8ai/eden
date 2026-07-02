@@ -1,7 +1,16 @@
 import type { Route } from "./+types/home";
-import { Link, Form, useRouteLoaderData } from "react-router";
+import { Link, Form } from "react-router";
 import { signOut, authkitLoader } from "@workos-inc/authkit-react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
+
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
 
 export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
 
@@ -56,56 +65,46 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   const { user } = loaderData;
 
   return (
-    <main className="min-h-screen px-6 py-16 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-4xl">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-medium uppercase tracking-widest text-gray-500 dark:text-gray-400">
-            Eden
-          </p>
-          <div className="flex items-center gap-4">
+    <main className="min-h-screen bg-background text-foreground">
+      <header className="border-b">
+        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
+          <span className="text-base font-semibold tracking-tight">Eden</span>
+          <div className="flex items-center gap-3">
             {user ? (
               <>
-                <span className="text-sm text-gray-600 dark:text-gray-300">
+                <span className="hidden text-sm text-muted-foreground sm:inline">
                   {user.email}
                 </span>
-                <Link
-                  to="/dashboard"
-                  className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-                >
-                  Dashboard
-                </Link>
+                <Button asChild size="sm">
+                  <Link to="/dashboard">Dashboard</Link>
+                </Button>
                 <Form method="post">
-                  <button
-                    type="submit"
-                    className="rounded-md bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
-                  >
+                  <Button variant="ghost" size="sm" type="submit">
                     Sign out
-                  </button>
+                  </Button>
                 </Form>
               </>
             ) : (
               <>
-                <Link
-                  to="/login"
-                  className="text-sm font-medium text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
-                >
-                  Sign in
-                </Link>
-                <Link
-                  to="/signup"
-                  className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-                >
-                  Sign up
-                </Link>
+                <Button variant="ghost" size="sm" asChild>
+                  <Link to="/login">Sign in</Link>
+                </Button>
+                <Button size="sm" asChild>
+                  <Link to="/signup">Sign up</Link>
+                </Button>
               </>
             )}
           </div>
         </div>
-        <h1 className="mt-2 text-4xl font-semibold tracking-tight">
+      </header>
+
+      <section className="mx-auto flex max-w-3xl flex-col items-center px-6 py-24 text-center">
+        <Badge variant="secondary">Build, manage, and deploy eve agents</Badge>
+        <h1 className="mt-6 text-4xl font-semibold tracking-tight sm:text-5xl">
           Build, manage, and deploy eve agents from the web.
         </h1>
-        <p className="mt-4 max-w-2xl text-lg text-gray-600 dark:text-gray-300">
-          A web interface over Vercel&rsquo;s{" "}
+        <p className="mt-6 max-w-2xl text-lg text-muted-foreground">
+          Eden is a web app over Vercel&rsquo;s{" "}
           <a
             className="underline underline-offset-4"
             href="https://github.com/vercel/eve"
@@ -117,29 +116,55 @@ export default function Home({ loaderData }: Route.ComponentProps) {
           code by hand.
         </p>
 
-        <div className="mt-12 grid gap-4 sm:grid-cols-2">
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+          {user ? (
+            <>
+              <Button asChild size="lg">
+                <Link to="/dashboard">Open dashboard</Link>
+              </Button>
+              <Button asChild size="lg" variant="outline">
+                <Link to="/connect">Connect a repo</Link>
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button asChild size="lg">
+                <Link to="/signup">Get started</Link>
+              </Button>
+              <Button asChild size="lg" variant="outline">
+                <Link to="/login">Sign in</Link>
+              </Button>
+            </>
+          )}
+        </div>
+      </section>
+
+      <div className="mx-auto max-w-5xl px-6 pb-24">
+        <div className="grid gap-4 sm:grid-cols-2">
           {pillars.map((p) => (
-            <section
-              key={p.key}
-              className="rounded-xl border border-gray-200 p-5 dark:border-gray-800"
-            >
-              <div className="flex items-baseline justify-between">
-                <h2 className="text-lg font-semibold">{p.title}</h2>
-                <span className="text-xs font-medium text-gray-400">
-                  {p.milestone}
-                </span>
-              </div>
-              <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-                {p.blurb}
-              </p>
-            </section>
+            <Card key={p.key}>
+              <CardHeader>
+                <div className="flex items-baseline justify-between gap-2">
+                  <CardTitle className="text-lg">{p.title}</CardTitle>
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {p.milestone}
+                  </span>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground">{p.blurb}</p>
+              </CardContent>
+            </Card>
           ))}
         </div>
 
-        <p className="mt-12 text-sm text-gray-500 dark:text-gray-400">
+        <p className="mt-12 text-sm text-muted-foreground">
           M0 skeleton · React Router 7 + Vite. Next: WorkOS AuthKit
           (<code>npx workos@latest install</code>) and the org/project model.
-          See <Link className="underline underline-offset-4" to="/">PRD.md</Link>{" "}
+          See{" "}
+          <Link className="underline underline-offset-4" to="/">
+            PRD.md
+          </Link>{" "}
           and ARCHITECTURE.md.
         </p>
       </div>

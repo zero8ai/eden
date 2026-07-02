@@ -21,29 +21,29 @@ export const loader = (args: LoaderFunctionArgs) => {
   return authkitLoader(args);
 };
 
-export const links: Route.LinksFunction = () => [
-  { rel: "preconnect", href: "https://fonts.googleapis.com" },
-  {
-    rel: "preconnect",
-    href: "https://fonts.gstatic.com",
-    crossOrigin: "anonymous",
-  },
-  {
-    rel: "stylesheet",
-    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
-  },
-];
+/** Sync shadcn's `.dark` class with the OS preference before first paint (no FOUC). */
+const darkModeScript = `
+(function () {
+  var mql = window.matchMedia("(prefers-color-scheme: dark)");
+  var apply = function () {
+    document.documentElement.classList.toggle("dark", mql.matches);
+  };
+  apply();
+  mql.addEventListener("change", apply);
+})();
+`;
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <script dangerouslySetInnerHTML={{ __html: darkModeScript }} />
         <Meta />
         <Links />
       </head>
-      <body>
+      <body className="min-h-screen antialiased">
         {children}
         <ScrollRestoration />
         <Scripts />
@@ -73,11 +73,11 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   }
 
   return (
-    <main className="pt-16 p-4 container mx-auto">
-      <h1>{message}</h1>
-      <p>{details}</p>
+    <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center gap-3 px-6 py-16">
+      <h1 className="text-3xl font-semibold tracking-tight">{message}</h1>
+      <p className="text-muted-foreground">{details}</p>
       {stack && (
-        <pre className="w-full p-4 overflow-x-auto">
+        <pre className="mt-4 overflow-x-auto rounded-lg border bg-muted p-4 text-xs">
           <code>{stack}</code>
         </pre>
       )}

@@ -22,6 +22,19 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
 import { createProject } from "~/db/queries.server";
 import { syncTenant, type Org } from "~/auth/tenant.server";
 import { ensureWorkspace } from "~/auth/workspace.server";
@@ -166,130 +179,137 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
   const submitting = navigation.state === "submitting";
 
   return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-3xl">
-        <Link
-          to="/dashboard"
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-        >
-          ← Dashboard
-        </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          Connect an eve repo
-        </h1>
+    <AppShell workspaceName={org?.name}>
+      <PageHeader
+        title="New agent"
+        description="An agent is one eve repository. Connect an existing repo, or scaffold a fresh one."
+        actions={
+          <Button variant="ghost" asChild>
+            <Link to="/dashboard">← Back</Link>
+          </Button>
+        }
+      />
 
-        {actionData?.error && (
-          <p className="mt-6 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200">
-            {actionData.error}
-          </p>
-        )}
+      {actionData?.error && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertTitle>Couldn&rsquo;t connect</AlertTitle>
+          <AlertDescription>{actionData.error}</AlertDescription>
+        </Alert>
+      )}
 
-        {!org && (
-          <p className="mt-6 text-sm text-gray-600 dark:text-gray-300">
-            You need to belong to an organization first.
-          </p>
-        )}
+      {github.state === "unconfigured" && (
+        <Alert className="mb-6">
+          <AlertTitle>GitHub App isn&rsquo;t configured yet</AlertTitle>
+          <AlertDescription>{github.message}</AlertDescription>
+        </Alert>
+      )}
 
-        {github.state === "unconfigured" && (
-          <div className="mt-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200">
-            <p className="font-medium">GitHub App isn&rsquo;t configured yet.</p>
-            <p className="mt-1 opacity-80">{github.message}</p>
-          </div>
-        )}
+      {github.state === "install" && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Install the GitHub App</CardTitle>
+            <CardDescription>
+              Install Eden on the account that owns your eve repository, then pick
+              the repo to connect. You control which repositories it can access.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button asChild>
+              <a href={github.installUrl}>Install on GitHub</a>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
-        {github.state === "install" && (
-          <div className="mt-6">
-            <p className="text-sm text-gray-600 dark:text-gray-300">
-              Install the Eden GitHub App on the account that owns your eve repo,
-              then pick the repo to connect.
-            </p>
-            <a
-              href={github.installUrl}
-              className="mt-4 inline-block rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-            >
-              Install on GitHub
-            </a>
-          </div>
-        )}
-
-        {github.state === "pick" && (
-          <div className="mt-6">
-            {github.repos.length === 0 ? (
-              <p className="text-sm text-gray-600 dark:text-gray-300">
-                No repositories are accessible to this installation. Grant the
-                App access to your eve repo and try again.
-              </p>
-            ) : (
-              <ul className="divide-y divide-gray-200 rounded-xl border border-gray-200 dark:divide-gray-800 dark:border-gray-800">
-                {github.repos.map((r) => (
-                  <li
-                    key={r.fullName}
-                    className="flex items-center justify-between px-4 py-3"
-                  >
-                    <div>
-                      <span className="font-medium">{r.fullName}</span>
-                      {r.private && (
-                        <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-                          private
+      {github.state === "pick" && (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Connect an existing repository</CardTitle>
+              <CardDescription>
+                Repositories the GitHub App can access. Eden validates that the
+                repo is an eve project before connecting.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {github.repos.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No repositories are accessible to this installation. Grant the
+                  App access to your eve repo and try again.
+                </p>
+              ) : (
+                <ul className="divide-y rounded-lg border">
+                  {github.repos.map((r) => (
+                    <li
+                      key={r.fullName}
+                      className="flex items-center justify-between gap-3 px-4 py-3"
+                    >
+                      <div className="flex items-center gap-2 truncate">
+                        <span className="truncate font-mono text-sm">
+                          {r.fullName}
                         </span>
-                      )}
-                    </div>
-                    <Form method="post">
-                      <input type="hidden" name="installationId" value={github.installationId} />
-                      <input type="hidden" name="owner" value={r.owner} />
-                      <input type="hidden" name="repo" value={r.repo} />
-                      <input type="hidden" name="defaultBranch" value={r.defaultBranch} />
-                      <button
-                        type="submit"
-                        disabled={submitting}
-                        className="rounded-md bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-300 disabled:opacity-50 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
-                      >
-                        {submitting ? "Connecting…" : "Connect"}
-                      </button>
-                    </Form>
-                  </li>
-                ))}
-              </ul>
-            )}
+                        {r.private && (
+                          <Badge variant="secondary" className="text-xs">
+                            private
+                          </Badge>
+                        )}
+                      </div>
+                      <Form method="post">
+                        <input type="hidden" name="installationId" value={github.installationId} />
+                        <input type="hidden" name="owner" value={r.owner} />
+                        <input type="hidden" name="repo" value={r.repo} />
+                        <input type="hidden" name="defaultBranch" value={r.defaultBranch} />
+                        <Button size="sm" variant="secondary" type="submit" disabled={submitting}>
+                          {submitting ? "Connecting…" : "Connect"}
+                        </Button>
+                      </Form>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
 
-            {/* Create a new eve repo (eve init) */}
-            <div className="mt-8 rounded-xl border border-dashed border-gray-300 p-5 dark:border-gray-700">
-              <h2 className="text-sm font-semibold">Or create a new eve agent</h2>
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Creates a repo in your organization and scaffolds an eve{" "}
+          <Card>
+            <CardHeader>
+              <CardTitle>Create a new eve agent</CardTitle>
+              <CardDescription>
+                Creates a repository in your organization and scaffolds an eve{" "}
                 <span className="font-mono">agent/</span> skeleton.
-              </p>
-              <Form method="post" className="mt-3 flex flex-wrap items-center gap-2">
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Form method="post" className="flex flex-wrap items-end gap-3">
                 <input type="hidden" name="intent" value="create" />
-                <input
-                  type="hidden"
-                  name="installationId"
-                  value={github.installationId}
-                />
-                <input
-                  name="owner"
-                  defaultValue={github.repos[0]?.owner ?? ""}
-                  placeholder="org"
-                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-900"
-                />
-                <span className="text-gray-400">/</span>
-                <input
-                  name="name"
-                  placeholder="my-agent"
-                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 font-mono text-sm dark:border-gray-700 dark:bg-gray-900"
-                />
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-                >
+                <input type="hidden" name="installationId" value={github.installationId} />
+                <div className="grid gap-1.5">
+                  <Label htmlFor="owner">Organization</Label>
+                  <Input
+                    id="owner"
+                    name="owner"
+                    defaultValue={github.repos[0]?.owner ?? ""}
+                    placeholder="org"
+                    className="w-40"
+                  />
+                </div>
+                <span className="pb-2 text-muted-foreground">/</span>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="name">Repository</Label>
+                  <Input
+                    id="name"
+                    name="name"
+                    placeholder="my-agent"
+                    className="w-56 font-mono"
+                  />
+                </div>
+                <Button type="submit" disabled={submitting}>
                   {submitting ? "Creating…" : "Create & scaffold"}
-                </button>
+                </Button>
               </Form>
-            </div>
-          </div>
-        )}
-      </div>
-    </main>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </AppShell>
   );
 }

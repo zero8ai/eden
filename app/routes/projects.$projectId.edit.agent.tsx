@@ -15,6 +15,10 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Button } from "~/components/ui/button";
+import { Label } from "~/components/ui/label";
 import { readModel, scaffoldAgentModule, setModel, SUGGESTED_MODELS } from "~/eve/agentModule";
 import { readAgentFile } from "~/github/repo.server";
 import { proposeChange } from "~/github/write.server";
@@ -115,40 +119,40 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
     current as (typeof SUGGESTED_MODELS)[number],
   );
 
-  return (
-    <main className="min-h-screen px-6 py-12 text-gray-900 dark:text-gray-100">
-      <div className="mx-auto max-w-2xl">
-        <Link
-          to={`/projects/${project.id}`}
-          className="text-sm font-medium uppercase tracking-widest text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-        >
-          ← {project.name}
-        </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-          Runtime config
-        </h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          {exists ? (
-            <>
-              Editing <span className="font-mono">agent/agent.ts</span>.
-            </>
-          ) : (
-            <>
-              No <span className="font-mono">agent/agent.ts</span> yet — saving
-              scaffolds one.
-            </>
-          )}{" "}
-          Save opens a pull request.
-        </p>
+  const base = `/projects/${project.id}`;
 
-        {actionData?.error && (
-          <p className="mt-6 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-200">
-            {actionData.error}
-          </p>
-        )}
-        {actionData?.ok && (
-          <p className="mt-6 rounded-lg border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800 dark:border-green-800/60 dark:bg-green-950/40 dark:text-green-200">
-            Pull request opened:{" "}
+  return (
+    <AppShell>
+      <PageHeader
+        title="Agent config"
+        description={
+          <>
+            {exists ? (
+              <>
+                Editing <span className="font-mono">agent/agent.ts</span>.
+              </>
+            ) : (
+              <>
+                No <span className="font-mono">agent/agent.ts</span> yet — saving
+                scaffolds one.
+              </>
+            )}{" "}
+            Save opens a pull request.
+          </>
+        }
+      />
+      <AgentNav base={base} />
+
+      {actionData?.error && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertTitle>Couldn&rsquo;t open the pull request</AlertTitle>
+          <AlertDescription>{actionData.error}</AlertDescription>
+        </Alert>
+      )}
+      {actionData?.ok && (
+        <Alert className="mb-6">
+          <AlertTitle>Pull request opened</AlertTitle>
+          <AlertDescription>
             <a
               className="font-medium underline underline-offset-4"
               href={actionData.pullRequestUrl}
@@ -157,60 +161,54 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
             >
               #{actionData.pullRequestNumber}
             </a>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <Form method="post" className="max-w-xl space-y-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="model">Model</Label>
+          <select
+            id="model"
+            name="model"
+            defaultValue={knownSelected ? current : "__custom"}
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            onChange={(e) => {
+              const custom = e.currentTarget.form?.elements.namedItem(
+                "customModel",
+              ) as HTMLInputElement | null;
+              if (custom) custom.hidden = e.currentTarget.value !== "__custom";
+            }}
+          >
+            {SUGGESTED_MODELS.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+            <option value="__custom">Custom…</option>
+          </select>
+          <input
+            name="customModel"
+            defaultValue={knownSelected ? "" : current}
+            hidden={knownSelected}
+            placeholder="provider/model-id"
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 font-mono text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+          <p className="text-xs text-muted-foreground">
+            Provider-prefixed, e.g.{" "}
+            <span className="font-mono">anthropic/claude-sonnet-5</span>.
           </p>
-        )}
+        </div>
 
-        <Form method="post" className="mt-6 space-y-4">
-          <div>
-            <label className="block text-sm font-medium">Model</label>
-            <select
-              name="model"
-              defaultValue={knownSelected ? current : "__custom"}
-              className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
-              onChange={(e) => {
-                const custom = e.currentTarget.form?.elements.namedItem(
-                  "customModel",
-                ) as HTMLInputElement | null;
-                if (custom) custom.hidden = e.currentTarget.value !== "__custom";
-              }}
-            >
-              {SUGGESTED_MODELS.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-              <option value="__custom">Custom…</option>
-            </select>
-            <input
-              name="customModel"
-              defaultValue={knownSelected ? "" : current}
-              hidden={knownSelected}
-              placeholder="provider/model-id"
-              className="mt-2 w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm dark:border-gray-700 dark:bg-gray-900"
-            />
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Provider-prefixed, e.g.{" "}
-              <span className="font-mono">anthropic/claude-sonnet-5</span>.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="submit"
-              disabled={saving}
-              className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-            >
-              {saving ? "Opening PR…" : "Save as pull request"}
-            </button>
-            <Link
-              to={`/projects/${project.id}`}
-              className="text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
-            >
-              Cancel
-            </Link>
-          </div>
-        </Form>
-      </div>
-    </main>
+        <div className="flex items-center gap-3">
+          <Button type="submit" disabled={saving}>
+            {saving ? "Opening PR…" : "Save as pull request"}
+          </Button>
+          <Button variant="ghost" asChild>
+            <Link to={base}>Cancel</Link>
+          </Button>
+        </div>
+      </Form>
+    </AppShell>
   );
 }

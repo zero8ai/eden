@@ -14,6 +14,7 @@ import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import { deployments, environments, projects, releases } from "~/db/schema";
+import { recordAudit } from "~/managed/audit.server";
 import { getRuntime } from "~/seams/index.server";
 
 export type Release = typeof releases.$inferSelect;
@@ -138,6 +139,15 @@ export async function deployRelease(input: {
       .set({ status: health.status, url: health.url ?? null, updatedAt: new Date() })
       .where(eq(deployments.id, dep.id))
       .returning();
+    if (project) {
+      await recordAudit({
+        orgId: project.orgId,
+        actorUserId: input.createdBy ?? null,
+        action: "deploy",
+        target: release.version,
+        meta: { environmentId: input.environmentId, status: updated.status },
+      });
+    }
     return updated;
   } catch {
     const [failed] = await db

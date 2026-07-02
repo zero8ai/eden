@@ -55,6 +55,14 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
             <span className="text-sm text-gray-600 dark:text-gray-300">
               {user.email}
             </span>
+            {org && (
+              <Link
+                to="/org/settings"
+                className="text-sm font-medium text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+              >
+                Settings
+              </Link>
+            )}
             <Form method="post">
               <button
                 type="submit"

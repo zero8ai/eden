@@ -22,6 +22,13 @@
       "when": 1782959314568,
       "tag": "0002_fancy_sumo",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1782959508755,
+      "tag": "0003_light_overlord",
+      "breakpoints": true
     }
   ]
 }

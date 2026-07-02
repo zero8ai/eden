@@ -337,6 +337,42 @@ export const schedules = pgTable(
 );
 
 /**
+ * Per-tenant spend controls (managed mode — ARCH §3.2/§3.4/§8). The model gateway checks these
+ * before allowing a turn: a monthly token cap and a kill-switch. OSS leaves rows absent
+ * (unlimited). Keyed by WorkOS org id.
+ */
+export const spendLimits = pgTable("spend_limits", {
+  orgId: text("org_id")
+    .primaryKey()
+    .references(() => orgs.id, { onDelete: "cascade" }),
+  monthlyTokenCap: integer("monthly_token_cap"),
+  killSwitch: boolean("kill_switch").notNull().default(false),
+  updatedAt: updatedAt(),
+});
+
+/**
+ * Operational audit log (ARCH §3.8) — deploys, rollbacks, secret changes, spend-limit edits.
+ * This is the audit of *operations*; identity/auth audit is delegated to WorkOS. Keyed by org.
+ */
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    actorUserId: text("actor_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    action: text("action").notNull(),
+    target: text("target"),
+    meta: jsonb("meta").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    createdAt: createdAt(),
+  },
+  (t) => [index("audit_log_org_created_idx").on(t.orgId, t.createdAt)],
+);
+
+/**
  * Raw usage events (MeteringSink seam). OSS records them locally for visibility; managed
  * aggregates and pushes Stripe usage records (ARCH §3.4). Kept append-only.
  */

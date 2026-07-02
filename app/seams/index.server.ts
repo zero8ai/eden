@@ -8,6 +8,8 @@
  * will wire the KMS/gateway/Stripe/Nomad implementations as they land (M4); until then it
  * falls back to the OSS impls so the control plane still boots.
  */
+import { managedMeteringSink } from "~/managed/metering.stripe.server";
+import { managedModelGateway } from "~/managed/gateway.proxy.server";
 import { containerPostgresTarget } from "./oss/deploy.container.server";
 import { directModelGateway } from "./oss/gateway.direct.server";
 import { localMeteringSink } from "./oss/metering.local.server";
@@ -24,14 +26,17 @@ function buildRuntime(mode: EdenMode): EdenRuntime {
   // Managed-only implementations (KMS secrets, gateway proxy, Stripe metering, Nomad target)
   // are introduced in M4 and swapped in here by mode. Until then both modes share the OSS
   // reference impls; the seam boundary means that swap is local to this file.
+  const managed = mode === "managed";
   return {
     mode,
+    // Deploy target + secrets: managed KMS/Nomad impls land as they're built; OSS refs for now.
     deployTarget: containerPostgresTarget,
     secrets: localSecretsProvider,
-    modelGateway: directModelGateway,
-    metering: localMeteringSink,
     scheduler: localScheduler,
     telemetry: localTelemetrySink,
+    // Managed swaps in the gateway proxy (keys/metering/caps) and Stripe metering.
+    modelGateway: managed ? managedModelGateway : directModelGateway,
+    metering: managed ? managedMeteringSink : localMeteringSink,
   };
 }
 

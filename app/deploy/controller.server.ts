@@ -76,6 +76,28 @@ export async function createRelease(input: {
   }
 }
 
+/**
+ * Find-or-create the Release for a merge commit (D9: the merge SHA is the version identity).
+ * Idempotent per (project, gitSha) so the two merge triggers — the in-app Merge button and the
+ * GitHub webhook — converge on one Release no matter which fires first (or if both do). Returns
+ * whether this call created it, so a caller can act (e.g. audit) only on first creation.
+ */
+export async function ensureReleaseForCommit(input: {
+  projectId: string;
+  gitSha: string;
+  changelog?: string | null;
+  createdBy?: string | null;
+}): Promise<{ release: Release; created: boolean }> {
+  const [existing] = await db
+    .select()
+    .from(releases)
+    .where(and(eq(releases.projectId, input.projectId), eq(releases.gitSha, input.gitSha)))
+    .limit(1);
+  if (existing) return { release: existing, created: false };
+  const release = await createRelease(input);
+  return { release, created: true };
+}
+
 /** Deployments for an environment, newest first, joined to their release version. */
 export async function listDeployments(environmentId: string) {
   return db

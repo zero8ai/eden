@@ -141,16 +141,14 @@ export default function Assistant({ loaderData, actionData }: Route.ComponentPro
       )}
       {actionData?.kind === "saved" && (
         <Alert className="mb-6">
-          <AlertTitle>Pull request opened</AlertTitle>
+          <AlertTitle>Change #{actionData.pullRequestNumber} ready to review</AlertTitle>
           <AlertDescription>
-            <a
+            <Link
+              to={`${base}/changes`}
               className="font-medium underline underline-offset-4"
-              href={actionData.pullRequestUrl}
-              target="_blank"
-              rel="noreferrer"
             >
-              #{actionData.pullRequestNumber}
-            </a>
+              Review &amp; merge in Changes →
+            </Link>
           </AlertDescription>
         </Alert>
       )}

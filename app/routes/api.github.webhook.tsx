@@ -1,18 +1,18 @@
 /**
- * GitHub App webhook receiver — the merge-triggers-deploy pipeline (PRD §7.3/§7.4).
+ * GitHub App webhook receiver — keeps Eden's Release history in sync when a change is merged
+ * on github.com instead of in-app (PRD §7.3: "merge in Eden or on GitHub").
  *
- * On a merged pull request, cut a Release at the merge commit and deploy it to the project's
- * production environment. Resource route (action only); signature-verified.
+ * On a PR merged into the default branch, find-or-create the Release at the merge commit. It
+ * does NOT auto-deploy: deploying a version is a separate, explicit act on the Deployments tab
+ * (the human picks environment + traffic weight — the multi-version primitive, §7.7). The
+ * release create is idempotent with the in-app Merge button via `ensureReleaseForCommit`, so a
+ * change merged in Eden and echoed back by this webhook yields exactly one Release.
+ * Resource route (action only); signature-verified.
  */
-import { eq, and } from "drizzle-orm";
 import { data, type ActionFunctionArgs } from "react-router";
 
-import { db } from "~/db/client.server";
-import { environments } from "~/db/schema";
-import { createRelease, findProjectByRepo } from "~/deploy/controller.server";
+import { ensureReleaseForCommit, findProjectByRepo } from "~/deploy/controller.server";
 import { verifyGitHubSignature } from "~/github/webhook.server";
-import { enqueue } from "~/jobs/queue.server";
-import { ensureWorkerStarted } from "~/jobs/worker.server";
 
 export async function action({ request }: ActionFunctionArgs) {
   const raw = await request.text();
@@ -53,7 +53,7 @@ export async function action({ request }: ActionFunctionArgs) {
   );
   if (!project) return data({ ok: true, skipped: "no project" });
 
-  const release = await createRelease({
+  const { release, created } = await ensureReleaseForCommit({
     projectId: project.id,
     gitSha: payload.pull_request.merge_commit_sha,
     changelog: payload.pull_request.title
@@ -61,21 +61,5 @@ export async function action({ request }: ActionFunctionArgs) {
       : null,
   });
 
-  // Enqueue the deploy to the production environment (builds take minutes; GitHub
-  // times webhook deliveries out at ~10s — the worker owns the long-running part).
-  const [prod] = await db
-    .select()
-    .from(environments)
-    .where(and(eq(environments.projectId, project.id), eq(environments.name, "production")))
-    .limit(1);
-  let jobId: string | undefined;
-  if (prod) {
-    ensureWorkerStarted();
-    jobId = await enqueue("deploy_release", {
-      environmentId: prod.id,
-      releaseId: release.id,
-    });
-  }
-
-  return data({ ok: true, release: release.version, jobId });
+  return data({ ok: true, release: release.version, created });
 }

@@ -118,9 +118,9 @@ export default function EditInstructions({
         title="Edit instructions"
         description={
           <>
-            Saving opens a pull request against{" "}
-            <span className="font-mono">{project.defaultBranch}</span>. Merge it
-            to ship.
+            Saving opens a change against{" "}
+            <span className="font-mono">{project.defaultBranch}</span>. Review and
+            merge it on the Changes tab to cut a new version.
           </>
         }
       />
@@ -128,23 +128,21 @@ export default function EditInstructions({
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
-          <AlertTitle>Couldn&rsquo;t open the pull request</AlertTitle>
+          <AlertTitle>Couldn&rsquo;t open the change</AlertTitle>
           <AlertDescription>{actionData.error}</AlertDescription>
         </Alert>
       )}
 
       {actionData?.ok && (
         <Alert className="mb-6">
-          <AlertTitle>Pull request opened</AlertTitle>
-          <AlertDescription>
-            <a
+          <AlertTitle>Change #{actionData.pullRequestNumber} ready to review</AlertTitle>
+          <AlertDescription className="flex items-center gap-3">
+            <Link
+              to={`${base}/changes`}
               className="font-medium underline underline-offset-4"
-              href={actionData.pullRequestUrl}
-              target="_blank"
-              rel="noreferrer"
             >
-              #{actionData.pullRequestNumber}
-            </a>
+              Review &amp; merge in Changes →
+            </Link>
           </AlertDescription>
         </Alert>
       )}

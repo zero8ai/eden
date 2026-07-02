@@ -133,6 +133,159 @@ export async function proposeChange(
   });
 }
 
+/** A file touched by a change, with line deltas for a PM-readable diff summary. */
+export interface ChangedFile {
+  path: string;
+  /** GitHub file status: added | modified | removed | renamed. */
+  status: string;
+  additions: number;
+  deletions: number;
+}
+
+/** An open change-set (PR) awaiting review, with enough to review + merge it in-app. */
+export interface OpenChange {
+  number: number;
+  title: string;
+  /** PR body — the plain-language changelog Eden wrote. */
+  body: string;
+  url: string;
+  branch: string;
+  base: string;
+  createdAt: string;
+  /** null while GitHub is still computing mergeability. */
+  mergeable: boolean | null;
+  /** e.g. "clean", "dirty" (conflicts), "blocked", "unknown". */
+  mergeableState: string;
+  files: ChangedFile[];
+}
+
+/**
+ * List open pull requests Eden opened for this repo (head branches under `eden/`), newest
+ * first, each enriched with mergeability and its changed-file summary. This is the Changes
+ * review inbox — the in-app surface that replaces bouncing to github.com to see/merge a PR.
+ */
+export async function listOpenChanges(
+  installationId: string | number,
+  { owner, repo }: RepoRef,
+  limit = 20,
+): Promise<OpenChange[]> {
+  const octokit = await getInstallationOctokit(installationId);
+  const list = await octokit.rest.pulls.list({
+    owner,
+    repo,
+    state: "open",
+    sort: "created",
+    direction: "desc",
+    per_page: 50,
+  });
+  // Only Eden-authored change-sets (our editors/assistant all branch under `eden/`).
+  const edenPrs = list.data
+    .filter((pr) => pr.head.ref.startsWith("eden/"))
+    .slice(0, limit);
+
+  return Promise.all(
+    edenPrs.map(async (pr) => {
+      // pulls.get returns the computed `mergeable`/`mergeable_state` the list omits.
+      const [detail, files] = await Promise.all([
+        octokit.rest.pulls.get({ owner, repo, pull_number: pr.number }),
+        octokit.rest.pulls.listFiles({ owner, repo, pull_number: pr.number, per_page: 100 }),
+      ]);
+      return {
+        number: pr.number,
+        title: pr.title,
+        body: pr.body ?? "",
+        url: pr.html_url,
+        branch: pr.head.ref,
+        base: pr.base.ref,
+        createdAt: pr.created_at,
+        mergeable: detail.data.mergeable,
+        mergeableState: detail.data.mergeable_state,
+        files: files.data.map((f) => ({
+          path: f.filename,
+          status: f.status,
+          additions: f.additions,
+          deletions: f.deletions,
+        })),
+      } satisfies OpenChange;
+    }),
+  );
+}
+
+export interface MergeResult {
+  /** The commit SHA on the base branch after merge — the canonical version identity (D9). */
+  mergeSha: string;
+  method: "squash" | "merge";
+}
+
+/**
+ * Merge a change-set in-app (PRD §7.3: "merge in Eden or on GitHub"). Squash by default so
+ * each change-set becomes exactly one commit on the default branch == one Release; falls back
+ * to a merge commit if the repo disallows squash. Deletes the working branch on success.
+ *
+ * Throws a human-readable error when GitHub refuses the merge (conflicts / not mergeable) so
+ * the Changes UI can tell the PM why rather than surfacing a raw 405/409.
+ */
+export async function mergePullRequest(
+  installationId: string | number,
+  { owner, repo }: RepoRef,
+  pullNumber: number,
+  branch?: string,
+): Promise<MergeResult> {
+  const octokit = await getInstallationOctokit(installationId);
+
+  let method: "squash" | "merge" = "squash";
+  let merged;
+  try {
+    merged = await octokit.rest.pulls.merge({
+      owner,
+      repo,
+      pull_number: pullNumber,
+      merge_method: method,
+    });
+  } catch (error) {
+    const status = statusOf(error);
+    // 405 with squash disabled on the repo — retry as a merge commit.
+    if (status === 405) {
+      method = "merge";
+      try {
+        merged = await octokit.rest.pulls.merge({
+          owner,
+          repo,
+          pull_number: pullNumber,
+          merge_method: method,
+        });
+      } catch (retryError) {
+        throw mergeError(retryError);
+      }
+    } else {
+      throw mergeError(error);
+    }
+  }
+
+  // Best-effort branch cleanup; a failure here must not fail the (already-done) merge.
+  const head = branch ?? (await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber })).data.head.ref;
+  if (head) {
+    try {
+      await octokit.rest.git.deleteRef({ owner, repo, ref: `heads/${head}` });
+    } catch {
+      // ignore — protected/already-deleted branch
+    }
+  }
+
+  return { mergeSha: merged.data.sha, method };
+}
+
+/** Turn an Octokit merge failure into a PM-readable message. */
+function mergeError(error: unknown): Error {
+  const status = statusOf(error);
+  if (status === 409 || status === 405) {
+    return new Error(
+      "This change can't be merged automatically — it conflicts with the current default branch. Re-open the change from a fresh edit, or resolve it in GitHub.",
+    );
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 async function openOrReusePullRequest(
   octokit: InstallationOctokit,
   { owner, repo }: RepoRef,

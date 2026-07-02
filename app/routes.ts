@@ -6,6 +6,7 @@ export default [
   route("org/settings", "routes/org.settings.tsx"),
   route("connect", "routes/connect.tsx"),
   route("projects/:projectId", "routes/projects.$projectId.tsx"),
+  route("projects/:projectId/changes", "routes/projects.$projectId.changes.tsx"),
   route("projects/:projectId/secrets", "routes/projects.$projectId.secrets.tsx"),
   route(
     "projects/:projectId/assistant",

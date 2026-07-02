@@ -142,6 +142,7 @@ export function PageHeader({
 export function AgentNav({ base }: { base: string }) {
   const items = [
     { to: base, label: "Overview", end: true },
+    { to: `${base}/changes`, label: "Changes" },
     { to: `${base}/deployments`, label: "Deployments" },
     { to: `${base}/runs`, label: "Runs" },
     { to: `${base}/secrets`, label: "Secrets" },

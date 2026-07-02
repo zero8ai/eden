@@ -12,6 +12,7 @@ import { createProject } from "~/db/queries.server";
 import {
   createRelease,
   deployRelease,
+  ensureReleaseForCommit,
   listDeployments,
   rollbackTo,
   setTrafficSplit,
@@ -48,6 +49,16 @@ describe("releases", () => {
     );
     const labels = made.map((r) => r.version);
     expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("ensureReleaseForCommit is idempotent per merge commit (in-app merge + webhook converge)", async () => {
+    const sha = "1234abcd".repeat(5); // 40 chars
+    const first = await ensureReleaseForCommit({ projectId, gitSha: sha });
+    const second = await ensureReleaseForCommit({ projectId, gitSha: sha });
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.release.id).toBe(first.release.id);
+    expect(second.release.version).toBe(first.release.version);
   });
 });
 

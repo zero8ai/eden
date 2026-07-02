@@ -9,6 +9,7 @@ import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import {
   Form,
   redirect,
+  useSearchParams,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
@@ -131,6 +132,13 @@ export function meta() {
 export default function Deployments({ loaderData, actionData }: Route.ComponentProps) {
   const { project, releases, envs } = loaderData;
   const base = `/projects/${project.id}`;
+  const [params] = useSearchParams();
+  // Set when the human just merged a change on the Changes tab — the new version is now here,
+  // ready to deploy. Preselect it in the environment deploy selectors below.
+  const justReleased = params.get("released");
+  const justReleasedId = justReleased
+    ? releases.find((r) => r.version === justReleased)?.id
+    : undefined;
 
   return (
     <AppShell>
@@ -147,6 +155,18 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
         }
       />
       <AgentNav base={base} />
+
+      {justReleased && (
+        <Alert className="mb-6">
+          <AlertTitle>{justReleased} is ready to deploy</AlertTitle>
+          <AlertDescription>
+            Your change was merged and cut as release{" "}
+            <span className="font-semibold">{justReleased}</span>. Deploy it to an
+            environment below — pick a weight to run it alongside the current version, or
+            deploy at 100% to replace it.
+          </AlertDescription>
+        </Alert>
+      )}
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
@@ -269,6 +289,7 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
                   <input type="hidden" name="environmentId" value={env.id} />
                   <select
                     name="releaseId"
+                    defaultValue={justReleasedId}
                     className="h-9 rounded-md border bg-background px-2 text-sm"
                   >
                     {releases.map((r) => (

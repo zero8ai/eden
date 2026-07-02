@@ -12,6 +12,7 @@
  */
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -192,6 +193,7 @@ export const runs = pgTable(
     releaseId: uuid("release_id").references(() => releases.id, {
       onDelete: "set null",
     }),
+    sessionId: uuid("session_id"),
     // Correlates to the eve/Workflow run id in the telemetry store.
     externalRunId: text("external_run_id"),
     channel: text("channel"),
@@ -212,6 +214,79 @@ export const runs = pgTable(
     index("runs_release_idx").on(t.releaseId),
     uniqueIndex("runs_external_uq").on(t.projectId, t.externalRunId),
   ],
+);
+
+/**
+ * Observability: a Session is a durable conversation/task; each triggering input creates a
+ * Run (indexed in `runs`); a Run has ordered Steps. (PRD §7.6, ARCH §3.7.)
+ */
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    externalSessionId: text("external_session_id"),
+    trigger: text("trigger"),
+    channel: text("channel"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    index("sessions_project_started_idx").on(t.projectId, t.startedAt),
+    unique("sessions_external_uq")
+      .on(t.projectId, t.externalSessionId)
+      .nullsNotDistinct(),
+  ],
+);
+
+/**
+ * Ordered steps within a Run: model calls, tool calls, reasoning, messages. Common scalar
+ * fields are columns for filtering; the full per-step payload (messages, args, output) is in
+ * `data` (jsonb). The system prompt is reconstructed from the Run's Release commit, not stored.
+ */
+export const runSteps = pgTable(
+  "run_steps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    // model_call | tool_call | reasoning | message
+    type: text("type").notNull(),
+    model: text("model"),
+    toolName: text("tool_name"),
+    tokensInput: integer("tokens_input"),
+    tokensOutput: integer("tokens_output"),
+    durationMs: integer("duration_ms"),
+    isError: boolean("is_error").notNull().default(false),
+    approvalGated: boolean("approval_gated").notNull().default(false),
+    data: jsonb("data").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+  },
+  (t) => [index("run_steps_run_seq_idx").on(t.runId, t.seq)],
+);
+
+/**
+ * Per-project ingest tokens for the authenticated OTLP/runs endpoint (ARCH §3.7). BYO
+ * instances ship telemetry back with one of these Bearer tokens. Only the hash is stored.
+ */
+export const ingestTokens = pgTable(
+  "ingest_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: createdAt(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  },
+  (t) => [index("ingest_tokens_project_idx").on(t.projectId)],
 );
 
 /**

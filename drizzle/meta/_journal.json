@@ -15,6 +15,13 @@
       "when": 1782930241794,
       "tag": "0001_living_the_professor",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782959314568,
+      "tag": "0002_fancy_sumo",
+      "breakpoints": true
     }
   ]
 }

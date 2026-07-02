@@ -85,6 +85,12 @@ export default function ProjectDetail({ loaderData }: Route.ComponentProps) {
               Deployments
             </Link>
             <Link
+              to={`/projects/${project.id}/runs`}
+              className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+            >
+              Runs
+            </Link>
+            <Link
               to={`/projects/${project.id}/assistant`}
               className="text-sm font-medium text-gray-600 underline underline-offset-4 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
             >

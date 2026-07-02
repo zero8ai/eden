@@ -13,6 +13,7 @@ import { managedModelGateway } from "~/managed/gateway.proxy.server";
 import { nomadTarget } from "./adapters/deploy.nomad.server";
 import { vercelTarget } from "./adapters/deploy.vercel.server";
 import { containerPostgresTarget } from "./oss/deploy.container.server";
+import { localDockerTarget } from "./oss/deploy.localdocker.server";
 import { directModelGateway } from "./oss/gateway.direct.server";
 import { localMeteringSink } from "./oss/metering.local.server";
 import { localScheduler } from "./oss/scheduler.local.server";
@@ -27,6 +28,8 @@ function resolveMode(): EdenMode {
 /** Pick the DeployTarget by `EDEN_DEPLOY_TARGET` (container | nomad | vercel). */
 function resolveDeployTarget(): DeployTarget {
   switch (process.env.EDEN_DEPLOY_TARGET) {
+    case "local-docker":
+      return localDockerTarget;
     case "nomad":
       return nomadTarget;
     case "vercel":

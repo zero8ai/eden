@@ -8,6 +8,7 @@
  * will wire the KMS/gateway/Stripe/Nomad implementations as they land (M4); until then it
  * falls back to the OSS impls so the control plane still boots.
  */
+import { drizzleDataStore } from "~/data/drizzle.server";
 import { managedMeteringSink } from "~/managed/metering.stripe.server";
 import { managedModelGateway } from "~/managed/gateway.proxy.server";
 import { nomadTarget } from "./adapters/deploy.nomad.server";
@@ -46,6 +47,7 @@ function buildRuntime(mode: EdenMode): EdenRuntime {
   const managed = mode === "managed";
   return {
     mode,
+    data: drizzleDataStore,
     // Deploy target selectable per host (container default; nomad/vercel adapters).
     deployTarget: resolveDeployTarget(),
     secrets: localSecretsProvider,

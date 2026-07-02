@@ -1,61 +1,58 @@
 /**
  * Deploy controller + release registry (Deploy pillar, M2 — PRD §7.4/§7.7, ARCH §3.1/§3.9).
  *
- * Orchestrates the pipeline over the `DeployTarget` seam: cut an immutable Release (merge
- * commit + content-addressed image), deploy it to an environment as a weighted deployment,
- * fast-rollback by re-pointing to a prior Release, and set the session-sticky traffic split
- * across concurrently-live Releases.
+ * Orchestrates the pipeline over the seams: cut an immutable Release (merge commit +
+ * content-addressed image), deploy it to an environment as a weighted deployment, fast-rollback
+ * by re-pointing to a prior Release, and set the session-sticky traffic split across
+ * concurrently-live Releases.
+ *
+ * Persistence goes through the `DataStore` seam (data/ports.ts) and infra through the
+ * DeployTarget/SecretsProvider seams, all injected with `getRuntime()` defaults — so every
+ * function here is unit-testable against in-memory fakes with no database or docker.
  *
  * The DeployTarget's build/deploy need the eve+docker toolchain; where it's unavailable the
- * controller still records the Release and deployment rows and marks the deployment `failed`
- * with the tooling error, so the control plane and UI work end-to-end without real infra.
+ * controller still records the Release + deployment rows and marks the deployment `failed` with
+ * the tooling error, so the control plane and UI work end-to-end without real infra.
  */
-import { and, eq, sql } from "drizzle-orm";
-
-import { db } from "~/db/client.server";
-import { deployments, environments, projects, releases } from "~/db/schema";
-import { recordAudit } from "~/managed/audit.server";
+import type { DataStore, Deployment, Release } from "~/data/ports";
 import { getRuntime } from "~/seams/index.server";
+import type { DeployTarget, SecretsProvider } from "~/seams/types";
 import { isVersionLabelCollision, versionLabel } from "./versioning";
 
-export type Release = typeof releases.$inferSelect;
-export type Deployment = typeof deployments.$inferSelect;
+export type { Release, Deployment } from "~/data/ports";
 
-/** Next `vN` label for a project (1-based on existing release count). */
-async function nextVersionLabel(projectId: string): Promise<string> {
-  const [{ c }] = await db
-    .select({ c: sql<number>`count(*)::int` })
-    .from(releases)
-    .where(eq(releases.projectId, projectId));
-  return versionLabel(c ?? 0);
+/** Everything deployRelease/rollbackTo touch: persistence + the two infra seams. */
+export interface DeployDeps {
+  store: DataStore;
+  deployTarget: DeployTarget;
+  secrets: SecretsProvider;
+}
+
+function deployDeps(): DeployDeps {
+  const r = getRuntime();
+  return { store: r.data, deployTarget: r.deployTarget, secrets: r.secrets };
 }
 
 /**
  * Record an immutable Release for a project at a git commit. Image is built lazily at deploy
- * time (imageRef stays null until then). Immutability is inherited from git + image digests.
- * Concurrent creates (e.g. two webhook deliveries) race on the label; the unique
- * (project, version) constraint catches it and we retry with a fresh count.
+ * time (imageRef stays null until then). Concurrent creates (e.g. two webhook deliveries) race
+ * on the version label; the (project, version) unique constraint catches it and we retry with a
+ * fresh count.
  */
-export async function createRelease(input: {
-  projectId: string;
-  gitSha: string;
-  changelog?: string | null;
-  createdBy?: string | null;
-}): Promise<Release> {
+export async function createRelease(
+  input: {
+    projectId: string;
+    gitSha: string;
+    changelog?: string | null;
+    createdBy?: string | null;
+  },
+  store: DataStore = getRuntime().data,
+): Promise<Release> {
   for (let attempt = 0; ; attempt++) {
-    const version = await nextVersionLabel(input.projectId);
+    const count = await store.releases.countByProject(input.projectId);
+    const version = versionLabel(count);
     try {
-      const [row] = await db
-        .insert(releases)
-        .values({
-          projectId: input.projectId,
-          version,
-          gitSha: input.gitSha,
-          changelog: input.changelog ?? null,
-          createdBy: input.createdBy ?? null,
-        })
-        .returning();
-      return row;
+      return await store.releases.insert({ ...input, version });
     } catch (err) {
       // N concurrent creates resolve one winner per round — allow N-ish rounds.
       if (!isVersionLabelCollision(err) || attempt >= 8) throw err;
@@ -69,117 +66,81 @@ export async function createRelease(input: {
  * GitHub webhook — converge on one Release no matter which fires first (or if both do). Returns
  * whether this call created it, so a caller can act (e.g. audit) only on first creation.
  */
-export async function ensureReleaseForCommit(input: {
-  projectId: string;
-  gitSha: string;
-  changelog?: string | null;
-  createdBy?: string | null;
-}): Promise<{ release: Release; created: boolean }> {
-  const [existing] = await db
-    .select()
-    .from(releases)
-    .where(and(eq(releases.projectId, input.projectId), eq(releases.gitSha, input.gitSha)))
-    .limit(1);
+export async function ensureReleaseForCommit(
+  input: {
+    projectId: string;
+    gitSha: string;
+    changelog?: string | null;
+    createdBy?: string | null;
+  },
+  store: DataStore = getRuntime().data,
+): Promise<{ release: Release; created: boolean }> {
+  const existing = await store.releases.findByCommit(input.projectId, input.gitSha);
   if (existing) return { release: existing, created: false };
-  const release = await createRelease(input);
+  const release = await createRelease(input, store);
   return { release, created: true };
 }
 
 /** Deployments for an environment, newest first, joined to their release version. */
-export async function listDeployments(environmentId: string) {
-  return db
-    .select({
-      id: deployments.id,
-      status: deployments.status,
-      trafficWeight: deployments.trafficWeight,
-      url: deployments.url,
-      errorDetail: deployments.errorDetail,
-      createdAt: deployments.createdAt,
-      releaseId: deployments.releaseId,
-      version: releases.version,
-      gitSha: releases.gitSha,
-    })
-    .from(deployments)
-    .innerJoin(releases, eq(deployments.releaseId, releases.id))
-    .where(eq(deployments.environmentId, environmentId))
-    .orderBy(sql`${deployments.createdAt} desc`);
+export function listDeployments(environmentId: string, store: DataStore = getRuntime().data) {
+  return store.deployments.listByEnvironment(environmentId);
 }
 
 /**
  * Deploy a Release to an environment: build the image if needed, run it via the DeployTarget,
  * and record a deployment row with the resulting health/status. Injects the environment's
- * resolved secrets as container env at start (SecretsProvider seam).
+ * resolved secrets as container env at start.
  */
-export async function deployRelease(input: {
-  environmentId: string;
-  releaseId: string;
-  trafficWeight?: number;
-  createdBy?: string | null;
-}): Promise<Deployment> {
-  const [release] = await db
-    .select()
-    .from(releases)
-    .where(eq(releases.id, input.releaseId))
-    .limit(1);
+export async function deployRelease(
+  input: {
+    environmentId: string;
+    releaseId: string;
+    trafficWeight?: number;
+    createdBy?: string | null;
+  },
+  deps: DeployDeps = deployDeps(),
+): Promise<Deployment> {
+  const { store, deployTarget, secrets } = deps;
+  const release = await store.releases.findById(input.releaseId);
   if (!release) throw new Error("Release not found.");
-  const [env] = await db
-    .select()
-    .from(environments)
-    .where(eq(environments.id, input.environmentId))
-    .limit(1);
+  const env = await store.environments.findById(input.environmentId);
   if (!env) throw new Error("Environment not found.");
-  const [project] = await db
-    .select()
-    .from(projects)
-    .where(eq(projects.id, release.projectId))
-    .limit(1);
+  const project = await store.projects.findById(release.projectId);
 
-  const [dep] = await db
-    .insert(deployments)
-    .values({
-      environmentId: input.environmentId,
-      releaseId: input.releaseId,
-      status: "building",
-      trafficWeight: input.trafficWeight ?? 100,
-      createdBy: input.createdBy ?? null,
-    })
-    .returning();
+  const dep = await store.deployments.insert({
+    environmentId: input.environmentId,
+    releaseId: input.releaseId,
+    status: "building",
+    trafficWeight: input.trafficWeight ?? 100,
+    createdBy: input.createdBy ?? null,
+  });
 
-  const runtime = getRuntime();
   try {
     let imageRef = release.imageRef;
     if (!imageRef && project?.repoOwner && project.repoName) {
-      const built = await runtime.deployTarget.build({
+      const built = await deployTarget.build({
         projectId: release.projectId,
         repo: { owner: project.repoOwner, repo: project.repoName },
         ref: release.gitSha,
         installationId: project.repoInstallationId,
       });
       imageRef = built.imageRef;
-      await db
-        .update(releases)
-        .set({ imageRef: built.imageRef })
-        .where(eq(releases.id, release.id));
+      await store.releases.setImageRef(release.id, built.imageRef);
     }
 
-    const env2 = await runtime.secrets.resolve(release.projectId, input.environmentId);
-    const health = await runtime.deployTarget.deploy({
+    const envVars = await secrets.resolve(release.projectId, input.environmentId);
+    const health = await deployTarget.deploy({
       deploymentId: dep.id,
       imageRef: imageRef ?? "",
-      env: env2,
+      env: envVars,
     });
-    const [updated] = await db
-      .update(deployments)
-      .set({
-        status: health.status,
-        url: health.url ?? null,
-        errorDetail: health.status === "failed" ? (health.detail ?? null) : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(deployments.id, dep.id))
-      .returning();
+    const updated = await store.deployments.update(dep.id, {
+      status: health.status,
+      url: health.url ?? null,
+      errorDetail: health.status === "failed" ? (health.detail ?? null) : null,
+    });
     if (project) {
-      await recordAudit({
+      await store.audit.record({
         orgId: project.orgId,
         actorUserId: input.createdBy ?? null,
         action: "deploy",
@@ -192,12 +153,7 @@ export async function deployRelease(input: {
     // Record WHY it failed — a bare `failed` row is undebuggable (and while the eve
     // toolchain is young, build failures are the expected failure mode).
     const detail = error instanceof Error ? error.message : String(error);
-    const [failed] = await db
-      .update(deployments)
-      .set({ status: "failed", errorDetail: detail, updatedAt: new Date() })
-      .where(eq(deployments.id, dep.id))
-      .returning();
-    return failed;
+    return store.deployments.update(dep.id, { status: "failed", errorDetail: detail });
   }
 }
 
@@ -205,21 +161,12 @@ export async function deployRelease(input: {
  * Fast rollback (D9): deploy a prior Release again at full weight and drain the others in the
  * environment. The prior image is reused (no rebuild) when it's already been built.
  */
-export async function rollbackTo(input: {
-  environmentId: string;
-  releaseId: string;
-  createdBy?: string | null;
-}): Promise<Deployment> {
-  await db
-    .update(deployments)
-    .set({ status: "draining", trafficWeight: 0, updatedAt: new Date() })
-    .where(
-      and(
-        eq(deployments.environmentId, input.environmentId),
-        eq(deployments.status, "live"),
-      ),
-    );
-  return deployRelease({ ...input, trafficWeight: 100 });
+export async function rollbackTo(
+  input: { environmentId: string; releaseId: string; createdBy?: string | null },
+  deps: DeployDeps = deployDeps(),
+): Promise<Deployment> {
+  await deps.store.deployments.drainLive(input.environmentId);
+  return deployRelease({ ...input, trafficWeight: 100 }, deps);
 }
 
 /**
@@ -229,29 +176,16 @@ export async function rollbackTo(input: {
 export async function setTrafficSplit(
   environmentId: string,
   weights: { deploymentId: string; weight: number }[],
+  store: DataStore = getRuntime().data,
 ): Promise<void> {
-  // One transaction: a crash mid-way must not leave the environment on a partial split.
-  await db.transaction(async (tx) => {
-    for (const w of weights) {
-      await tx
-        .update(deployments)
-        .set({ trafficWeight: Math.max(0, Math.round(w.weight)), updatedAt: new Date() })
-        .where(
-          and(
-            eq(deployments.id, w.deploymentId),
-            eq(deployments.environmentId, environmentId),
-          ),
-        );
-    }
-  });
+  await store.deployments.setWeights(environmentId, weights);
 }
 
 /** Find the project connected to a repo (for webhook-driven deploys). */
-export async function findProjectByRepo(owner: string, repo: string) {
-  const [row] = await db
-    .select()
-    .from(projects)
-    .where(and(eq(projects.repoOwner, owner), eq(projects.repoName, repo)))
-    .limit(1);
-  return row;
+export function findProjectByRepo(
+  owner: string,
+  repo: string,
+  store: DataStore = getRuntime().data,
+) {
+  return store.projects.findByRepo(owner, repo);
 }

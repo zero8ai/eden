@@ -1,19 +1,17 @@
 /**
- * Durable Postgres-backed job queue (control plane).
+ * Durable job queue (control plane), over the `DataStore` seam.
  *
- * Long-running work — builds and deploys above all — must not run inside HTTP request
- * handlers: GitHub delivers webhooks with a ~10s timeout while an `eve build` takes minutes,
- * and an in-request build dies silently on server restart. Handlers enqueue; the worker
- * (worker.server.ts) claims with FOR UPDATE SKIP LOCKED and executes. Jobs retry with linear
- * backoff up to `maxAttempts`, then land in `failed` for inspection.
+ * Long-running work — builds and deploys above all — must not run inside HTTP request handlers:
+ * GitHub delivers webhooks with a ~10s timeout while an `eve build` takes minutes, and an
+ * in-request build dies silently on server restart. Handlers enqueue; the worker
+ * (worker.server.ts) claims and executes. The claim's FOR UPDATE SKIP LOCKED and the backoff
+ * persistence live in the Drizzle store; the retry *policy* is the pure planFailure (policy.ts).
  */
-import { and, asc, eq, lte, sql } from "drizzle-orm";
-
-import { db } from "~/db/client.server";
-import { jobs } from "~/db/schema";
+import type { DataStore, Job } from "~/data/ports";
+import { getRuntime } from "~/seams/index.server";
 import { planFailure } from "./policy";
 
-export type Job = typeof jobs.$inferSelect;
+export type { Job } from "~/data/ports";
 
 export type JobKind = "deploy_release" | "rollback_release";
 
@@ -30,71 +28,38 @@ export async function enqueue(
   kind: JobKind,
   payload: Record<string, unknown>,
   opts?: { runAt?: Date; maxAttempts?: number },
+  store: DataStore = getRuntime().data,
 ): Promise<string> {
-  const [row] = await db
-    .insert(jobs)
-    .values({
-      kind,
-      payload,
-      ...(opts?.runAt ? { runAt: opts.runAt } : {}),
-      ...(opts?.maxAttempts ? { maxAttempts: opts.maxAttempts } : {}),
-    })
-    .returning({ id: jobs.id });
-  return row.id;
+  return store.jobs.insert({ kind, payload, runAt: opts?.runAt, maxAttempts: opts?.maxAttempts });
 }
 
 /**
- * Atomically claim the next runnable job (queued, due). SKIP LOCKED makes concurrent
- * workers safe: each job is claimed by exactly one.
+ * Atomically claim the next runnable job (queued, due). Concurrent workers are safe: the store
+ * claims each job for exactly one caller (SKIP LOCKED in the Drizzle impl).
  */
-export async function claimNext(): Promise<Job | null> {
-  return db.transaction(async (tx) => {
-    const [job] = await tx
-      .select()
-      .from(jobs)
-      .where(and(eq(jobs.status, "queued"), lte(jobs.runAt, new Date())))
-      .orderBy(asc(jobs.runAt))
-      .limit(1)
-      .for("update", { skipLocked: true });
-    if (!job) return null;
-    await tx
-      .update(jobs)
-      .set({
-        status: "running",
-        attempts: job.attempts + 1,
-        updatedAt: new Date(),
-      })
-      .where(eq(jobs.id, job.id));
-    return { ...job, status: "running", attempts: job.attempts + 1 };
-  });
+export function claimNext(store: DataStore = getRuntime().data): Promise<Job | null> {
+  return store.jobs.claimNext(new Date());
 }
 
-export async function markDone(jobId: string): Promise<void> {
-  await db
-    .update(jobs)
-    .set({ status: "done", error: null, updatedAt: new Date() })
-    .where(eq(jobs.id, jobId));
+export async function markDone(jobId: string, store: DataStore = getRuntime().data): Promise<void> {
+  await store.jobs.update(jobId, { status: "done", error: null });
 }
 
 /** Retry with linear backoff while attempts remain; park as `failed` after the last one. */
-export async function markFailed(job: Job, error: string): Promise<void> {
+export async function markFailed(
+  job: Job,
+  error: string,
+  store: DataStore = getRuntime().data,
+): Promise<void> {
   const plan = planFailure(job, new Date());
-  await db
-    .update(jobs)
-    .set({
-      status: plan.status,
-      error,
-      ...(plan.runAt ? { runAt: plan.runAt } : {}),
-      updatedAt: new Date(),
-    })
-    .where(eq(jobs.id, job.id));
+  await store.jobs.update(job.id, {
+    status: plan.status,
+    error,
+    ...(plan.runAt ? { runAt: plan.runAt } : {}),
+  });
 }
 
 /** Queue depth by status (ops/debug view). */
-export async function queueStats(): Promise<Record<string, number>> {
-  const rows = await db
-    .select({ status: jobs.status, count: sql<number>`count(*)::int` })
-    .from(jobs)
-    .groupBy(jobs.status);
-  return Object.fromEntries(rows.map((r) => [r.status, r.count]));
+export function queueStats(store: DataStore = getRuntime().data): Promise<Record<string, number>> {
+  return store.jobs.statsByStatus();
 }

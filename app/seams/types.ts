@@ -8,6 +8,7 @@
  *
  * Pure types only (no server imports) so they can be referenced anywhere.
  */
+import type { DataStore } from "~/data/ports";
 
 export type EdenMode = "oss" | "managed";
 
@@ -181,6 +182,7 @@ export interface NormalizedRunEvent {
 /** The full set of runtime implementations selected for the current mode. */
 export interface EdenRuntime {
   mode: EdenMode;
+  data: DataStore;
   deployTarget: DeployTarget;
   secrets: SecretsProvider;
   modelGateway: ModelGateway;

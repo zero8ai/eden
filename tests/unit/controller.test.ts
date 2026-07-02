@@ -1,0 +1,117 @@
+/**
+ * Deploy controller orchestration — against in-memory fakes (no DB, no docker). Verifies the
+ * logic the controller owns: version labelling + collision retry, release idempotency, the
+ * build→deploy→record pipeline (success and failure), rollback draining, and scoped splits.
+ * Row-locking / real constraint enforcement is the store impl's job (trusted at schema level).
+ */
+import { beforeEach, describe, expect, it } from "vitest";
+
+import {
+  createRelease,
+  deployRelease,
+  ensureReleaseForCommit,
+  listDeployments,
+  rollbackTo,
+  setTrafficSplit,
+} from "~/deploy/controller.server";
+import { fakeDeployTarget, fakeSecrets } from "../fakes/infra";
+import { makeFakeStore, type FakeStore } from "../fakes/store";
+
+let store: FakeStore;
+const PROJECT = "proj_1";
+const ORG = "org_1";
+const ENV = "env_1";
+
+beforeEach(() => {
+  store = makeFakeStore();
+  store.seedProject({ id: PROJECT, orgId: ORG, repoOwner: "acme", repoName: "agent" });
+  store.seedEnvironment({ id: ENV, projectId: PROJECT, name: "production" });
+});
+
+describe("createRelease", () => {
+  it("labels releases v1, v2, … per project", async () => {
+    const r1 = await createRelease({ projectId: PROJECT, gitSha: "a".repeat(40) }, store);
+    const r2 = await createRelease({ projectId: PROJECT, gitSha: "b".repeat(40) }, store);
+    expect(r1.version).toBe("v1");
+    expect(r2.version).toBe("v2");
+  });
+
+  it("retries past a version-label collision and still lands", async () => {
+    store.forceReleaseCollisions(2); // first two inserts raise 23505, third succeeds
+    const r = await createRelease({ projectId: PROJECT, gitSha: "c".repeat(40) }, store);
+    expect(r.version).toBe("v1");
+  });
+});
+
+describe("ensureReleaseForCommit", () => {
+  it("is idempotent per merge commit (in-app merge + webhook converge)", async () => {
+    const sha = "d".repeat(40);
+    const first = await ensureReleaseForCommit({ projectId: PROJECT, gitSha: sha }, store);
+    const second = await ensureReleaseForCommit({ projectId: PROJECT, gitSha: sha }, store);
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.release.id).toBe(first.release.id);
+  });
+});
+
+describe("deployRelease", () => {
+  it("builds, deploys live, records the image + an audit entry", async () => {
+    const release = await createRelease({ projectId: PROJECT, gitSha: "e".repeat(40) }, store);
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://x" } }), secrets: fakeSecrets() },
+    );
+    expect(dep.status).toBe("live");
+    expect(dep.url).toBe("http://x");
+    expect((await store.releases.findById(release.id))?.imageRef).toBe("img:fake");
+    expect(store.auditEntries).toContainEqual({ action: "deploy", target: "v1", orgId: ORG });
+  });
+
+  it("records failed status WITH the reason when the target throws", async () => {
+    const release = await createRelease({ projectId: PROJECT, gitSha: "f".repeat(40) }, store);
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      { store, deployTarget: fakeDeployTarget({ deployError: "docker unavailable" }), secrets: fakeSecrets() },
+    );
+    expect(dep.status).toBe("failed");
+    expect(dep.errorDetail).toBe("docker unavailable");
+  });
+});
+
+describe("rollbackTo", () => {
+  it("drains live deployments and redeploys the prior release at 100", async () => {
+    const rA = await createRelease({ projectId: PROJECT, gitSha: "1".repeat(40) }, store);
+    const deps = { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }), secrets: fakeSecrets() };
+    const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
+    expect(depA.status).toBe("live");
+
+    const rolled = await rollbackTo({ environmentId: ENV, releaseId: rA.id }, deps);
+    expect(rolled.trafficWeight).toBe(100);
+
+    const all = await listDeployments(ENV, store);
+    const drained = all.find((d) => d.id === depA.id);
+    expect(drained?.status).toBe("draining");
+    expect(drained?.trafficWeight).toBe(0);
+  });
+});
+
+describe("setTrafficSplit", () => {
+  it("applies weights within the environment and clamps negatives to 0", async () => {
+    const release = await createRelease({ projectId: PROJECT, gitSha: "2".repeat(40) }, store);
+    const deps = { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://y" } }), secrets: fakeSecrets() };
+    const d1 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+    const d2 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+
+    await setTrafficSplit(ENV, [
+      { deploymentId: d1.id, weight: 90 },
+      { deploymentId: d2.id, weight: 10 },
+    ], store);
+    let all = await listDeployments(ENV, store);
+    expect(all.find((d) => d.id === d1.id)?.trafficWeight).toBe(90);
+    expect(all.find((d) => d.id === d2.id)?.trafficWeight).toBe(10);
+
+    await setTrafficSplit(ENV, [{ deploymentId: d2.id, weight: -5 }], store);
+    all = await listDeployments(ENV, store);
+    expect(all.find((d) => d.id === d2.id)?.trafficWeight).toBe(0);
+  });
+});

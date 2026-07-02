@@ -7,10 +7,8 @@ export default defineConfig({
     alias: { "~": fileURLToPath(new URL("./app", import.meta.url)) },
   },
   test: {
-    globalSetup: "./tests/global-setup.ts",
     setupFiles: ["./tests/setup.ts"],
-    // Integration tests share one Postgres database; run files serially to avoid races.
-    fileParallelism: false,
+    // Pure unit tests over in-memory fakes — no shared state, so files run in parallel.
     testTimeout: 20_000,
   },
 });

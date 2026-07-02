@@ -17,6 +17,18 @@ export interface InstallationRepo {
   private: boolean;
 }
 
+/** Current head commit SHA of a branch (default branch if omitted) — used to cut a Release. */
+export async function getBranchHead(
+  installationId: string | number,
+  { owner, repo, ref }: { owner: string; repo: string; ref?: string },
+): Promise<{ sha: string; branch: string }> {
+  const octokit = await getInstallationOctokit(installationId);
+  const branch =
+    ref ?? (await octokit.rest.repos.get({ owner, repo })).data.default_branch;
+  const res = await octokit.rest.repos.getBranch({ owner, repo, branch });
+  return { sha: res.data.commit.sha, branch };
+}
+
 /** Repos this installation can access, for the connect picker. */
 export async function listInstallationRepos(
   installationId: string | number,

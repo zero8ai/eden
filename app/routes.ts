@@ -10,6 +10,11 @@ export default [
     "projects/:projectId/assistant",
     "routes/projects.$projectId.assistant.tsx",
   ),
+  route(
+    "projects/:projectId/deployments",
+    "routes/projects.$projectId.deployments.tsx",
+  ),
+  route("api/github/webhook", "routes/api.github.webhook.tsx"),
   route("projects/:projectId/edit", "routes/projects.$projectId.edit.tsx"),
   route(
     "projects/:projectId/edit/agent",

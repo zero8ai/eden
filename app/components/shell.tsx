@@ -5,10 +5,19 @@
  * AppShell renders the workspace-level header; AgentNav renders the per-agent section nav
  * (Overview = the repo-backed config surface, then Deployments / Runs / Secrets / Assistant).
  */
+import { LogOut, User } from "lucide-react";
 import { Form, Link, NavLink } from "react-router";
 
 import { ThemeToggle } from "~/components/theme-toggle";
 import { Button } from "~/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
 import { Separator } from "~/components/ui/separator";
 import { TooltipProvider } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -43,24 +52,51 @@ export function AppShell({
             <HeaderLink to="/connect">Connect</HeaderLink>
             <HeaderLink to="/org/settings">Settings</HeaderLink>
           </nav>
-          <div className="ml-auto flex items-center gap-2">
-            {userEmail && (
-              <span className="hidden text-sm text-muted-foreground sm:inline">
-                {userEmail}
-              </span>
-            )}
+          <div className="ml-auto flex items-center gap-1">
             <ThemeToggle />
-            <Form method="post" action="/dashboard">
-              <Button variant="ghost" size="sm" type="submit">
-                Sign out
-              </Button>
-            </Form>
+            <AccountMenu userEmail={userEmail} />
           </div>
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-6 py-8">{children}</main>
     </div>
     </TooltipProvider>
+  );
+}
+
+/** Account dropdown behind a user icon: shows who's signed in, and Sign out. */
+function AccountMenu({ userEmail }: { userEmail?: string | null }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" aria-label="Account">
+          <User className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        {userEmail && (
+          <>
+            <DropdownMenuLabel className="font-normal">
+              <span className="block text-xs text-muted-foreground">
+                Signed in as
+              </span>
+              <span className="block truncate text-sm font-medium">
+                {userEmail}
+              </span>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+          </>
+        )}
+        <Form method="post" action="/dashboard">
+          <DropdownMenuItem asChild>
+            <button type="submit" className="w-full cursor-pointer">
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign out
+            </button>
+          </DropdownMenuItem>
+        </Form>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

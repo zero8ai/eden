@@ -1,15 +1,22 @@
 /**
  * Job queue semantics: exclusive claims, backoff-retry, and terminal failure after
  * maxAttempts. (The worker loop itself is exercised in dev; these pin the queue contract.)
+ *
+ * ISOLATION: `claimNext()` is a global work-stealer — it claims the oldest due job across the
+ * whole table, so these assertions ("the only claimable job", "nothing else is due") require
+ * the queue to be OURS alone. Unlike the pid-namespaced deploy/tenancy tests, a global queue
+ * can't be row-scoped, so we clear before EVERY test (not once) — that makes each test
+ * independent of order and of any residue a prior/interrupted run left behind. This is why the
+ * suite runs single-process (`fileParallelism: false`, one shared `eden_test`); running a
+ * second test process against the same DB concurrently would steal these jobs.
  */
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { db } from "~/db/client.server";
 import { jobs } from "~/db/schema";
 import { claimNext, enqueue, markDone, markFailed } from "~/jobs/queue.server";
 
-beforeAll(async () => {
-  // These assertions reason about "the only claimable job" — start from an empty queue.
+beforeEach(async () => {
   await db.delete(jobs);
 });
 

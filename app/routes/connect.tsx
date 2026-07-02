@@ -24,6 +24,7 @@ import {
 
 import { createProject } from "~/db/queries.server";
 import { syncTenant, type Org } from "~/auth/tenant.server";
+import { ensureWorkspace } from "~/auth/workspace.server";
 import { getInstallUrl } from "~/github/client.server";
 import { createEveRepo } from "~/github/create.server";
 import {
@@ -49,6 +50,8 @@ export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
     args,
     async ({ auth }): Promise<ConnectView> => {
+      // First org-less login: provision the user's workspace and replay (redirect).
+      await ensureWorkspace(args.request, auth);
       const { org } = await syncTenant({
         user: auth.user,
         organizationId: auth.organizationId,

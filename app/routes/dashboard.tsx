@@ -10,6 +10,7 @@ import { Form, Link } from "react-router";
 
 import { listProjects } from "~/db/queries.server";
 import { syncTenant } from "~/auth/tenant.server";
+import { ensureWorkspace } from "~/auth/workspace.server";
 import type { Route } from "./+types/dashboard";
 
 // `ensureSignedIn: true` redirects anonymous visitors to WorkOS sign-in. The inner
@@ -18,6 +19,8 @@ export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
     args,
     async ({ auth }) => {
+      // First org-less login: provision the user's workspace and replay (redirect).
+      await ensureWorkspace(args.request, auth);
       const { org } = await syncTenant(auth);
       const projects = org ? await listProjects(org.id) : [];
       return { org, projects };

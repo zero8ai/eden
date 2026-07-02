@@ -9,13 +9,15 @@ import {
 } from "react-router";
 import { authkitLoader } from "@workos-inc/authkit-react-router";
 
+import { ensureSplitterStarted } from "~/deploy/splitter.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import type { Route } from "./+types/root";
 import "./app.css";
 
 export const loader = (args: LoaderFunctionArgs) => {
-  // Boot the background job worker with the first server render (per-process singleton).
+  // Boot the background singletons with the first server render (per-process guards).
   ensureWorkerStarted();
+  ensureSplitterStarted();
   return authkitLoader(args);
 };
 

@@ -175,9 +175,12 @@ The assistant:
 - **Is scoped and safe**: custom Eden tools (via Pi's `customTools`) expose only repo-authoring and
   sandbox-test actions; destructive/host actions are excluded. Model + keys come from Eden config.
 
-> **Decision:** the assistant runtime is Pi SDK. A thin custom Claude-API loop was considered and
-> rejected for v1 to avoid rebuilding session/tool/streaming plumbing Pi already provides. Revisit if
-> Pi's harness abstractions get in the way.
+> **Decision (revised 2026-07-02):** v1 ships a **Claude-API generator** (stateless: describe →
+> generated `defineTool` file → lands on the working branch via the normal PR flow) behind an
+> `AuthoringAssistant` seam, with a Pi adapter stubbed next to it. The full **Pi SDK live session**
+> (persistent workspace bound to a working-branch checkout, streaming read/write/edit/bash) remains
+> the target for the richer experience but depends on the workspace-checkout spike (§12) — it slots
+> in behind the same seam without touching the editors.
 
 **Secrets & env vars UI:** when a tool or connection needs a secret, the assistant references it by
 name; the PM sets the value in Eden's secrets manager (per environment), never in code. Values are
@@ -460,8 +463,12 @@ two-source-of-truth reconciliation problem.
 
 - **eve beta churn.** eve is in public beta; APIs (`defineAgent`, `defineTool`, build output, Worlds)
   may change. Eden must isolate an "eve-version adapter" layer and pin/track eve versions per repo.
-- **`eve init` in a server context.** Confirm eve provides a programmatic/CLI-scriptable init and
-  build that Eden can run headlessly (vs. its interactive TUI).
+  **Sharpened by the spike (docs/SPIKE-EVE.md):** the eve ↔ `@workflow/world-postgres` version pair
+  is strict and runtime-enforced (world spec versions) — Eden must treat it as pinned per repo.
+- ~~**`eve init` in a server context.**~~ **Resolved (2026-07-02, docs/SPIKE-EVE.md):** `eve init`
+  and `eve build` run fully headless (Node ≥ 24; Eden runs them inside build containers). A repo is
+  deployable off-Vercel only if it declares the Postgres world in `agent.ts` — Connect should
+  validate and offer a "make deployable" PR.
 - **Assistant workspace model.** Exactly how the Pi session mounts the working branch (ephemeral
   container checkout vs. persistent) and how its edits map cleanly to PR commits.
 - **Sandbox backend for the default target.** Which sandbox implementation Eden ships for authored-

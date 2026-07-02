@@ -6,22 +6,25 @@
  * It's the honest, minimal version of the managed Nomad/gVisor substrate: same DeployTarget
  * seam, plain `docker run` instead of an orchestrator.
  *
- * Pipeline:
- *   build   fetch repo tarball @ commit (GitHub App) → npm install → `eve build` →
- *           docker build an image of the Nitro .output/
- *   deploy  create a per-instance Postgres DB → docker run -d with DATABASE_URL + secret env
- *           on a mapped 127.0.0.1 port → health-check → return the URL
+ * Pipeline (contract validated in docs/SPIKE-EVE.md):
+ *   build   fetch repo tarball @ commit (GitHub App) → docker multi-stage build (npm ci +
+ *           `eve build` run inside linux) → runtime image of the Nitro .output/ + a
+ *           build-stage image that keeps node_modules (for the world migration CLI)
+ *   deploy  create a per-instance Postgres DB → run `workflow-postgres-setup` from the
+ *           build-stage image → docker run -d with WORKFLOW_POSTGRES_URL + secret env on a
+ *           mapped 127.0.0.1 port → health-check → return the URL
  *   stop/start  docker stop/start (scale-to-zero)
  *
- * The build step needs the eve/npm toolchain + GitHub App and is the piece to validate against
- * a real eve repo (PRD "eve build headless" spike); the run/health/port/DB lifecycle is
- * self-contained and works today.
+ * The repo must be deployable off-Vercel: `@workflow/world-postgres` (at the beta line
+ * matching its eve version) as a dependency, and agent.ts declaring
+ * `experimental.workflow.world` + `build.externalDependencies` for it. See SPIKE-EVE.
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import postgres from "postgres";
 
+import { buildEveImage, buildStageTagFor } from "~/deploy/eve-image.server";
 import type {
   BuildRequest,
   BuiltArtifact,
@@ -95,6 +98,32 @@ async function removeIfExists(name: string): Promise<void> {
   }
 }
 
+/**
+ * Run the Workflow World's schema migrations against the instance DB, using the build-stage
+ * image (the migration CLI + SQL files are not traced into the runtime .output — SPIKE-EVE).
+ * Skipped when no build-stage image exists (e.g. a plain test image), since such an image
+ * cannot be an eve agent needing a World.
+ */
+async function runWorldMigrations(imageRef: string, dbUrl: string): Promise<void> {
+  const buildTag = buildStageTagFor(imageRef);
+  try {
+    await docker(["image", "inspect", buildTag]);
+  } catch {
+    return; // no build-stage image — nothing to migrate
+  }
+  await docker([
+    "run",
+    "--rm",
+    "--add-host",
+    "host.docker.internal:host-gateway",
+    "-e",
+    `WORKFLOW_POSTGRES_URL=${dbUrl}`,
+    buildTag,
+    "node",
+    "node_modules/@workflow/world-postgres/bin/setup.js",
+  ]);
+}
+
 /** Poll the instance's HTTP endpoint until it responds or the timeout elapses. */
 async function waitForHealth(url: string, timeoutMs = 30_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -114,12 +143,18 @@ export const localDockerTarget: DeployTarget = {
   name: "local-docker",
 
   async build(req: BuildRequest): Promise<BuiltArtifact> {
-    // Needs the GitHub App (fetch tarball @ req.ref) + eve/npm toolchain. Wired against a real
-    // eve repo (PRD spike). Left explicit so a misconfig fails loud instead of half-deploying.
-    throw new Error(
-      `local-docker build not wired yet for ${req.repo.owner}/${req.repo.repo}@${req.ref.slice(0, 7)}: ` +
-        "fetch tarball → npm install → `eve build` → docker build. Validate against a real eve repo.",
-    );
+    if (!req.installationId) {
+      throw new Error(
+        `local-docker build for ${req.repo.owner}/${req.repo.repo}@${req.ref.slice(0, 7)} ` +
+          "needs a GitHub App installation on the repo to fetch its source.",
+      );
+    }
+    return buildEveImage({
+      projectId: req.projectId,
+      repo: req.repo,
+      ref: req.ref,
+      installationId: req.installationId,
+    });
   },
 
   async deploy(req: DeployRequest): Promise<InstanceHealth> {
@@ -130,8 +165,14 @@ export const localDockerTarget: DeployTarget = {
     await removeIfExists(name);
 
     const dbUrl = await provisionInstanceDb(req.deploymentId);
-    const envArgs = Object.entries({ ...req.env, DATABASE_URL: dbUrl, PORT: String(INSTANCE_PORT) })
-      .flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+    await runWorldMigrations(req.imageRef, dbUrl);
+    // The Postgres World reads WORKFLOW_POSTGRES_URL; DATABASE_URL kept for authored tools.
+    const envArgs = Object.entries({
+      ...req.env,
+      WORKFLOW_POSTGRES_URL: dbUrl,
+      DATABASE_URL: dbUrl,
+      PORT: String(INSTANCE_PORT),
+    }).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
 
     await docker([
       "run",

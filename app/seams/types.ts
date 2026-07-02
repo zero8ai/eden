@@ -20,6 +20,8 @@ export interface BuildRequest {
   repo: { owner: string; repo: string };
   /** Git commit SHA to build (the merge commit for a Release). */
   ref: string;
+  /** GitHub App installation that can read the repo (targets that fetch source need it). */
+  installationId?: string | null;
 }
 
 export interface BuiltArtifact {

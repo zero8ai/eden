@@ -120,6 +120,7 @@ export async function deployRelease(input: {
         projectId: release.projectId,
         repo: { owner: project.repoOwner, repo: project.repoName },
         ref: release.gitSha,
+        installationId: project.repoInstallationId,
       });
       imageRef = built.imageRef;
       await db

@@ -4,10 +4,18 @@
  * unique constraint, transactional weight updates) is realized here and trusted at the schema
  * level; the logic that orchestrates these calls is what gets unit-tested against the fake.
  */
-import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
-import { auditLog, deployments, environments, jobs, projects, releases } from "~/db/schema";
+import {
+  auditLog,
+  deployments,
+  draftChanges,
+  environments,
+  jobs,
+  projects,
+  releases,
+} from "~/db/schema";
 import { recordAudit } from "~/managed/audit.server";
 import type { DataStore } from "./ports";
 
@@ -233,6 +241,52 @@ export const drizzleDataStore: DataStore = {
         .from(jobs)
         .groupBy(jobs.status);
       return Object.fromEntries(rows.map((r) => [r.status, r.count]));
+    },
+  },
+
+  drafts: {
+    async upsert(input) {
+      const [row] = await db
+        .insert(draftChanges)
+        .values({
+          projectId: input.projectId,
+          path: input.path,
+          content: input.content,
+          baseSha: input.baseSha ?? null,
+          createdBy: input.createdBy ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [draftChanges.projectId, draftChanges.path],
+          set: {
+            content: input.content,
+            baseSha: input.baseSha ?? null,
+            createdBy: input.createdBy ?? null,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+      return row;
+    },
+    async get(projectId, path) {
+      const [row] = await db
+        .select()
+        .from(draftChanges)
+        .where(and(eq(draftChanges.projectId, projectId), eq(draftChanges.path, path)))
+        .limit(1);
+      return row ?? null;
+    },
+    async listByProject(projectId) {
+      return db
+        .select()
+        .from(draftChanges)
+        .where(eq(draftChanges.projectId, projectId))
+        .orderBy(asc(draftChanges.createdAt));
+    },
+    async deleteByPaths(projectId, paths) {
+      if (paths.length === 0) return;
+      await db
+        .delete(draftChanges)
+        .where(and(eq(draftChanges.projectId, projectId), inArray(draftChanges.path, paths)));
     },
   },
 

@@ -1,9 +1,9 @@
 /**
  * Structured editor: agent instructions (Author pillar, M1).
  *
- * The simplest editor, and the proof of the git-native write flow (D3): load the current
- * `agent/instructions.md`, edit it, and Save opens a PR via `proposeChange`. Eden never writes
- * the default branch directly — the human merges the PR to ship.
+ * Save STAGES the edit as a draft (refresh-proof, no git write); publishing the staged
+ * change-set into a PR happens on the Changes tab (PRD §7.3: edits accumulate; publish opens
+ * the PR). The loader overlays any staged draft over the repo content.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import {
@@ -22,8 +22,8 @@ import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
 import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
+import { getDraft, stageDraft } from "~/drafts/drafts.server";
 import { readAgentFile } from "~/github/repo.server";
-import { proposeChange } from "~/github/write.server";
 import type { Route } from "./+types/projects.$projectId.edit.instructions";
 
 const INSTRUCTIONS_PATH = "agent/instructions.md";
@@ -45,14 +45,21 @@ export const loader = (args: LoaderFunctionArgs) =>
         throw data("Project has no connected repo", { status: 400 });
       }
 
-      const instructions =
-        (await readAgentFile(
+      // Overlay a staged draft (unpublished edit) over the repo content.
+      const [repoContent, draft] = await Promise.all([
+        readAgentFile(
           project.repoInstallationId,
           { owner: project.repoOwner, repo: project.repoName },
           INSTRUCTIONS_PATH,
-        )) ?? "";
+        ),
+        getDraft(project.id, INSTRUCTIONS_PATH),
+      ]);
 
-      return { project, instructions };
+      return {
+        project,
+        instructions: draft?.content ?? repoContent ?? "",
+        hasDraft: !!draft,
+      };
     },
     { ensureSignedIn: true },
   );
@@ -77,22 +84,13 @@ export async function action(args: ActionFunctionArgs) {
   const content = String(form.get("content") ?? "");
 
   try {
-    const change = await proposeChange(
-      project.repoInstallationId,
-      { owner: project.repoOwner, repo: project.repoName },
-      {
-        branch: `eden/instructions-${Date.now().toString(36)}`,
-        files: [{ path: INSTRUCTIONS_PATH, content }],
-        title: "Update agent instructions",
-        body: "Edited via Eden.",
-        commitMessage: "chore(agent): update instructions",
-      },
-    );
-    return {
-      ok: true as const,
-      pullRequestUrl: change.pullRequestUrl,
-      pullRequestNumber: change.pullRequestNumber,
-    };
+    await stageDraft({
+      projectId: project.id,
+      path: INSTRUCTIONS_PATH,
+      content,
+      createdBy: auth.user.id,
+    });
+    return { ok: true as const };
   } catch (error) {
     return { error: (error as Error).message };
   }
@@ -106,7 +104,7 @@ export default function EditInstructions({
   loaderData,
   actionData,
 }: Route.ComponentProps) {
-  const { project, instructions } = loaderData;
+  const { project, instructions, hasDraft } = loaderData;
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
 
@@ -116,32 +114,27 @@ export default function EditInstructions({
     <AppShell>
       <PageHeader
         title="Edit instructions"
-        description={
-          <>
-            Saving opens a change against{" "}
-            <span className="font-mono">{project.defaultBranch}</span>. Review and
-            merge it on the Changes tab to cut a new version.
-          </>
-        }
+        description="Saving stages the change — publish staged changes as one pull request from the Changes tab."
       />
       <AgentNav base={base} />
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
-          <AlertTitle>Couldn&rsquo;t open the change</AlertTitle>
+          <AlertTitle>Couldn&rsquo;t stage the change</AlertTitle>
           <AlertDescription>{actionData.error}</AlertDescription>
         </Alert>
       )}
 
-      {actionData?.ok && (
+      {(actionData?.ok || hasDraft) && (
         <Alert className="mb-6">
-          <AlertTitle>Change #{actionData.pullRequestNumber} ready to review</AlertTitle>
+          <AlertTitle>Staged — not published yet</AlertTitle>
           <AlertDescription className="flex items-center gap-3">
+            <span>This file has an unpublished draft.</span>
             <Link
               to={`${base}/changes`}
               className="font-medium underline underline-offset-4"
             >
-              Review &amp; merge in Changes →
+              Review &amp; publish in Changes →
             </Link>
           </AlertDescription>
         </Alert>
@@ -156,7 +149,7 @@ export default function EditInstructions({
         />
         <div className="mt-4 flex items-center gap-3">
           <Button type="submit" disabled={saving}>
-            {saving ? "Opening PR…" : "Save as pull request"}
+            {saving ? "Saving…" : "Save"}
           </Button>
           <Button variant="ghost" asChild>
             <Link to={base}>Cancel</Link>

@@ -19,6 +19,7 @@ import {
 } from "~/components/ui/card";
 import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
+import { listDrafts } from "~/drafts/drafts.server";
 import { buildAgentConfig } from "~/eve/parse";
 import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
 import { fetchAgentSource } from "~/github/repo.server";
@@ -29,6 +30,8 @@ interface ProjectView {
   project: Project;
   config: AgentConfig | null;
   error: string | null;
+  /** Paths with staged (unpublished) drafts, so the config surface can flag them. */
+  draftPaths: string[];
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -46,17 +49,30 @@ export const loader = (args: LoaderFunctionArgs) =>
       if (!project) throw data("Project not found", { status: 404 });
 
       if (!project.repoInstallationId || !project.repoOwner || !project.repoName) {
-        return { project, config: null, error: "This project has no connected repo." };
+        return {
+          project,
+          config: null,
+          error: "This project has no connected repo.",
+          draftPaths: [],
+        };
       }
 
       try {
-        const source = await fetchAgentSource(project.repoInstallationId, {
-          owner: project.repoOwner,
-          repo: project.repoName,
-        });
-        return { project, config: buildAgentConfig(source), error: null };
+        const [source, drafts] = await Promise.all([
+          fetchAgentSource(project.repoInstallationId, {
+            owner: project.repoOwner,
+            repo: project.repoName,
+          }),
+          listDrafts(project.id),
+        ]);
+        return {
+          project,
+          config: buildAgentConfig(source),
+          error: null,
+          draftPaths: drafts.map((d) => d.path),
+        };
       } catch (error) {
-        return { project, config: null, error: (error as Error).message };
+        return { project, config: null, error: (error as Error).message, draftPaths: [] };
       }
     },
     { ensureSignedIn: true },
@@ -67,7 +83,7 @@ export function meta() {
 }
 
 export default function ProjectDetail({ loaderData }: Route.ComponentProps) {
-  const { project, config, error } = loaderData;
+  const { project, config, error, draftPaths } = loaderData;
   const base = `/projects/${project.id}`;
 
   return (
@@ -98,7 +114,30 @@ export default function ProjectDetail({ loaderData }: Route.ComponentProps) {
         </Alert>
       )}
 
-      {config && <AgentSurface config={config} projectId={project.id} />}
+      {draftPaths.length > 0 && (
+        <Alert className="mb-6">
+          <AlertTitle>
+            {draftPaths.length} staged change{draftPaths.length === 1 ? "" : "s"} not
+            published yet
+          </AlertTitle>
+          <AlertDescription>
+            <Link
+              to={`${base}/changes`}
+              className="font-medium underline underline-offset-4"
+            >
+              Review &amp; publish in Changes →
+            </Link>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {config && (
+        <AgentSurface
+          config={config}
+          projectId={project.id}
+          draftPaths={draftPaths}
+        />
+      )}
     </AppShell>
   );
 }
@@ -116,11 +155,14 @@ const CATEGORY_HINTS: Record<string, string> = {
 function AgentSurface({
   config,
   projectId,
+  draftPaths,
 }: {
   config: AgentConfig;
   projectId: string;
+  draftPaths: string[];
 }) {
   const base = `/projects/${projectId}`;
+  const drafted = new Set(draftPaths);
   return (
     <div className="space-y-6">
       {/* The root agent: model + instructions. One repo == one root agent. */}
@@ -131,6 +173,11 @@ function AgentSurface({
             <Badge variant={config.hasAgentModule ? "secondary" : "outline"}>
               {config.hasAgentModule ? "agent.ts" : "no agent.ts"}
             </Badge>
+            {drafted.has("agent/agent.ts") && (
+              <Badge variant="outline" className="text-xs">
+                staged
+              </Badge>
+            )}
           </div>
           <Button variant="outline" size="sm" asChild>
             <Link to={`${base}/edit/agent`}>Edit config</Link>
@@ -148,7 +195,14 @@ function AgentSurface({
 
       <Card>
         <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle>Instructions</CardTitle>
+          <div className="flex items-center gap-3">
+            <CardTitle>Instructions</CardTitle>
+            {drafted.has("agent/instructions.md") && (
+              <Badge variant="outline" className="text-xs">
+                staged
+              </Badge>
+            )}
+          </div>
           <Button variant="outline" size="sm" asChild>
             <Link to={`${base}/edit/instructions`}>Edit</Link>
           </Button>
@@ -168,7 +222,16 @@ function AgentSurface({
 
       <div className="grid gap-4 sm:grid-cols-2">
         {AGENT_CATEGORIES.map((cat) => {
-          const items = config[cat.key];
+          const repoItems = config[cat.key];
+          // Staged NEW files (drafts not yet in the repo) still belong in their category.
+          const stagedNew = draftPaths
+            .filter(
+              (p) =>
+                p.startsWith(`agent/${cat.dir}/`) &&
+                !repoItems.some((i) => i.path === p),
+            )
+            .map((p) => ({ path: p, name: p.split("/").pop()!, isDirectory: false }));
+          const items = [...repoItems, ...stagedNew];
           return (
             <Card key={cat.key}>
               <CardHeader className="space-y-1 pb-3">
@@ -195,7 +258,7 @@ function AgentSurface({
                 ) : (
                   <ul className="space-y-1 text-sm">
                     {items.map((item) => (
-                      <li key={item.path}>
+                      <li key={item.path} className="flex items-center gap-2">
                         {item.isDirectory ? (
                           <span className="font-mono text-muted-foreground">
                             {item.name}/
@@ -207,6 +270,11 @@ function AgentSurface({
                           >
                             {item.name}
                           </Link>
+                        )}
+                        {drafted.has(item.path) && (
+                          <Badge variant="outline" className="text-xs">
+                            staged
+                          </Badge>
                         )}
                       </li>
                     ))}

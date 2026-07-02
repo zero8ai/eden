@@ -152,6 +152,34 @@ export const deployments = pgTable(
 );
 
 /**
+ * Staged, unpublished edits — the product's "git staging area" (PRD §7.3: edits accumulate
+ * per change-set; PUBLISHING opens the PR). One row per (project, path), latest content wins.
+ * Saving an editor stages a draft here (no git write); the Changes tab lists drafts with
+ * checkboxes and Publish turns the selected ones into one branch + one PR, then deletes them.
+ * The repo stays the source of truth for published config — this table only ever holds
+ * in-flight edits, and rows are short-lived.
+ */
+export const draftChanges = pgTable(
+  "draft_changes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** Repo-relative path under agent/ (e.g. "agent/instructions.md"). */
+    path: text("path").notNull(),
+    /** Full new file contents (drafts are whole-file, like the editors). */
+    content: text("content").notNull(),
+    /** Blob sha of the file when the edit was made (null = new file); future conflict hints. */
+    baseSha: text("base_sha"),
+    createdBy: text("created_by").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("draft_changes_project_path_uq").on(t.projectId, t.path)],
+);
+
+/**
  * Secret METADATA only (D3 + SecretsProvider seam, HANDOFF §8): names/scope/audit, never
  * values. Values live in the SecretsProvider (local no-op for OSS, KMS/Vault for managed).
  */

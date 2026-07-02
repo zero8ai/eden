@@ -8,6 +8,7 @@
 import type {
   DataStore,
   Deployment,
+  DraftChange,
   Environment,
   Job,
   Project,
@@ -41,6 +42,7 @@ export function makeFakeStore(): FakeStore {
   const releases = new Map<string, Release>();
   const deployments = new Map<string, Deployment>();
   const jobs = new Map<string, Job>();
+  const drafts = new Map<string, DraftChange>(); // key: projectId|path
   const auditEntries: { action: string; target?: string | null; orgId: string }[] = [];
   let forcedCollisions = 0;
 
@@ -277,6 +279,36 @@ export function makeFakeStore(): FakeStore {
         const out: Record<string, number> = {};
         for (const j of jobs.values()) out[j.status] = (out[j.status] ?? 0) + 1;
         return out;
+      },
+    },
+
+    drafts: {
+      async upsert(input) {
+        const key = `${input.projectId}|${input.path}`;
+        const existing = drafts.get(key);
+        const row: DraftChange = {
+          id: existing?.id ?? id("draft"),
+          projectId: input.projectId,
+          path: input.path,
+          content: input.content,
+          baseSha: input.baseSha ?? null,
+          createdBy: input.createdBy ?? null,
+          createdAt: existing?.createdAt ?? new Date(++seq),
+          updatedAt: new Date(++seq),
+        };
+        drafts.set(key, row);
+        return row;
+      },
+      async get(projectId, path) {
+        return drafts.get(`${projectId}|${path}`) ?? null;
+      },
+      async listByProject(projectId) {
+        return [...drafts.values()]
+          .filter((d) => d.projectId === projectId)
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      },
+      async deleteByPaths(projectId, paths) {
+        for (const p of paths) drafts.delete(`${projectId}|${p}`);
       },
     },
 

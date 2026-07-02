@@ -2,8 +2,9 @@
  * Structured editor: agent runtime config (`agent/agent.ts`) — Author pillar, M1.
  *
  * A form over the `defineAgent({...})` config (model to start; more options later). Save
- * rewrites `agent.ts` with a targeted edit and opens a PR (D3). If `agent.ts` doesn't exist,
- * we scaffold a minimal one.
+ * rewrites `agent.ts` with a targeted edit and STAGES it as a draft; the Changes tab publishes
+ * staged drafts as one PR (PRD §7.3). If `agent.ts` doesn't exist, we scaffold a minimal one.
+ * The loader overlays a staged draft so the form reflects unpublished edits.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import {
@@ -19,9 +20,9 @@ import { AgentNav, AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { Label } from "~/components/ui/label";
+import { getDraft, stageDraft } from "~/drafts/drafts.server";
 import { readModel, scaffoldAgentModule, setModel, SUGGESTED_MODELS } from "~/eve/agentModule";
 import { readAgentFile } from "~/github/repo.server";
-import { proposeChange } from "~/github/write.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.edit.agent";
 
@@ -41,15 +42,21 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
-      const source = await readAgentFile(
-        project.repoInstallationId,
-        { owner: project.repoOwner, repo: project.repoName },
-        AGENT_PATH,
-      );
+      // Overlay a staged draft (unpublished edit) over the repo content.
+      const [repoSource, draft] = await Promise.all([
+        readAgentFile(
+          project.repoInstallationId,
+          { owner: project.repoOwner, repo: project.repoName },
+          AGENT_PATH,
+        ),
+        getDraft(project.id, AGENT_PATH),
+      ]);
+      const source = draft?.content ?? repoSource;
       return {
         project,
         model: source ? readModel(source) : null,
-        exists: source !== null,
+        exists: repoSource !== null,
+        hasDraft: !!draft,
       };
     },
     { ensureSignedIn: true },
@@ -77,30 +84,26 @@ export async function action(args: ActionFunctionArgs) {
       : selected;
   if (!model) return { error: "Pick or enter a model." };
 
-  const current = await readAgentFile(
-    project.repoInstallationId,
-    { owner: project.repoOwner, repo: project.repoName },
-    AGENT_PATH,
-  );
+  // Base the targeted edit on the staged draft if one exists (edits stack), else the repo.
+  const [repoSource, draft] = await Promise.all([
+    readAgentFile(
+      project.repoInstallationId,
+      { owner: project.repoOwner, repo: project.repoName },
+      AGENT_PATH,
+    ),
+    getDraft(project.id, AGENT_PATH),
+  ]);
+  const current = draft?.content ?? repoSource;
   const next = current ? setModel(current, model) : scaffoldAgentModule(model);
 
   try {
-    const change = await proposeChange(
-      project.repoInstallationId,
-      { owner: project.repoOwner, repo: project.repoName },
-      {
-        branch: `eden/agent-config-${Date.now().toString(36)}`,
-        files: [{ path: AGENT_PATH, content: next }],
-        title: "Update agent runtime config",
-        body: `Set model to \`${model}\` via Eden.`,
-        commitMessage: "chore(agent): update runtime config",
-      },
-    );
-    return {
-      ok: true as const,
-      pullRequestUrl: change.pullRequestUrl,
-      pullRequestNumber: change.pullRequestNumber,
-    };
+    await stageDraft({
+      projectId: project.id,
+      path: AGENT_PATH,
+      content: next,
+      createdBy: auth.user.id,
+    });
+    return { ok: true as const };
   } catch (error) {
     return { error: (error as Error).message };
   }
@@ -111,7 +114,7 @@ export function meta() {
 }
 
 export default function EditAgent({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, model, exists } = loaderData;
+  const { project, model, exists, hasDraft } = loaderData;
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
   const current = model ?? "";
@@ -137,7 +140,7 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
                 scaffolds one.
               </>
             )}{" "}
-            Save opens a pull request.
+            Saving stages the change — publish from the Changes tab.
           </>
         }
       />
@@ -145,19 +148,20 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
-          <AlertTitle>Couldn&rsquo;t open the change</AlertTitle>
+          <AlertTitle>Couldn&rsquo;t stage the change</AlertTitle>
           <AlertDescription>{actionData.error}</AlertDescription>
         </Alert>
       )}
-      {actionData?.ok && (
+      {(actionData?.ok || hasDraft) && (
         <Alert className="mb-6">
-          <AlertTitle>Change #{actionData.pullRequestNumber} ready to review</AlertTitle>
-          <AlertDescription>
+          <AlertTitle>Staged — not published yet</AlertTitle>
+          <AlertDescription className="flex items-center gap-3">
+            <span>This file has an unpublished draft.</span>
             <Link
               to={`${base}/changes`}
               className="font-medium underline underline-offset-4"
             >
-              Review &amp; merge in Changes →
+              Review &amp; publish in Changes →
             </Link>
           </AlertDescription>
         </Alert>
@@ -200,7 +204,7 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
 
         <div className="flex items-center gap-3">
           <Button type="submit" disabled={saving}>
-            {saving ? "Opening PR…" : "Save as pull request"}
+            {saving ? "Saving…" : "Save"}
           </Button>
           <Button variant="ghost" asChild>
             <Link to={base}>Cancel</Link>

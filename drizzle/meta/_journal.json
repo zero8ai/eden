@@ -36,6 +36,13 @@
       "when": 1782971380481,
       "tag": "0004_square_the_spike",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783016728965,
+      "tag": "0005_spotty_gladiator",
+      "breakpoints": true
     }
   ]
 }

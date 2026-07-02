@@ -7,8 +7,16 @@
  *
  * Row types are the schema's inferred selects, so the fake and the real impl can't drift.
  */
-import type { deployments, environments, jobs, projects, releases } from "~/db/schema";
+import type {
+  deployments,
+  draftChanges,
+  environments,
+  jobs,
+  projects,
+  releases,
+} from "~/db/schema";
 
+export type DraftChange = typeof draftChanges.$inferSelect;
 export type Release = typeof releases.$inferSelect;
 export type Deployment = typeof deployments.$inferSelect;
 export type Environment = typeof environments.$inferSelect;
@@ -110,6 +118,22 @@ export interface JobRepo {
   statsByStatus(): Promise<Record<string, number>>;
 }
 
+export interface DraftRepo {
+  /** Stage (upsert) a draft: latest content per (project, path) wins. */
+  upsert(input: {
+    projectId: string;
+    path: string;
+    content: string;
+    baseSha?: string | null;
+    createdBy?: string | null;
+  }): Promise<DraftChange>;
+  get(projectId: string, path: string): Promise<DraftChange | null>;
+  /** A project's staged drafts, oldest first (stable checkbox order in the UI). */
+  listByProject(projectId: string): Promise<DraftChange[]>;
+  /** Remove drafts by path (after publish, or an explicit discard). */
+  deleteByPaths(projectId: string, paths: string[]): Promise<void>;
+}
+
 export interface AuditRepo {
   record(input: {
     orgId: string;
@@ -127,5 +151,6 @@ export interface DataStore {
   environments: EnvironmentRepo;
   projects: ProjectRepo;
   jobs: JobRepo;
+  drafts: DraftRepo;
   audit: AuditRepo;
 }

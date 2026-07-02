@@ -22,7 +22,7 @@ import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Textarea } from "~/components/ui/textarea";
 import { getAuthoringAssistant } from "~/assistant/index.server";
-import { proposeChange } from "~/github/write.server";
+import { stageDraft } from "~/drafts/drafts.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.assistant";
 
@@ -47,7 +47,7 @@ export const loader = (args: LoaderFunctionArgs) =>
 
 type ActionResult =
   | { kind: "generated"; path: string; content: string; explanation: string; secretsNeeded: string[] }
-  | { kind: "saved"; pullRequestUrl: string; pullRequestNumber: number }
+  | { kind: "saved"; path: string }
   | { kind: "error"; message: string };
 
 export async function action(args: ActionFunctionArgs): Promise<ActionResult> {
@@ -72,22 +72,14 @@ export async function action(args: ActionFunctionArgs): Promise<ActionResult> {
     const content = String(form.get("content") ?? "");
     if (!path || !content) return { kind: "error", message: "Nothing to save." };
     try {
-      const change = await proposeChange(
-        project.repoInstallationId,
-        { owner: project.repoOwner, repo: project.repoName },
-        {
-          branch: `eden/tool-${Date.now().toString(36)}`,
-          files: [{ path, content }],
-          title: `Add tool ${path.split("/").pop()}`,
-          body: "Generated with the Eden authoring assistant.",
-          commitMessage: `feat(agent): add ${path}`,
-        },
-      );
-      return {
-        kind: "saved",
-        pullRequestUrl: change.pullRequestUrl,
-        pullRequestNumber: change.pullRequestNumber,
-      };
+      // Stage like every other editor: the Changes tab publishes staged drafts as one PR.
+      await stageDraft({
+        projectId: project.id,
+        path,
+        content,
+        createdBy: auth.user.id,
+      });
+      return { kind: "saved", path };
     } catch (error) {
       return { kind: "error", message: (error as Error).message };
     }
@@ -141,13 +133,15 @@ export default function Assistant({ loaderData, actionData }: Route.ComponentPro
       )}
       {actionData?.kind === "saved" && (
         <Alert className="mb-6">
-          <AlertTitle>Change #{actionData.pullRequestNumber} ready to review</AlertTitle>
+          <AlertTitle>
+            Staged <span className="font-mono">{actionData.path}</span>
+          </AlertTitle>
           <AlertDescription>
             <Link
               to={`${base}/changes`}
               className="font-medium underline underline-offset-4"
             >
-              Review &amp; merge in Changes →
+              Review &amp; publish in Changes →
             </Link>
           </AlertDescription>
         </Alert>

@@ -10,16 +10,30 @@
  */
 import { managedMeteringSink } from "~/managed/metering.stripe.server";
 import { managedModelGateway } from "~/managed/gateway.proxy.server";
+import { nomadTarget } from "./adapters/deploy.nomad.server";
+import { vercelTarget } from "./adapters/deploy.vercel.server";
 import { containerPostgresTarget } from "./oss/deploy.container.server";
 import { directModelGateway } from "./oss/gateway.direct.server";
 import { localMeteringSink } from "./oss/metering.local.server";
 import { localScheduler } from "./oss/scheduler.local.server";
 import { localSecretsProvider } from "./oss/secrets.local.server";
 import { localTelemetrySink } from "./oss/telemetry.local.server";
-import type { EdenMode, EdenRuntime } from "./types";
+import type { DeployTarget, EdenMode, EdenRuntime } from "./types";
 
 function resolveMode(): EdenMode {
   return process.env.EDEN_MODE === "managed" ? "managed" : "oss";
+}
+
+/** Pick the DeployTarget by `EDEN_DEPLOY_TARGET` (container | nomad | vercel). */
+function resolveDeployTarget(): DeployTarget {
+  switch (process.env.EDEN_DEPLOY_TARGET) {
+    case "nomad":
+      return nomadTarget;
+    case "vercel":
+      return vercelTarget;
+    default:
+      return containerPostgresTarget;
+  }
 }
 
 function buildRuntime(mode: EdenMode): EdenRuntime {
@@ -29,8 +43,8 @@ function buildRuntime(mode: EdenMode): EdenRuntime {
   const managed = mode === "managed";
   return {
     mode,
-    // Deploy target + secrets: managed KMS/Nomad impls land as they're built; OSS refs for now.
-    deployTarget: containerPostgresTarget,
+    // Deploy target selectable per host (container default; nomad/vercel adapters).
+    deployTarget: resolveDeployTarget(),
     secrets: localSecretsProvider,
     scheduler: localScheduler,
     telemetry: localTelemetrySink,

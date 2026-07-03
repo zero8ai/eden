@@ -11,6 +11,8 @@ import {
   getDraft,
   listDrafts,
   publishDrafts,
+  resolveFileView,
+  type FileViewDeps,
 } from "~/drafts/drafts.server";
 import { stageDraft } from "~/drafts/drafts.server";
 import type { ProposedChange } from "~/github/write.server";
@@ -110,4 +112,64 @@ describe("publishDrafts", () => {
     // Nothing was deleted — the human can retry.
     expect(await listDrafts(PROJECT.id, store)).toHaveLength(1);
   });
+});
+
+describe("resolveFileView", () => {
+  const PATH = "agent/agent.ts";
+  /** GitHub fakes: repo (default branch) content + one open change touching PATH. */
+  function deps({
+    repoContent = "repo",
+    pendingContent = "pending",
+    pending = true,
+  }: {
+    repoContent?: string | null;
+    pendingContent?: string | null;
+    pending?: boolean;
+  } = {}): FileViewDeps {
+    return {
+      readFile: vi.fn(async (_inst, repo: { ref?: string }) =>
+        repo.ref === "eden/publish-x" ? pendingContent : repoContent,
+      ) as FileViewDeps["readFile"],
+      findOpenChange: vi.fn(async () =>
+        pending
+          ? { number: 7, title: "Update agent files", branch: "eden/publish-x", url: "u" }
+          : null,
+      ) as FileViewDeps["findOpenChange"],
+    };
+  }
+
+  it("a staged draft wins over everything (it's the newest edit)", async () => {
+    await stageDraft({ projectId: PROJECT.id, path: PATH, content: "draft" }, store);
+    const view = await resolveFileView(PROJECT, PATH, store, deps());
+    expect(view).toMatchObject({ content: "draft", source: "draft", existsInRepo: true });
+  });
+
+  it("with no draft, shows the pending value from the open change request", async () => {
+    const view = await resolveFileView(PROJECT, PATH, store, deps());
+    expect(view).toMatchObject({
+      content: "pending",
+      source: "change-request",
+      change: { number: 7, title: "Update agent files" },
+    });
+  });
+
+  it("falls back to repo content when nothing is staged or pending", async () => {
+    const view = await resolveFileView(PROJECT, PATH, store, deps({ pending: false }));
+    expect(view).toMatchObject({ content: "repo", source: "repo", change: null });
+  });
+
+  it("a change request that ADDS the file still resolves (repo has nothing)", async () => {
+    const view = await resolveFileView(
+      PROJECT,
+      PATH,
+      store,
+      deps({ repoContent: null }),
+    );
+    expect(view).toMatchObject({
+      content: "pending",
+      source: "change-request",
+      existsInRepo: false,
+    });
+  });
+
 });

@@ -7,7 +7,12 @@
  * Drafts are in-flight edits only; the repo remains the source of truth for published config.
  */
 import type { DataStore, DraftChange } from "~/data/ports";
-import { proposeChange, type ProposedChange } from "~/github/write.server";
+import { readAgentFile } from "~/github/repo.server";
+import {
+  findOpenChangeForFile,
+  proposeChange,
+  type ProposedChange,
+} from "~/github/write.server";
 import { getRuntime } from "~/seams/index.server";
 
 export interface StageInput {
@@ -51,6 +56,69 @@ export function discardDrafts(
   store: DataStore = getRuntime().data,
 ): Promise<void> {
   return store.drafts.deleteByPaths(projectId, paths);
+}
+
+/**
+ * What an editor should show for a file, and where that value comes from. The editor always
+ * displays the user's LATEST intended value, walking back through the change lifecycle:
+ *   staged draft → open change request → default branch.
+ * Without the middle step, publishing made an edit invisible in the editors (the draft is
+ * deleted, main still has the old value) until the change request merged — "I set the model
+ * yesterday, why does the editor show the old one?".
+ */
+export interface FileView {
+  /** Content to show; null when the file exists nowhere yet. */
+  content: string | null;
+  source: "draft" | "change-request" | "repo";
+  /** The file exists on the default branch (vs. being newly created by a draft/change). */
+  existsInRepo: boolean;
+  /** Set when source is "change-request": the open change holding the pending value. */
+  change: { number: number; title: string } | null;
+}
+
+/** GitHub reads injected so unit tests run without a repo. */
+export interface FileViewDeps {
+  readFile: typeof readAgentFile;
+  findOpenChange: typeof findOpenChangeForFile;
+}
+
+export async function resolveFileView(
+  project: {
+    id: string;
+    repoInstallationId: string;
+    repoOwner: string;
+    repoName: string;
+  },
+  path: string,
+  store: DataStore = getRuntime().data,
+  deps: FileViewDeps = { readFile: readAgentFile, findOpenChange: findOpenChangeForFile },
+): Promise<FileView> {
+  const repo = { owner: project.repoOwner, repo: project.repoName };
+  const [repoContent, draft, pending] = await Promise.all([
+    deps.readFile(project.repoInstallationId, repo, path),
+    store.drafts.get(project.id, path),
+    deps.findOpenChange(project.repoInstallationId, repo, path),
+  ]);
+  const existsInRepo = repoContent !== null;
+
+  // A staged draft is the newest edit — it wins even over an open change request.
+  if (draft) return { content: draft.content, source: "draft", existsInRepo, change: null };
+
+  if (pending) {
+    const pendingContent = await deps.readFile(
+      project.repoInstallationId,
+      { ...repo, ref: pending.branch },
+      path,
+    );
+    return {
+      content: pendingContent ?? repoContent,
+      source: "change-request",
+      existsInRepo,
+      change: { number: pending.number, title: pending.title },
+    };
+  }
+
+  return { content: repoContent, source: "repo", existsInRepo, change: null };
 }
 
 /** Injected so unit tests exercise selection/cleanup without GitHub. */

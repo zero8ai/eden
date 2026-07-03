@@ -16,14 +16,14 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { FileStateBanner } from "~/components/file-state-banner";
 import { AgentNav, AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
 import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
-import { getDraft, stageDraft } from "~/drafts/drafts.server";
-import { readAgentFile } from "~/github/repo.server";
+import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import type { Route } from "./+types/projects.$projectId.edit.instructions";
 
 const INSTRUCTIONS_PATH = "agent/instructions.md";
@@ -45,20 +45,22 @@ export const loader = (args: LoaderFunctionArgs) =>
         throw data("Project has no connected repo", { status: 400 });
       }
 
-      // Overlay a staged draft (unpublished edit) over the repo content.
-      const [repoContent, draft] = await Promise.all([
-        readAgentFile(
-          project.repoInstallationId,
-          { owner: project.repoOwner, repo: project.repoName },
-          INSTRUCTIONS_PATH,
-        ),
-        getDraft(project.id, INSTRUCTIONS_PATH),
-      ]);
+      // Show the latest intended value: staged draft → open change request → repo.
+      const view = await resolveFileView(
+        {
+          id: project.id,
+          repoInstallationId: project.repoInstallationId,
+          repoOwner: project.repoOwner,
+          repoName: project.repoName,
+        },
+        INSTRUCTIONS_PATH,
+      );
 
       return {
         project,
-        instructions: draft?.content ?? repoContent ?? "",
-        hasDraft: !!draft,
+        instructions: view.content ?? "",
+        source: view.source,
+        change: view.change,
       };
     },
     { ensureSignedIn: true },
@@ -104,7 +106,7 @@ export default function EditInstructions({
   loaderData,
   actionData,
 }: Route.ComponentProps) {
-  const { project, instructions, hasDraft } = loaderData;
+  const { project, instructions, source, change } = loaderData;
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
 
@@ -125,20 +127,12 @@ export default function EditInstructions({
         </Alert>
       )}
 
-      {(actionData?.ok || hasDraft) && (
-        <Alert className="mb-6">
-          <AlertTitle>Staged — not published yet</AlertTitle>
-          <AlertDescription className="flex items-center gap-3">
-            <span>This file has an unpublished draft.</span>
-            <Link
-              to={`${base}/changes`}
-              className="font-medium underline underline-offset-4"
-            >
-              Review &amp; publish in Changes →
-            </Link>
-          </AlertDescription>
-        </Alert>
-      )}
+      <FileStateBanner
+        saved={!!actionData?.ok}
+        source={source}
+        change={change}
+        base={base}
+      />
 
       <Form method="post">
         <Textarea

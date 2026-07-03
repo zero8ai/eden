@@ -236,6 +236,80 @@ export async function listOpenChanges(
   );
 }
 
+/** The newest open Eden change request touching a given file. */
+export interface PendingFileChange {
+  number: number;
+  title: string;
+  branch: string;
+  url: string;
+}
+
+/**
+ * Find the newest open Eden change request that touches `path`. Editors use this to surface a
+ * published-but-unmerged value — without it, a file "loses" its latest edit the moment the
+ * staged draft is published, until the change request merges.
+ */
+export async function findOpenChangeForFile(
+  installationId: string | number,
+  { owner, repo }: RepoRef,
+  path: string,
+): Promise<PendingFileChange | null> {
+  const octokit = await getInstallationOctokit(installationId);
+  const list = await octokit.rest.pulls.list({
+    owner,
+    repo,
+    state: "open",
+    sort: "created",
+    direction: "desc",
+    per_page: 50,
+  });
+  for (const pr of list.data.filter((p) => p.head.ref.startsWith("eden/"))) {
+    const files = await octokit.rest.pulls.listFiles({
+      owner,
+      repo,
+      pull_number: pr.number,
+      per_page: 100,
+    });
+    if (files.data.some((f) => f.filename === path)) {
+      return { number: pr.number, title: pr.title, branch: pr.head.ref, url: pr.html_url };
+    }
+  }
+  return null;
+}
+
+/**
+ * Delete a change request: comment (so the PR trail says why it closed), close without
+ * merging, and remove the working branch. Recoverable at the source — GitHub can restore the
+ * branch from the closed PR — so the UI can treat this as delete without it being data loss.
+ */
+export async function closePullRequest(
+  installationId: string | number,
+  { owner, repo }: RepoRef,
+  pullNumber: number,
+  branch?: string,
+): Promise<void> {
+  const octokit = await getInstallationOctokit(installationId);
+  // Comment before closing so the trail exists even if a later step fails.
+  await octokit.rest.issues.createComment({
+    owner,
+    repo,
+    issue_number: pullNumber,
+    body: "Change request deleted from Eden — closed without merging.",
+  });
+  await octokit.rest.pulls.update({ owner, repo, pull_number: pullNumber, state: "closed" });
+
+  const head =
+    branch ??
+    (await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber })).data.head.ref;
+  if (head) {
+    try {
+      await octokit.rest.git.deleteRef({ owner, repo, ref: `heads/${head}` });
+    } catch {
+      // protected or already-deleted branch — the close already succeeded
+    }
+  }
+}
+
 export interface MergeResult {
   /** The commit SHA on the base branch after merge — the canonical version identity (D9). */
   mergeSha: string;

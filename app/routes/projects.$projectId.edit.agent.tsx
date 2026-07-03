@@ -20,9 +20,9 @@ import { AgentNav, AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { Label } from "~/components/ui/label";
-import { getDraft, stageDraft } from "~/drafts/drafts.server";
+import { FileStateBanner } from "~/components/file-state-banner";
+import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import { readModel, scaffoldAgentModule, setModel, SUGGESTED_MODELS } from "~/eve/agentModule";
-import { readAgentFile } from "~/github/repo.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.edit.agent";
 
@@ -42,21 +42,14 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
-      // Overlay a staged draft (unpublished edit) over the repo content.
-      const [repoSource, draft] = await Promise.all([
-        readAgentFile(
-          project.repoInstallationId,
-          { owner: project.repoOwner, repo: project.repoName },
-          AGENT_PATH,
-        ),
-        getDraft(project.id, AGENT_PATH),
-      ]);
-      const source = draft?.content ?? repoSource;
+      // Show the latest intended value: staged draft → open change request → repo.
+      const view = await resolveFileView(project, AGENT_PATH);
       return {
         project,
-        model: source ? readModel(source) : null,
-        exists: repoSource !== null,
-        hasDraft: !!draft,
+        model: view.content ? readModel(view.content) : null,
+        exists: view.content !== null,
+        source: view.source,
+        change: view.change,
       };
     },
     { ensureSignedIn: true },
@@ -84,17 +77,10 @@ export async function action(args: ActionFunctionArgs) {
       : selected;
   if (!model) return { error: "Pick or enter a model." };
 
-  // Base the targeted edit on the staged draft if one exists (edits stack), else the repo.
-  const [repoSource, draft] = await Promise.all([
-    readAgentFile(
-      project.repoInstallationId,
-      { owner: project.repoOwner, repo: project.repoName },
-      AGENT_PATH,
-    ),
-    getDraft(project.id, AGENT_PATH),
-  ]);
-  const current = draft?.content ?? repoSource;
-  const next = current ? setModel(current, model) : scaffoldAgentModule(model);
+  // Base the targeted edit on the latest intended value (draft → pending change → repo) so
+  // saving the model never silently reverts other unmerged edits to this file.
+  const view = await resolveFileView(project, AGENT_PATH);
+  const next = view.content ? setModel(view.content, model) : scaffoldAgentModule(model);
 
   try {
     await stageDraft({
@@ -114,7 +100,7 @@ export function meta() {
 }
 
 export default function EditAgent({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, model, exists, hasDraft } = loaderData;
+  const { project, model, exists, source, change } = loaderData;
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
   const current = model ?? "";
@@ -152,20 +138,12 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
           <AlertDescription>{actionData.error}</AlertDescription>
         </Alert>
       )}
-      {(actionData?.ok || hasDraft) && (
-        <Alert className="mb-6">
-          <AlertTitle>Staged — not published yet</AlertTitle>
-          <AlertDescription className="flex items-center gap-3">
-            <span>This file has an unpublished draft.</span>
-            <Link
-              to={`${base}/changes`}
-              className="font-medium underline underline-offset-4"
-            >
-              Review &amp; publish in Changes →
-            </Link>
-          </AlertDescription>
-        </Alert>
-      )}
+      <FileStateBanner
+        saved={!!actionData?.ok}
+        source={source}
+        change={change}
+        base={base}
+      />
 
       <Form method="post" className="max-w-xl space-y-4">
         <div className="space-y-1.5">

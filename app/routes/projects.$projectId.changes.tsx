@@ -27,7 +27,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { ensureReleaseForCommit } from "~/deploy/controller.server";
 import { discardDrafts, listDrafts, publishDrafts } from "~/drafts/drafts.server";
-import { listOpenChanges, mergePullRequest } from "~/github/write.server";
+import { closePullRequest, listOpenChanges, mergePullRequest } from "~/github/write.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.changes";
 
@@ -91,6 +91,20 @@ export async function action(args: ActionFunctionArgs) {
       throw redirect(back);
     }
 
+    // ── Delete an open change request (close without merging) ──
+    if (intent === "delete") {
+      const pullNumber = Number(form.get("pullNumber"));
+      const branch = String(form.get("branch") ?? "") || undefined;
+      if (!pullNumber) return { error: "Missing change to delete." };
+      await closePullRequest(
+        project.repoInstallationId,
+        { owner: project.repoOwner, repo: project.repoName },
+        pullNumber,
+        branch,
+      );
+      throw redirect(back);
+    }
+
     // ── Merge an open change request ──
     if (intent === "merge") {
       const pullNumber = Number(form.get("pullNumber"));
@@ -140,6 +154,8 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
   const activeIntent = busy ? String(navigation.formData!.get("intent") ?? "") : null;
   const mergingNumber =
     activeIntent === "merge" ? Number(navigation.formData!.get("pullNumber")) : null;
+  const deletingNumber =
+    activeIntent === "delete" ? Number(navigation.formData!.get("pullNumber")) : null;
 
   return (
     <AppShell>
@@ -247,6 +263,7 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
               change={c}
               busy={busy}
               merging={mergingNumber === c.number}
+              deleting={deletingNumber === c.number}
             />
           ))}
         </div>
@@ -259,12 +276,15 @@ function ChangeCard({
   change,
   busy,
   merging,
+  deleting,
 }: {
   change: Route.ComponentProps["loaderData"]["changes"][number];
   /** Some submission is in flight — disable, but don't relabel. */
   busy: boolean;
   /** THIS change is the one being merged — show the progress label. */
   merging: boolean;
+  /** THIS change is the one being deleted — show the progress label. */
+  deleting: boolean;
 }) {
   const conflicted = change.mergeable === false;
   const checking = change.mergeable === null;
@@ -288,6 +308,31 @@ function ChangeCard({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <MergeabilityBadge conflicted={conflicted} checking={checking} />
+            <Form
+              method="post"
+              onSubmit={(e) => {
+                if (
+                  !window.confirm(
+                    `Delete change request #${change.number}? It will be closed without merging.`,
+                  )
+                ) {
+                  e.preventDefault();
+                }
+              }}
+            >
+              <input type="hidden" name="intent" value="delete" />
+              <input type="hidden" name="pullNumber" value={change.number} />
+              <input type="hidden" name="branch" value={change.branch} />
+              <Button
+                type="submit"
+                size="sm"
+                variant="ghost"
+                className="text-destructive hover:text-destructive"
+                disabled={busy}
+              >
+                {deleting ? "Deleting…" : "Delete"}
+              </Button>
+            </Form>
             <Form method="post">
               <input type="hidden" name="intent" value="merge" />
               <input type="hidden" name="pullNumber" value={change.number} />

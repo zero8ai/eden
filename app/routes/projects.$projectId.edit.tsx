@@ -25,8 +25,8 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Textarea } from "~/components/ui/textarea";
-import { getDraft, stageDraft } from "~/drafts/drafts.server";
-import { readAgentFile } from "~/github/repo.server";
+import { FileStateBanner } from "~/components/file-state-banner";
+import { resolveFileView, stageDraft, type FileView } from "~/drafts/drafts.server";
 import {
   normalizeAgentPath,
   requireProject,
@@ -40,7 +40,8 @@ interface FileEditView {
   path: string | null;
   content: string;
   exists: boolean;
-  hasDraft: boolean;
+  source: FileView["source"];
+  change: FileView["change"];
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -61,24 +62,25 @@ export const loader = (args: LoaderFunctionArgs) =>
       const raw = new URL(args.request.url).searchParams.get("path") ?? "";
       const path = normalizeAgentPath(raw);
       if (!path) {
-        return { project, path: null, content: "", exists: false, hasDraft: false };
+        return {
+          project,
+          path: null,
+          content: "",
+          exists: false,
+          source: "repo" as const,
+          change: null,
+        };
       }
 
-      // Overlay a staged draft (unpublished edit) over the repo content.
-      const [content, draft] = await Promise.all([
-        readAgentFile(
-          project.repoInstallationId,
-          { owner: project.repoOwner, repo: project.repoName },
-          path,
-        ),
-        getDraft(project.id, path),
-      ]);
+      // Show the latest intended value: staged draft → open change request → repo.
+      const view = await resolveFileView(project, path);
       return {
         project,
         path,
-        content: draft?.content ?? content ?? "",
-        exists: content !== null,
-        hasDraft: !!draft,
+        content: view.content ?? "",
+        exists: view.existsInRepo,
+        source: view.source,
+        change: view.change,
       };
     },
     { ensureSignedIn: true },
@@ -122,7 +124,7 @@ export function meta() {
 }
 
 export default function EditFile({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, path, content, exists, hasDraft } = loaderData;
+  const { project, path, content, exists, source, change } = loaderData;
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
 
@@ -171,20 +173,12 @@ export default function EditFile({ loaderData, actionData }: Route.ComponentProp
               <AlertDescription>{actionData.error}</AlertDescription>
             </Alert>
           )}
-          {(actionData?.ok || hasDraft) && (
-            <Alert className="mb-6">
-              <AlertTitle>Staged — not published yet</AlertTitle>
-              <AlertDescription className="flex items-center gap-3">
-                <span>This file has an unpublished draft.</span>
-                <Link
-                  to={`${base}/changes`}
-                  className="font-medium underline underline-offset-4"
-                >
-                  Review &amp; publish in Changes →
-                </Link>
-              </AlertDescription>
-            </Alert>
-          )}
+          <FileStateBanner
+            saved={!!actionData?.ok}
+            source={source}
+            change={change}
+            base={base}
+          />
 
           <Form method="post">
             <input type="hidden" name="path" value={path} />

@@ -11,6 +11,7 @@ import {
   deployRelease,
   ensureReleaseForCommit,
   listDeployments,
+  queueDeploy,
   rollbackTo,
   setTrafficSplit,
 } from "~/deploy/controller.server";
@@ -75,6 +76,34 @@ describe("deployRelease", () => {
     );
     expect(dep.status).toBe("failed");
     expect(dep.errorDetail).toBe("docker unavailable");
+  });
+});
+
+describe("queueDeploy", () => {
+  it("creates the queued row FIRST, and the job takes over that same row (no duplicate)", async () => {
+    const release = await createRelease({ projectId: PROJECT, gitSha: "9".repeat(40) }, store);
+
+    // Click: row exists immediately in `queued` — this is the UI's instant feedback.
+    const queued = await queueDeploy(
+      { environmentId: ENV, releaseId: release.id, createdBy: "user_1" },
+      store,
+    );
+    expect(queued.status).toBe("queued");
+    expect((await listDeployments(ENV, store)).map((d) => d.id)).toEqual([queued.id]);
+
+    // Worker: claims the job, whose payload points at the pre-created row.
+    const job = await store.jobs.claimNext(new Date());
+    expect(job?.kind).toBe("deploy_release");
+    expect(job?.payload.deploymentId).toBe(queued.id);
+
+    // Executing the deploy updates that row — never inserts a second one.
+    const done = await deployRelease(
+      job!.payload as { environmentId: string; releaseId: string; deploymentId: string },
+      { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://z" } }), secrets: fakeSecrets() },
+    );
+    expect(done.id).toBe(queued.id);
+    expect(done.status).toBe("live");
+    expect(await listDeployments(ENV, store)).toHaveLength(1);
   });
 });
 

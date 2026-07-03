@@ -15,6 +15,7 @@
  * the tooling error, so the control plane and UI work end-to-end without real infra.
  */
 import type { DataStore, Deployment, Release } from "~/data/ports";
+import { enqueue } from "~/jobs/queue.server";
 import { getRuntime } from "~/seams/index.server";
 import type { DeployTarget, SecretsProvider } from "~/seams/types";
 import { isVersionLabelCollision, versionLabel } from "./versioning";
@@ -98,6 +99,8 @@ export async function deployRelease(
   input: {
     environmentId: string;
     releaseId: string;
+    /** Existing `queued` row to take over (from queueDeploy); otherwise one is created. */
+    deploymentId?: string;
     trafficWeight?: number;
     createdBy?: string | null;
   },
@@ -111,16 +114,21 @@ export async function deployRelease(
   ]);
   if (!release) throw new Error("Release not found.");
   if (!env) throw new Error("Environment not found.");
-  // The project lookup and the building-row insert don't depend on each other.
+  // The project lookup and the building-row upsert don't depend on each other.
   const [project, dep] = await Promise.all([
     store.projects.findById(release.projectId),
-    store.deployments.insert({
-      environmentId: input.environmentId,
-      releaseId: input.releaseId,
-      status: "building",
-      trafficWeight: input.trafficWeight ?? 100,
-      createdBy: input.createdBy ?? null,
-    }),
+    input.deploymentId
+      ? store.deployments.update(input.deploymentId, {
+          status: "building",
+          trafficWeight: input.trafficWeight ?? 100,
+        })
+      : store.deployments.insert({
+          environmentId: input.environmentId,
+          releaseId: input.releaseId,
+          status: "building",
+          trafficWeight: input.trafficWeight ?? 100,
+          createdBy: input.createdBy ?? null,
+        }),
   ]);
 
   try {
@@ -170,11 +178,52 @@ export async function deployRelease(
  * environment. The prior image is reused (no rebuild) when it's already been built.
  */
 export async function rollbackTo(
-  input: { environmentId: string; releaseId: string; createdBy?: string | null },
+  input: {
+    environmentId: string;
+    releaseId: string;
+    deploymentId?: string;
+    createdBy?: string | null;
+  },
   deps: DeployDeps = deployDeps(),
 ): Promise<Deployment> {
   await deps.store.deployments.drainLive(input.environmentId);
   return deployRelease({ ...input, trafficWeight: 100 }, deps);
+}
+
+/**
+ * Queue a deploy (or rollback) the way the UI needs it: create the deployment row in `queued`
+ * status FIRST — so the click has an immediately-visible result — then enqueue the job that
+ * takes the row through building → live/failed. Without this, the row only appeared when the
+ * worker picked the job up, which read as "the button did nothing".
+ */
+export async function queueDeploy(
+  input: {
+    environmentId: string;
+    releaseId: string;
+    rollback?: boolean;
+    createdBy?: string | null;
+  },
+  store: DataStore = getRuntime().data,
+): Promise<Deployment> {
+  const dep = await store.deployments.insert({
+    environmentId: input.environmentId,
+    releaseId: input.releaseId,
+    status: "queued",
+    trafficWeight: 100,
+    createdBy: input.createdBy ?? null,
+  });
+  await enqueue(
+    input.rollback ? "rollback_release" : "deploy_release",
+    {
+      environmentId: input.environmentId,
+      releaseId: input.releaseId,
+      deploymentId: dep.id,
+      createdBy: input.createdBy ?? null,
+    },
+    undefined,
+    store,
+  );
+  return dep;
 }
 
 /**

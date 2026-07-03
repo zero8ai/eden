@@ -6,9 +6,12 @@
  * the deploy controller over the DeployTarget seam.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { useEffect } from "react";
 import {
   Form,
   redirect,
+  useFetcher,
+  useRevalidator,
   useSearchParams,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
@@ -44,11 +47,11 @@ import {
 import {
   createRelease,
   listDeployments,
+  queueDeploy,
   setTrafficSplit,
 } from "~/deploy/controller.server";
 import { listEnvironments, listReleases } from "~/db/queries.server";
 import { getBranchHead } from "~/github/repo.server";
-import { enqueue } from "~/jobs/queue.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.deployments";
@@ -112,14 +115,16 @@ export async function action(args: ActionFunctionArgs) {
         createdBy: auth.user.id,
       });
     } else if (intent === "deploy" || intent === "rollback") {
-      // Builds take minutes — enqueue and let the worker run it; the list shows progress.
+      // Builds take minutes. queueDeploy creates the row in `queued` status BEFORE enqueueing,
+      // so the click has an immediately visible result; the worker takes it to building → live.
       ensureWorkerStarted();
-      await enqueue(intent === "deploy" ? "deploy_release" : "rollback_release", {
+      await queueDeploy({
         environmentId: String(form.get("environmentId")),
         releaseId: String(form.get("releaseId")),
+        rollback: intent === "rollback",
         createdBy: auth.user.id,
       });
-      throw redirect(`${back}?queued=1`);
+      return { ok: true as const };
     } else if (intent === "split") {
       const environmentId = String(form.get("environmentId"));
       const weights = [...form.entries()].flatMap(([k, v]) =>
@@ -128,6 +133,7 @@ export async function action(args: ActionFunctionArgs) {
           : [],
       );
       await setTrafficSplit(environmentId, weights);
+      return { ok: true as const };
     }
   } catch (error) {
     if (error instanceof Response) throw error; // the queued redirect above
@@ -147,10 +153,23 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
   // Set when the human just merged a change on the Changes tab — the new version is now here,
   // ready to deploy. Preselect it in the environment deploy selectors below.
   const justReleased = params.get("released");
-  const justQueued = params.get("queued") === "1";
   const justReleasedId = justReleased
     ? releases.find((r) => r.version === justReleased)?.id
     : undefined;
+
+  // Live progress: while any deployment is queued/building, re-fetch every few seconds so the
+  // table walks queued → building → live/failed without a manual refresh.
+  const revalidator = useRevalidator();
+  const inFlight = envs.some(({ deployments }) =>
+    deployments.some((d) => d.status === "queued" || d.status === "building" || d.status === "pending"),
+  );
+  useEffect(() => {
+    if (!inFlight) return;
+    const timer = setInterval(() => {
+      if (revalidator.state === "idle") revalidator.revalidate();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [inFlight, revalidator]);
 
   return (
     <AppShell>
@@ -167,17 +186,6 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
         }
       />
       <AgentNav base={base} />
-
-      {justQueued && (
-        <Alert className="mb-6">
-          <AlertTitle>Deploy queued</AlertTitle>
-          <AlertDescription>
-            The build is running in the background — first builds take a few minutes.
-            Refresh to watch the deployment go building → live (failures show a
-            &ldquo;why?&rdquo; with the reason).
-          </AlertDescription>
-        </Alert>
-      )}
 
       {justReleased && (
         <Alert className="mb-6">
@@ -230,16 +238,60 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
 
       {/* Environments */}
       <div className="space-y-6">
-      {envs.map(({ env, deployments }) => (
+        {envs.map(({ env, deployments }) => (
+          <EnvironmentCard
+            key={env.id}
+            env={env}
+            deployments={deployments}
+            releases={releases}
+            justReleasedId={justReleasedId}
+          />
+        ))}
+      </div>
+    </AppShell>
+  );
+}
+
+/**
+ * One environment's deployments + controls. Fetcher forms (not navigations) so submitting
+ * doesn't reset scroll; the loader revalidates automatically and the queued row appears
+ * in place.
+ */
+function EnvironmentCard({
+  env,
+  deployments,
+  releases,
+  justReleasedId,
+}: {
+  env: { id: string; name: string };
+  deployments: Route.ComponentProps["loaderData"]["envs"][number]["deployments"];
+  releases: Route.ComponentProps["loaderData"]["releases"];
+  justReleasedId?: string;
+}) {
+  const splitFetcher = useFetcher<typeof action>();
+  const deployFetcher = useFetcher<typeof action>();
+  const busy = splitFetcher.state !== "idle" || deployFetcher.state !== "idle";
+  const error =
+    (deployFetcher.data && "error" in deployFetcher.data && deployFetcher.data.error) ||
+    (splitFetcher.data && "error" in splitFetcher.data && splitFetcher.data.error) ||
+    null;
+
+  return (
           <Card key={env.id}>
             <CardHeader className="pb-3">
               <CardTitle className="text-base capitalize">{env.name}</CardTitle>
             </CardHeader>
             <CardContent>
+            {error && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertTitle>Action failed</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
             {deployments.length === 0 ? (
               <p className="text-sm text-muted-foreground">No deployments.</p>
             ) : (
-              <Form method="post">
+              <splitFetcher.Form method="post">
                 <input type="hidden" name="intent" value="split" />
                 <input type="hidden" name="environmentId" value={env.id} />
                 <Table>
@@ -299,15 +351,15 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
                     ))}
                   </TableBody>
                 </Table>
-                <Button type="submit" size="sm" variant="secondary" className="mt-3">
-                  Save split
+                <Button type="submit" size="sm" variant="secondary" className="mt-3" disabled={busy}>
+                  {splitFetcher.state !== "idle" ? "Saving…" : "Save split"}
                 </Button>
-              </Form>
+              </splitFetcher.Form>
             )}
 
             {releases.length > 0 && (
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Form method="post" className="flex items-center gap-2">
+                <deployFetcher.Form method="post" className="flex items-center gap-2">
                   <input type="hidden" name="intent" value="deploy" />
                   <input type="hidden" name="environmentId" value={env.id} />
                   <ReleaseSelect
@@ -315,11 +367,11 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
                     defaultValue={justReleasedId ?? releases[0]?.id}
                     label="Release to deploy"
                   />
-                  <Button type="submit" size="sm">
-                    Deploy
+                  <Button type="submit" size="sm" disabled={busy}>
+                    {deployFetcher.state !== "idle" ? "Queueing…" : "Deploy"}
                   </Button>
-                </Form>
-                <Form method="post" className="flex items-center gap-2">
+                </deployFetcher.Form>
+                <deployFetcher.Form method="post" className="flex items-center gap-2">
                   <input type="hidden" name="intent" value="rollback" />
                   <input type="hidden" name="environmentId" value={env.id} />
                   <ReleaseSelect
@@ -327,17 +379,14 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
                     defaultValue={releases[0]?.id}
                     label="Release to roll back to"
                   />
-                  <Button type="submit" size="sm" variant="secondary">
+                  <Button type="submit" size="sm" variant="secondary" disabled={busy}>
                     Rollback to
                   </Button>
-                </Form>
+                </deployFetcher.Form>
               </div>
             )}
             </CardContent>
           </Card>
-        ))}
-      </div>
-    </AppShell>
   );
 }
 
@@ -376,7 +425,9 @@ function StatusBadge({ status }: { status: string }) {
       ? "default"
       : status === "failed"
         ? "destructive"
-        : "secondary";
+        : status === "queued" || status === "pending"
+          ? "outline"
+          : "secondary";
   return (
     <Badge variant={variant} className="capitalize">
       {status}

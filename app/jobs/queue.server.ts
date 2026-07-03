@@ -18,6 +18,8 @@ export type JobKind = "deploy_release" | "rollback_release";
 export interface DeployReleasePayload {
   environmentId: string;
   releaseId: string;
+  /** Pre-created `queued` deployment row the job takes over (visible in the UI immediately). */
+  deploymentId?: string;
   trafficWeight?: number;
   createdBy?: string | null;
   [key: string]: unknown;

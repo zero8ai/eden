@@ -1,0 +1,557 @@
+#!/usr/bin/env node
+/**
+ * worktree-setup.mjs
+ *
+ * Per-worktree environment wiring for eden.
+ *
+ * Usage (from main repo root):
+ *   node scripts/worktree-setup.mjs [--skip-validate] <prefix>/<kebab-name>
+ *
+ * Called by the `clawd -w <prefix>/<kebab-name>` shell function after
+ * `git worktree add` has created the worktree at
+ * `.worktrees/<prefix>-<kebab-name>`.
+ *
+ * Prefix enforces branch-type hygiene (feature, bugfix, hotfix, etc.) and
+ * maps to names like so for `feature/tanga-integration`:
+ *   - branch        : feature/tanga-integration
+ *   - worktree dir  : .worktrees/feature-tanga-integration
+ *   - session name  : tanga-integration
+ *   - postgres db   : eden_feature_tanga_integration
+ *
+ * Pass `--skip-validate` to bypass the prefix convention (e.g. for one-off
+ * non-conforming names). Derivation still works:
+ *   - branch/dir    : regen
+ *   - session name  : regen
+ *   - postgres db   : eden_regen
+ *
+ * What it does:
+ *   1. Allocates a unique (dev, splitter, instance) port triple for the
+ *      worktree, tracked in `.worktrees/_ports.json`. Starts at dev=5273,
+ *      splitter=8887, instance=3100 (main uses 5173 / 8787 / 3000).
+ *   2. Copies the main checkout's `.env.local` into the worktree, overriding
+ *      only PORT + WORKOS_REDIRECT_URI + DATABASE_URL + the port vars above.
+ *      All other keys (secrets, API keys, deploy target) are shared with main.
+ *   3. Writes a `WORKTREE.md` at the worktree root so humans can inspect the
+ *      worktree URL and ports, and a `CLAUDE.local.md` with the same context
+ *      plus a git-safety section so agents load the instructions automatically
+ *      (both are gitignored).
+ *   4. Clones the canonical Postgres dev DB into a per-worktree copy so
+ *      destructive `db:push` in the worktree doesn't affect main. All Postgres
+ *      operations run inside the `eden-postgres` docker container via
+ *      `docker exec`; no host-side psql / pg_dump / createdb is required.
+ *
+ * Idempotent: running twice on the same feature reuses the allocated ports
+ * and overwrites the generated files.
+ *
+ * No dependencies outside the Node stdlib.
+ */
+
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const PREFIXES = [
+  "feature",
+  "feat",
+  "bugfix",
+  "hotfix",
+  "chore",
+  "refactor",
+  "docs",
+  "experiment",
+  "issue",
+];
+const FEATURE_RE = new RegExp(`^(?:${PREFIXES.join("|")})\\/[a-z0-9]+(?:-[a-z0-9]+)*$`);
+
+const DEV_PORT_START = 5273; // main dev server uses vite's default 5173
+const SPLITTER_PORT_START = 8887; // main splitter uses 8787
+const INSTANCE_PORT_START = 3100; // main deployed instances allocate from 3000
+const PG_CONTAINER = "eden-postgres";
+const WORKTREE_ROOT_DIR = process.env.AGENT_WORKTREE_DIR ?? ".worktrees";
+
+function die(message) {
+  console.error(`worktree-setup: ${message}`);
+  process.exit(1);
+}
+
+/**
+ * Parse a feature argument into its derived names. Derivation is agnostic —
+ * it works whether or not the input follows the `<prefix>/<short>` convention,
+ * so the same function handles `feature/tanga-integration` or any bare name
+ * you pass through `--skip-validate`.
+ *
+ * - `full`     : input as-is — used as the git branch name
+ * - `short`    : everything after the last `/` (or the whole string if no `/`) —
+ *                passed to `claude --name` + terminal title
+ * - `dir`      : input with `/` → `-` — worktree directory + registry key
+ * - `dbSuffix` : input with `/` and `-` both → `_` — suffix appended to the
+ *                canonical DB name (e.g. `feature_tanga_integration`)
+ */
+function parseFeature(input, skipValidate) {
+  if (!skipValidate && !FEATURE_RE.test(input)) {
+    die(
+      `invalid feature name "${input}". expected <prefix>/<kebab-name> where prefix is one of: ${PREFIXES.join(", ")}. Pass --skip-validate to bypass.`,
+    );
+  }
+  const lastSlash = input.lastIndexOf("/");
+  const short = lastSlash === -1 ? input : input.slice(lastSlash + 1);
+  const dir = input.replace(/\//g, "-");
+  const dbSuffix = input.replace(/[-/]/g, "_");
+  return { full: input, short, dir, dbSuffix };
+}
+
+function repoPath(root, relPath, ...parts) {
+  return join(root, ...relPath.split(/[\\/]+/).filter(Boolean), ...parts);
+}
+
+function run(cmd, opts = {}) {
+  const [bin, ...args] = cmd;
+  const result = spawnSync(bin, args, { encoding: "utf8", ...opts });
+  if (result.error) {
+    return { code: 1, stdout: "", stderr: result.error.message };
+  }
+  return {
+    code: result.status ?? 1,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+  };
+}
+
+function getRepoRoot() {
+  const res = run(["git", "rev-parse", "--show-toplevel"]);
+  if (res.code !== 0) die(`not inside a git repository: ${res.stderr.trim()}`);
+  return res.stdout.trim();
+}
+
+/**
+ * Return the symbolic branch name that HEAD points to in the given git
+ * directory. Used to capture the base branch the worktree was created from —
+ * whatever the main checkout has checked out when this script runs is, by
+ * definition, what `git worktree add -b <feature> HEAD` branched from.
+ *
+ * Dies if HEAD is detached; we need a branch name to target with `gh pr create`.
+ */
+function getCurrentBranch(cwd) {
+  const res = run(["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"]);
+  if (res.code !== 0) die(`failed to read current branch in ${cwd}: ${res.stderr.trim()}`);
+  const branch = res.stdout.trim();
+  if (branch === "HEAD" || !branch) {
+    die(
+      `main checkout at ${cwd} is on a detached HEAD; cannot record a base branch for the worktree. ` +
+        `Check out the intended base branch (e.g. \`main\`) and re-run.`,
+    );
+  }
+  return branch;
+}
+
+function loadRegistry(path) {
+  if (!existsSync(path)) return {};
+  const text = readFileSync(path, "utf8");
+  if (!text.trim()) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    die(`failed to parse ${path}: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    die(`registry at ${path} is not a JSON object`);
+  }
+  return parsed;
+}
+
+function saveRegistry(path, registry) {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(registry, null, 2)}\n`);
+  renameSync(tmp, path);
+}
+
+/**
+ * Allocate (dev, splitter, instance) ports for a worktree.
+ *
+ * - If the feature already has an entry with all three fields set, reuse it.
+ * - Otherwise all three start at their *_PORT_START and increment in lockstep
+ *   until none collides with another registry entry.
+ */
+export function allocatePorts(registry, feature) {
+  const existing = registry[feature];
+  if (
+    existing &&
+    typeof existing.dev === "number" &&
+    typeof existing.splitter === "number" &&
+    typeof existing.instance === "number"
+  ) {
+    return existing;
+  }
+
+  const usedDev = new Set();
+  const usedSplitter = new Set();
+  const usedInstance = new Set();
+  for (const [name, entry] of Object.entries(registry)) {
+    if (name === feature) continue;
+    if (typeof entry.dev === "number") usedDev.add(entry.dev);
+    if (typeof entry.splitter === "number") usedSplitter.add(entry.splitter);
+    if (typeof entry.instance === "number") usedInstance.add(entry.instance);
+  }
+
+  let dev = DEV_PORT_START;
+  let splitter = SPLITTER_PORT_START;
+  // Deployed instances allocate upward from their base, so space worktree
+  // bases 100 apart to leave each worktree room for multiple instances.
+  let instance = INSTANCE_PORT_START;
+  while (usedDev.has(dev) || usedSplitter.has(splitter) || usedInstance.has(instance)) {
+    dev += 1;
+    splitter += 1;
+    instance += 100;
+  }
+  return { dev, splitter, instance };
+}
+
+/**
+ * Return a new postgres:// URL with the database (first path segment)
+ * replaced by `db`. Auth, host, port, and query string are preserved.
+ */
+export function withDatabaseName(url, db) {
+  if (!/^[a-z0-9_]+$/.test(db)) {
+    throw new Error(`withDatabaseName: unexpected database name "${db}"`);
+  }
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (err) {
+    throw new Error(`withDatabaseName: invalid URL "${url}": ${err.message}`);
+  }
+  if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+    throw new Error(
+      `withDatabaseName: expected postgres:// or postgresql:// URL, got "${parsed.protocol}"`,
+    );
+  }
+  parsed.pathname = `/${db}`;
+  return parsed.toString();
+}
+
+/**
+ * Extract the pieces of DATABASE_URL needed to run createdb/psql/pg_dump
+ * inside the shared Postgres container.
+ */
+export function parseDatabaseUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (err) {
+    throw new Error(`parseDatabaseUrl: invalid URL "${url}": ${err.message}`);
+  }
+  const user = decodeURIComponent(parsed.username);
+  const password = decodeURIComponent(parsed.password);
+  const db = decodeURIComponent(parsed.pathname.replace(/^\//, "").split("/")[0] ?? "");
+  if (!user || !db) {
+    throw new Error(`parseDatabaseUrl: URL "${url}" is missing a user or database name`);
+  }
+  return { user, password, db };
+}
+
+/**
+ * Apply overrides to an env file text block. For each key in `overrides`:
+ *   - if the file already has a line starting with `KEY=`, replace that line
+ *   - otherwise append `KEY=value` at the end
+ * Preserves original ordering and comments.
+ *
+ * Multi-line quoted values (e.g. GITHUB_APP_PRIVATE_KEY's PEM block) are
+ * passed through untouched: their continuation lines contain no `=` or don't
+ * match an override key, so the line-mapper leaves them alone.
+ *
+ * The output is always newline-terminated so any later append lands on its
+ * own line rather than being glued onto the last `KEY=value`.
+ */
+export function applyEnvOverrides(original, overrides) {
+  const lines = original.split("\n");
+  const applied = new Set();
+
+  const result = lines.map((line) => {
+    // Skip comments and blank lines
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("#") || trimmed === "") return line;
+    const eq = line.indexOf("=");
+    if (eq === -1) return line;
+    const key = line.slice(0, eq).trim();
+    if (key in overrides && !applied.has(key)) {
+      applied.add(key);
+      return `${key}=${overrides[key]}`;
+    }
+    return line;
+  });
+
+  const toAppend = [];
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!applied.has(key)) toAppend.push(`${key}=${value}`);
+  }
+
+  if (toAppend.length > 0) {
+    // Ensure there's a newline separating appended keys
+    const needsBlank = result.length > 0 && result[result.length - 1].trim() !== "";
+    if (needsBlank) result.push("");
+    result.push(...toAppend);
+  }
+
+  const joined = result.join("\n");
+  return joined.endsWith("\n") ? joined : `${joined}\n`;
+}
+
+/**
+ * Minimal env-file reader for looking up single keys (DATABASE_URL). Ignores
+ * comments, blank lines, and multi-line continuation lines.
+ */
+export function parseEnvFile(text) {
+  const out = {};
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"') && value.length > 1) ||
+      (value.startsWith("'") && value.endsWith("'") && value.length > 1)
+    ) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+function worktreeMdTemplate(feat, ports, targetDb, canonicalDb, baseBranch, worktreeRootDir) {
+  return `# Worktree: ${feat.full}
+
+You are inside a git worktree at \`${worktreeRootDir}/${feat.dir}\`, not the main checkout. Use the URL and ports below when starting the dev server or driving the app via browser automation.
+
+## Identity
+
+- **Branch**: \`${feat.full}\`
+- **Worktree dir**: \`${worktreeRootDir}/${feat.dir}\`
+- **Session name**: \`${feat.short}\` (terminal title / agent session name)
+- **DB**: \`${targetDb}\`
+
+## Base branch
+
+\`${baseBranch}\`
+
+This worktree's branch was created from \`${baseBranch}\`. Any PR opened from this worktree MUST target \`${baseBranch}\` as the base — not whatever the GitHub default branch happens to be.
+
+## URL & ports
+
+- **App**: http://localhost:${ports.dev}
+- Dev server port: \`${ports.dev}\` (via \`PORT\` in this worktree's \`.env.local\`)
+- Traffic splitter port: \`${ports.splitter}\` (\`EDEN_SPLITTER_PORT\`)
+- Deployed-instance base port: \`${ports.instance}\` (\`EDEN_INSTANCE_PORT\`)
+
+## How to start the dev server
+
+From the worktree root:
+\`\`\`
+npm run dev
+\`\`\`
+This uses the worktree's \`.env.local\` overrides; the server binds to port ${ports.dev}.
+
+Dependencies are already installed by \`scripts/worktree-setup.mjs\` (a local \`node_modules\` exists in the worktree) — no need to run \`npm install\` again.
+
+## Notes for agents
+
+- Do NOT edit \`.env.local\` in this worktree; it is generated by \`scripts/worktree-setup.mjs\` from the main checkout.
+- The Postgres database for this worktree is \`${targetDb}\` — a clone of \`${canonicalDb}\` taken at setup time. Destructive \`db:push\` here is safe; it does NOT affect main or other worktrees. When preparing a PR, remember migrations are diffed against the canonical \`${canonicalDb}\` DB, not this clone.
+- WorkOS login redirects to \`http://localhost:${ports.dev}/callback\`. If login fails with a redirect-URI error, that URI needs to be added to the WorkOS app's allowed redirect URIs (dashboard) — it is per-port.
+`;
+}
+
+function gitSafetySection(feat) {
+  return `
+## Git safety
+
+- You are on branch \`${feat.full}\`, not \`main\`. \`git log\`, \`git status\`, and \`git diff\` refer to this branch only — they will NOT show work from main or other worktrees.
+- Do NOT \`git checkout\` a different branch inside this worktree — it breaks the sibling checkout that owns this working directory. If you need to inspect another branch, ask the user.
+- The Postgres database is per-worktree (a clone); deployed local-docker instances and other external services may still be shared — confirm with the user before running destructive ops against them.
+- \`WORKTREE.md\`, \`CLAUDE.local.md\`, and \`.env.local\` are generated per-worktree and gitignored. Do not stage or commit them.
+`;
+}
+
+/**
+ * Verify the shared Postgres container is running before issuing any DB ops.
+ * All DB commands in this script are executed via `docker exec`, so the
+ * container must be up. Fails hard (via die) with a clear remediation message.
+ */
+function ensurePgContainerRunning() {
+  const res = run(["docker", "inspect", "-f", "{{.State.Running}}", PG_CONTAINER]);
+  if (res.code !== 0 || res.stdout.trim() !== "true") {
+    const detail = res.stderr.trim() || res.stdout.trim() || "unknown error";
+    die(
+      `${PG_CONTAINER} container is not running (${detail}). Start it with 'docker compose up -d postgres' and try again.`,
+    );
+  }
+}
+
+/**
+ * Build the argv for a `docker exec` invocation that runs a Postgres CLI tool
+ * inside the shared container with PGPASSWORD injected via `-e`.
+ */
+function dockerExecArgs(conn, cmd) {
+  return ["docker", "exec", "-e", `PGPASSWORD=${conn.password}`, PG_CONTAINER, ...cmd];
+}
+
+function quoteArgv(argv) {
+  return argv
+    .map((a) => (/[^A-Za-z0-9_\-./=]/.test(a) ? `'${a.replace(/'/g, "'\\''")}'` : a))
+    .join(" ");
+}
+
+function databaseExists(conn, name) {
+  // `name` is derived from a kebab-case feature (regex-validated) with
+  // hyphens swapped for underscores, so it matches [a-z0-9_]+ and is safe
+  // to inline into the SQL literal below.
+  const argv = dockerExecArgs(conn, [
+    "psql",
+    "-U",
+    conn.user,
+    "-d",
+    "postgres",
+    "-tAc",
+    `SELECT 1 FROM pg_database WHERE datname = '${name}'`,
+  ]);
+  const res = run(argv);
+  if (res.code !== 0) {
+    die(
+      `psql (via docker exec) failed checking for database ${name}: ${res.stderr.trim()} [cmd: ${quoteArgv(argv)}]`,
+    );
+  }
+  return res.stdout.trim() === "1";
+}
+
+function cloneDatabase(conn, canonical, target) {
+  console.log(`worktree-setup: cloning ${canonical} → ${target} (via docker exec ${PG_CONTAINER}) ...`);
+
+  const createArgv = dockerExecArgs(conn, ["createdb", "-U", conn.user, target]);
+  const create = run(createArgv);
+  if (create.code !== 0) {
+    die(`createdb ${target} (via docker exec) failed: ${create.stderr.trim()} [cmd: ${quoteArgv(createArgv)}]`);
+  }
+
+  // `docker exec` doesn't pipe between two separate exec calls, so run the
+  // entire `pg_dump | psql` pipeline in a single bash invocation inside the
+  // container. This also keeps the dump on the container's unix socket —
+  // faster than round-tripping bytes through the host.
+  const pipeCmd = `set -o pipefail; pg_dump -U ${conn.user} ${canonical} | psql -U ${conn.user} -d ${target}`;
+  const dumpArgv = dockerExecArgs(conn, ["bash", "-c", pipeCmd]);
+  const dump = run(dumpArgv);
+  if (dump.code !== 0) {
+    const dropArgv = dockerExecArgs(conn, ["dropdb", "--if-exists", "-U", conn.user, target]);
+    run(dropArgv);
+    die(
+      `pg_dump | psql (via docker exec) failed cloning ${canonical} to ${target}: ${dump.stderr.trim()} [cmd: ${quoteArgv(dumpArgv)}]`,
+    );
+  }
+}
+
+function main() {
+  const argv = process.argv.slice(2);
+  let skipValidate = false;
+  let input = "";
+  for (const arg of argv) {
+    if (arg === "--skip-validate") {
+      skipValidate = true;
+      continue;
+    }
+    if (!input) {
+      input = arg;
+      continue;
+    }
+    die(`unexpected argument "${arg}"`);
+  }
+  if (!input) {
+    die("missing feature name. usage: node scripts/worktree-setup.mjs [--skip-validate] <prefix>/<kebab-name>");
+  }
+  const feat = parseFeature(input, skipValidate);
+
+  const root = getRepoRoot();
+  const worktreePath = repoPath(root, WORKTREE_ROOT_DIR, feat.dir);
+  if (!existsSync(worktreePath)) {
+    die(`worktree not found at ${worktreePath}. create it first via \`git worktree add\`.`);
+  }
+
+  // Capture the main checkout's current branch as the base the worktree
+  // branched from. Must happen before the main checkout moves for any reason;
+  // `clawd -w` invokes us immediately after `git worktree add`, so HEAD still
+  // points at the intended base.
+  const baseBranch = getCurrentBranch(root);
+
+  // Preflight: all subsequent DB operations run via `docker exec`, so the
+  // container must be up before we get deep into the setup.
+  ensurePgContainerRunning();
+
+  const registryPath = repoPath(root, WORKTREE_ROOT_DIR, "_ports.json");
+  const registry = loadRegistry(registryPath);
+  const ports = allocatePorts(registry, feat.dir);
+  registry[feat.dir] = ports;
+  saveRegistry(registryPath, registry);
+
+  const mainEnvPath = join(root, ".env.local");
+  if (!existsSync(mainEnvPath)) die(`main .env.local not found at ${mainEnvPath}`);
+  const mainEnv = readFileSync(mainEnvPath, "utf8");
+  const mainEnvParsed = parseEnvFile(mainEnv);
+
+  const mainDbUrl = mainEnvParsed.DATABASE_URL;
+  if (!mainDbUrl) die("main .env.local is missing DATABASE_URL");
+  let conn;
+  try {
+    conn = parseDatabaseUrl(mainDbUrl);
+  } catch (err) {
+    die(err.message);
+  }
+  const canonicalDb = conn.db;
+  const targetDb = `${canonicalDb}_${feat.dbSuffix}`;
+
+  const worktreeEnv = applyEnvOverrides(mainEnv, {
+    PORT: String(ports.dev),
+    WORKOS_REDIRECT_URI: `http://localhost:${ports.dev}/callback`,
+    DATABASE_URL: withDatabaseName(mainDbUrl, targetDb),
+    EDEN_SPLITTER_PORT: String(ports.splitter),
+    EDEN_INSTANCE_PORT: String(ports.instance),
+  });
+
+  const worktreeMd = worktreeMdTemplate(feat, ports, targetDb, canonicalDb, baseBranch, WORKTREE_ROOT_DIR);
+
+  writeFileSync(join(worktreePath, ".env.local"), worktreeEnv);
+  writeFileSync(join(worktreePath, "WORKTREE.md"), worktreeMd);
+  // CLAUDE.local.md is auto-loaded by Claude Code (and gitignored), so agents
+  // pick up the worktree context + git safety rules without extra flags.
+  writeFileSync(join(worktreePath, "CLAUDE.local.md"), `${worktreeMd}${gitSafetySection(feat)}`);
+
+  console.log(`worktree-setup: Installing dependencies in ${worktreePath}...`);
+  const install = spawnSync("npm", ["install"], { cwd: worktreePath, stdio: "inherit" });
+  if (install.status !== 0) {
+    die(`npm install failed in ${worktreePath}`);
+  }
+
+  if (databaseExists(conn, targetDb)) {
+    console.log(`worktree-setup: database ${targetDb} already exists, skipping clone`);
+  } else {
+    cloneDatabase(conn, canonicalDb, targetDb);
+  }
+
+  console.log(`worktree-setup: ${feat.full}`);
+  console.log(`  branch:    ${feat.full}`);
+  console.log(`  dir:       ${feat.dir}`);
+  console.log(`  session:   ${feat.short}`);
+  console.log(`  base:      ${baseBranch}`);
+  console.log(`  dev port:  ${ports.dev}`);
+  console.log(`  app url:   http://localhost:${ports.dev}`);
+  console.log(`  splitter:  ${ports.splitter}`);
+  console.log(`  instances: ${ports.instance}+`);
+  console.log(`  db:        ${targetDb}`);
+  console.log(`  guide:     ${join(worktreePath, "WORKTREE.md")}`);
+}
+
+// Only run main() when executed directly, not when imported for tests.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

@@ -11,3 +11,8 @@
 
 # Local Docker Compose (copy of docker-compose.example.yml; tweak freely)
 docker-compose.yml
+
+# Per-feature git worktrees (scripts/clawd.sh + scripts/worktree-setup.mjs)
+/.worktrees/
+WORKTREE.md
+CLAUDE.local.md

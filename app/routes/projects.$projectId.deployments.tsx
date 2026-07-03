@@ -119,6 +119,7 @@ export async function action(args: ActionFunctionArgs) {
         releaseId: String(form.get("releaseId")),
         createdBy: auth.user.id,
       });
+      throw redirect(`${back}?queued=1`);
     } else if (intent === "split") {
       const environmentId = String(form.get("environmentId"));
       const weights = [...form.entries()].flatMap(([k, v]) =>
@@ -129,6 +130,7 @@ export async function action(args: ActionFunctionArgs) {
       await setTrafficSplit(environmentId, weights);
     }
   } catch (error) {
+    if (error instanceof Response) throw error; // the queued redirect above
     return { error: (error as Error).message };
   }
   throw redirect(back);
@@ -145,6 +147,7 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
   // Set when the human just merged a change on the Changes tab — the new version is now here,
   // ready to deploy. Preselect it in the environment deploy selectors below.
   const justReleased = params.get("released");
+  const justQueued = params.get("queued") === "1";
   const justReleasedId = justReleased
     ? releases.find((r) => r.version === justReleased)?.id
     : undefined;
@@ -164,6 +167,17 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
         }
       />
       <AgentNav base={base} />
+
+      {justQueued && (
+        <Alert className="mb-6">
+          <AlertTitle>Deploy queued</AlertTitle>
+          <AlertDescription>
+            The build is running in the background — first builds take a few minutes.
+            Refresh to watch the deployment go building → live (failures show a
+            &ldquo;why?&rdquo; with the reason).
+          </AlertDescription>
+        </Alert>
+      )}
 
       {justReleased && (
         <Alert className="mb-6">

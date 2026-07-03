@@ -480,6 +480,13 @@ two-source-of-truth reconciliation problem.
 - **Managed multi-tenant security.** Isolation guarantees for customer agents (which run
   model-generated code in sandboxes) in shared Eden infra.
 - **Naming/branding & licensing** of the OSS core vs. managed service (open-core boundaries).
+- **REVIEW: model API key placement (from first dogfooding, 2026-07-03).** Today the model key
+  (e.g. `OPENROUTER_API_KEY`) is set as a per-project secret, but it's a *prerequisite for every
+  agent* — per-agent placement feels wrong and repetitive. Likely resolution: a workspace-level
+  "model provider" configuration (org settings) that deploys inherit as env automatically, with
+  per-project/per-environment secrets as an override. In managed mode this collapses into the
+  ModelGateway (Eden owns the keys; §8) — so the workspace-level key is primarily an OSS/BYO
+  concern. Decide before onboarding a second real agent.
 
 ---
 

@@ -15,10 +15,12 @@ import {
   Link,
   redirect,
   useNavigation,
+  useSubmit,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { ConfirmDialog } from "~/components/confirm-dialog";
 import { AgentNav, AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -148,6 +150,7 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
   const { project, drafts, changes } = loaderData;
   const base = `/projects/${project.id}`;
   const navigation = useNavigation();
+  const submit = useSubmit();
   // One action serves several forms — identify WHICH submission is in flight from its form
   // data, so only the clicked button changes label (the rest just disable).
   const busy = navigation.state !== "idle" && navigation.formData != null;
@@ -188,11 +191,6 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
             </p>
           ) : (
             <>
-              {/* Standalone discard form; per-row buttons reference it via form= and carry
-                  the path as their own name/value (only the submitter's pair is sent). */}
-              <Form method="post" id="discard-form">
-                <input type="hidden" name="intent" value="discard" />
-              </Form>
               <Form method="post">
                 <input type="hidden" name="intent" value="publish" />
                 <ul className="divide-y rounded-lg border text-sm">
@@ -215,17 +213,19 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
                       <span className="shrink-0 text-xs text-muted-foreground">
                         {new Date(d.updatedAt).toLocaleString()}
                       </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        type="submit"
-                        form="discard-form"
-                        name="path"
-                        value={d.path}
-                        disabled={busy}
-                      >
-                        Discard
-                      </Button>
+                      <ConfirmDialog
+                        trigger={
+                          <Button variant="ghost" size="sm" type="button" disabled={busy}>
+                            Discard
+                          </Button>
+                        }
+                        title={`Discard staged change to ${d.path}?`}
+                        description="The unpublished edit is deleted. The file itself is untouched — only the staged draft is lost."
+                        confirmLabel="Discard"
+                        onConfirm={() =>
+                          submit({ intent: "discard", path: d.path }, { method: "post" })
+                        }
+                      />
                     </li>
                   ))}
                 </ul>
@@ -286,6 +286,7 @@ function ChangeCard({
   /** THIS change is the one being deleted — show the progress label. */
   deleting: boolean;
 }) {
+  const submit = useSubmit();
   const conflicted = change.mergeable === false;
   const checking = change.mergeable === null;
 
@@ -308,31 +309,32 @@ function ChangeCard({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <MergeabilityBadge conflicted={conflicted} checking={checking} />
-            <Form
-              method="post"
-              onSubmit={(e) => {
-                if (
-                  !window.confirm(
-                    `Delete change request #${change.number}? It will be closed without merging.`,
-                  )
-                ) {
-                  e.preventDefault();
-                }
-              }}
-            >
-              <input type="hidden" name="intent" value="delete" />
-              <input type="hidden" name="pullNumber" value={change.number} />
-              <input type="hidden" name="branch" value={change.branch} />
-              <Button
-                type="submit"
-                size="sm"
-                variant="ghost"
-                className="text-destructive hover:text-destructive"
-                disabled={busy}
-              >
-                {deleting ? "Deleting…" : "Delete"}
-              </Button>
-            </Form>
+            <ConfirmDialog
+              trigger={
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive"
+                  disabled={busy}
+                >
+                  {deleting ? "Deleting…" : "Delete"}
+                </Button>
+              }
+              title={`Delete change request #${change.number}?`}
+              description="It will be closed without merging and its staged edits discarded. GitHub keeps the closed change request, so this can be restored there if needed."
+              confirmLabel="Delete"
+              onConfirm={() =>
+                submit(
+                  {
+                    intent: "delete",
+                    pullNumber: String(change.number),
+                    branch: change.branch,
+                  },
+                  { method: "post" },
+                )
+              }
+            />
             <Form method="post">
               <input type="hidden" name="intent" value="merge" />
               <input type="hidden" name="pullNumber" value={change.number} />

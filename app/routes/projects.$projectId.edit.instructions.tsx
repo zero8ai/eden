@@ -6,21 +6,22 @@
  * the PR). The loader overlays any staged draft over the repo content.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { useState } from "react";
 import {
-  Form,
   Link,
   data,
   redirect,
   useNavigation,
+  useSubmit,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { CodeEditor } from "~/components/code-editor";
 import { FileStateBanner } from "~/components/file-state-banner";
 import { AgentNav, AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
-import { Textarea } from "~/components/ui/textarea";
 import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
 import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
@@ -108,7 +109,9 @@ export default function EditInstructions({
 }: Route.ComponentProps) {
   const { project, instructions, source, change } = loaderData;
   const navigation = useNavigation();
-  const saving = navigation.state === "submitting";
+  const submit = useSubmit();
+  const saving = navigation.state !== "idle";
+  const [value, setValue] = useState(instructions);
 
   const base = `/projects/${project.id}`;
 
@@ -134,22 +137,18 @@ export default function EditInstructions({
         base={base}
       />
 
-      <Form method="post">
-        <Textarea
-          name="content"
-          defaultValue={instructions}
-          spellCheck={false}
-          className="min-h-[28rem] font-mono text-sm"
-        />
-        <div className="mt-4 flex items-center gap-3">
-          <Button type="submit" disabled={saving}>
-            {saving ? "Saving…" : "Save"}
-          </Button>
-          <Button variant="ghost" asChild>
-            <Link to={base}>Cancel</Link>
-          </Button>
-        </div>
-      </Form>
+      <CodeEditor path={INSTRUCTIONS_PATH} value={value} onChange={setValue} />
+      <div className="mt-4 flex items-center gap-3">
+        <Button
+          onClick={() => submit({ content: value }, { method: "post" })}
+          disabled={saving}
+        >
+          {saving ? "Saving…" : "Save"}
+        </Button>
+        <Button variant="ghost" asChild>
+          <Link to={base}>Cancel</Link>
+        </Button>
+      </div>
     </AppShell>
   );
 }

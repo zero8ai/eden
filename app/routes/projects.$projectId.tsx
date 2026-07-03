@@ -7,6 +7,7 @@
 import { authkitLoader } from "@workos-inc/authkit-react-router";
 import { Link, data, type LoaderFunctionArgs } from "react-router";
 
+import { NewResourceDialog } from "~/components/new-resource-dialog";
 import { AgentNav, AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -21,6 +22,7 @@ import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { buildAgentConfig } from "~/eve/parse";
+import { RESOURCE_KINDS } from "~/eve/templates";
 import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
 import { fetchAgentSource } from "~/github/repo.server";
 import type { Project } from "~/db/queries.server";
@@ -239,13 +241,7 @@ function AgentSurface({
                     <CardTitle className="text-base">{cat.label}</CardTitle>
                     <Badge variant="secondary">{items.length}</Badge>
                   </div>
-                  <Button variant="ghost" size="sm" asChild>
-                    <Link
-                      to={`${base}/edit?path=${encodeURIComponent(`agent/${cat.dir}/`)}`}
-                    >
-                      New
-                    </Link>
-                  </Button>
+                  <NewResourceDialog kind={RESOURCE_KINDS[cat.key]} base={base} />
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {CATEGORY_HINTS[cat.key]}

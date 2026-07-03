@@ -1,32 +1,32 @@
 /**
- * Generic file editor (Author pillar, M1).
+ * File editor (Author pillar, M1) — CodeMirror-backed, for any file under `agent/`.
  *
- * Edits (or creates) any file under `agent/` — tools, channels, schedules, connections,
- * subagents, or a raw config file. Save STAGES a draft (refresh-proof, no git write); the
- * Changes tab publishes staged drafts as one PR (PRD §7.3). The target file is the `?path=`
- * query param; a missing file is treated as a new file to create.
- *
- * This is the general-purpose companion to the labeled instructions editor: the read-only
- * agent view links every file resource here, and a "New file" form creates fresh ones.
+ * Reached from a resource link or the "New <kind>" dialog on the Overview. A file that exists
+ * nowhere yet (no repo content, no draft, no pending change) starts from its category's
+ * starter template (~/eve/templates). Save formats code files with Prettier, then STAGES a
+ * draft (refresh-proof, no git write); the Changes tab publishes staged drafts as one PR
+ * (PRD §7.3).
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { useState } from "react";
 import {
-  Form,
   Link,
   redirect,
   useNavigation,
+  useSubmit,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { CodeEditor } from "~/components/code-editor";
+import { FileStateBanner } from "~/components/file-state-banner";
 import { AgentNav, AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { Input } from "~/components/ui/input";
-import { Textarea } from "~/components/ui/textarea";
-import { FileStateBanner } from "~/components/file-state-banner";
 import { resolveFileView, stageDraft, type FileView } from "~/drafts/drafts.server";
+import { RESOURCE_KINDS } from "~/eve/templates";
+import { formatSource, isFormattable } from "~/lib/format";
 import {
   normalizeAgentPath,
   requireProject,
@@ -37,11 +37,22 @@ import type { Route } from "./+types/projects.$projectId.edit";
 
 interface FileEditView {
   project: ConnectedProject;
-  path: string | null;
+  path: string;
   content: string;
+  /** File exists on the default branch. */
   exists: boolean;
+  /** Content came from a category starter template (brand-new resource). */
+  isNew: boolean;
   source: FileView["source"];
   change: FileView["change"];
+}
+
+/** Starter content for a brand-new file, by its category directory (null if none applies). */
+function templateFor(path: string): string | null {
+  const m = path.match(/^agent\/([^/]+)\/([^/]+)\.[a-z]+$/);
+  if (!m) return null;
+  const kind = Object.values(RESOURCE_KINDS).find((k) => k.key === m[1]);
+  return kind ? kind.template(m[2]) : null;
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -61,24 +72,17 @@ export const loader = (args: LoaderFunctionArgs) =>
 
       const raw = new URL(args.request.url).searchParams.get("path") ?? "";
       const path = normalizeAgentPath(raw);
-      if (!path) {
-        return {
-          project,
-          path: null,
-          content: "",
-          exists: false,
-          source: "repo" as const,
-          change: null,
-        };
-      }
+      // No (valid) target — nothing to edit; back to the overview, where creation lives.
+      if (!path) throw redirect(`/projects/${project.id}`);
 
-      // Show the latest intended value: staged draft → open change request → repo.
       const view = await resolveFileView(project, path);
+      const template = view.content === null ? templateFor(path) : null;
       return {
         project,
         path,
-        content: view.content ?? "",
+        content: view.content ?? template ?? "",
         exists: view.existsInRepo,
+        isNew: template !== null,
         source: view.source,
         change: view.change,
       };
@@ -124,81 +128,97 @@ export function meta() {
 }
 
 export default function EditFile({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, path, content, exists, source, change } = loaderData;
+  // Keyed by path so switching files remounts the editor with fresh state.
+  return <Editor key={loaderData.path} loaderData={loaderData} actionData={actionData} />;
+}
+
+function Editor({
+  loaderData,
+  actionData,
+}: Pick<Route.ComponentProps, "loaderData" | "actionData">) {
+  const { project, path, content, exists, isNew } = loaderData;
   const navigation = useNavigation();
-  const saving = navigation.state === "submitting";
+  const submit = useSubmit();
+  const saving = navigation.state !== "idle";
+
+  const [value, setValue] = useState(content);
+  const [formatError, setFormatError] = useState<string | null>(null);
+
+  // Save = auto-format (code files; falls back to as-typed on syntax errors, which the lint
+  // gutter already flags), then stage the draft.
+  const save = async () => {
+    let out = value;
+    if (isFormattable(path)) {
+      try {
+        out = await formatSource(path, value);
+        setValue(out);
+        setFormatError(null);
+      } catch {
+        // unformattable (syntax error) — stage the draft as-is; drafts are WIP
+      }
+    }
+    submit({ path, content: out }, { method: "post" });
+  };
+
+  const formatNow = async () => {
+    try {
+      setValue(await formatSource(path, value));
+      setFormatError(null);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setFormatError(msg.split("\n")[0]);
+    }
+  };
 
   const base = `/projects/${project.id}`;
 
   return (
     <AppShell>
-      {!path ? (
-        <>
-          <PageHeader
-            title="New file"
-            description={
-              <>
-                Enter a path under <span className="font-mono">agent/</span> to
-                create or open a file.
-              </>
-            }
-          />
-          <AgentNav base={base} />
-          <Form method="get" className="flex max-w-2xl gap-2">
-            <Input
-              name="path"
-              defaultValue="agent/tools/"
-              spellCheck={false}
-              className="flex-1 font-mono text-sm"
-            />
-            <Button type="submit">Open</Button>
-          </Form>
-        </>
-      ) : (
-        <>
-          <PageHeader
-            title={
-              <span className="flex items-center gap-3">
-                <span className="font-mono text-xl">{path}</span>
-                {!exists && <Badge variant="secondary">new</Badge>}
-              </span>
-            }
-            description="Saving stages the change — publish staged changes as one pull request from the Changes tab."
-          />
-          <AgentNav base={base} />
+      <PageHeader
+        title={
+          <span className="flex items-center gap-3">
+            <span className="font-mono text-xl">{path}</span>
+            {!exists && <Badge variant="secondary">new</Badge>}
+          </span>
+        }
+        description={
+          isNew
+            ? "Starting from a template — edit it, then Save to stage the new file."
+            : "Saving stages the change — publish staged changes as one pull request from the Changes tab."
+        }
+      />
+      <AgentNav base={base} />
 
-          {actionData?.error && (
-            <Alert variant="destructive" className="mb-6">
-              <AlertTitle>Couldn&rsquo;t stage the change</AlertTitle>
-              <AlertDescription>{actionData.error}</AlertDescription>
-            </Alert>
-          )}
-          <FileStateBanner
-            saved={!!actionData?.ok}
-            source={source}
-            change={change}
-            base={base}
-          />
-
-          <Form method="post">
-            <input type="hidden" name="path" value={path} />
-            <Textarea
-              name="content"
-              defaultValue={content}
-              spellCheck={false}
-              className="min-h-[28rem] font-mono text-sm"
-            />
-            <div className="mt-4 flex items-center gap-3">
-              <Button type="submit" disabled={saving}>
-                {saving ? "Saving…" : "Save"}
-              </Button>
-              <Button variant="ghost" asChild>
-                <Link to={base}>Cancel</Link>
-              </Button>
-            </div>
-          </Form>
-        </>
+      {actionData?.error && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertTitle>Couldn&rsquo;t stage the change</AlertTitle>
+          <AlertDescription>{actionData.error}</AlertDescription>
+        </Alert>
       )}
+      <FileStateBanner
+        saved={!!actionData?.ok}
+        source={loaderData.source}
+        change={loaderData.change}
+        base={base}
+      />
+
+      <CodeEditor path={path} value={value} onChange={setValue} />
+      {formatError && (
+        <p className="mt-2 text-xs text-destructive">Can&rsquo;t format: {formatError}</p>
+      )}
+      <div className="mt-4 flex items-center gap-3">
+        <Button onClick={save} disabled={saving}>
+          {saving ? "Saving…" : "Save"}
+        </Button>
+        {isFormattable(path) && (
+          <Button variant="outline" onClick={formatNow} disabled={saving}>
+            Format
+          </Button>
+        )}
+        <Button variant="ghost" asChild>
+          <Link to={base}>Cancel</Link>
+        </Button>
+      </div>
     </AppShell>
   );
 }

@@ -16,6 +16,10 @@ export default [
     "projects/:projectId/deployments",
     "routes/projects.$projectId.deployments.tsx",
   ),
+  route(
+    "projects/:projectId/playground",
+    "routes/projects.$projectId.playground.tsx",
+  ),
   route("projects/:projectId/runs", "routes/projects.$projectId.runs.tsx"),
   route(
     "projects/:projectId/runs/:runId",

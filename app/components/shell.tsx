@@ -144,6 +144,7 @@ export function AgentNav({ base }: { base: string }) {
     { to: base, label: "Overview", end: true },
     { to: `${base}/changes`, label: "Changes" },
     { to: `${base}/deployments`, label: "Deployments" },
+    { to: `${base}/playground`, label: "Playground" },
     { to: `${base}/runs`, label: "Runs" },
     { to: `${base}/secrets`, label: "Secrets" },
     { to: `${base}/assistant`, label: "Assistant" },

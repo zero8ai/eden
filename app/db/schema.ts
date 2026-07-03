@@ -9,6 +9,9 @@
  *    only pointers (repo coordinates, git SHAs, image refs) and operational state.
  *  - D9: a Release = an immutable merge-commit + content-addressed image. Deployments bind a
  *    release to an environment with a traffic weight for the multi-version splitter (D9/D10).
+ *
+ * IDs: existing tables keep their uuid defaults (no migration); NEW tables take
+ * `text("id").primaryKey().$defaultFn(newId)` with `newId` from ~/lib/id — see that module.
  */
 import { sql } from "drizzle-orm";
 import {

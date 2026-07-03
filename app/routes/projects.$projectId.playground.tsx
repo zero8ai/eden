@@ -27,6 +27,7 @@ import {
 } from "~/components/ui/select";
 import { Textarea } from "~/components/ui/textarea";
 import { listDeployments } from "~/deploy/controller.server";
+import { newId } from "~/lib/id";
 import { listEnvironments } from "~/db/queries.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.playground";
@@ -144,7 +145,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     if ("error" in data && data.error) {
       setEntries((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), role: "assistant", text: "", error: data.error },
+        { id: newId(), role: "assistant", text: "", error: data.error },
       ]);
       return;
     }
@@ -153,7 +154,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       setEntries((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: newId(),
           role: "assistant",
           text: r.reply ?? "",
           structured: r.replyIsStructured,
@@ -221,7 +222,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
                   if (message) {
                     setEntries((prev) => [
                       ...prev,
-                      { id: crypto.randomUUID(), role: "user", text: message },
+                      { id: newId(), role: "user", text: message },
                     ]);
                   }
                 }}

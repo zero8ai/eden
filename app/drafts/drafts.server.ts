@@ -13,6 +13,7 @@ import {
   proposeChange,
   type ProposedChange,
 } from "~/github/write.server";
+import { newId } from "~/lib/id";
 import { getRuntime } from "~/seams/index.server";
 
 export interface StageInput {
@@ -167,7 +168,7 @@ export async function publishDrafts(
     { owner: input.project.repoOwner, repo: input.project.repoName },
     {
       base: input.project.defaultBranch,
-      branch: `eden/publish-${Date.now().toString(36)}`,
+      branch: `eden/publish-${newId()}`,
       files: selected.map((d) => ({ path: d.path, content: d.content })),
       title,
       body,

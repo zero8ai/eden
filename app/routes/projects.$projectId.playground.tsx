@@ -92,6 +92,7 @@ export async function action(args: ActionFunctionArgs) {
   const form = await args.request.formData();
   const deploymentId = String(form.get("deploymentId") ?? "");
   const message = String(form.get("message") ?? "").trim();
+  const sessionId = String(form.get("sessionId") ?? "") || null;
   const continuationToken = String(form.get("continuationToken") ?? "") || null;
   if (!message) return { error: "Type a message first." } as const;
 
@@ -104,7 +105,7 @@ export async function action(args: ActionFunctionArgs) {
     } as const;
   }
 
-  const result = await sendTurn({ baseUrl: target.url, message, continuationToken });
+  const result = await sendTurn({ baseUrl: target.url, message, sessionId, continuationToken });
   return { result, version: target.version } as const;
 }
 
@@ -119,6 +120,7 @@ interface ChatEntry {
   text: string;
   structured?: boolean;
   version?: string;
+  modelId?: string | null;
   steps?: TurnResult["steps"];
   error?: string | null;
 }
@@ -130,7 +132,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const busy = fetcher.state !== "idle";
 
   const [entries, setEntries] = useState<ChatEntry[]>([]);
-  const [continuation, setContinuation] = useState<string>("");
+  // Session continuity: follow-up turns POST to the same eve session with its token.
+  const [session, setSession] = useState<{ id: string; token: string } | null>(null);
   const lastHandled = useRef<unknown>(null);
 
   // Append the assistant reply when a turn returns (once per response object).
@@ -155,11 +158,14 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           text: r.reply ?? "",
           structured: r.replyIsStructured,
           version: data.version,
+          modelId: r.modelId,
           steps: r.steps,
           error: r.error,
         },
       ]);
-      setContinuation(r.continuationToken ?? "");
+      if (r.sessionId && r.continuationToken) {
+        setSession({ id: r.sessionId, token: r.continuationToken });
+      }
     }
   }, [fetcher.data, fetcher.state]);
 
@@ -168,6 +174,20 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       <PageHeader
         title="Playground"
         description="Talk to a live deployment of this agent. Each reply is tagged with the version that produced it."
+        actions={
+          entries.length > 0 ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setEntries([]);
+                setSession(null);
+              }}
+            >
+              New conversation
+            </Button>
+          ) : undefined
+        }
       />
       <AgentNav base={base} />
 
@@ -206,7 +226,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
                   }
                 }}
               >
-                <input type="hidden" name="continuationToken" value={continuation} />
+                <input type="hidden" name="sessionId" value={session?.id ?? ""} />
+                <input type="hidden" name="continuationToken" value={session?.token ?? ""} />
                 <div className="flex flex-wrap items-end gap-3">
                   <div className="min-w-0 flex-1">
                     <Textarea
@@ -256,9 +277,16 @@ function ChatBubble({ entry }: { entry: ChatEntry }) {
   return (
     <div className="max-w-[85%] rounded-xl border bg-card px-4 py-2.5 text-sm">
       {entry.version && (
-        <Badge variant="secondary" className="mb-1.5 text-xs">
-          {entry.version}
-        </Badge>
+        <span className="mb-1.5 flex items-center gap-1.5">
+          <Badge variant="secondary" className="text-xs">
+            {entry.version}
+          </Badge>
+          {entry.modelId && (
+            <span className="font-mono text-xs text-muted-foreground">
+              {entry.modelId}
+            </span>
+          )}
+        </span>
       )}
       {entry.error ? (
         <p className="text-destructive">{entry.error}</p>
@@ -279,7 +307,10 @@ function ChatBubble({ entry }: { entry: ChatEntry }) {
               <li key={`${entry.id}-step-${s.type}-${i}`} className="font-mono">
                 {s.type}
                 {s.name ? ` · ${s.name}` : ""}
-                {s.durationMs != null ? ` · ${s.durationMs}ms` : ""}
+                {s.durationMs != null ? ` · ${(s.durationMs / 1000).toFixed(1)}s` : ""}
+                {s.tokensIn != null || s.tokensOut != null
+                  ? ` · ${s.tokensIn ?? 0} in / ${s.tokensOut ?? 0} out tok`
+                  : ""}
                 {s.isError ? " · failed" : ""}
               </li>
             ))}

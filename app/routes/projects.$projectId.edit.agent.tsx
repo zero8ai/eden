@@ -7,6 +7,7 @@
  * The loader overlays a staged draft so the form reflects unpublished edits.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { useState } from "react";
 import {
   Form,
   Link,
@@ -20,6 +21,14 @@ import { AgentNav, AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { Label } from "~/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import { Input } from "~/components/ui/input";
 import { FileStateBanner } from "~/components/file-state-banner";
 import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import { readModel, scaffoldAgentModule, setModel, SUGGESTED_MODELS } from "~/eve/agentModule";
@@ -107,6 +116,7 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
   const knownSelected = SUGGESTED_MODELS.includes(
     current as (typeof SUGGESTED_MODELS)[number],
   );
+  const [selected, setSelected] = useState(knownSelected ? current : "__custom");
 
   const base = `/projects/${project.id}`;
 
@@ -148,33 +158,28 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
       <Form method="post" className="max-w-xl space-y-4">
         <div className="space-y-1.5">
           <Label htmlFor="model">Model</Label>
-          <select
-            id="model"
-            name="model"
-            defaultValue={knownSelected ? current : "__custom"}
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            onChange={(e) => {
-              const custom = e.currentTarget.form?.elements.namedItem(
-                "customModel",
-              ) as HTMLInputElement | null;
-              if (custom) custom.hidden = e.currentTarget.value !== "__custom";
-            }}
-          >
-            {SUGGESTED_MODELS.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-            <option value="__custom">Custom…</option>
-          </select>
-          <input
-            name="customModel"
-            aria-label="Custom model id"
-            defaultValue={knownSelected ? "" : current}
-            hidden={knownSelected}
-            placeholder="provider/model-id"
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 font-mono text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          />
+          <Select name="model" value={selected} onValueChange={setSelected}>
+            <SelectTrigger id="model" className="w-full">
+              <SelectValue placeholder="Pick a model" />
+            </SelectTrigger>
+            <SelectContent>
+              {SUGGESTED_MODELS.map((m) => (
+                <SelectItem key={m} value={m}>
+                  {m}
+                </SelectItem>
+              ))}
+              <SelectItem value="__custom">Custom…</SelectItem>
+            </SelectContent>
+          </Select>
+          {selected === "__custom" && (
+            <Input
+              name="customModel"
+              aria-label="Custom model id"
+              defaultValue={knownSelected ? "" : current}
+              placeholder="provider/model-id"
+              className="font-mono"
+            />
+          )}
           <p className="text-xs text-muted-foreground">
             Provider-prefixed, e.g.{" "}
             <span className="font-mono">anthropic/claude-sonnet-5</span>.

@@ -24,6 +24,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import {
   listEnvironments,
   type Environment,
   type Project,
@@ -155,19 +162,19 @@ export default function Secrets({ loaderData, actionData }: Route.ComponentProps
       {/* Scope selector */}
       <Form method="get" className="flex items-center gap-2">
         <Label htmlFor="secret-scope">Scope</Label>
-        <select
-          id="secret-scope"
-          name="env"
-          defaultValue={envValue}
-          className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <option value={ALL}>All environments</option>
-          {envs.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.name}
-            </option>
-          ))}
-        </select>
+        <Select name="env" defaultValue={envValue}>
+          <SelectTrigger id="secret-scope" className="min-w-44">
+            <SelectValue placeholder="Scope" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All environments</SelectItem>
+            {envs.map((e) => (
+              <SelectItem key={e.id} value={e.id}>
+                {e.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Button type="submit" variant="secondary">
           Switch
         </Button>

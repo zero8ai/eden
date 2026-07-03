@@ -26,6 +26,13 @@ import {
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -50,8 +57,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         { user: auth.user, organizationId: auth.organizationId, role: auth.role },
         args.params.projectId,
       );
-      const releaseId =
-        new URL(args.request.url).searchParams.get("release") || undefined;
+      const raw = new URL(args.request.url).searchParams.get("release");
+      // "all" is the picker's explicit no-filter sentinel (Radix items can't be empty).
+      const releaseId = raw && raw !== "all" ? raw : undefined;
       const [runsList, releasesList, tokens] = await Promise.all([
         listRuns(project.id, releaseId),
         listReleases(project.id),
@@ -117,19 +125,19 @@ export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
       <Form method="get" className="mb-6 flex items-end gap-2">
         <div className="grid gap-1.5">
           <Label htmlFor="release">Version</Label>
-          <select
-            id="release"
-            name="release"
-            defaultValue={releaseId ?? ""}
-            className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <option value="">All</option>
-            {releases.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.version}
-              </option>
-            ))}
-          </select>
+          <Select name="release" defaultValue={releaseId ?? "all"}>
+            <SelectTrigger id="release" className="min-w-32">
+              <SelectValue placeholder="All" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              {releases.map((r) => (
+                <SelectItem key={r.id} value={r.id}>
+                  {r.version}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <Button type="submit" variant="secondary">
           Filter

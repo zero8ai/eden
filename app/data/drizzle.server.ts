@@ -116,6 +116,16 @@ export const drizzleDataStore: DataStore = {
           ),
         );
     },
+    async deleteFailed(environmentId) {
+      await db
+        .delete(deployments)
+        .where(
+          and(
+            eq(deployments.environmentId, environmentId),
+            eq(deployments.status, "failed"),
+          ),
+        );
+    },
     async setWeights(environmentId, weights) {
       // One transaction so a crash mid-way can't leave a partial split; the per-row
       // updates hit distinct rows and are order-independent, so they run concurrently
@@ -239,6 +249,14 @@ export const drizzleDataStore: DataStore = {
         .update(jobs)
         .set({ ...patch, updatedAt: new Date() })
         .where(eq(jobs.id, id));
+    },
+    async requeueRunning() {
+      const rows = await db
+        .update(jobs)
+        .set({ status: "queued", runAt: new Date(), updatedAt: new Date() })
+        .where(eq(jobs.status, "running"))
+        .returning({ id: jobs.id });
+      return rows.length;
     },
     async statsByStatus() {
       const rows = await db

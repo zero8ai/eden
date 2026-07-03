@@ -107,6 +107,29 @@ describe("queueDeploy", () => {
   });
 });
 
+describe("redeploying the same release", () => {
+  it("supersedes the previous live instance (stopped, weight 0) — never two live copies", async () => {
+    const release = await createRelease({ projectId: PROJECT, gitSha: "8".repeat(40) }, store);
+    const deps = {
+      store,
+      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }),
+      secrets: fakeSecrets(),
+    };
+    const first = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+    expect(first.status).toBe("live");
+
+    const second = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+    expect(second.status).toBe("live");
+
+    const all = await listDeployments(ENV, store);
+    const oldRow = all.find((d) => d.id === first.id);
+    expect(oldRow?.status).toBe("stopped");
+    expect(oldRow?.trafficWeight).toBe(0);
+    // Exactly one live copy of the release remains.
+    expect(all.filter((d) => d.status === "live")).toHaveLength(1);
+  });
+});
+
 describe("rollbackTo", () => {
   it("drains live deployments and redeploys the prior release at 100", async () => {
     const rA = await createRelease({ projectId: PROJECT, gitSha: "1".repeat(40) }, store);

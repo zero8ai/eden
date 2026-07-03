@@ -7,6 +7,7 @@
  * resource use predictable on a dev box.
  */
 import { deployRelease, rollbackTo } from "~/deploy/controller.server";
+import { getRuntime } from "~/seams/index.server";
 import type { DeployReleasePayload, Job } from "./queue.server";
 import { claimNext, markDone, markFailed } from "./queue.server";
 
@@ -55,6 +56,16 @@ async function tick(): Promise<void> {
 }
 
 function startWorker(): { stop: () => void } {
+  // Boot recovery: a process restart (dev HMR, redeploy, crash) kills in-flight jobs, leaving
+  // them stranded as `running` — and their deployment rows stuck at queued/building forever.
+  // This worker is the only one per box (ARCH §2), so requeueing all `running` jobs is safe.
+  getRuntime()
+    .data.jobs.requeueRunning()
+    .then((n) => {
+      if (n > 0) console.log(`[jobs] requeued ${n} job(s) stranded by a restart`);
+    })
+    .catch((err) => console.error("[jobs] boot recovery failed:", err));
+
   let running = false;
   const interval = setInterval(async () => {
     if (running) return; // don't stack ticks behind a long build

@@ -176,6 +176,13 @@ export function makeFakeStore(): FakeStore {
           }
         }
       },
+      async deleteFailed(environmentId) {
+        for (const [did, d] of deployments) {
+          if (d.environmentId === environmentId && d.status === "failed") {
+            deployments.delete(did);
+          }
+        }
+      },
       async setWeights(environmentId, weights) {
         for (const w of weights) {
           const d = deployments.get(w.deploymentId);
@@ -274,6 +281,16 @@ export function makeFakeStore(): FakeStore {
       async update(jid, patch) {
         const cur = jobs.get(jid);
         if (cur) jobs.set(jid, { ...cur, ...patch, updatedAt: new Date(++seq) });
+      },
+      async requeueRunning() {
+        let n = 0;
+        for (const [jid, j] of jobs) {
+          if (j.status === "running") {
+            jobs.set(jid, { ...j, status: "queued", runAt: new Date(0) });
+            n++;
+          }
+        }
+        return n;
       },
       async statsByStatus() {
         const out: Record<string, number> = {};

@@ -45,6 +45,7 @@ import {
   TooltipTrigger,
 } from "~/components/ui/tooltip";
 import {
+  clearFailedDeployments,
   createRelease,
   listDeployments,
   queueDeploy,
@@ -133,6 +134,9 @@ export async function action(args: ActionFunctionArgs) {
           : [],
       );
       await setTrafficSplit(environmentId, weights);
+      return { ok: true as const };
+    } else if (intent === "clear-failed") {
+      await clearFailedDeployments(String(form.get("environmentId")));
       return { ok: true as const };
     }
   } catch (error) {
@@ -270,6 +274,7 @@ function EnvironmentCard({
 }) {
   const splitFetcher = useFetcher<typeof action>();
   const deployFetcher = useFetcher<typeof action>();
+  const failedCount = deployments.filter((d) => d.status === "failed").length;
   const busy = splitFetcher.state !== "idle" || deployFetcher.state !== "idle";
   const error =
     (deployFetcher.data && "error" in deployFetcher.data && deployFetcher.data.error) ||
@@ -279,7 +284,18 @@ function EnvironmentCard({
   return (
           <Card key={env.id}>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base capitalize">{env.name}</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base capitalize">{env.name}</CardTitle>
+                {failedCount > 0 && (
+                  <deployFetcher.Form method="post">
+                    <input type="hidden" name="intent" value="clear-failed" />
+                    <input type="hidden" name="environmentId" value={env.id} />
+                    <Button type="submit" size="sm" variant="ghost" disabled={busy}>
+                      Clear {failedCount} failed
+                    </Button>
+                  </deployFetcher.Form>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
             {error && (

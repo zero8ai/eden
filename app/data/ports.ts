@@ -68,6 +68,8 @@ export interface DeploymentRepo {
   listByEnvironment(environmentId: string): Promise<DeploymentWithRelease[]>;
   /** Set every currently-live deployment in the env to draining at weight 0 (rollback). */
   drainLive(environmentId: string): Promise<void>;
+  /** Delete an environment's failed deployment rows (post-mortem clutter). */
+  deleteFailed(environmentId: string): Promise<void>;
   /** Apply weights atomically, scoped to the environment (clamped ≥ 0 by the caller). */
   setWeights(
     environmentId: string,
@@ -115,6 +117,8 @@ export interface JobRepo {
     id: string,
     patch: Partial<Pick<Job, "status" | "error" | "runAt">>,
   ): Promise<void>;
+  /** Requeue jobs stranded in `running` (a process restart killed their worker mid-job). */
+  requeueRunning(): Promise<number>;
   statsByStatus(): Promise<Record<string, number>>;
 }
 

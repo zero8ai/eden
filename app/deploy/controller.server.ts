@@ -155,6 +155,27 @@ export async function deployRelease(
       url: health.url ?? null,
       errorDetail: health.status === "failed" ? (health.detail ?? null) : null,
     });
+
+    // Redeploying the SAME release supersedes its previous instances in this environment:
+    // stop them and zero their weight. (Different releases stay live side by side — that's
+    // the multi-version primitive; identical duplicates are never what the human meant.)
+    if (updated.status === "live") {
+      const siblings = await store.deployments.listByEnvironment(input.environmentId);
+      const superseded = siblings.filter(
+        (d) => d.releaseId === release.id && d.id !== dep.id && d.status === "live",
+      );
+      await Promise.all(
+        superseded.map(async (d) => {
+          await store.deployments.update(d.id, { status: "stopped", trafficWeight: 0 });
+          // Best-effort container stop — a failure here must not fail the new deployment.
+          try {
+            await deployTarget.stop(d.id);
+          } catch {
+            // container already gone / target can't stop — the row is authoritative
+          }
+        }),
+      );
+    }
     if (project) {
       await store.audit.record({
         orgId: project.orgId,
@@ -236,6 +257,14 @@ export async function setTrafficSplit(
   store: DataStore = getRuntime().data,
 ): Promise<void> {
   await store.deployments.setWeights(environmentId, weights);
+}
+
+/** Remove an environment's failed deployment rows (post-mortem clutter in the UI). */
+export function clearFailedDeployments(
+  environmentId: string,
+  store: DataStore = getRuntime().data,
+): Promise<void> {
+  return store.deployments.deleteFailed(environmentId);
 }
 
 /** Find the project connected to a repo (for webhook-driven deploys). */

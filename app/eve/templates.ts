@@ -40,7 +40,7 @@ export const RESOURCE_KINDS: Record<CategoryKey, ResourceKind> = {
     label: "tool",
     ext: ".ts",
     hint: "A function the model can call — described inputs, typed output.",
-    template: (name) => `import { defineTool } from "eve";
+    template: (name) => `import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 export default defineTool({

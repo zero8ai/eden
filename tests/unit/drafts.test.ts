@@ -114,6 +114,54 @@ describe("publishDrafts", () => {
   });
 });
 
+describe("publish gate (build check)", () => {
+  it("a failing check blocks the change request and keeps drafts staged", async () => {
+    await stageDraft({ projectId: PROJECT.id, path: "agent/tools/w.ts", content: "bad" }, store);
+    const propose = vi.fn().mockResolvedValue(proposed);
+    const failCheck = vi
+      .fn()
+      .mockResolvedValue({ ok: false, output: "'eve' does not provide defineTool" });
+
+    await expect(
+      publishDrafts({ project: PROJECT, paths: ["agent/tools/w.ts"] }, store, propose, failCheck),
+    ).rejects.toThrow(/Build check failed[\s\S]*does not provide defineTool/);
+
+    expect(propose).not.toHaveBeenCalled(); // no branch, no PR
+    expect(await listDrafts(PROJECT.id, store)).toHaveLength(1); // fix & retry
+  });
+
+  it("checks exactly the SELECTED drafts against the default branch", async () => {
+    await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "A" }, store);
+    await stageDraft({ projectId: PROJECT.id, path: "agent/b.md", content: "B" }, store);
+    const check = vi.fn().mockResolvedValue({ ok: true });
+    await publishDrafts(
+      { project: PROJECT, paths: ["agent/a.md"] },
+      store,
+      vi.fn().mockResolvedValue(proposed),
+      check,
+    );
+    expect(check).toHaveBeenCalledWith({
+      projectId: PROJECT.id,
+      repo: { owner: "acme", repo: "agent" },
+      ref: "main",
+      installationId: "inst_1",
+      overlay: [{ path: "agent/a.md", content: "A" }],
+    });
+  });
+
+  it("a skipped check (no toolchain) still publishes", async () => {
+    await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "A" }, store);
+    const propose = vi.fn().mockResolvedValue(proposed);
+    const change = await publishDrafts(
+      { project: PROJECT, paths: ["agent/a.md"] },
+      store,
+      propose,
+      vi.fn().mockResolvedValue({ ok: true, skipped: true }),
+    );
+    expect(change.pullRequestNumber).toBe(7);
+  });
+});
+
 describe("resolveFileView", () => {
   const PATH = "agent/agent.ts";
   /** GitHub fakes: repo (default branch) content + one open change touching PATH. */

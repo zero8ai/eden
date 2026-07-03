@@ -15,6 +15,7 @@ import {
 } from "~/github/write.server";
 import { newId } from "~/lib/id";
 import { getRuntime } from "~/seams/index.server";
+import type { BuildCheckRequest, BuildCheckResult } from "~/seams/types";
 
 export interface StageInput {
   projectId: string;
@@ -125,6 +126,15 @@ export async function resolveFileView(
 /** Injected so unit tests exercise selection/cleanup without GitHub. */
 export type ProposeFn = typeof proposeChange;
 
+/** Publish gate: compile-check the drafts against the target branch (injectable in tests). */
+export type CheckBuildFn = (req: BuildCheckRequest) => Promise<BuildCheckResult>;
+
+/** Default gate: the runtime DeployTarget's checkBuild, or skip when it has none. */
+const runtimeCheckBuild: CheckBuildFn = async (req) => {
+  const target = getRuntime().deployTarget;
+  return target.checkBuild ? target.checkBuild(req) : { ok: true, skipped: true };
+};
+
 /**
  * Publish the SELECTED staged drafts as one change-set: one branch, one commit per file, one
  * PR. Published drafts are deleted (they're now on the branch); unselected drafts stay staged
@@ -146,11 +156,28 @@ export async function publishDrafts(
   },
   store: DataStore = getRuntime().data,
   propose: ProposeFn = proposeChange,
+  checkBuild: CheckBuildFn = runtimeCheckBuild,
 ): Promise<ProposedChange> {
   const staged = await store.drafts.listByProject(input.project.id);
   const selected = staged.filter((d) => input.paths.includes(d.path));
   if (selected.length === 0) {
     throw new Error("No staged changes selected to publish.");
+  }
+
+  // Publish gate: the change-set must compile against the branch it targets. A failed check
+  // creates NOTHING (no branch, no PR) and keeps the drafts staged so they can be fixed and
+  // republished — broken code never becomes a change request.
+  const check = await checkBuild({
+    projectId: input.project.id,
+    repo: { owner: input.project.repoOwner, repo: input.project.repoName },
+    ref: input.project.defaultBranch,
+    installationId: input.project.repoInstallationId,
+    overlay: selected.map((d) => ({ path: d.path, content: d.content })),
+  });
+  if (!check.ok) {
+    throw new Error(
+      `Build check failed — no change request was created. Fix this and publish again:\n\n${check.output}`,
+    );
   }
 
   const title =

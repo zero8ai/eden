@@ -40,6 +40,23 @@ export interface DeployRequest {
   env: Record<string, string>;
 }
 
+/** Compile-check request: repo@ref with the staged drafts overlaid (publish gate). */
+export interface BuildCheckRequest {
+  projectId: string;
+  repo: { owner: string; repo: string };
+  /** Ref to base the check on — the default branch the change request targets. */
+  ref: string;
+  installationId?: string | null;
+  /** Draft files being published, overlaid on the source before building. */
+  overlay: { path: string; content: string }[];
+}
+
+export type BuildCheckResult =
+  /** Build compiles (or the target has no toolchain and the gate was skipped). */
+  | { ok: true; skipped?: boolean }
+  /** Build failed — `output` is the compiler/tool error, human-readable. */
+  | { ok: false; output: string };
+
 export type InstanceStatus =
   | "pending"
   | "building"
@@ -57,6 +74,12 @@ export interface InstanceHealth {
 export interface DeployTarget {
   readonly name: string;
   build(req: BuildRequest): Promise<BuiltArtifact>;
+  /**
+   * Compile-check source + overlay without deploying — the publish gate that keeps a
+   * change request from being created for code that can't build. Optional: targets
+   * without a local toolchain simply skip the gate.
+   */
+  checkBuild?(req: BuildCheckRequest): Promise<BuildCheckResult>;
   deploy(req: DeployRequest): Promise<InstanceHealth>;
   /** Scale-to-zero: stop an idle instance (0 CPU/RAM); state survives in Postgres. */
   stop(deploymentId: string): Promise<void>;

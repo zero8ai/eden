@@ -71,33 +71,39 @@ export interface EveImageBuildInput {
   installationId: string | number;
 }
 
+/** Fetch repo@ref into `workDir/src`, ensuring Dockerfile/.dockerignore. Returns srcDir. */
+async function fetchSource(input: EveImageBuildInput, workDir: string): Promise<string> {
+  // Repo tarball at the exact ref (GitHub App installation token).
+  const octokit = await getInstallationOctokit(input.installationId);
+  const res = await octokit.request("GET /repos/{owner}/{repo}/tarball/{ref}", {
+    owner: input.repo.owner,
+    repo: input.repo.repo,
+    ref: input.ref,
+  });
+  const tarPath = path.join(workDir, "src.tar.gz");
+  await writeFile(tarPath, Buffer.from(res.data as ArrayBuffer));
+  const srcDir = path.join(workDir, "src");
+  await exec("mkdir", ["-p", srcDir]);
+  // GitHub tarballs wrap everything in a single "<owner>-<repo>-<sha>/" directory.
+  await exec("tar", ["-xzf", tarPath, "-C", srcDir, "--strip-components=1"]);
+
+  // Eden's reference Dockerfile, unless the repo brings its own.
+  if (!existsSync(path.join(srcDir, "Dockerfile"))) {
+    await writeFile(path.join(srcDir, "Dockerfile"), EDEN_EVE_DOCKERFILE);
+  }
+  if (!existsSync(path.join(srcDir, ".dockerignore"))) {
+    await writeFile(path.join(srcDir, ".dockerignore"), EDEN_DOCKERIGNORE);
+  }
+  return srcDir;
+}
+
 /** Fetch repo@ref, ensure Dockerfile, docker-build runtime + build-stage images. */
 export async function buildEveImage(input: EveImageBuildInput): Promise<BuiltArtifact> {
   const workDir = await mkdtemp(path.join(tmpdir(), "eden-build-"));
   try {
-    // 1. Repo tarball at the exact commit (GitHub App installation token).
-    const octokit = await getInstallationOctokit(input.installationId);
-    const res = await octokit.request("GET /repos/{owner}/{repo}/tarball/{ref}", {
-      owner: input.repo.owner,
-      repo: input.repo.repo,
-      ref: input.ref,
-    });
-    const tarPath = path.join(workDir, "src.tar.gz");
-    await writeFile(tarPath, Buffer.from(res.data as ArrayBuffer));
-    const srcDir = path.join(workDir, "src");
-    await exec("mkdir", ["-p", srcDir]);
-    // GitHub tarballs wrap everything in a single "<owner>-<repo>-<sha>/" directory.
-    await exec("tar", ["-xzf", tarPath, "-C", srcDir, "--strip-components=1"]);
+    const srcDir = await fetchSource(input, workDir);
 
-    // 2. Eden's reference Dockerfile, unless the repo brings its own.
-    if (!existsSync(path.join(srcDir, "Dockerfile"))) {
-      await writeFile(path.join(srcDir, "Dockerfile"), EDEN_EVE_DOCKERFILE);
-    }
-    if (!existsSync(path.join(srcDir, ".dockerignore"))) {
-      await writeFile(path.join(srcDir, ".dockerignore"), EDEN_DOCKERIGNORE);
-    }
-
-    // 3. Build both images (the runtime build reuses the build stage from cache).
+    // Build both images (the runtime build reuses the build stage from cache).
     const tags = imageTags(input.projectId, input.ref);
     const opts = { maxBuffer: 64 * 1024 * 1024 };
     await exec("docker", ["build", "--target", "build", "-t", tags.buildStage, srcDir], opts);
@@ -117,4 +123,57 @@ export async function buildEveImage(input: EveImageBuildInput): Promise<BuiltArt
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Publish gate: compile-check repo@ref with `overlay` files (the staged drafts being
+ * published) written over the source, running only the build stage — same builder as a real
+ * deploy, so "passes the check" means "will build when merged". One reused tag per project;
+ * failures return the compiler's own lines, not the docker wall of text.
+ */
+export async function checkEveBuild(
+  input: EveImageBuildInput & { overlay: { path: string; content: string }[] },
+): Promise<{ ok: true; skipped?: boolean } | { ok: false; output: string }> {
+  const workDir = await mkdtemp(path.join(tmpdir(), "eden-check-"));
+  try {
+    const srcDir = await fetchSource(input, workDir);
+
+    for (const file of input.overlay) {
+      const target = path.join(srcDir, file.path);
+      // Overlay paths come from Eden's own staging (already normalized under agent/), but
+      // never write outside the checkout regardless.
+      if (!target.startsWith(srcDir + path.sep)) continue;
+      await exec("mkdir", ["-p", path.dirname(target)]);
+      await writeFile(target, file.content);
+    }
+
+    const tag = `eden/publish-check:proj-${input.projectId.slice(0, 8)}`;
+    try {
+      await exec("docker", ["build", "--target", "build", "-t", tag, srcDir], {
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      return { ok: true };
+    } catch (error) {
+      const raw = error instanceof Error ? error.message : String(error);
+      if (/ENOENT/.test(raw) && /docker/.test(raw)) {
+        console.warn("[publish-check] docker unavailable — gate skipped");
+        return { ok: true, skipped: true };
+      }
+      return { ok: false, output: extractBuildError(raw) };
+    }
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Pull the tool/compiler output out of buildkit's progress stream: the step-output lines
+ * (`#N <seconds> <message>`), which is what a human needs to fix the code. Falls back to the
+ * error's tail when nothing matches.
+ */
+function extractBuildError(raw: string): string {
+  const stepLines = [...raw.matchAll(/^#\d+ \d+\.\d+ (.*)$/gm)].map((m) => m[1]);
+  const meaningful = stepLines.filter((l) => l.trim().length > 0);
+  if (meaningful.length > 0) return meaningful.join("\n");
+  return raw.split("\n").slice(-15).join("\n");
 }

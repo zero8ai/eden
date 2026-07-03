@@ -24,7 +24,7 @@ import { promisify } from "node:util";
 
 import postgres from "postgres";
 
-import { buildEveImage, buildStageTagFor } from "~/deploy/eve-image.server";
+import { buildEveImage, buildStageTagFor, checkEveBuild } from "~/deploy/eve-image.server";
 import type {
   BuildRequest,
   BuiltArtifact,
@@ -154,6 +154,19 @@ export const localDockerTarget: DeployTarget = {
       repo: req.repo,
       ref: req.ref,
       installationId: req.installationId,
+    });
+  },
+
+  async checkBuild(req) {
+    if (!req.installationId) {
+      return { ok: true as const, skipped: true }; // can't fetch source — don't block publish
+    }
+    return checkEveBuild({
+      projectId: req.projectId,
+      repo: req.repo,
+      ref: req.ref,
+      installationId: req.installationId,
+      overlay: req.overlay,
     });
   },
 

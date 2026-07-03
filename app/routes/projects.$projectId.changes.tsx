@@ -171,7 +171,9 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
           <AlertTitle>Something went wrong</AlertTitle>
-          <AlertDescription>{actionData.error}</AlertDescription>
+          <AlertDescription className="whitespace-pre-wrap">
+            {actionData.error}
+          </AlertDescription>
         </Alert>
       )}
 
@@ -237,7 +239,7 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
                   />
                   <Button type="submit" disabled={busy}>
                     {activeIntent === "publish"
-                      ? "Publishing…"
+                      ? "Checking build & publishing…"
                       : "Publish selected as change request"}
                   </Button>
                 </div>

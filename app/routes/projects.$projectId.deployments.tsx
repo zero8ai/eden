@@ -21,6 +21,13 @@ import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -289,17 +296,11 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
                 <Form method="post" className="flex items-center gap-2">
                   <input type="hidden" name="intent" value="deploy" />
                   <input type="hidden" name="environmentId" value={env.id} />
-                  <select
-                    name="releaseId"
-                    defaultValue={justReleasedId}
-                    className="h-9 rounded-md border bg-background px-2 text-sm"
-                  >
-                    {releases.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.version}
-                      </option>
-                    ))}
-                  </select>
+                  <ReleaseSelect
+                    releases={releases}
+                    defaultValue={justReleasedId ?? releases[0]?.id}
+                    label="Release to deploy"
+                  />
                   <Button type="submit" size="sm">
                     Deploy
                   </Button>
@@ -307,16 +308,11 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
                 <Form method="post" className="flex items-center gap-2">
                   <input type="hidden" name="intent" value="rollback" />
                   <input type="hidden" name="environmentId" value={env.id} />
-                  <select
-                    name="releaseId"
-                    className="h-9 rounded-md border bg-background px-2 text-sm"
-                  >
-                    {releases.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.version}
-                      </option>
-                    ))}
-                  </select>
+                  <ReleaseSelect
+                    releases={releases}
+                    defaultValue={releases[0]?.id}
+                    label="Release to roll back to"
+                  />
                   <Button type="submit" size="sm" variant="secondary">
                     Rollback to
                   </Button>
@@ -328,6 +324,35 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
         ))}
       </div>
     </AppShell>
+  );
+}
+
+/** Release picker for deploy/rollback forms; posts `releaseId` via Radix's hidden select. */
+function ReleaseSelect({
+  releases,
+  defaultValue,
+  label,
+}: {
+  releases: { id: string; version: string; gitSha: string }[];
+  defaultValue?: string;
+  label: string;
+}) {
+  return (
+    <Select name="releaseId" defaultValue={defaultValue}>
+      <SelectTrigger className="min-w-32" aria-label={label}>
+        <SelectValue placeholder="Release" />
+      </SelectTrigger>
+      <SelectContent>
+        {releases.map((r) => (
+          <SelectItem key={r.id} value={r.id}>
+            {r.version}{" "}
+            <span className="font-mono text-xs text-muted-foreground">
+              {r.gitSha.slice(0, 7)}
+            </span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 

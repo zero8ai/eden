@@ -134,7 +134,12 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
   const { project, drafts, changes } = loaderData;
   const base = `/projects/${project.id}`;
   const navigation = useNavigation();
-  const busy = navigation.state === "submitting";
+  // One action serves several forms — identify WHICH submission is in flight from its form
+  // data, so only the clicked button changes label (the rest just disable).
+  const busy = navigation.state !== "idle" && navigation.formData != null;
+  const activeIntent = busy ? String(navigation.formData!.get("intent") ?? "") : null;
+  const mergingNumber =
+    activeIntent === "merge" ? Number(navigation.formData!.get("pullNumber")) : null;
 
   return (
     <AppShell>
@@ -215,7 +220,9 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
                     className="h-9 w-72"
                   />
                   <Button type="submit" disabled={busy}>
-                    {busy ? "Publishing…" : "Publish selected as change request"}
+                    {activeIntent === "publish"
+                      ? "Publishing…"
+                      : "Publish selected as change request"}
                   </Button>
                 </div>
               </Form>
@@ -235,7 +242,12 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
       ) : (
         <div className="space-y-4">
           {changes.map((c) => (
-            <ChangeCard key={c.number} change={c} merging={busy} />
+            <ChangeCard
+              key={c.number}
+              change={c}
+              busy={busy}
+              merging={mergingNumber === c.number}
+            />
           ))}
         </div>
       )}
@@ -245,9 +257,13 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
 
 function ChangeCard({
   change,
+  busy,
   merging,
 }: {
   change: Route.ComponentProps["loaderData"]["changes"][number];
+  /** Some submission is in flight — disable, but don't relabel. */
+  busy: boolean;
+  /** THIS change is the one being merged — show the progress label. */
   merging: boolean;
 }) {
   const conflicted = change.mergeable === false;
@@ -277,7 +293,7 @@ function ChangeCard({
               <input type="hidden" name="pullNumber" value={change.number} />
               <input type="hidden" name="branch" value={change.branch} />
               <input type="hidden" name="title" value={change.title} />
-              <Button type="submit" size="sm" disabled={merging || conflicted}>
+              <Button type="submit" size="sm" disabled={busy || conflicted}>
                 {merging ? "Merging…" : "Merge"}
               </Button>
             </Form>

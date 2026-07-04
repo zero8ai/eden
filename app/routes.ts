@@ -36,6 +36,10 @@ export default [
     "projects/:projectId/edit/instructions",
     "routes/projects.$projectId.edit.instructions.tsx",
   ),
+  route(
+    "projects/:projectId/edit/schedule",
+    "routes/projects.$projectId.edit.schedule.tsx",
+  ),
   route("callback", "routes/callback.tsx"),
   route("login", "routes/login.tsx"),
   route("signup", "routes/signup.tsx"),

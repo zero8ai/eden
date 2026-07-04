@@ -70,10 +70,18 @@ export const loader = (args: LoaderFunctionArgs) =>
         ),
       );
 
-      const raw = new URL(args.request.url).searchParams.get("path") ?? "";
-      const path = normalizeAgentPath(raw);
+      const url = new URL(args.request.url);
+      const path = normalizeAgentPath(url.searchParams.get("path") ?? "");
       // No (valid) target — nothing to edit; back to the overview, where creation lives.
       if (!path) throw redirect(`/projects/${project.id}`);
+
+      // Markdown schedules get the structured editor (cron + message); ?raw=1 is its own
+      // "advanced" escape hatch back to this code editor.
+      if (/^agent\/schedules\/[^/]+\.md$/.test(path) && !url.searchParams.get("raw")) {
+        throw redirect(
+          `/projects/${project.id}/edit/schedule?path=${encodeURIComponent(path)}`,
+        );
+      }
 
       const view = await resolveFileView(project, path);
       const template = view.content === null ? templateFor(path) : null;

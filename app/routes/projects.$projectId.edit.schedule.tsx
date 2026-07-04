@@ -1,0 +1,221 @@
+/**
+ * Structured editor: markdown-form schedules (`agent/schedules/<name>.md`) — Author pillar.
+ *
+ * A schedule is two decisions: WHEN (cron, edited through the human-readable CronField) and
+ * WHAT (the message the agent receives when it fires). This form owns exactly those; other
+ * frontmatter keys are preserved verbatim. Advanced modes stay available: "edit raw markdown"
+ * opens the code editor on the same file (?raw=1 skips the redirect back here), and
+ * TypeScript schedules (`<name>.ts`, defineSchedule with a run() handler) always open in the
+ * code editor. Save stages a draft like every other editor.
+ */
+import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { useState } from "react";
+import {
+  Link,
+  redirect,
+  useNavigation,
+  useSubmit,
+  type ActionFunctionArgs,
+  type LoaderFunctionArgs,
+} from "react-router";
+
+import { CronField } from "~/components/cron-field";
+import { FileStateBanner } from "~/components/file-state-banner";
+import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Label } from "~/components/ui/label";
+import { Textarea } from "~/components/ui/textarea";
+import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
+import { buildScheduleFile, parseScheduleFile } from "~/eve/scheduleFile";
+import { isValidCron } from "~/lib/cron";
+import { normalizeAgentPath, requireProject, requireRepo } from "~/project/guard.server";
+import type { Route } from "./+types/projects.$projectId.edit.schedule";
+
+/** This editor only understands markdown-form schedules. */
+function schedulePath(raw: string): string | null {
+  const path = normalizeAgentPath(raw);
+  return path && /^agent\/schedules\/[^/]+\.md$/.test(path) ? path : null;
+}
+
+const DEFAULT_CRON = "0 9 * * 1-5";
+
+export const loader = (args: LoaderFunctionArgs) =>
+  authkitLoader(
+    args,
+    async ({ auth }) => {
+      const project = requireRepo(
+        await requireProject(
+          {
+            user: auth.user,
+            organizationId: auth.organizationId,
+            role: auth.role,
+          },
+          args.params.projectId,
+        ),
+      );
+      const path = schedulePath(
+        new URL(args.request.url).searchParams.get("path") ?? "",
+      );
+      if (!path) throw redirect(`/projects/${project.id}`);
+
+      const view = await resolveFileView(project, path);
+      const parsed = view.content ? parseScheduleFile(view.content) : null;
+      return {
+        project,
+        path,
+        cron: parsed?.cron || DEFAULT_CRON,
+        message: parsed?.message ?? "",
+        extraFrontmatter: parsed?.extraFrontmatter ?? [],
+        exists: view.existsInRepo,
+        isNew: view.content === null,
+        source: view.source,
+        change: view.change,
+      };
+    },
+    { ensureSignedIn: true },
+  );
+
+export async function action(args: ActionFunctionArgs) {
+  const auth = await withAuth(args);
+  if (!auth.user) throw redirect("/login");
+  const project = requireRepo(
+    await requireProject(
+      {
+        user: auth.user,
+        organizationId: auth.organizationId ?? null,
+        role: auth.role ?? null,
+      },
+      args.params.projectId,
+    ),
+  );
+
+  const form = await args.request.formData();
+  const path = schedulePath(String(form.get("path") ?? ""));
+  if (!path) return { error: "Invalid schedule path." };
+  const cron = String(form.get("cron") ?? "").trim();
+  const message = String(form.get("message") ?? "").trim();
+  if (!isValidCron(cron)) return { error: "That cron expression isn't valid." };
+  if (!message) return { error: "Say what the agent should do when this fires." };
+
+  // Re-read the current file so frontmatter keys this form doesn't own survive the save.
+  const view = await resolveFileView(project, path);
+  const extraFrontmatter = view.content
+    ? parseScheduleFile(view.content).extraFrontmatter
+    : [];
+
+  try {
+    await stageDraft({
+      projectId: project.id,
+      path,
+      content: buildScheduleFile({ cron, message, extraFrontmatter }),
+      createdBy: auth.user.id,
+    });
+    return { ok: true as const };
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
+}
+
+export function meta() {
+  return [{ title: "Edit schedule · Eden" }];
+}
+
+export default function EditSchedule({ loaderData, actionData }: Route.ComponentProps) {
+  // Keyed by path so switching schedules remounts with fresh state.
+  return (
+    <ScheduleForm key={loaderData.path} loaderData={loaderData} actionData={actionData} />
+  );
+}
+
+function ScheduleForm({
+  loaderData,
+  actionData,
+}: Pick<Route.ComponentProps, "loaderData" | "actionData">) {
+  const { project, path, exists, isNew } = loaderData;
+  const navigation = useNavigation();
+  const submit = useSubmit();
+  const saving = navigation.state !== "idle";
+
+  const [cron, setCron] = useState(loaderData.cron);
+  const [message, setMessage] = useState(loaderData.message);
+
+  const base = `/projects/${project.id}`;
+  const name = path.split("/").pop()!.replace(/\.md$/, "");
+
+  return (
+    <AppShell>
+      <PageHeader
+        title={
+          <span className="flex items-center gap-3">
+            Schedule: {name}
+            {!exists && <Badge variant="secondary">new</Badge>}
+          </span>
+        }
+        description="When the schedule fires, the agent receives the message below and acts on it."
+      />
+      <AgentNav base={base} />
+
+      {actionData?.error && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertTitle>Couldn&rsquo;t stage the change</AlertTitle>
+          <AlertDescription>{actionData.error}</AlertDescription>
+        </Alert>
+      )}
+      <FileStateBanner
+        saved={!!actionData?.ok}
+        source={loaderData.source}
+        change={loaderData.change}
+        base={base}
+      />
+
+      <div className="max-w-2xl space-y-6">
+        <div className="space-y-1.5">
+          <Label>Runs</Label>
+          <CronField value={cron} onChange={setCron} />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="schedule-message">Message to the agent</Label>
+          <Textarea
+            id="schedule-message"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="e.g. Summarize yesterday's runs and flag anything unusual."
+            className="min-h-32"
+          />
+          <p className="text-xs text-muted-foreground">
+            Sent to the agent as a prompt each time the schedule fires (fire-and-forget).
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={() => submit({ path, cron, message }, { method: "post" })}
+            disabled={saving || !isValidCron(cron) || !message.trim()}
+          >
+            {saving ? "Saving…" : "Save"}
+          </Button>
+          <Button variant="ghost" asChild>
+            <Link to={base}>Cancel</Link>
+          </Button>
+          {!isNew && (
+            <Link
+              to={`${base}/edit?path=${encodeURIComponent(path)}&raw=1`}
+              className="ml-auto text-xs text-muted-foreground underline-offset-4 hover:underline"
+            >
+              Advanced: edit raw markdown
+            </Link>
+          )}
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Need logic instead of a message? Author the schedule as TypeScript
+          (`agent/schedules/{name}.ts`) with a <span className="font-mono">run()</span>{" "}
+          handler — code-file schedules open in the code editor.
+        </p>
+      </div>
+    </AppShell>
+  );
+}

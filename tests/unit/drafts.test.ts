@@ -153,6 +153,46 @@ describe("publish gate (build check)", () => {
     });
   });
 
+  it("stages shared root files unattributed, and a mixed selection checks the repo root", async () => {
+    // package.json is outside every member — staged with no owning agent (add_dependency).
+    const shared = await stageDraft(
+      { projectId: PROJECT.id, path: "package.json", content: "{}" },
+      store,
+    );
+    expect(shared.agentId).toBeNull();
+    const owned = await stageDraft(
+      { projectId: PROJECT.id, path: "agent/tools/x.ts", content: "//" },
+      store,
+    );
+    expect(owned.agentId).toBe("agent_1");
+
+    // Mixed member + shared selection → no member root; the gate builds the repo root.
+    const check = vi.fn().mockResolvedValue({ ok: true });
+    await publishDrafts(
+      { project: PROJECT, paths: ["package.json", "agent/tools/x.ts"] },
+      store,
+      vi.fn().mockResolvedValue(proposed),
+      check,
+    );
+    expect(check).toHaveBeenCalledWith(
+      expect.objectContaining({ agentRoot: undefined }),
+    );
+  });
+
+  it("attributes a team member's draft to that member (path root decides)", async () => {
+    store.seedAgent({
+      id: "agent_pm",
+      projectId: PROJECT.id,
+      name: "pm",
+      root: "agents/pm/agent",
+    });
+    const draft = await stageDraft(
+      { projectId: PROJECT.id, path: "agents/pm/agent/tools/plan.ts", content: "//" },
+      store,
+    );
+    expect(draft.agentId).toBe("agent_pm");
+  });
+
   it("a skipped check (no toolchain) still publishes", async () => {
     await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "A" }, store);
     const propose = vi.fn().mockResolvedValue(proposed);

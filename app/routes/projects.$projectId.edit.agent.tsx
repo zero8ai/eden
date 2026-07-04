@@ -32,10 +32,9 @@ import { Input } from "~/components/ui/input";
 import { FileStateBanner } from "~/components/file-state-banner";
 import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import { readModel, scaffoldAgentModule, setModel, SUGGESTED_MODELS } from "~/eve/agentModule";
+import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.edit.agent";
-
-const AGENT_PATH = "agent/agent.ts";
 
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
@@ -51,10 +50,19 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
+      const { roster, active, isTeam } = await resolveAgentContext(
+        project.id,
+        agentParam(args.request),
+      );
+      const path = `${active.root}/agent.ts`;
       // Show the latest intended value: staged draft → open change request → repo.
-      const view = await resolveFileView(project, AGENT_PATH);
+      const view = await resolveFileView(project, path);
       return {
         project,
+        path,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
+        isTeam,
         model: view.content ? readModel(view.content) : null,
         exists: view.content !== null,
         source: view.source,
@@ -86,15 +94,21 @@ export async function action(args: ActionFunctionArgs) {
       : selected;
   if (!model) return { error: "Pick or enter a model." };
 
+  const { active } = await resolveAgentContext(
+    project.id,
+    String(form.get("agent") ?? "") || null,
+  );
+  const path = `${active.root}/agent.ts`;
+
   // Base the targeted edit on the latest intended value (draft → pending change → repo) so
   // saving the model never silently reverts other unmerged edits to this file.
-  const view = await resolveFileView(project, AGENT_PATH);
+  const view = await resolveFileView(project, path);
   const next = view.content ? setModel(view.content, model) : scaffoldAgentModule(model);
 
   try {
     await stageDraft({
       projectId: project.id,
-      path: AGENT_PATH,
+      path,
       content: next,
       createdBy: auth.user.id,
     });
@@ -109,7 +123,8 @@ export function meta() {
 }
 
 export default function EditAgent({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, model, exists, source, change } = loaderData;
+  const { project, path, roster, activeAgent, isTeam, model, exists, source, change } =
+    loaderData;
   const navigation = useNavigation();
   const saving = navigation.state === "submitting";
   const current = model ?? "";
@@ -119,20 +134,21 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
   const [selected, setSelected] = useState(knownSelected ? current : "__custom");
 
   const base = `/projects/${project.id}`;
+  const backTo = isTeam ? `${base}?agent=${encodeURIComponent(activeAgent)}` : base;
 
   return (
     <AppShell>
       <PageHeader
-        title="Agent config"
+        title={isTeam ? `Agent config — ${activeAgent}` : "Agent config"}
         description={
           <>
             {exists ? (
               <>
-                Editing <span className="font-mono">agent/agent.ts</span>.
+                Editing <span className="font-mono">{path}</span>.
               </>
             ) : (
               <>
-                No <span className="font-mono">agent/agent.ts</span> yet — saving
+                No <span className="font-mono">{path}</span> yet — saving
                 scaffolds one.
               </>
             )}{" "}
@@ -140,7 +156,7 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
           </>
         }
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
@@ -156,6 +172,7 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
       />
 
       <Form method="post" className="max-w-xl space-y-4">
+        <input type="hidden" name="agent" value={activeAgent} />
         <div className="space-y-1.5">
           <Label htmlFor="model">Model</Label>
           <Select name="model" value={selected} onValueChange={setSelected}>
@@ -191,7 +208,7 @@ export default function EditAgent({ loaderData, actionData }: Route.ComponentPro
             {saving ? "Saving…" : "Save"}
           </Button>
           <Button variant="ghost" asChild>
-            <Link to={base}>Cancel</Link>
+            <Link to={backTo}>Cancel</Link>
           </Button>
         </div>
       </Form>

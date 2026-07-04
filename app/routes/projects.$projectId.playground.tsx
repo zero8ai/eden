@@ -39,6 +39,7 @@ import {
 import { listDeployments } from "~/deploy/controller.server";
 import { listEnvironments } from "~/db/queries.server";
 import { newId } from "~/lib/id";
+import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.playground";
 
@@ -93,7 +94,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
-      const [targets, conversation] = await Promise.all([
+      const [targets, conversation, { roster, active }] = await Promise.all([
         liveTargets(project.id),
         loadConversation<PlaygroundState>(
           project.id,
@@ -101,6 +102,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           auth.user!.id,
           EMPTY_STATE,
         ),
+        resolveAgentContext(project.id, agentParam(args.request)),
       ]);
       return {
         project,
@@ -108,6 +110,8 @@ export const loader = (args: LoaderFunctionArgs) =>
         entries: conversation.entries,
         expired: conversation.expired,
         lastDeploymentId: conversation.state.deploymentId,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
       };
     },
     { ensureSignedIn: true },
@@ -185,7 +189,8 @@ export function meta() {
 }
 
 export default function Playground({ loaderData }: Route.ComponentProps) {
-  const { project, targets, entries, expired, lastDeploymentId } = loaderData;
+  const { project, targets, entries, expired, lastDeploymentId, roster, activeAgent } =
+    loaderData;
   const base = `/projects/${project.id}`;
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
@@ -233,7 +238,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           ) : undefined
         }
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {targets.length === 0 ? (
         <Alert>

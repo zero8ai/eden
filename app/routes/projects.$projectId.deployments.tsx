@@ -51,9 +51,10 @@ import {
   queueDeploy,
   setTrafficSplit,
 } from "~/deploy/controller.server";
-import { listAgents, listEnvironments, listReleases } from "~/db/queries.server";
+import { listAgentEnvironments, listReleases } from "~/db/queries.server";
 import { getBranchHead } from "~/github/repo.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
+import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.deployments";
 
@@ -71,9 +72,14 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
+      // Everything on this page is per roster member: its releases, its environments.
+      const { roster, active, isTeam } = await resolveAgentContext(
+        project.id,
+        agentParam(args.request),
+      );
       const [releaseRows, envRows] = await Promise.all([
         listReleases(project.id),
-        listEnvironments(project.id),
+        listAgentEnvironments(active.id),
       ]);
       const envs = await Promise.all(
         envRows.map(async (env) => ({
@@ -81,7 +87,14 @@ export const loader = (args: LoaderFunctionArgs) =>
           deployments: await listDeployments(env.id),
         })),
       );
-      return { project, releases: releaseRows, envs };
+      return {
+        project,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
+        isTeam,
+        releases: releaseRows.filter((r) => r.agentId === active.id),
+        envs,
+      };
     },
     { ensureSignedIn: true },
   );
@@ -101,7 +114,10 @@ export async function action(args: ActionFunctionArgs) {
   );
   const form = await args.request.formData();
   const intent = String(form.get("intent") ?? "");
-  const back = `/projects/${project.id}/deployments`;
+  const agentRaw = String(form.get("agent") ?? "");
+  const back = `/projects/${project.id}/deployments${
+    agentRaw ? `?agent=${encodeURIComponent(agentRaw)}` : ""
+  }`;
 
   try {
     if (intent === "cut-release") {
@@ -109,19 +125,18 @@ export async function action(args: ActionFunctionArgs) {
         owner: project.repoOwner,
         repo: project.repoName,
       });
-      // One Release per roster member (a single-agent repo is a team of one — §7.9).
-      const roster = await listAgents(project.id);
-      await Promise.all(
-        roster.map((agent) =>
-          createRelease({
-            projectId: project.id,
-            agentId: agent.id,
-            gitSha: head.sha,
-            changelog: `Cut from ${head.branch} @ ${head.sha.slice(0, 7)}`,
-            createdBy: auth.user.id,
-          }),
-        ),
+      // Cut for the ACTIVE roster member (the page operates member-at-a-time, §7.9).
+      const { active } = await resolveAgentContext(
+        project.id,
+        String(form.get("agent") ?? "") || null,
       );
+      await createRelease({
+        projectId: project.id,
+        agentId: active.id,
+        gitSha: head.sha,
+        changelog: `Cut from ${head.branch} @ ${head.sha.slice(0, 7)}`,
+        createdBy: auth.user.id,
+      });
     } else if (intent === "deploy" || intent === "rollback") {
       // Builds take minutes. queueDeploy creates the row in `queued` status BEFORE enqueueing,
       // so the click has an immediately visible result; the worker takes it to building → live.
@@ -158,7 +173,7 @@ export function meta() {
 }
 
 export default function Deployments({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, releases, envs } = loaderData;
+  const { project, roster, activeAgent, isTeam, releases, envs } = loaderData;
   const base = `/projects/${project.id}`;
   const [params] = useSearchParams();
   // Set when the human just merged a change on the Changes tab — the new version is now here,
@@ -185,18 +200,23 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
   return (
     <AppShell>
       <PageHeader
-        title="Deployments"
-        description="Immutable releases from the default branch, deployed across environments behind a session-sticky traffic split."
+        title={isTeam ? `Deployments — ${activeAgent}` : "Deployments"}
+        description={
+          isTeam
+            ? "This member's releases and environments — each teammate builds, versions, and deploys independently."
+            : "Immutable releases from the default branch, deployed across environments behind a session-sticky traffic split."
+        }
         actions={
           <Form method="post">
             <input type="hidden" name="intent" value="cut-release" />
+            <input type="hidden" name="agent" value={activeAgent} />
             <Button type="submit">
               Cut release from {project.defaultBranch}
             </Button>
           </Form>
         }
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {justReleased && (
         <Alert className="mb-6">

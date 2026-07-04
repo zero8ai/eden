@@ -32,6 +32,11 @@ export interface AuthoringRunInput {
   project: ConnectedProject;
   instruction: string;
   createdBy: string;
+  /**
+   * Active agent directory ("agent" or "agents/<member>/agent", PRD §7.9). Team members
+   * author under their own root and manage their own package manifest.
+   */
+  agentRoot?: string;
   /** Prior model-level turns (no system message) — the conversation's memory. */
   history?: ChatMessage[];
 }
@@ -173,8 +178,8 @@ async function writeRepoFile(
   staged: string[],
 ): Promise<ToolResult> {
   const p = normalizeAgentPath(rawPath);
-  if (!p) return `ERROR: files must live under agent/ (got: ${rawPath})`;
-  if (p === "package.json" || p === "package-lock.json") {
+  if (!p) return `ERROR: files must live under the agent's directory (got: ${rawPath})`;
+  if (p.endsWith("package.json") || p.endsWith("package-lock.json")) {
     return "ERROR: use add_dependency for dependency changes — never write the manifest directly.";
   }
   await stageDraft({ projectId: project.id, path: p, content, createdBy });
@@ -192,16 +197,20 @@ async function addDependency(
   createdBy: string,
   packages: string[],
   staged: string[],
+  /** "" for single-agent repos; "agents/<member>/" for a team member's manifest. */
+  manifestPrefix = "",
 ): Promise<ToolResult> {
   if (packages.length === 0) return "ERROR: no packages given.";
   if (packages.some((p) => !/^(@?[\w.-]+\/)?[\w.-]+(@[\w^~><=.*-]+)?$/.test(p))) {
     return `ERROR: invalid package spec in: ${packages.join(", ")}`;
   }
+  const pkgPath = `${manifestPrefix}package.json`;
+  const lockPath = `${manifestPrefix}package-lock.json`;
   const [pkgView, lockView] = await Promise.all([
-    resolveFileView(project, "package.json"),
-    resolveFileView(project, "package-lock.json"),
+    resolveFileView(project, pkgPath),
+    resolveFileView(project, lockPath),
   ]);
-  if (pkgView.content === null) return "ERROR: the repo has no package.json.";
+  if (pkgView.content === null) return `ERROR: the repo has no ${pkgPath}.`;
 
   const dir = await mkdtemp(path.join(tmpdir(), "eden-deps-"));
   try {
@@ -218,17 +227,12 @@ async function addDependency(
       readFile(path.join(dir, "package.json"), "utf8"),
       readFile(path.join(dir, "package-lock.json"), "utf8"),
     ]);
-    await stageDraft({ projectId: project.id, path: "package.json", content: pkg, createdBy });
-    await stageDraft({
-      projectId: project.id,
-      path: "package-lock.json",
-      content: lock,
-      createdBy,
-    });
-    for (const p of ["package.json", "package-lock.json"]) {
+    await stageDraft({ projectId: project.id, path: pkgPath, content: pkg, createdBy });
+    await stageDraft({ projectId: project.id, path: lockPath, content: lock, createdBy });
+    for (const p of [pkgPath, lockPath]) {
       if (!staged.includes(p)) staged.push(p);
     }
-    return `Added ${packages.join(", ")}; package.json and package-lock.json staged.`;
+    return `Added ${packages.join(", ")}; ${pkgPath} and ${lockPath} staged.`;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     return `ERROR: npm could not resolve ${packages.join(", ")}: ${msg.split("\n").slice(0, 6).join("\n")}`;
@@ -327,10 +331,21 @@ export async function runAuthoringAgent(
   const staged: string[] = [];
   const checks: AuthoringRunResult["checks"] = { ran: false, ok: false };
 
+  // Team repos (§7.9): the assistant authors for ONE roster member under its own root,
+  // with its own package manifest.
+  const agentRoot = input.agentRoot ?? "agent";
+  const memberDir = agentRoot === "agent" ? "" : agentRoot.replace(/\/agent$/, "");
+  const teamNote = memberDir
+    ? `\n\nTEAM CONTEXT: this repository is a team monorepo. You are working on the member ` +
+      `whose eve project lives in ${memberDir}/. Every agent file path in this session must ` +
+      `start with ${agentRoot}/ (e.g. ${agentRoot}/tools/<name>.ts), and the member's ` +
+      `dependency manifest is ${memberDir}/package.json. Do not touch other members' files.`
+    : "";
+
   // The system prompt is prepended fresh each run (METHOD updates apply to old
   // conversations); the persisted history carries only the turns.
   const messages: ChatMessage[] = [
-    { role: "system", content: METHOD },
+    { role: "system", content: METHOD + teamNote },
     ...(input.history ?? []),
     { role: "user", content: instruction },
   ];
@@ -396,6 +411,7 @@ export async function runAuthoringAgent(
               createdBy,
               Array.isArray(args.packages) ? args.packages.map(String) : [],
               staged,
+              memberDir ? `${memberDir}/` : "",
             );
             break;
           case "run_checks":

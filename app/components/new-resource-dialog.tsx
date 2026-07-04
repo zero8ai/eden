@@ -27,10 +27,13 @@ import {
 export function NewResourceDialog({
   kind,
   base,
+  root = "agent",
 }: {
   kind: ResourceKind;
   /** Project base path, e.g. /projects/:id */
   base: string;
+  /** Active agent root ("agent" or "agents/<member>/agent") the file is created under. */
+  root?: string;
 }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -41,7 +44,7 @@ export function NewResourceDialog({
     if (!slug) return;
     setOpen(false);
     setName("");
-    navigate(`${base}/edit?path=${encodeURIComponent(resourcePath(kind, slug))}`);
+    navigate(`${base}/edit?path=${encodeURIComponent(resourcePath(kind, slug, root))}`);
   };
 
   return (
@@ -74,7 +77,7 @@ export function NewResourceDialog({
           <p className="text-xs text-muted-foreground">
             {slug ? (
               <>
-                Creates <span className="font-mono">{resourcePath(kind, slug)}</span>
+                Creates <span className="font-mono">{resourcePath(kind, slug, root)}</span>
               </>
             ) : (
               "Names become kebab-case file names."

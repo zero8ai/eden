@@ -28,6 +28,7 @@ import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { newId } from "~/lib/id";
+import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.assistant";
 
@@ -49,13 +50,19 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
-      const conversation = await loadConversation<AssistantState>(
-        project.id,
-        "assistant",
-        auth.user!.id,
-        { history: [] },
-      );
-      return { project, entries: conversation.entries, expired: conversation.expired };
+      const [conversation, { roster, active }] = await Promise.all([
+        loadConversation<AssistantState>(project.id, "assistant", auth.user!.id, {
+          history: [],
+        }),
+        resolveAgentContext(project.id, agentParam(args.request)),
+      ]);
+      return {
+        project,
+        entries: conversation.entries,
+        expired: conversation.expired,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
+      };
     },
     { ensureSignedIn: true },
   );
@@ -83,12 +90,12 @@ export async function action(args: ActionFunctionArgs) {
   const message = String(form.get("message") ?? "").trim();
   if (!message) return { error: "Say what you want built." };
 
-  const conversation = await loadConversation<AssistantState>(
-    project.id,
-    "assistant",
-    auth.user.id,
-    { history: [] },
-  );
+  const [conversation, { active }] = await Promise.all([
+    loadConversation<AssistantState>(project.id, "assistant", auth.user.id, {
+      history: [],
+    }),
+    resolveAgentContext(project.id, String(form.get("agent") ?? "") || null),
+  ]);
   const entries = [...conversation.entries];
   entries.push({ id: newId(), role: "user", text: message });
 
@@ -97,6 +104,7 @@ export async function action(args: ActionFunctionArgs) {
       project,
       instruction: message,
       createdBy: auth.user.id,
+      agentRoot: active.root,
       history: conversation.state.history,
     });
     entries.push({
@@ -131,7 +139,7 @@ export function meta() {
 }
 
 export default function Assistant({ loaderData }: Route.ComponentProps) {
-  const { project, entries, expired } = loaderData;
+  const { project, entries, expired, roster, activeAgent } = loaderData;
   const base = `/projects/${project.id}`;
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
@@ -156,7 +164,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           ) : undefined
         }
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {expired && entries.length === 0 && (
         <Alert className="mb-4">
@@ -189,10 +197,16 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         </ChatTranscript>
 
         <ChatComposer
-          placeholder="What should the agent be able to do?"
+          placeholder={
+            roster.length > 1
+              ? `What should ${activeAgent} be able to do?`
+              : "What should the agent be able to do?"
+          }
           busy={busy}
           busyLabel="Working…"
-          onSend={(message) => fetcher.submit({ message }, { method: "post" })}
+          onSend={(message) =>
+            fetcher.submit({ message, agent: activeAgent }, { method: "post" })
+          }
         />
       </div>
     </AppShell>

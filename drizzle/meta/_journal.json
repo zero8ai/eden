@@ -71,6 +71,13 @@
       "when": 1783152834092,
       "tag": "0009_agents_split",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783155178635,
+      "tag": "0010_draft_agent_nullable",
+      "breakpoints": true
     }
   ]
 }

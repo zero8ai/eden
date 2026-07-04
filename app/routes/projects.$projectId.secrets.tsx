@@ -47,6 +47,9 @@ interface SecretsView {
   project: Project;
   envs: Environment[];
   scope: { environmentId: string | null; label: string };
+  roster: { name: string }[];
+  activeAgent: string;
+  isTeam: boolean;
   names: string[];
   configured: boolean;
   error: string | null;
@@ -84,10 +87,16 @@ export const loader = (args: LoaderFunctionArgs) =>
         args.params.projectId,
       );
       const url = new URL(args.request.url);
+      const roster = await listAgents(project.id);
       const agent = await resolveAgent(project.id, url.searchParams.get("agent"));
       if (!agent) throw new Error("Project has no agents.");
       const envs = await listAgentEnvironments(agent.id);
       const scope = resolveScope(url.searchParams.get("env"), envs);
+      const team = {
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: agent.name,
+        isTeam: roster.length > 1,
+      };
 
       try {
         const names = await getRuntime().secrets.listNames({
@@ -95,12 +104,13 @@ export const loader = (args: LoaderFunctionArgs) =>
           agentId: agent.id,
           environmentId: scope.environmentId,
         });
-        return { project, envs, scope, names, configured: true, error: null };
+        return { project, envs, scope, ...team, names, configured: true, error: null };
       } catch (error) {
         return {
           project,
           envs,
           scope,
+          ...team,
           names: [] as string[],
           configured: false,
           error: (error as Error).message,
@@ -130,7 +140,7 @@ export async function action(args: ActionFunctionArgs) {
   const envs = await listAgentEnvironments(agent.id);
   const { environmentId } = resolveScope(envRaw, envs);
   const key = String(form.get("key") ?? "").trim();
-  const back = `/projects/${project.id}/secrets?env=${encodeURIComponent(envRaw)}`;
+  const back = `/projects/${project.id}/secrets?env=${encodeURIComponent(envRaw)}&agent=${encodeURIComponent(agent.name)}`;
 
   const secrets = getRuntime().secrets;
   const ref = { projectId: project.id, agentId: agent.id, environmentId, key };
@@ -156,7 +166,8 @@ export function meta() {
 }
 
 export default function Secrets({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, envs, scope, names, configured, error } = loaderData;
+  const { project, envs, scope, roster, activeAgent, isTeam, names, configured, error } =
+    loaderData;
   const navigation = useNavigation();
   const busy = navigation.state === "submitting";
   const envValue = scope.environmentId ?? ALL;
@@ -166,18 +177,23 @@ export default function Secrets({ loaderData, actionData }: Route.ComponentProps
   return (
     <AppShell workspaceName={project.name}>
       <PageHeader
-        title="Secrets"
-        description="Stored encrypted, never in the repo. Reference them by name in tools and connections; values are injected at deploy time."
+        title={isTeam ? `Secrets — ${activeAgent}` : "Secrets"}
+        description={
+          isTeam
+            ? "Scoped to this team member only — teammates cannot read each other's credentials. Values are injected at deploy time."
+            : "Stored encrypted, never in the repo. Reference them by name in tools and connections; values are injected at deploy time."
+        }
         actions={
           <Button variant="outline" asChild>
             <Link to={base}>← {project.name}</Link>
           </Button>
         }
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {/* Scope selector */}
       <Form method="get" className="flex items-center gap-2">
+        {isTeam && <input type="hidden" name="agent" value={activeAgent} />}
         <Label htmlFor="secret-scope">Scope</Label>
         <Select name="env" defaultValue={envValue}>
           <SelectTrigger id="secret-scope" className="min-w-44">
@@ -229,12 +245,13 @@ export default function Secrets({ loaderData, actionData }: Route.ComponentProps
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-sm">{name}</span>
                     <Badge variant={scope.environmentId ? "secondary" : "outline"}>
-                      {scope.environmentId ? scope.label : "project-wide"}
+                      {scope.environmentId ? scope.label : "all environments"}
                     </Badge>
                   </div>
                   <Form method="post">
                     <input type="hidden" name="intent" value="delete" />
                     <input type="hidden" name="env" value={envValue} />
+                    <input type="hidden" name="agent" value={activeAgent} />
                     <input type="hidden" name="key" value={name} />
                     <Button
                       type="submit"
@@ -264,6 +281,7 @@ export default function Secrets({ loaderData, actionData }: Route.ComponentProps
           <Form method="post" className="space-y-3">
             <input type="hidden" name="intent" value="set" />
             <input type="hidden" name="env" value={envValue} />
+            <input type="hidden" name="agent" value={activeAgent} />
             <div className="space-y-1.5">
               <Label htmlFor="secret-key">Key</Label>
               <Input

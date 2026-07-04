@@ -30,13 +30,16 @@ import { Textarea } from "~/components/ui/textarea";
 import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import { buildScheduleFile, parseScheduleFile } from "~/eve/scheduleFile";
 import { isValidCron } from "~/lib/cron";
+import { memberFromPath, resolveAgentContext } from "~/project/agent-context.server";
 import { normalizeAgentPath, requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.edit.schedule";
 
-/** This editor only understands markdown-form schedules. */
+/** This editor only understands markdown-form schedules (root agent or a team member). */
 function schedulePath(raw: string): string | null {
   const path = normalizeAgentPath(raw);
-  return path && /^agent\/schedules\/[^/]+\.md$/.test(path) ? path : null;
+  return path && /^(?:agent|agents\/[^/]+\/agent)\/schedules\/[^/]+\.md$/.test(path)
+    ? path
+    : null;
 }
 
 const DEFAULT_CRON = "0 9 * * 1-5";
@@ -60,11 +63,16 @@ export const loader = (args: LoaderFunctionArgs) =>
       );
       if (!path) throw redirect(`/projects/${project.id}`);
 
-      const view = await resolveFileView(project, path);
+      const [view, { roster, active }] = await Promise.all([
+        resolveFileView(project, path),
+        resolveAgentContext(project.id, memberFromPath(path)),
+      ]);
       const parsed = view.content ? parseScheduleFile(view.content) : null;
       return {
         project,
         path,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
         cron: parsed?.cron || DEFAULT_CRON,
         message: parsed?.message ?? "",
         extraFrontmatter: parsed?.extraFrontmatter ?? [],
@@ -133,7 +141,7 @@ function ScheduleForm({
   loaderData,
   actionData,
 }: Pick<Route.ComponentProps, "loaderData" | "actionData">) {
-  const { project, path, exists, isNew } = loaderData;
+  const { project, path, roster, activeAgent, exists, isNew } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const saving = navigation.state !== "idle";
@@ -155,7 +163,7 @@ function ScheduleForm({
         }
         description="When the schedule fires, the agent receives the message below and acts on it."
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">

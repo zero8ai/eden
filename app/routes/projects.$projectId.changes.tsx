@@ -30,6 +30,7 @@ import { Input } from "~/components/ui/input";
 import { ensureReleasesForCommit } from "~/deploy/controller.server";
 import { discardDrafts, listDrafts, publishDrafts } from "~/drafts/drafts.server";
 import { closePullRequest, listOpenChanges, mergePullRequest } from "~/github/write.server";
+import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.changes";
 
@@ -43,6 +44,10 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
+      const { roster, active } = await resolveAgentContext(
+        project.id,
+        agentParam(args.request),
+      );
       const [drafts, changes] = await Promise.all([
         listDrafts(project.id),
         listOpenChanges(project.repoInstallationId, {
@@ -50,7 +55,13 @@ export const loader = (args: LoaderFunctionArgs) =>
           repo: project.repoName,
         }),
       ]);
-      return { project, drafts, changes };
+      return {
+        project,
+        drafts,
+        changes,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
+      };
     },
     { ensureSignedIn: true },
   );
@@ -149,7 +160,7 @@ export function meta() {
 }
 
 export default function Changes({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, drafts, changes } = loaderData;
+  const { project, drafts, changes, roster, activeAgent } = loaderData;
   const base = `/projects/${project.id}`;
   const navigation = useNavigation();
   const submit = useSubmit();
@@ -168,7 +179,7 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
         title="Changes"
         description="Staged edits publish together as one change request; merging a change request cuts a new version."
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">

@@ -29,7 +29,8 @@ export interface StageInput {
 
 /**
  * Stage (or restage) a draft for a file. Latest save per path wins. The owning roster
- * member is derived from the path's agent root (Milestone 5.5: drafts key by agent).
+ * member is derived from the path's agent root (Milestone 5.5: drafts key by agent);
+ * project-shared files outside every member (root package.json) stage unattributed.
  */
 export async function stageDraft(
   input: StageInput,
@@ -37,12 +38,7 @@ export async function stageDraft(
 ): Promise<DraftChange> {
   const agents = await store.agents.listByProject(input.projectId);
   const agent = agentForPath(agents, input.path);
-  if (!agent) {
-    throw new Error(
-      `"${input.path}" doesn't belong to any agent in this project — stage files under an agent's directory.`,
-    );
-  }
-  return store.drafts.upsert({ ...input, agentId: agent.id });
+  return store.drafts.upsert({ ...input, agentId: agent?.id ?? null });
 }
 
 /** All staged drafts for a project, oldest first. */
@@ -178,12 +174,11 @@ export async function publishDrafts(
   // Publish gate: the change-set must compile against the branch it targets. A failed check
   // creates NOTHING (no branch, no PR) and keeps the drafts staged so they can be fixed and
   // republished — broken code never becomes a change request. When every selected draft
-  // belongs to one roster member, the gate builds that member's directory (team repos, §7.9).
+  // belongs to one roster member, the gate builds that member's directory (team repos, §7.9);
+  // mixed or shared (unattributed) selections check the repo root.
   const memberIds = new Set(selected.map((d) => d.agentId));
-  const soleMember =
-    memberIds.size === 1
-      ? await store.agents.findById(selected[0].agentId)
-      : null;
+  const soleId = memberIds.size === 1 ? selected[0].agentId : null;
+  const soleMember = soleId ? await store.agents.findById(soleId) : null;
   const check = await checkBuild({
     projectId: input.project.id,
     repo: { owner: input.project.repoOwner, repo: input.project.repoName },

@@ -189,11 +189,15 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
   }
 }
 
-/** Run list for a project (optionally filtered by Release for compare-by-version). */
-export function listRuns(projectId: string, releaseId?: string) {
-  const where = releaseId
-    ? and(eq(runs.projectId, projectId), eq(runs.releaseId, releaseId))
-    : eq(runs.projectId, projectId);
+/** Run list for a project, optionally filtered by Release and/or roster member (§7.9). */
+export function listRuns(
+  projectId: string,
+  filter: { releaseId?: string; agentId?: string } = {},
+) {
+  const conditions = [eq(runs.projectId, projectId)];
+  if (filter.releaseId) conditions.push(eq(runs.releaseId, filter.releaseId));
+  if (filter.agentId) conditions.push(eq(runs.agentId, filter.agentId));
+  const where = and(...conditions);
   return db
     .select({
       id: runs.id,

@@ -12,8 +12,8 @@ import { getInstallationOctokit } from "./client.server";
 export interface FileChange {
   /** Repo-relative path, forward-slashed (e.g. "agent/instructions.md"). */
   path: string;
-  /** New UTF-8 file contents. */
-  content: string;
+  /** New UTF-8 file contents; null deletes the file (e.g. removing a team member). */
+  content: string | null;
 }
 
 export interface ProposeChangeInput {
@@ -74,7 +74,7 @@ async function ensureBranch(
 /**
  * Commit `files` to `branch` as ONE commit via the Git Data API: blobs upload concurrently
  * (independent), then a single tree + commit + ref update. One change-set == one commit, and
- * no per-file sequential round-trips.
+ * no per-file sequential round-trips. A null-content entry deletes that path (tree sha null).
  */
 export async function commitFiles(
   octokit: InstallationOctokit,
@@ -83,9 +83,11 @@ export async function commitFiles(
   files: FileChange[],
   message: string,
 ): Promise<string> {
+  const writes = files.filter((f): f is FileChange & { content: string } => f.content !== null);
+  const deletes = files.filter((f) => f.content === null);
   const [blobs, head] = await Promise.all([
     Promise.all(
-      files.map((f) =>
+      writes.map((f) =>
         octokit.rest.git.createBlob({
           owner,
           repo,
@@ -102,12 +104,21 @@ export async function commitFiles(
     owner,
     repo,
     base_tree: headCommit.data.tree.sha,
-    tree: files.map((f, i) => ({
-      path: f.path,
-      mode: "100644" as const,
-      type: "blob" as const,
-      sha: blobs[i].data.sha,
-    })),
+    tree: [
+      ...writes.map((f, i) => ({
+        path: f.path,
+        mode: "100644" as const,
+        type: "blob" as const,
+        sha: blobs[i].data.sha,
+      })),
+      // sha: null in a tree entry removes the path from the base tree.
+      ...deletes.map((f) => ({
+        path: f.path,
+        mode: "100644" as const,
+        type: "blob" as const,
+        sha: null,
+      })),
+    ],
   });
   const commit = await octokit.rest.git.createCommit({
     owner,

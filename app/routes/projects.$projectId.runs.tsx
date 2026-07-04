@@ -46,6 +46,7 @@ import {
   listIngestTokens,
   listRuns,
 } from "~/observability/store.server";
+import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.runs";
 
@@ -57,15 +58,29 @@ export const loader = (args: LoaderFunctionArgs) =>
         { user: auth.user, organizationId: auth.organizationId, role: auth.role },
         args.params.projectId,
       );
+      const { roster, active, isTeam } = await resolveAgentContext(
+        project.id,
+        agentParam(args.request),
+      );
       const raw = new URL(args.request.url).searchParams.get("release");
       // "all" is the picker's explicit no-filter sentinel (Radix items can't be empty).
       const releaseId = raw && raw !== "all" ? raw : undefined;
       const [runsList, releasesList, tokens] = await Promise.all([
-        listRuns(project.id, releaseId),
+        // Teams: this member's runs only (unattributed runs appear under no member).
+        listRuns(project.id, { releaseId, agentId: isTeam ? active.id : undefined }),
         listReleases(project.id),
         listIngestTokens(project.id),
       ]);
-      return { project, runs: runsList, releases: releasesList, tokens, releaseId };
+      return {
+        project,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
+        isTeam,
+        runs: runsList,
+        releases: releasesList.filter((r) => !isTeam || r.agentId === active.id),
+        tokens,
+        releaseId,
+      };
     },
     { ensureSignedIn: true },
   );
@@ -110,19 +125,21 @@ function statusVariant(
 }
 
 export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, runs, releases, tokens, releaseId } = loaderData;
+  const { project, roster, activeAgent, isTeam, runs, releases, tokens, releaseId } =
+    loaderData;
   const base = `/projects/${project.id}`;
 
   return (
     <AppShell>
       <PageHeader
-        title="Runs"
+        title={isTeam ? `Runs — ${activeAgent}` : "Runs"}
         description="Per-run summary metrics, filterable by release to compare versions."
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {/* Compare-by-version filter */}
       <Form method="get" className="mb-6 flex items-end gap-2">
+        {isTeam && <input type="hidden" name="agent" value={activeAgent} />}
         <div className="grid gap-1.5">
           <Label htmlFor="release">Version</Label>
           <Select name="release" defaultValue={releaseId ?? "all"}>

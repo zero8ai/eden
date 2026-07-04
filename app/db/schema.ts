@@ -200,10 +200,11 @@ export const draftChanges = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    /** The roster member the path belongs to (derived from the path's agent root). */
-    agentId: uuid("agent_id")
-      .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+    /**
+     * The roster member the path belongs to (derived from the path's agent root). Null for
+     * project-shared files outside every member (e.g. the root package.json).
+     */
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
     /** Repo-relative path under the agent's root (e.g. "agent/instructions.md"). */
     path: text("path").notNull(),
     /** Full new file contents (drafts are whole-file, like the editors). */

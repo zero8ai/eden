@@ -36,17 +36,20 @@ export function requireRepo(project: Project): ConnectedProject {
 }
 
 /**
- * Validate a user-supplied repo path stays within the agent surface. Prevents editing files
- * outside `agent/` and path-traversal. Returns the normalized path or null if invalid.
+ * Validate a user-supplied repo path stays within the agent surface — the root `agent/`
+ * directory or a team member's `agents/<member>/agent/` (PRD §7.9). Prevents editing files
+ * outside those and path-traversal. Returns the normalized path or null if invalid.
  */
 const ROOT_FILE_ALLOWLIST = new Set(["package.json", "package-lock.json"]);
+const MEMBER_PATH = /^agents\/[A-Za-z0-9][\w.-]*\/(agent\/.+|package\.json|package-lock\.json)$/;
 
 export function normalizeAgentPath(raw: string): string | null {
   const p = raw.trim().replace(/^\/+/, "");
   if (p.includes("..") || p.endsWith("/")) return null;
   // Change-sets may carry the dependency manifest (a tool can need an npm package); anything
-  // else outside agent/ (CI config, Dockerfile, app code) stays off-limits to edits from Eden.
+  // else outside the agent surface (CI config, Dockerfile, app code) stays off-limits.
   if (ROOT_FILE_ALLOWLIST.has(p)) return p;
-  if (!p.startsWith("agent/")) return null;
-  return p;
+  if (p.startsWith("agent/")) return p;
+  if (MEMBER_PATH.test(p)) return p;
+  return null;
 }

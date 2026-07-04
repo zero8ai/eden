@@ -12,6 +12,7 @@ import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { getRunWithSteps } from "~/observability/store.server";
+import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.runs.$runId";
 
@@ -23,9 +24,17 @@ export const loader = (args: LoaderFunctionArgs) =>
         { user: auth.user, organizationId: auth.organizationId, role: auth.role },
         args.params.projectId,
       );
-      const result = await getRunWithSteps(project.id, args.params.runId!);
+      const [result, { roster, active }] = await Promise.all([
+        getRunWithSteps(project.id, args.params.runId!),
+        resolveAgentContext(project.id, agentParam(args.request)),
+      ]);
       if (!result) throw data("Run not found", { status: 404 });
-      return { project, ...result };
+      return {
+        project,
+        ...result,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
+      };
     },
     { ensureSignedIn: true },
   );
@@ -44,7 +53,7 @@ function statusVariant(
 }
 
 export default function RunTranscript({ loaderData }: Route.ComponentProps) {
-  const { project, run, steps, release } = loaderData;
+  const { project, run, steps, release, roster, activeAgent } = loaderData;
   const base = `/projects/${project.id}`;
 
   return (
@@ -58,7 +67,7 @@ export default function RunTranscript({ loaderData }: Route.ComponentProps) {
           </Button>
         }
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {/* Summary */}
       <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">

@@ -5,8 +5,8 @@
  * AppShell renders the workspace-level header; AgentNav renders the per-agent section nav
  * (Overview = the repo-backed config surface, then Deployments / Runs / Secrets / Assistant).
  */
-import { LogOut, User } from "lucide-react";
-import { Form, Link, NavLink } from "react-router";
+import { LogOut, User, Users } from "lucide-react";
+import { Form, Link, NavLink, useLocation, useNavigate } from "react-router";
 
 import { ThemeToggle } from "~/components/theme-toggle";
 import { Button } from "~/components/ui/button";
@@ -18,6 +18,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
 import { TooltipProvider } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -138,37 +145,98 @@ export function PageHeader({
   );
 }
 
-/** Per-agent section navigation. `base` is `/projects/<id>`. */
-export function AgentNav({ base }: { base: string }) {
+/** Minimal roster info the switcher needs (serializable through loaders). */
+export interface RosterMember {
+  name: string;
+}
+
+/**
+ * Per-project section navigation. `base` is `/projects/<id>`. For team repos (roster > 1,
+ * PRD §7.9) a member switcher renders beside the tabs, and every tab link carries the
+ * active member as `?agent=<name>` so the selection follows you across tabs.
+ */
+export function AgentNav({
+  base,
+  roster,
+  activeAgent,
+}: {
+  base: string;
+  roster?: RosterMember[];
+  activeAgent?: string;
+}) {
+  const isTeam = (roster?.length ?? 0) > 1;
+  const suffix =
+    isTeam && activeAgent ? `?agent=${encodeURIComponent(activeAgent)}` : "";
   const items = [
-    { to: base, label: "Overview", end: true },
-    { to: `${base}/changes`, label: "Changes" },
-    { to: `${base}/deployments`, label: "Deployments" },
-    { to: `${base}/playground`, label: "Playground" },
-    { to: `${base}/runs`, label: "Runs" },
-    { to: `${base}/secrets`, label: "Secrets" },
-    { to: `${base}/assistant`, label: "Assistant" },
+    { to: `${base}${suffix}`, label: "Overview", end: true },
+    { to: `${base}/changes${suffix}`, label: "Changes" },
+    { to: `${base}/deployments${suffix}`, label: "Deployments" },
+    { to: `${base}/playground${suffix}`, label: "Playground" },
+    { to: `${base}/runs${suffix}`, label: "Runs" },
+    { to: `${base}/secrets${suffix}`, label: "Secrets" },
+    { to: `${base}/assistant${suffix}`, label: "Assistant" },
   ];
   return (
     <div className="mb-8">
-      <nav className="flex items-center gap-1 text-sm">
-        {items.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end}
-            className={({ isActive }) =>
-              cn(
-                "rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground",
-                isActive && "bg-accent font-medium text-foreground",
-              )
-            }
-          >
-            {item.label}
-          </NavLink>
-        ))}
-      </nav>
+      <div className="flex items-center justify-between gap-3">
+        <nav className="flex items-center gap-1 text-sm">
+          {items.map((item) => (
+            <NavLink
+              key={item.label}
+              to={item.to}
+              end={item.end}
+              className={({ isActive }) =>
+                cn(
+                  "rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground",
+                  isActive && "bg-accent font-medium text-foreground",
+                )
+              }
+            >
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
+        {isTeam && roster && activeAgent && (
+          <AgentSwitcher roster={roster} activeAgent={activeAgent} />
+        )}
+      </div>
       <Separator className="mt-2" />
+    </div>
+  );
+}
+
+/** Team member picker: swaps `?agent=` on the current tab (state follows across tabs). */
+function AgentSwitcher({
+  roster,
+  activeAgent,
+}: {
+  roster: RosterMember[];
+  activeAgent: string;
+}) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  return (
+    <div className="flex items-center gap-2">
+      <Users className="h-4 w-4 text-muted-foreground" aria-hidden />
+      <Select
+        value={activeAgent}
+        onValueChange={(name) => {
+          const params = new URLSearchParams(location.search);
+          params.set("agent", name);
+          navigate(`${location.pathname}?${params}`);
+        }}
+      >
+        <SelectTrigger className="h-8 min-w-36 font-mono text-xs" aria-label="Team member">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {roster.map((m) => (
+            <SelectItem key={m.name} value={m.name} className="font-mono text-xs">
+              {m.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   );
 }

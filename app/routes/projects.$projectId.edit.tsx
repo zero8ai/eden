@@ -27,6 +27,7 @@ import { Button } from "~/components/ui/button";
 import { resolveFileView, stageDraft, type FileView } from "~/drafts/drafts.server";
 import { RESOURCE_KINDS } from "~/eve/templates";
 import { formatSource, isFormattable } from "~/lib/format";
+import { memberFromPath, resolveAgentContext } from "~/project/agent-context.server";
 import {
   normalizeAgentPath,
   requireProject,
@@ -38,6 +39,8 @@ import type { Route } from "./+types/projects.$projectId.edit";
 interface FileEditView {
   project: ConnectedProject;
   path: string;
+  roster: { name: string }[];
+  activeAgent: string;
   content: string;
   /** File exists on the default branch. */
   exists: boolean;
@@ -49,7 +52,8 @@ interface FileEditView {
 
 /** Starter content for a brand-new file, by its category directory (null if none applies). */
 function templateFor(path: string): string | null {
-  const m = path.match(/^agent\/([^/]+)\/([^/]+)\.[a-z]+$/);
+  // Root agent (agent/<cat>/<name>) or a team member (agents/<m>/agent/<cat>/<name>) — §7.9.
+  const m = path.match(/^(?:agent|agents\/[^/]+\/agent)\/([^/]+)\/([^/]+)\.[a-z]+$/);
   if (!m) return null;
   const kind = Object.values(RESOURCE_KINDS).find((k) => k.key === m[1]);
   return kind ? kind.template(m[2]) : null;
@@ -77,17 +81,25 @@ export const loader = (args: LoaderFunctionArgs) =>
 
       // Markdown schedules get the structured editor (cron + message); ?raw=1 is its own
       // "advanced" escape hatch back to this code editor.
-      if (/^agent\/schedules\/[^/]+\.md$/.test(path) && !url.searchParams.get("raw")) {
+      if (
+        /^(?:agent|agents\/[^/]+\/agent)\/schedules\/[^/]+\.md$/.test(path) &&
+        !url.searchParams.get("raw")
+      ) {
         throw redirect(
           `/projects/${project.id}/edit/schedule?path=${encodeURIComponent(path)}`,
         );
       }
 
-      const view = await resolveFileView(project, path);
+      const [view, { roster, active }] = await Promise.all([
+        resolveFileView(project, path),
+        resolveAgentContext(project.id, memberFromPath(path)),
+      ]);
       const template = view.content === null ? templateFor(path) : null;
       return {
         project,
         path,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
         content: view.content ?? template ?? "",
         exists: view.existsInRepo,
         isNew: template !== null,
@@ -144,7 +156,7 @@ function Editor({
   loaderData,
   actionData,
 }: Pick<Route.ComponentProps, "loaderData" | "actionData">) {
-  const { project, path, content, exists, isNew } = loaderData;
+  const { project, path, roster, activeAgent, content, exists, isNew } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const saving = navigation.state !== "idle";
@@ -195,7 +207,7 @@ function Editor({
             : "Saving stages the change — publish staged changes as one pull request from the Changes tab."
         }
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">

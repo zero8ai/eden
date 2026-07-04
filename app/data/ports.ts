@@ -146,7 +146,8 @@ export interface DraftRepo {
   /** Stage (upsert) a draft: latest content per (project, path) wins. */
   upsert(input: {
     projectId: string;
-    agentId: string;
+    /** Owning roster member; null for project-shared files (root package.json). */
+    agentId: string | null;
     path: string;
     content: string;
     baseSha?: string | null;

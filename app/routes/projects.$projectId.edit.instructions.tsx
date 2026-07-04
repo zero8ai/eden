@@ -25,9 +25,8 @@ import { Button } from "~/components/ui/button";
 import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
 import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
+import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
 import type { Route } from "./+types/projects.$projectId.edit.instructions";
-
-const INSTRUCTIONS_PATH = "agent/instructions.md";
 
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
@@ -46,6 +45,12 @@ export const loader = (args: LoaderFunctionArgs) =>
         throw data("Project has no connected repo", { status: 400 });
       }
 
+      const { roster, active, isTeam } = await resolveAgentContext(
+        project.id,
+        agentParam(args.request),
+      );
+      const path = `${active.root}/instructions.md`;
+
       // Show the latest intended value: staged draft → open change request → repo.
       const view = await resolveFileView(
         {
@@ -54,11 +59,15 @@ export const loader = (args: LoaderFunctionArgs) =>
           repoOwner: project.repoOwner,
           repoName: project.repoName,
         },
-        INSTRUCTIONS_PATH,
+        path,
       );
 
       return {
         project,
+        path,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
+        isTeam,
         instructions: view.content ?? "",
         source: view.source,
         change: view.change,
@@ -85,11 +94,15 @@ export async function action(args: ActionFunctionArgs) {
 
   const form = await args.request.formData();
   const content = String(form.get("content") ?? "");
+  const { active } = await resolveAgentContext(
+    project.id,
+    String(form.get("agent") ?? "") || null,
+  );
 
   try {
     await stageDraft({
       projectId: project.id,
-      path: INSTRUCTIONS_PATH,
+      path: `${active.root}/instructions.md`,
       content,
       createdBy: auth.user.id,
     });
@@ -107,21 +120,23 @@ export default function EditInstructions({
   loaderData,
   actionData,
 }: Route.ComponentProps) {
-  const { project, instructions, source, change } = loaderData;
+  const { project, path, roster, activeAgent, isTeam, instructions, source, change } =
+    loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const saving = navigation.state !== "idle";
   const [value, setValue] = useState(instructions);
 
   const base = `/projects/${project.id}`;
+  const backTo = isTeam ? `${base}?agent=${encodeURIComponent(activeAgent)}` : base;
 
   return (
     <AppShell>
       <PageHeader
-        title="Edit instructions"
+        title={isTeam ? `Edit instructions — ${activeAgent}` : "Edit instructions"}
         description="Saving stages the change — publish staged changes as one pull request from the Changes tab."
       />
-      <AgentNav base={base} />
+      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
@@ -137,16 +152,18 @@ export default function EditInstructions({
         base={base}
       />
 
-      <CodeEditor path={INSTRUCTIONS_PATH} value={value} onChange={setValue} />
+      <CodeEditor path={path} value={value} onChange={setValue} />
       <div className="mt-4 flex items-center gap-3">
         <Button
-          onClick={() => submit({ content: value }, { method: "post" })}
+          onClick={() =>
+            submit({ content: value, agent: activeAgent }, { method: "post" })
+          }
           disabled={saving}
         >
           {saving ? "Saving…" : "Save"}
         </Button>
         <Button variant="ghost" asChild>
-          <Link to={base}>Cancel</Link>
+          <Link to={backTo}>Cancel</Link>
         </Button>
       </div>
     </AppShell>

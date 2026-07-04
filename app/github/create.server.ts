@@ -86,23 +86,33 @@ function singleAgentFiles(name: string, model: string): FileChange[] {
 }
 
 /**
- * A fresh team monorepo skeleton (PRD §7.9): npm workspaces, each member a complete eve
- * project under `agents/<member>/`, detected by convention. `eden.json` is metadata only.
+ * The files for ONE team member: a complete eve project under `agents/<member>/`. Used by
+ * the team scaffold and by the add-member flow (which lands them as a change-set).
  */
-function teamFiles(name: string, model: string): FileChange[] {
-  const memberDir = `agents/${STARTER_MEMBER}`;
+export function memberScaffold(member: string, model: string = DEFAULT_MODEL): FileChange[] {
+  const memberDir = `agents/${member}`;
   return [
-    ...agentDirFiles(`${memberDir}/agent`, STARTER_MEMBER, model),
+    ...agentDirFiles(`${memberDir}/agent`, member, model),
     {
       path: `${memberDir}/package.json`,
       content: packageJson({
-        name: STARTER_MEMBER,
+        name: member,
         private: true,
         type: "module",
         scripts: { dev: "eve dev", build: "eve build" },
         dependencies: { eve: "latest", zod: "^3.23.0" },
       }),
     },
+  ];
+}
+
+/**
+ * A fresh team monorepo skeleton (PRD §7.9): npm workspaces, each member a complete eve
+ * project under `agents/<member>/`, detected by convention. `eden.json` is metadata only.
+ */
+function teamFiles(name: string, model: string): FileChange[] {
+  return [
+    ...memberScaffold(STARTER_MEMBER, model),
     {
       path: "package.json",
       content: packageJson({

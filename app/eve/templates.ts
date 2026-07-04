@@ -135,7 +135,7 @@ export default defineMcpClientConnection({
   },
 };
 
-/** Path a new resource of `kind` named `slug` lives at. */
-export function resourcePath(kind: ResourceKind, slug: string): string {
-  return `agent/${kind.key}/${slug}${kind.ext}`;
+/** Path a new resource of `kind` named `slug` lives at, under an agent root (§7.9). */
+export function resourcePath(kind: ResourceKind, slug: string, root = "agent"): string {
+  return `${root}/${kind.key}/${slug}${kind.ext}`;
 }

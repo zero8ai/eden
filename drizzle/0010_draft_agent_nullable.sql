@@ -1,0 +1,1 @@
+ALTER TABLE "draft_changes" ALTER COLUMN "agent_id" DROP NOT NULL;

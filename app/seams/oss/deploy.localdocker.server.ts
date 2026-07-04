@@ -50,6 +50,18 @@ async function docker(args: string[]): Promise<string> {
   return stdout.trim();
 }
 
+function commandErrorText(error: unknown): string {
+  if (typeof error === "object" && error !== null) {
+    const e = error as { stderr?: unknown; stdout?: unknown; message?: unknown };
+    return String(e.stderr || e.stdout || e.message || error);
+  }
+  return String(error);
+}
+
+function isMissingDockerObject(error: unknown): boolean {
+  return /No such (container|object)|not found/i.test(commandErrorText(error));
+}
+
 /** Control-plane Postgres connection info, for provisioning per-instance databases. */
 function controlPlaneUrl(): URL {
   const raw = process.env.DATABASE_URL;
@@ -93,8 +105,24 @@ async function dropInstanceDb(deploymentId: string): Promise<void> {
 async function removeIfExists(name: string): Promise<void> {
   try {
     await docker(["rm", "-f", name]);
-  } catch {
-    // not running / doesn't exist
+  } catch (error) {
+    if (isMissingDockerObject(error)) return;
+    throw error;
+  }
+}
+
+async function inspectRunning(name: string): Promise<boolean | null> {
+  try {
+    const state = await docker([
+      "inspect",
+      "--format",
+      "{{.State.Running}}",
+      name,
+    ]);
+    return state === "true";
+  } catch (error) {
+    if (isMissingDockerObject(error)) return null;
+    throw error;
   }
 }
 
@@ -217,10 +245,13 @@ export const localDockerTarget: DeployTarget = {
   },
 
   async stop(deploymentId: string): Promise<void> {
-    try {
-      await docker(["stop", containerName(deploymentId)]);
-    } catch {
-      // already stopped / gone
+    const name = containerName(deploymentId);
+    const before = await inspectRunning(name);
+    if (before === null || before === false) return;
+    await docker(["stop", name]);
+    const after = await inspectRunning(name);
+    if (after === true) {
+      throw new Error(`container ${name} is still running after docker stop`);
     }
   },
 
@@ -241,15 +272,11 @@ export const localDockerTarget: DeployTarget = {
   async health(deploymentId: string): Promise<InstanceHealth> {
     const name = containerName(deploymentId);
     try {
-      const state = await docker([
-        "inspect",
-        "--format",
-        "{{.State.Running}}",
-        name,
-      ]);
-      return { status: state === "true" ? "live" : "stopped" };
-    } catch {
-      return { status: "stopped", detail: "no container" };
+      const running = await inspectRunning(name);
+      if (running === null) return { status: "stopped", detail: "no container" };
+      return { status: running ? "live" : "stopped" };
+    } catch (error) {
+      return { status: "failed", detail: commandErrorText(error) };
     }
   },
 
@@ -260,4 +287,3 @@ export const localDockerTarget: DeployTarget = {
     await dropInstanceDb(deploymentId);
   },
 };
-

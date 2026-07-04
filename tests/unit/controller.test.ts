@@ -104,6 +104,30 @@ describe("deployRelease", () => {
     expect(dep.status).toBe("failed");
     expect(dep.errorDetail).toBe("docker unavailable");
   });
+
+  it("stops a failed/unhealthy new instance so its schedules cannot keep running", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "7".repeat(40) }, store);
+    const stoppedIds: string[] = [];
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: {
+            status: "failed",
+            url: "http://bad",
+            detail: "container did not become healthy",
+          },
+          stoppedIds,
+        }),
+        secrets: fakeSecrets(),
+      },
+    );
+
+    expect(dep.status).toBe("failed");
+    expect(dep.errorDetail).toBe("container did not become healthy");
+    expect(stoppedIds).toContain(dep.id);
+  });
 });
 
 describe("queueDeploy", () => {
@@ -174,6 +198,38 @@ describe("cutover on deploy", () => {
     const oldRow = all.find((d) => d.id === depA.id);
     expect(oldRow?.status).toBe("stopped");
     expect(oldRow?.trafficWeight).toBe(0);
+    expect(all.filter((d) => d.status === "live")).toHaveLength(1);
+  });
+
+  it("does not hide a stale old instance when cutover cannot stop it", async () => {
+    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a".repeat(40) }, store);
+    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b".repeat(40) }, store);
+    const first = await deployRelease(
+      { environmentId: ENV, releaseId: rA.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://old" } }),
+        secrets: fakeSecrets(),
+      },
+    );
+    expect(first.status).toBe("live");
+
+    const brokenStop = fakeDeployTarget({
+      health: { status: "live", url: "http://new" },
+      stopError: "docker daemon unreachable",
+    });
+    delete (brokenStop as Partial<typeof brokenStop>).destroy;
+    const second = await deployRelease(
+      { environmentId: ENV, releaseId: rB.id },
+      { store, deployTarget: brokenStop, secrets: fakeSecrets() },
+    );
+
+    expect(second.status).toBe("failed");
+    expect(second.errorDetail).toMatch(/cutover failed while stopping the previous deployment/);
+
+    const all = await listDeployments(ENV, store);
+    expect(all.find((d) => d.id === first.id)?.status).toBe("live");
+    expect(all.find((d) => d.id === second.id)?.status).toBe("failed");
     expect(all.filter((d) => d.status === "live")).toHaveLength(1);
   });
 

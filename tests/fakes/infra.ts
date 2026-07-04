@@ -17,9 +17,15 @@ export function fakeDeployTarget(opts: {
   health?: InstanceHealth;
   deployError?: string;
   buildImageRef?: string;
+  stopError?: string;
   /** Captures the env each deploy() received, for injection assertions. */
   deployedEnvs?: Record<string, string>[];
+  /** Captures stopped deployment ids for cleanup/cutover assertions. */
+  stoppedIds?: string[];
+  /** Captures destroyed deployment ids for cleanup/cutover assertions. */
+  destroyedIds?: string[];
 } = {}): DeployTarget {
+  const stopped = new Set<string>();
   return {
     name: "fake",
     async build() {
@@ -30,11 +36,20 @@ export function fakeDeployTarget(opts: {
       if (opts.deployError) throw new Error(opts.deployError);
       return opts.health ?? { status: "live", url: "http://fake.local" };
     },
-    async stop() {},
+    async stop(id) {
+      if (opts.stopError) throw new Error(opts.stopError);
+      opts.stoppedIds?.push(id);
+      stopped.add(id);
+    },
+    async destroy(id) {
+      opts.destroyedIds?.push(id);
+      stopped.add(id);
+    },
     async start() {
       return { status: "live" };
     },
-    async health() {
+    async health(id) {
+      if (stopped.has(id)) return { status: "stopped" };
       return opts.health ?? { status: "live" };
     },
   };

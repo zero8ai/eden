@@ -43,6 +43,48 @@ function deployDeps(): DeployDeps {
   };
 }
 
+function deploymentStillActive(status: string): boolean {
+  return status === "live" || status === "starting" || status === "pending";
+}
+
+async function stopDeploymentInfra(
+  deployTarget: DeployTarget,
+  deploymentId: string,
+): Promise<void> {
+  try {
+    await deployTarget.stop(deploymentId);
+  } catch (stopError) {
+    if (!deployTarget.destroy) throw stopError;
+    await deployTarget.destroy(deploymentId);
+  }
+
+  const health = await deployTarget.health(deploymentId);
+  if (!deploymentStillActive(health.status)) return;
+
+  if (deployTarget.destroy) {
+    await deployTarget.destroy(deploymentId);
+    const afterDestroy = await deployTarget.health(deploymentId);
+    if (!deploymentStillActive(afterDestroy.status)) return;
+    throw new Error(
+      `deployment ${deploymentId} is still ${afterDestroy.status} after destroy`,
+    );
+  }
+
+  throw new Error(`deployment ${deploymentId} is still ${health.status} after stop`);
+}
+
+async function cleanupNewDeploymentInfra(
+  deployTarget: DeployTarget,
+  deploymentId: string,
+): Promise<string | null> {
+  try {
+    await stopDeploymentInfra(deployTarget, deploymentId);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 /**
  * Record an immutable Release for an agent at a git commit. Image is built lazily at deploy
  * time (imageRef stays null until then). Concurrent creates (e.g. two webhook deliveries) race
@@ -194,32 +236,61 @@ export async function deployRelease(
       imageRef: imageRef ?? "",
       env: envVars,
     });
-    const updated = await store.deployments.update(dep.id, {
-      status: health.status,
-      url: health.url ?? null,
-      errorDetail: health.status === "failed" ? (health.detail ?? null) : null,
-    });
+
+    if (health.status !== "live") {
+      const cleanupError = await cleanupNewDeploymentInfra(deployTarget, dep.id);
+      return store.deployments.update(dep.id, {
+        status: health.status,
+        url: health.url ?? null,
+        errorDetail:
+          health.status === "failed"
+            ? [health.detail, cleanupError && `cleanup failed: ${cleanupError}`]
+                .filter(Boolean)
+                .join("; ") || null
+            : cleanupError
+              ? `cleanup failed: ${cleanupError}`
+              : null,
+      });
+    }
 
     // Cutover: a deployment that lands live becomes THE live version of this environment.
     // Every other live deployment — any release — is demoted (stopped, weight 0). The old
     // version keeps serving until this moment, so a failed deploy never takes anything down.
     // (The weighted multi-version splitter survives in the data model, but the product model
     // is single-live-per-environment for now.)
-    if (updated.status === "live") {
-      const siblings = await store.deployments.listByEnvironment(input.environmentId);
-      const superseded = siblings.filter((d) => d.id !== dep.id && d.status === "live");
+    const siblings = await store.deployments.listByEnvironment(input.environmentId);
+    const superseded = siblings.filter((d) => d.id !== dep.id && d.status === "live");
+    try {
       await Promise.all(
         superseded.map(async (d) => {
-          await store.deployments.update(d.id, { status: "stopped", trafficWeight: 0 });
-          // Best-effort container stop — a failure here must not fail the new deployment.
-          try {
-            await deployTarget.stop(d.id);
-          } catch {
-            // container already gone / target can't stop — the row is authoritative
-          }
+          await stopDeploymentInfra(deployTarget, d.id);
+          await store.deployments.update(d.id, {
+            status: "stopped",
+            trafficWeight: 0,
+            errorDetail: null,
+          });
         }),
       );
+    } catch (error) {
+      const cleanupError = await cleanupNewDeploymentInfra(deployTarget, dep.id);
+      const detail = error instanceof Error ? error.message : String(error);
+      return store.deployments.update(dep.id, {
+        status: "failed",
+        url: health.url ?? null,
+        errorDetail: [
+          `cutover failed while stopping the previous deployment: ${detail}`,
+          cleanupError && `new deployment cleanup failed: ${cleanupError}`,
+        ]
+          .filter(Boolean)
+          .join("; "),
+      });
     }
+
+    const updated = await store.deployments.update(dep.id, {
+      status: health.status,
+      url: health.url ?? null,
+      errorDetail: null,
+    });
     if (project) {
       await store.audit.record({
         orgId: project.orgId,
@@ -231,6 +302,7 @@ export async function deployRelease(
     }
     return updated;
   } catch (error) {
+    await cleanupNewDeploymentInfra(deployTarget, dep.id);
     // Record WHY it failed — a bare `failed` row is undebuggable (and while the eve
     // toolchain is young, build failures are the expected failure mode).
     const detail = error instanceof Error ? error.message : String(error);

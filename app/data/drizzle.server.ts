@@ -203,25 +203,62 @@ export const drizzleDataStore: DataStore = {
         .limit(1);
       return row ?? null;
     },
+    // Creation order with id as tiebreak: seeded rows can share a createdAt (bulk insert),
+    // and "first environment" is the PRIMARY (ship target, hero card) — it must be stable.
     async listByProject(projectId) {
       return db
         .select()
         .from(environments)
         .where(eq(environments.projectId, projectId))
-        .orderBy(asc(environments.createdAt));
+        .orderBy(asc(environments.createdAt), asc(environments.id));
     },
     async listByAgent(agentId) {
       return db
         .select()
         .from(environments)
         .where(eq(environments.agentId, agentId))
-        .orderBy(asc(environments.createdAt));
+        .orderBy(asc(environments.createdAt), asc(environments.id));
     },
-    async seedDefaults(projectId, agentId, names) {
+    async ensureDefault(projectId, agentId) {
+      const [existing] = await db
+        .select({ id: environments.id })
+        .from(environments)
+        .where(eq(environments.agentId, agentId))
+        .limit(1);
+      if (existing) return;
+      // Concurrent ensureDefault calls are settled by the (agent, name) unique index; a
+      // race with a concurrent user-created env can at worst leave both rows — acceptable.
       await db
         .insert(environments)
-        .values(names.map((name) => ({ projectId, agentId, name })))
+        .values({ projectId, agentId, name: "default" })
         .onConflictDoNothing();
+    },
+    async create(input) {
+      const [row] = await db.insert(environments).values(input).returning();
+      return row;
+    },
+    async rename(id, name) {
+      await db.update(environments).set({ name }).where(eq(environments.id, id));
+    },
+    async deleteById(id) {
+      // Lock the member's env rows before counting, so two concurrent deletes of a
+      // two-env agent serialize and the loser sees count=1 — never zero envs left.
+      return db.transaction(async (tx) => {
+        const [env] = await tx
+          .select({ agentId: environments.agentId })
+          .from(environments)
+          .where(eq(environments.id, id))
+          .limit(1);
+        if (!env) return false;
+        const siblings = await tx
+          .select({ id: environments.id })
+          .from(environments)
+          .where(eq(environments.agentId, env.agentId))
+          .for("update");
+        if (siblings.length <= 1) return false;
+        await tx.delete(environments).where(eq(environments.id, id));
+        return true;
+      });
     },
   },
 

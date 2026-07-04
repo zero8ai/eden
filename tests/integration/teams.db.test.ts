@@ -49,15 +49,13 @@ describe.runIf(LIVE)("teams against real Postgres", () => {
       let roster = await store.agents.listByProject(project.id);
       expect(roster.map((a) => a.name)).toEqual(["deployer", "pm"]);
       const deployer = roster[0];
+      // Environments are user-defined (M5.7): each member starts with exactly one.
       const deployerEnvs = await listAgentEnvironments(deployer.id, store);
-      expect(deployerEnvs.map((e) => e.name)).toEqual([
-        "production",
-        "preview",
-        "development",
-      ]);
-      expect(await listAgentEnvironments(roster[1].id, store)).toHaveLength(3);
+      expect(deployerEnvs.map((e) => e.name)).toEqual(["default"]);
+      expect(await listAgentEnvironments(roster[1].id, store)).toHaveLength(1);
 
-      // 2. Roster sync: add qa, drop pm; empty detection never wipes the roster.
+      // 2. Roster sync: add qa, drop pm; empty detection never wipes the roster; a re-sync
+      // never re-seeds members that already have environments.
       roster = await syncProjectAgents(
         project.id,
         [
@@ -68,7 +66,8 @@ describe.runIf(LIVE)("teams against real Postgres", () => {
       );
       expect(roster.map((a) => a.name)).toEqual(["deployer", "qa"]);
       const qa = roster[1];
-      expect(await listAgentEnvironments(qa.id, store)).toHaveLength(3);
+      expect(await listAgentEnvironments(qa.id, store)).toHaveLength(1);
+      expect(await listAgentEnvironments(deployer.id, store)).toHaveLength(1);
       expect(await store.agents.syncRoster(project.id, [])).toHaveLength(2);
 
       // 3. Releases: one per member per merge commit, idempotent, per-agent numbering.

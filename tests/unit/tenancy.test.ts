@@ -49,15 +49,14 @@ describe("tenant isolation", () => {
     expect(listA.some((p) => p.id === b.id)).toBe(false);
   });
 
-  it("suffixes colliding slugs within an org and seeds default environments", async () => {
+  it("suffixes colliding slugs within an org and seeds the single default environment", async () => {
     const first = await createProject({ orgId: ORG_A, name: "Alpha Agent" }, store);
     const again = await createProject({ orgId: ORG_A, name: "Alpha Agent" }, store);
     expect(first.slug).toBe("alpha-agent");
     expect(again.slug).toMatch(/^alpha-agent-\d+$/);
+    // Environments are user-defined (M5.7): a new member starts with exactly one.
     expect((await store.environments.listByProject(first.id)).map((e) => e.name)).toEqual([
-      "production",
-      "preview",
-      "development",
+      "default",
     ]);
   });
 });

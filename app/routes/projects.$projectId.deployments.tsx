@@ -1,14 +1,15 @@
 /**
- * Versions — the deploy surface (Deploy pillar, M2 + M6 — PRD §7.4/§7.7).
+ * Versions — the deploy surface (Deploy pillar, M2 + M6/M5.7 — PRD §7.4/§7.7).
  *
  * The mental model is deliberately small: an agent has VERSIONS; exactly ONE version is live
- * per environment. Production is the page's hero; the version history below lets any past
- * version be made live again in one click (fast rollback — the image is reused, no rebuild).
- * Shipping a NEW version happens on the Overview (Ship) or via Changes → merge; this page is
- * where you see and move what's live.
+ * per environment. Environments are user-defined (create/rename/delete below; every member
+ * keeps at least one) and the member's PRIMARY — its first — is the page's hero; the version
+ * history lets any past version be made live again in one click (fast rollback — the image
+ * is reused, no rebuild). Shipping a NEW version happens on the Overview (Ship) or via
+ * Changes → merge; this page is where you see and move what's live.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   redirect,
   useFetcher,
@@ -25,17 +26,33 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "~/components/ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "~/components/ui/tooltip";
 import { clearFailedDeployments, listDeployments, queueDeploy } from "~/deploy/controller.server";
+import {
+  createEnvironment,
+  deleteEnvironment,
+  renameEnvironment,
+} from "~/deploy/environments.server";
 import { listAgentEnvironments, listReleases } from "~/db/queries.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { timeAgo } from "~/lib/time";
@@ -87,7 +104,7 @@ export const loader = (args: LoaderFunctionArgs) =>
 export async function action(args: ActionFunctionArgs) {
   const auth = await withAuth(args);
   if (!auth.user) throw redirect("/login");
-  requireRepo(
+  const project = requireRepo(
     await requireProject(
       {
         user: auth.user,
@@ -101,6 +118,39 @@ export async function action(args: ActionFunctionArgs) {
   const intent = String(form.get("intent") ?? "");
 
   try {
+    // ── Environment CRUD (M5.7: environments are user-defined, per member) ──
+    if (intent === "env-create") {
+      const { active } = await resolveAgentContext(
+        project.id,
+        String(form.get("agent") ?? "") || null,
+      );
+      await createEnvironment({
+        projectId: project.id,
+        agentId: active.id,
+        name: String(form.get("name") ?? ""),
+        orgId: project.orgId,
+        createdBy: auth.user.id,
+      });
+      return { ok: true as const };
+    }
+    if (intent === "env-rename") {
+      await renameEnvironment({
+        environmentId: String(form.get("environmentId")),
+        name: String(form.get("name") ?? ""),
+        orgId: project.orgId,
+        createdBy: auth.user.id,
+      });
+      return { ok: true as const };
+    }
+    if (intent === "env-delete") {
+      await deleteEnvironment({
+        environmentId: String(form.get("environmentId")),
+        orgId: project.orgId,
+        createdBy: auth.user.id,
+      });
+      return { ok: true as const };
+    }
+
     if (intent === "make-live" || intent === "retry") {
       // Both are a cutover deploy of a chosen release; "make-live" of a past version rides
       // the rollback job (fast — image reuse), a retry re-runs the forward deploy.
@@ -164,8 +214,10 @@ export default function Versions({ loaderData, actionData }: Route.ComponentProp
     return () => clearInterval(timer);
   }, [inFlight, revalidator]);
 
-  const production = envs.find(({ env }) => env.name === "production") ?? envs[0];
-  const others = envs.filter((e) => e !== production);
+  // The member's PRIMARY environment is its first (creation order; environments are
+  // user-defined — no name is special). It gets the hero card; the rest live below.
+  const primary = envs[0];
+  const others = envs.filter((e) => e !== primary);
   // Which environments each release is live in, for the history rows' badges.
   const liveEnvNames = new Map<string, string[]>();
   for (const { env, deployments } of envs) {
@@ -204,68 +256,28 @@ export default function Versions({ loaderData, actionData }: Route.ComponentProp
         </Alert>
       )}
 
-      {production && (
-        <ProductionCard env={production.env} deployments={production.deployments} />
+      {primary && (
+        <PrimaryCard env={primary.env} deployments={primary.deployments} />
       )}
 
       <VersionHistory
         releases={releases}
-        production={production?.env ?? null}
+        primary={primary?.env ?? null}
         others={others.map((o) => o.env)}
         liveEnvNames={liveEnvNames}
       />
 
-      {others.length > 0 && (
-        <Card className="mt-6">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Other environments</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ul className="divide-y rounded-lg border text-sm">
-              {others.map(({ env, deployments }) => {
-                const live = liveOf(deployments);
-                const pending = deployments.find((d) => IN_FLIGHT.has(d.status));
-                return (
-                  <li key={env.id} className="flex items-center gap-3 px-4 py-2">
-                    <span className="w-32 shrink-0 font-medium capitalize">{env.name}</span>
-                    {live ? (
-                      <>
-                        <span className="font-semibold">{live.version}</span>
-                        <Badge>Live</Badge>
-                        <span className="text-muted-foreground">
-                          {timeAgo(live.createdAt)}
-                        </span>
-                        {live.url && (
-                          <a href={live.url} className="underline underline-offset-4">
-                            open
-                          </a>
-                        )}
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">nothing deployed</span>
-                    )}
-                    {pending && (
-                      <span className="text-muted-foreground">
-                        · {pending.version} {pending.status}…
-                      </span>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </CardContent>
-        </Card>
-      )}
+      <EnvironmentsCard envs={envs} primaryId={primary?.env.id} activeAgent={activeAgent} />
     </AppShell>
   );
 }
 
 /**
- * The hero: what production is running right now, plus in-flight progress and the latest
- * failure (with retry). Superseded/stopped rows are deliberately absent — the version
- * history is the durable record, old deployment rows are infrastructure.
+ * The hero: what the primary environment is running right now, plus in-flight progress and
+ * the latest failure (with retry). Superseded/stopped rows are deliberately absent — the
+ * version history is the durable record, old deployment rows are infrastructure.
  */
-function ProductionCard({ env, deployments }: { env: Env; deployments: DeploymentRow[] }) {
+function PrimaryCard({ env, deployments }: { env: Env; deployments: DeploymentRow[] }) {
   const fetcher = useFetcher<typeof action>();
   const live = liveOf(deployments);
   const pending = deployments.find((d) => IN_FLIGHT.has(d.status));
@@ -278,7 +290,7 @@ function ProductionCard({ env, deployments }: { env: Env; deployments: Deploymen
   return (
     <Card className="mb-6">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base capitalize">{env.name}</CardTitle>
+        <CardTitle className="text-base">{env.name}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         {live ? (
@@ -358,12 +370,12 @@ function ProductionCard({ env, deployments }: { env: Env; deployments: Deploymen
  */
 function VersionHistory({
   releases,
-  production,
+  primary,
   others,
   liveEnvNames,
 }: {
   releases: ReleaseRow[];
-  production: Env | null;
+  primary: Env | null;
   others: Env[];
   liveEnvNames: Map<string, string[]>;
 }) {
@@ -374,8 +386,8 @@ function VersionHistory({
       { intent: "make-live", environmentId, releaseId },
       { method: "post" },
     );
-  const liveInProd = (r: ReleaseRow) =>
-    (liveEnvNames.get(r.id) ?? []).includes(production?.name ?? "");
+  const liveInPrimary = (r: ReleaseRow) =>
+    (liveEnvNames.get(r.id) ?? []).includes(primary?.name ?? "");
 
   return (
     <Card>
@@ -394,10 +406,10 @@ function VersionHistory({
                 <span className="w-10 shrink-0 font-semibold">{r.version}</span>
                 <span className="flex w-28 shrink-0 items-center gap-1">
                   {(liveEnvNames.get(r.id) ?? []).map((name) =>
-                    name === production?.name ? (
+                    name === primary?.name ? (
                       <Badge key={name}>Live</Badge>
                     ) : (
-                      <Badge key={name} variant="outline" className="capitalize">
+                      <Badge key={name} variant="outline">
                         {name}
                       </Badge>
                     ),
@@ -412,17 +424,17 @@ function VersionHistory({
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {timeAgo(r.createdAt)}
                 </span>
-                {production && !liveInProd(r) && (
+                {primary && !liveInPrimary(r) && (
                   <ConfirmDialog
                     trigger={
                       <Button size="sm" variant="secondary" disabled={busy}>
                         Make live
                       </Button>
                     }
-                    title={`Make ${r.version} live in ${production.name}?`}
+                    title={`Make ${r.version} live in ${primary.name}?`}
                     description={`This replaces the current live version once ${r.version} is healthy — no rebuild needed, usually seconds. Undo by making the previous version live again.`}
                     confirmLabel="Make live"
-                    onConfirm={() => makeLive(production.id, r.id)}
+                    onConfirm={() => makeLive(primary.id, r.id)}
                   />
                 )}
                 {others.length > 0 && (
@@ -437,7 +449,6 @@ function VersionHistory({
                         <DropdownMenuItem
                           key={env.id}
                           onSelect={() => makeLive(env.id, r.id)}
-                          className="capitalize"
                         >
                           Make live in {env.name}
                         </DropdownMenuItem>
@@ -451,5 +462,216 @@ function VersionHistory({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Environment management (M5.7): environments are user-defined, per member. One row per
+ * env with its live version, plus rename/delete and a create dialog. The first (primary)
+ * env is badged — it's the default Ship target and the hero card above. Delete stops
+ * anything running and destroys the env's deploy history + env-scoped secrets (the FK
+ * cascade), so the confirm spells that out; a member's last environment can't be deleted.
+ */
+function EnvironmentsCard({
+  envs,
+  primaryId,
+  activeAgent,
+}: {
+  envs: { env: Env; deployments: DeploymentRow[] }[];
+  primaryId?: string;
+  activeAgent: string;
+}) {
+  const fetcher = useFetcher<typeof action>();
+  const busy = fetcher.state !== "idle";
+  const error =
+    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+
+  return (
+    <Card className="mt-6">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base">Environments</CardTitle>
+          <EnvNameDialog
+            intent="env-create"
+            agent={activeAgent}
+            trigger={
+              <Button size="sm" variant="outline" disabled={busy}>
+                New environment
+              </Button>
+            }
+            title="New environment"
+            description="A separate place to run this agent — its own live version and its own environment-scoped secrets. Deploy into it from the version history's ⋯ menu."
+            confirmLabel="Create"
+          />
+        </div>
+      </CardHeader>
+      <CardContent>
+        {error && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertTitle>Couldn&rsquo;t update environments</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        <ul className="divide-y rounded-lg border text-sm">
+          {envs.map(({ env, deployments }) => {
+            const live = liveOf(deployments);
+            const pending = deployments.find((d) => IN_FLIGHT.has(d.status));
+            return (
+              <li key={env.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
+                <span className="min-w-32 font-medium">{env.name}</span>
+                {env.id === primaryId && <Badge variant="secondary">primary</Badge>}
+                {live ? (
+                  <>
+                    <span className="font-semibold">{live.version}</span>
+                    <Badge>Live</Badge>
+                    <span className="text-muted-foreground">{timeAgo(live.createdAt)}</span>
+                    {live.url && (
+                      <a href={live.url} className="underline underline-offset-4">
+                        open
+                      </a>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">nothing deployed</span>
+                )}
+                {pending && (
+                  <span className="text-muted-foreground">
+                    · {pending.version} {pending.status}…
+                  </span>
+                )}
+                <span className="ml-auto flex items-center gap-1">
+                  <EnvNameDialog
+                    intent="env-rename"
+                    environmentId={env.id}
+                    initialName={env.name}
+                    trigger={
+                      <Button size="sm" variant="ghost" disabled={busy}>
+                        Rename
+                      </Button>
+                    }
+                    title={`Rename ${env.name}?`}
+                    description="Deploys, secrets, and history stay attached — only the name changes. On a team, Ship targets members' environments by name."
+                    confirmLabel="Rename"
+                  />
+                  <ConfirmDialog
+                    trigger={
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive"
+                        disabled={busy}
+                      >
+                        Delete
+                      </Button>
+                    }
+                    title={`Delete environment "${env.name}"?`}
+                    description={`Stops anything running here and permanently deletes this environment's deployment history and environment-scoped secrets. Agent-wide secrets and versions are untouched.${live ? ` ${live.version} is live here right now and will be taken down.` : ""}`}
+                    confirmLabel="Delete"
+                    onConfirm={() =>
+                      fetcher.submit(
+                        { intent: "env-delete", environmentId: env.id },
+                        { method: "post" },
+                      )
+                    }
+                  />
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Shared name dialog for env create/rename — one text field, posts `intent` + `name`. */
+function EnvNameDialog({
+  intent,
+  trigger,
+  title,
+  description,
+  confirmLabel,
+  environmentId,
+  initialName,
+  agent,
+}: {
+  intent: "env-create" | "env-rename";
+  trigger: React.ReactNode;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  environmentId?: string;
+  initialName?: string;
+  agent?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(initialName ?? "");
+  const fetcher = useFetcher<typeof action>();
+  const busy = fetcher.state !== "idle";
+  const error = fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+  // Stay open until OUR submission settles — success closes, an error (e.g. duplicate
+  // name) shows inline so the human can fix the name and retry.
+  const submitted = useRef(false);
+  useEffect(() => {
+    if (busy || !submitted.current) return;
+    submitted.current = false;
+    if (fetcher.data && "ok" in fetcher.data && fetcher.data.ok) {
+      setOpen(false);
+      if (intent === "env-create") setName("");
+    }
+  }, [busy, fetcher.data, intent]);
+  const submit = () => {
+    if (!name.trim()) return;
+    submitted.current = true;
+    fetcher.submit(
+      {
+        intent,
+        name: name.trim(),
+        ...(environmentId ? { environmentId } : {}),
+        ...(agent ? { agent } : {}),
+      },
+      { method: "post" },
+    );
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        <div className="space-y-1.5">
+          <Label htmlFor={`env-name-${intent}-${environmentId ?? "new"}`}>Name</Label>
+          <Input
+            id={`env-name-${intent}-${environmentId ?? "new"}`}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            placeholder="staging"
+            autoFocus
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={!name.trim() || busy}>
+            {busy ? "Saving…" : confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

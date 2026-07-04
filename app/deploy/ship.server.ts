@@ -35,6 +35,12 @@ export interface ShipResult {
   envName: string;
   /** One entry per member whose environment got a queued deploy. */
   deployed: { agentName: string; environmentId: string; deploymentId: string }[];
+  /**
+   * Target members that have NO environment named `envName` (environments are per-agent and
+   * user-defined, so names can diverge across a roster). Surfaced so a team ship never
+   * silently half-lands.
+   */
+  skipped: { agentName: string }[];
 }
 
 export type MergeFn = typeof mergePullRequest;
@@ -161,12 +167,16 @@ async function deployToMembers(input: {
 }): Promise<ShipResult> {
   const { store, envName } = input;
   const deployed: ShipResult["deployed"] = [];
+  const skipped: ShipResult["skipped"] = [];
   for (const agent of input.targets) {
     const release = input.releases.find((r) => r.agentId === agent.id);
     if (!release) continue;
     const envs = await store.environments.listByAgent(agent.id);
     const env = envs.find((e) => e.name === envName);
-    if (!env) continue;
+    if (!env) {
+      skipped.push({ agentName: agent.name });
+      continue;
+    }
     const dep = await queueDeploy(
       { environmentId: env.id, releaseId: release.id, createdBy: input.createdBy },
       store,
@@ -181,5 +191,6 @@ async function deployToMembers(input: {
     gitSha: input.gitSha,
     envName,
     deployed,
+    skipped,
   };
 }

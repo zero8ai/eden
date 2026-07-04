@@ -94,6 +94,12 @@ export interface DeployTarget {
   /** Wake a stopped instance. */
   start(deploymentId: string): Promise<InstanceHealth>;
   health(deploymentId: string): Promise<InstanceHealth>;
+  /**
+   * Permanently tear an instance down (environment delete): stop AND remove the container
+   * plus its instance state (e.g. the per-deployment Postgres DB). Optional — targets
+   * without it fall back to `stop`, leaving state for manual cleanup.
+   */
+  destroy?(deploymentId: string): Promise<void>;
 }
 
 // ── SecretsProvider ─────────────────────────────────────────────────────────

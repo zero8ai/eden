@@ -123,10 +123,10 @@ interface ProjectView {
   draftPaths: string[];
   /** Member view: this member's environment names, for the Ship dialog's target picker. */
   envNames: string[];
-  /** Member view: the production live deployment, for the header status line. */
+  /** Member view: the primary (first) environment's live deployment, for the status line. */
   liveNow: { version: string; url: string | null; at: string } | null;
-  /** Deploy progress for a just-shipped commit (?shipped=<sha>&env=<name>). */
-  ship: { env: string; rows: ShipStatusRow[] } | null;
+  /** Deploy progress for a just-shipped commit (?shipped=<sha>&env=<name>&skipped=a,b). */
+  ship: { env: string; rows: ShipStatusRow[]; skipped: string[] } | null;
 }
 
 /**
@@ -233,9 +233,13 @@ export const loader = (args: LoaderFunctionArgs) =>
         if (view === "member") {
           const envs = await listAgentEnvironments(active.id);
           envNames = envs.map((e) => e.name);
-          const prod = envs.find((e) => e.name === "production") ?? envs[0];
-          if (prod) {
-            const live = (await listDeployments(prod.id)).find((d) => d.status === "live");
+          // The member's PRIMARY environment is simply its first (environments are
+          // user-defined, M5.7 — no name is special; creation order decides).
+          const primary = envs[0];
+          if (primary) {
+            const live = (await listDeployments(primary.id)).find(
+              (d) => d.status === "live",
+            );
             if (live) {
               liveNow = {
                 version: live.version,
@@ -247,7 +251,10 @@ export const loader = (args: LoaderFunctionArgs) =>
 
           const url = new URL(args.request.url);
           const shippedSha = url.searchParams.get("shipped");
-          const shipEnv = url.searchParams.get("env") ?? "production";
+          const shipEnv = url.searchParams.get("env") ?? primary?.name ?? "default";
+          const shipSkipped = (url.searchParams.get("skipped") ?? "")
+            .split(",")
+            .filter(Boolean);
           if (shippedSha) {
             // Members are independent — resolve their env + deployment rows concurrently.
             const rows = (
@@ -275,7 +282,7 @@ export const loader = (args: LoaderFunctionArgs) =>
                 }),
               )
             ).filter((r): r is ShipStatusRow => r !== null);
-            if (rows.length > 0) ship = { env: shipEnv, rows };
+            if (rows.length > 0) ship = { env: shipEnv, rows, skipped: shipSkipped };
           }
         }
 
@@ -338,7 +345,10 @@ export async function action(args: ActionFunctionArgs) {
   try {
     // ── Ship: the one-click path — staged changes (or branch head) → live version ──
     if (intent === "ship" || intent === "ship-head") {
-      const envName = String(form.get("env") ?? "production");
+      // No fallback name: environments are user-defined (M5.7), so a missing field is a
+      // bug to surface, not something to paper over with a guessed target.
+      const envName = String(form.get("env") ?? "").trim();
+      if (!envName) return { error: "Pick an environment to ship to." };
       const agentName = String(form.get("agent") ?? "");
       ensureWorkerStarted();
       // Publish/merge/release run synchronously (same as the Changes publish button); the
@@ -351,6 +361,9 @@ export async function action(args: ActionFunctionArgs) {
       if (agentName) qs.set("agent", agentName);
       qs.set("shipped", result.gitSha);
       qs.set("env", envName);
+      if (result.skipped.length > 0) {
+        qs.set("skipped", result.skipped.map((s) => s.agentName).join(","));
+      }
       throw redirect(`/repos/${project.id}?${qs.toString()}`);
     }
 
@@ -795,10 +808,10 @@ function AddMemberDialog() {
 }
 
 /**
- * Ship — the one-click deploy. One dialog confirms the target environment (production by
- * default), then a single action publishes + merges the staged changes (or reuses the branch
- * head), cuts the version, and queues the deploy. The current version keeps serving until
- * the new one is healthy, so shipping is never a step backwards.
+ * Ship — the one-click deploy. One dialog confirms the target environment (the member's
+ * primary — its first — preselected), then a single action publishes + merges the staged
+ * changes (or reuses the branch head), cuts the version, and queues the deploy. The current
+ * version keeps serving until the new one is healthy, so shipping is never a step backwards.
  */
 function ShipDialog({
   draftCount,
@@ -812,9 +825,7 @@ function ShipDialog({
   agentName: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [env, setEnv] = useState(
-    envNames.includes("production") ? "production" : (envNames[0] ?? "production"),
-  );
+  const [env, setEnv] = useState(envNames[0] ?? "default");
   const navigation = useNavigation();
   const shipping =
     navigation.state !== "idle" &&
@@ -895,7 +906,7 @@ function ShipProgress({
   ship,
   dismissTo,
 }: {
-  ship: { env: string; rows: ShipStatusRow[] };
+  ship: { env: string; rows: ShipStatusRow[]; skipped: string[] };
   dismissTo: string;
 }) {
   const retry = useFetcher();
@@ -941,6 +952,12 @@ function ShipProgress({
               )}
             </div>
           ))}
+          {ship.skipped.length > 0 && (
+            <p className="text-xs">
+              Not deployed for {ship.skipped.join(", ")} — no environment named{" "}
+              <span className="font-mono">{ship.env}</span>.
+            </p>
+          )}
           {failed.map(
             (r) =>
               r.errorDetail && (

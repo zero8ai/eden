@@ -100,8 +100,21 @@ export interface EnvironmentRepo {
   /** All environments across a project's roster (legacy views; per-agent is the norm). */
   listByProject(projectId: string): Promise<Environment[]>;
   listByAgent(agentId: string): Promise<Environment[]>;
-  /** Seed named environments for a roster member (idempotent). */
-  seedDefaults(projectId: string, agentId: string, names: readonly string[]): Promise<void>;
+  /**
+   * Guarantee the ≥1-environment invariant: insert an env named "default" ONLY when the
+   * member has none. Idempotent on re-sync — agents with environments (whatever their
+   * names) are never touched, so user CRUD survives roster self-heals and webhooks.
+   */
+  ensureDefault(projectId: string, agentId: string): Promise<void>;
+  /** Create a named environment; throws the (agent, name) unique violation on duplicates. */
+  create(input: { projectId: string; agentId: string; name: string }): Promise<Environment>;
+  /** Rename; throws the (agent, name) unique violation on duplicates. */
+  rename(id: string, name: string): Promise<void>;
+  /**
+   * Delete, refusing to remove the member's LAST environment (the check and the delete are
+   * one statement, so concurrent deletes can't drop an agent to zero). True = deleted.
+   */
+  deleteById(id: string): Promise<boolean>;
 }
 
 export interface ProjectRepo {

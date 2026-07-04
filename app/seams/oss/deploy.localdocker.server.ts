@@ -252,5 +252,12 @@ export const localDockerTarget: DeployTarget = {
       return { status: "stopped", detail: "no container" };
     }
   },
+
+  async destroy(deploymentId: string): Promise<void> {
+    // Environment delete: the deployment row is about to cascade away, so remove
+    // everything only that row could find — the container AND its instance database.
+    await removeIfExists(containerName(deploymentId));
+    await dropInstanceDb(deploymentId);
+  },
 };
 

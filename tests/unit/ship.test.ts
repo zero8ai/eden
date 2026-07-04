@@ -88,6 +88,15 @@ describe("shipStagedChanges", () => {
 
     const result = await shipStagedChanges({ project: PROJECT, envName: "production" }, deps());
     expect(result.deployed.map((d) => d.agentName).sort()).toEqual(["alpha", "beta"]);
+    expect(result.skipped).toEqual([]);
+  });
+
+  it("reports members that have no environment of the target name (user-defined envs diverge)", async () => {
+    await stage("package.json", null); // affects both members
+    // alpha has "preview"; beta does not.
+    const result = await shipStagedChanges({ project: PROJECT, envName: "preview" }, deps());
+    expect(result.deployed.map((d) => d.agentName)).toEqual(["alpha"]);
+    expect(result.skipped).toEqual([{ agentName: "beta" }]);
   });
 
   it("throws when nothing is staged", async () => {

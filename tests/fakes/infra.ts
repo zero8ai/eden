@@ -19,7 +19,7 @@ export function fakeDeployTarget(opts: {
   buildImageRef?: string;
   /** Captures the env each deploy() received, for injection assertions. */
   deployedEnvs?: Record<string, string>[];
-}): DeployTarget {
+} = {}): DeployTarget {
   return {
     name: "fake",
     async build() {

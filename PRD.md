@@ -103,7 +103,7 @@ surface Eden must cover.
 | **Sandbox** | `agent/sandbox/*` / `defineSandbox()`; `defaultBackend()` local vs Vercel Sandbox | Choose/configure the sandbox backend (needed both for authored tools and for our own tool test-runs). |
 | **Approvals / HITL** | `needsApproval` on tools (`always()`, `once()`, predicates) | Toggle and configure human-approval gating per tool. |
 | **Evals** | TypeScript eval suites, run locally or vs deployed | Author scored checks; run as a deploy gate (later phase for full UI). |
-| **Env vars / secrets** | project environment variables | Manage secrets per environment (dev/preview/prod) with encryption and scoping. |
+| **Env vars / secrets** | project environment variables | Manage secrets per environment (user-defined, M5.7) with encryption and scoping. |
 | **Observability** | Agent Runs (Vercel) / OpenTelemetry via `instrumentation.ts` + the Workflow event log | **First-class pillar (§7.6):** per-agent, per-run transcript + metrics dashboard (inputs, model/tool calls, outputs, errors, tokens, wall-clock). Eden supplies its own runs store/UI on every host, not just Vercel. |
 | **Build/runtime** | `eve build` → `.eve/` (compiled artifacts) + `.output/` (Nitro host); runtime = **Nitro + Workflow SDK**; durability via **Workflow "Worlds"** (Local dev, **Postgres** reference, community Redis/Mongo/Turso/Cloudflare) | Eden drives build + deploy and wires the Workflow World, sandbox backend, and model keys. |
 
@@ -232,21 +232,31 @@ sandbox backend. This is the portable path and underpins both OSS-BYO and manage
 Vercel Sandbox, AI Gateway auto-wire) and additional Worlds (Redis/Turso/Cloudflare).
 
 **Instance & environment management:**
-- Multiple **environments** per agent (dev / preview / prod) and multiple **instances/deployments**
-  (e.g. per customer, per region) from one agent codebase.
+- **Environments are user-defined and per-agent (M5.7).** A new member starts with exactly ONE,
+  named `default` — the user renames it and creates/deletes others as their workflow demands
+  (someone who wants dev/staging/production makes them; nothing is imposed). Eden enforces one
+  invariant: a member always has at least one environment. The member's **primary** environment
+  is simply its first (creation order) — the default Ship target and the Versions-page hero; no
+  environment *name* is special anywhere in the product. Deleting an environment always works
+  behind an explicit confirm: it stops anything running there, tears down instance state, and
+  permanently removes that environment's deployment history and env-scoped secrets (agent-wide
+  secrets and Releases are untouched).
+- Multiple **instances/deployments** (e.g. per customer, per region) from one agent codebase.
 - Per-instance: status, logs, runs/observability, secrets, scaling knobs, start/stop, rollback,
   and the channel endpoints (HTTP URL, Slack install, cron status).
 
 **Deploy UX (M5.6) — Ship and Make live.** Two verbs cover the whole deploy surface for a PM:
 - **Ship** — the one-click path, on the agent's Overview (where the edit was just made): one
-  dialog confirms the target environment (production default), then a single action publishes all
+  dialog confirms the target environment (the member's primary preselected), then a single
+  action publishes all
   staged drafts, merges the change request, cuts the Release, and queues a **cutover deploy** —
   the current version keeps serving until the new one is healthy. With nothing staged, Ship offers
   "ship latest from `main`" (absorbing the old "cut release" button). On team repos a Ship deploys
   every member whose files the change touched. A DB-state-driven progress banner (Published →
   vN created → Building → Live) survives refresh; a failed build leaves the previous version
   serving and offers Retry. The careful path (Changes → review → merge → Versions) is unchanged.
-- **Make live** — the **Versions** tab (renamed from Deployments) shows a production hero card
+- **Make live** — the **Versions** tab (renamed from Deployments) shows the primary
+  environment's hero card
   (what's live now, in-flight progress, latest failure) over the version history; any prior
   successful Release can be **made live in one click** (image reused — seconds, no rebuild),
   demoting the current version on health. Deploy and revert are deliberately the same
@@ -600,7 +610,8 @@ two-source-of-truth reconciliation problem.
 - **Multiple Releases live at once** behind a **weighted, session-sticky traffic splitter** at ingress
   (the core "run two versions" primitive — §7.7; product surface later removed in M5.6, data
   plane retained).
-- Environments (dev/preview/prod), instance status/logs.
+- Environments (dev/preview/prod seeded; superseded by user-defined environments in M5.7),
+  instance status/logs.
 - Merge-triggers-deploy pipeline; optional PR preview instances.
 
 **Milestone 3 — Observe (run observability, §7.6)**
@@ -644,12 +655,14 @@ two-source-of-truth reconciliation problem.
   stopped). The splitter/`trafficWeight` data model is retained without a product surface
   (§7.7 revision).
 - **Ship:** the one-click deploy from the agent Overview — staged drafts → publish → merge →
-  Release → cutover deploy — with an environment picker (production default), team fan-out to
+  Release → cutover deploy — with an environment picker (production default; the *primary*
+  environment since M5.7), team fan-out to
   affected members, "ship latest from `main`" when nothing is staged, and a refresh-proof
   progress banner with Retry on build failure (§7.4 Deploy UX).
-- **Versions page** (replaces the Deployments tab): production hero card, version history with
-  **Make live** on any prior successful Release (confirm dialog on production; overflow menu for
-  preview/dev), other environments collapsed to a compact footer card. Weights/split controls,
+- **Versions page** (replaces the Deployments tab): hero card for the main environment, version
+  history with
+  **Make live** on any prior successful Release (confirm dialog; overflow menu for the other
+  environments), other environments collapsed to a compact footer card. Weights/split controls,
   the per-environment deploy selectors, and the "cut release" button are gone.
 - Rationale: shipping an edit took ~6–8 clicks across three pages, and ordinary deploys silently
   accumulated live versions. Two verbs (Ship, Make live) + one invariant (one live version per
@@ -657,6 +670,30 @@ two-source-of-truth reconciliation problem.
   product story (§7.7).
 - Deliberately not built: weights/canary UI, environment-promotion pipelines, per-PR preview
   deploys, deploy approvals/locks (consistent with §7.7's no-experimentation stance).
+
+**Milestone 5.7 — User-defined environments (shipped)**
+- The static seeded trio (production/preview/development) is gone: a new member starts with ONE
+  environment named `default`, and environments are ordinary user data — **create, rename,
+  delete** from the Versions page. Rationale: the trio was arbitrary (most agents used only
+  production; the other two sat empty on every member), and imposed vocabulary the user never
+  chose. Whoever wants dev/staging/production simply creates them.
+- **Primary = first.** No environment name is special in code anymore; the member's first
+  environment (creation order, id tiebreak) is the default Ship target, the Overview status
+  line, and the Versions hero. A data migration made the previously-implicit primary
+  ("production") explicitly first for existing agents; existing environments were otherwise
+  left exactly as they were.
+- **Invariant:** a member always has ≥1 environment (`ensureDefault` seeds `default` only for
+  members with zero — roster self-heals and webhooks can never re-seed over user CRUD; the
+  last environment refuses deletion).
+- **Delete is total but explicit:** one confirm dialog; it stops running instances, destroys
+  per-instance state (containers + instance databases via the new `DeployTarget.destroy` seam
+  method), and cascades away that environment's deployment history and env-scoped secrets.
+  Agent-wide secrets and Releases survive.
+- **Teams:** Ship still fans out across members by environment *name* (a shared name like
+  `default` keeps team ships one-click); members lacking the target name are reported in the
+  ship banner rather than silently skipped.
+- Deliberately not built: cross-member environment sync ("create staging for every member"),
+  per-environment protection rules, environment-scoped roles.
 
 **Milestone 6 — Recruit (marketplace, §7.8)**
 - Template format (files + manifest: required secrets/connections, version, eve range) and the

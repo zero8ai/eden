@@ -10,9 +10,6 @@ import { getRuntime } from "~/seams/index.server";
 
 export type { Agent, Project, Environment } from "~/data/ports";
 
-/** Environments every roster member gets, in display order. */
-const DEFAULT_ENVIRONMENTS = ["production", "preview", "development"] as const;
-
 /** The default roster for a repo whose layout is unknown/single: a team of one. */
 export const SINGLE_AGENT_ROSTER = [{ name: "agent", root: "agent" }] as const;
 
@@ -44,8 +41,9 @@ export async function resolveUniqueSlug(
 
 /**
  * Create a project (a connected eve repo) for a tenant, creating its agent roster (single =
- * team of one, PRD §7.9) and seeding default environments per member. `slug` is unique per
- * org; on collision we suffix so connecting similarly-named repos doesn't fail.
+ * team of one, PRD §7.9). Each member starts with ONE environment ("default" — renamable;
+ * environments are user-defined, M5.7). `slug` is unique per org; on collision we suffix so
+ * connecting similarly-named repos doesn't fail.
  */
 export async function createProject(
   input: {
@@ -69,7 +67,7 @@ export async function createProject(
   const roster = rosterInput?.length ? rosterInput : [...SINGLE_AGENT_ROSTER];
   const agents = await store.agents.syncRoster(project.id, roster);
   await Promise.all(
-    agents.map((a) => store.environments.seedDefaults(project.id, a.id, DEFAULT_ENVIRONMENTS)),
+    agents.map((a) => store.environments.ensureDefault(project.id, a.id)),
   );
   return project;
 }
@@ -100,8 +98,10 @@ export function withPreservedNames(
 
 /**
  * Reconcile the roster with the repo's detected layout (connect revisit, webhook). New
- * members get default environments; removed members cascade away; the root member's
- * human-given name survives detection.
+ * members get their one "default" environment; members that already have environments —
+ * whatever the user renamed or created — are left strictly alone, so the self-heal that
+ * runs on every Overview load can never re-seed. Removed members cascade away; the root
+ * member's human-given name survives detection.
  */
 export async function syncProjectAgents(
   projectId: string,
@@ -114,7 +114,7 @@ export async function syncProjectAgents(
     withPreservedNames(existing, roster),
   );
   await Promise.all(
-    agents.map((a) => store.environments.seedDefaults(projectId, a.id, DEFAULT_ENVIRONMENTS)),
+    agents.map((a) => store.environments.ensureDefault(projectId, a.id)),
   );
   return agents;
 }

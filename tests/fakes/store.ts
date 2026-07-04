@@ -264,24 +264,73 @@ export function makeFakeStore(): FakeStore {
       async listByProject(projectId) {
         return [...environments.values()]
           .filter((e) => e.projectId === projectId)
-          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+          .sort(
+            (a, b) =>
+              a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
+          );
       },
       async listByAgent(agentId) {
         return [...environments.values()]
           .filter((e) => e.agentId === agentId)
-          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+          .sort(
+            (a, b) =>
+              a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
+          );
       },
-      async seedDefaults(projectId, agentId, names) {
-        for (const name of names) {
-          const eid = id("env");
-          environments.set(eid, {
-            id: eid,
-            projectId,
-            agentId,
-            name,
-            createdAt: new Date(++seq),
+      async ensureDefault(projectId, agentId) {
+        const has = [...environments.values()].some((e) => e.agentId === agentId);
+        if (has) return;
+        const eid = id("env");
+        environments.set(eid, {
+          id: eid,
+          projectId,
+          agentId,
+          name: "default",
+          createdAt: new Date(++seq),
+        });
+      },
+      async create(input) {
+        const dup = [...environments.values()].some(
+          (e) => e.agentId === input.agentId && e.name === input.name,
+        );
+        if (dup) {
+          throw Object.assign(new Error("duplicate key value violates unique constraint"), {
+            code: "23505",
+            constraint_name: "environments_agent_name_uq",
           });
         }
+        const eid = id("env");
+        const row = { id: eid, ...input, createdAt: new Date(++seq) };
+        environments.set(eid, row);
+        return row;
+      },
+      async rename(eid, name) {
+        const env = environments.get(eid);
+        if (!env) return;
+        const dup = [...environments.values()].some(
+          (e) => e.agentId === env.agentId && e.name === name && e.id !== eid,
+        );
+        if (dup) {
+          throw Object.assign(new Error("duplicate key value violates unique constraint"), {
+            code: "23505",
+            constraint_name: "environments_agent_name_uq",
+          });
+        }
+        environments.set(eid, { ...env, name });
+      },
+      async deleteById(eid) {
+        const env = environments.get(eid);
+        if (!env) return false;
+        const siblings = [...environments.values()].filter(
+          (e) => e.agentId === env.agentId,
+        );
+        if (siblings.length <= 1) return false;
+        environments.delete(eid);
+        // Mirror the FK cascade: the env's deployments go with it.
+        for (const [did, d] of deployments) {
+          if (d.environmentId === eid) deployments.delete(did);
+        }
+        return true;
       },
     },
 

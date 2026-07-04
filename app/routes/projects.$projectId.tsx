@@ -58,6 +58,16 @@ import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Project } from "~/db/queries.server";
 import type { Route } from "./+types/projects.$projectId";
 
+/** Roster card data for the team landing view. */
+interface MemberSummary {
+  name: string;
+  model: string | null;
+  tools: number;
+  skills: number;
+  schedules: number;
+  channels: number;
+}
+
 interface ProjectView {
   project: Project;
   roster: { name: string }[];
@@ -65,6 +75,14 @@ interface ProjectView {
   isTeam: boolean;
   /** True when the repo uses the team layout (agents/*) — enables roster CRUD. */
   teamLayout: boolean;
+  /**
+   * Which level of the hierarchy this request renders: the TEAM landing (roster-first,
+   * no `?agent=`) or one MEMBER's config surface. Single-agent repos are always "member".
+   */
+  view: "team" | "member";
+  /** Team landing: one summary per roster member. */
+  members: MemberSummary[] | null;
+  /** Member view: the active member's parsed config. */
   config: AgentConfig | null;
   error: string | null;
   /** Paths with staged (unpublished) drafts, so the config surface can flag them. */
@@ -87,6 +105,8 @@ export const loader = (args: LoaderFunctionArgs) =>
           active: null,
           isTeam: false,
           teamLayout: false,
+          view: "member" as const,
+          members: null,
           config: null,
           error: "This project has no connected repo.",
           draftPaths: [],
@@ -104,9 +124,10 @@ export const loader = (args: LoaderFunctionArgs) =>
 
         // Self-heal the roster from the repo (external pushes don't always hit our webhook).
         const detected = detectAgentRoots(source.paths);
+        const requestedAgent = agentParam(args.request);
         let { roster, active, isTeam } = await resolveAgentContext(
           project.id,
-          agentParam(args.request),
+          requestedAgent,
         );
         const known = new Set(roster.map((a) => `${a.name}:${a.root}`));
         if (
@@ -117,17 +138,39 @@ export const loader = (args: LoaderFunctionArgs) =>
           await syncProjectAgents(project.id, detected);
           ({ roster, active, isTeam } = await resolveAgentContext(
             project.id,
-            agentParam(args.request),
+            requestedAgent,
           ));
         }
+
+        const teamLayout = active.root !== "agent";
+        // The hierarchy: a team repo LANDS on the team (roster) view; a member's config
+        // surface is a drill-in (?agent=<name>). Single-agent repos go straight to their
+        // one member, exactly as before teams existed.
+        const view = teamLayout && !requestedAgent ? ("team" as const) : ("member" as const);
+        const members =
+          view === "team"
+            ? roster.map((a) => {
+                const c = buildAgentConfig(source, a.root);
+                return {
+                  name: a.name,
+                  model: c.model,
+                  tools: c.tools.length,
+                  skills: c.skills.length,
+                  schedules: c.schedules.length,
+                  channels: c.channels.length,
+                };
+              })
+            : null;
 
         return {
           project,
           roster: roster.map((a) => ({ name: a.name })),
           active: { name: active.name, root: active.root },
           isTeam,
-          teamLayout: active.root !== "agent",
-          config: buildAgentConfig(source, active.root),
+          teamLayout,
+          view,
+          members,
+          config: view === "member" ? buildAgentConfig(source, active.root) : null,
           error: null,
           draftPaths: drafts.map((d) => d.path),
         };
@@ -138,6 +181,8 @@ export const loader = (args: LoaderFunctionArgs) =>
           active: null,
           isTeam: false,
           teamLayout: false,
+          view: "member" as const,
+          members: null,
           config: null,
           error: (error as Error).message,
           draftPaths: [],
@@ -227,44 +272,79 @@ export function meta() {
 }
 
 export default function ProjectDetail({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, roster, active, isTeam, teamLayout, config, error, draftPaths } =
-    loaderData;
+  const {
+    project,
+    roster,
+    active,
+    isTeam,
+    teamLayout,
+    view,
+    members,
+    config,
+    error,
+    draftPaths,
+  } = loaderData;
   const base = `/projects/${project.id}`;
   const agentSuffix =
-    isTeam && active ? `?agent=${encodeURIComponent(active.name)}` : "";
+    view === "member" && teamLayout && active
+      ? `?agent=${encodeURIComponent(active.name)}`
+      : "";
+
+  const repoLine =
+    project.repoOwner && project.repoName ? (
+      <span className="font-mono">
+        {project.repoOwner}/{project.repoName} · {project.defaultBranch}
+      </span>
+    ) : (
+      "no repo connected"
+    );
 
   return (
     <AppShell>
-      <PageHeader
-        title={project.name}
-        description={
-          project.repoOwner && project.repoName ? (
-            <span className="font-mono">
-              {project.repoOwner}/{project.repoName} · {project.defaultBranch}
-              {isTeam && active && (
-                <>
-                  {" · "}
-                  <span className="text-foreground">{active.name}</span>
-                </>
-              )}
+      {view === "team" ? (
+        <PageHeader
+          title={
+            <span className="flex items-center gap-3">
+              {project.name}
+              <Badge>Team · {roster.length} member{roster.length === 1 ? "" : "s"}</Badge>
             </span>
-          ) : (
-            "no repo connected"
-          )
-        }
-        actions={
-          <div className="flex items-center gap-2">
-            {teamLayout && <AddMemberDialog />}
-            {teamLayout && isTeam && active && (
-              <RemoveMemberButton member={active.name} />
-            )}
-            <Button asChild>
-              <Link to={`${base}/deployments${agentSuffix}`}>Deploy</Link>
-            </Button>
-          </div>
-        }
+          }
+          description={repoLine}
+          actions={<AddMemberDialog />}
+        />
+      ) : (
+        <PageHeader
+          title={teamLayout && active ? active.name : project.name}
+          description={
+            teamLayout ? (
+              <span>
+                Member of{" "}
+                <Link to={base} className="font-medium underline underline-offset-4">
+                  {project.name}
+                </Link>{" "}
+                · {repoLine}
+              </span>
+            ) : (
+              repoLine
+            )
+          }
+          actions={
+            <div className="flex items-center gap-2">
+              {teamLayout && isTeam && active && (
+                <RemoveMemberButton member={active.name} />
+              )}
+              <Button asChild>
+                <Link to={`${base}/deployments${agentSuffix}`}>Deploy</Link>
+              </Button>
+            </div>
+          }
+        />
+      )}
+      <AgentNav
+        base={base}
+        roster={roster}
+        activeAgent={view === "member" ? active?.name : undefined}
       />
-      <AgentNav base={base} roster={roster} activeAgent={active?.name} />
 
       {error && (
         <Alert className="mb-6">
@@ -312,7 +392,11 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
         </Alert>
       )}
 
-      {config && active && (
+      {view === "team" && members && (
+        <TeamSurface base={base} members={members} />
+      )}
+
+      {view === "member" && config && active && (
         <AgentSurface
           config={config}
           projectId={project.id}
@@ -322,6 +406,58 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
         />
       )}
     </AppShell>
+  );
+}
+
+/**
+ * The team landing view (PRD §7.9): the roster is the product surface. Each member is a
+ * complete agent — own runtime, channels, schedules, credentials, releases — and this page
+ * makes that hierarchy explicit before you drill into one member's config.
+ */
+function TeamSurface({ base, members }: { base: string; members: MemberSummary[] }) {
+  return (
+    <div className="space-y-6">
+      <Card className="border-primary/20 bg-muted/30">
+        <CardContent className="pt-6 text-sm text-muted-foreground">
+          <p>
+            This is a <span className="font-medium text-foreground">team</span>: each member
+            below is a complete agent with its own runtime, channels, schedules, secrets, and
+            deployments. Members are versioned and deployed independently, and changes to
+            several members ship atomically in one change request.
+          </p>
+          <p className="mt-2">
+            Coming next: teammates get auto-wired <em>delegation channels</em> — each member
+            receives tools to hand work to the others, so the team behaves like an
+            organisation, not a folder of agents.
+          </p>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        {members.map((m) => (
+          <Link key={m.name} to={`${base}?agent=${encodeURIComponent(m.name)}`} className="group">
+            <Card className="h-full transition-colors group-hover:border-ring/60">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between gap-2">
+                  <CardTitle className="truncate font-mono text-base">{m.name}</CardTitle>
+                  <Badge variant="secondary" className="shrink-0 font-mono text-xs">
+                    {m.model ?? "no model"}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                  <li>{m.tools} tool{m.tools === 1 ? "" : "s"}</li>
+                  <li>{m.skills} skill{m.skills === 1 ? "" : "s"}</li>
+                  <li>{m.schedules} schedule{m.schedules === 1 ? "" : "s"}</li>
+                  <li>{m.channels} channel{m.channels === 1 ? "" : "s"}</li>
+                </ul>
+              </CardContent>
+            </Card>
+          </Link>
+        ))}
+      </div>
+    </div>
   );
 }
 

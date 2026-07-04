@@ -22,6 +22,8 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { useState } from "react";
+
 import { AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -51,6 +53,7 @@ import {
   type InstallationRepo,
 } from "~/github/repo.server";
 import { detectAgentRoots, isEveRepo } from "~/eve/parse";
+import { slugifyResourceName } from "~/eve/templates";
 import type { Route } from "./+types/connect";
 
 type GithubConnectState =
@@ -147,9 +150,11 @@ export async function action(args: ActionFunctionArgs) {
     const owner = String(form.get("owner") ?? "").trim();
     const name = String(form.get("name") ?? "").trim();
     const layout = form.get("layout") === "team" ? ("team" as const) : ("single" as const);
+    const firstMember =
+      slugifyResourceName(String(form.get("firstMember") ?? "")) || "assistant";
     if (!owner || !name) return { error: "Owner and repo name are required." };
     try {
-      const repo = await createEveRepo(installationId, { owner, name, layout });
+      const repo = await createEveRepo(installationId, { owner, name, layout, firstMember });
       const project = await createProject({
         orgId: org.id,
         name,
@@ -160,7 +165,7 @@ export async function action(args: ActionFunctionArgs) {
         // The scaffold's roster is known without re-reading the repo (§7.9).
         roster:
           layout === "team"
-            ? [{ name: "assistant", root: "agents/assistant/agent" }]
+            ? [{ name: firstMember, root: `agents/${firstMember}/agent` }]
             : undefined,
       });
       throw redirect(`/projects/${project.id}`);
@@ -216,6 +221,7 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
   const busyData = navigation.state !== "idle" ? navigation.formData : null;
   const busyIntent = busyData ? String(busyData.get("intent") ?? "connect") : null;
   const busyRepo = busyData ? `${busyData.get("owner")}/${busyData.get("repo")}` : null;
+  const [layout, setLayout] = useState<"single" | "team">("single");
 
   return (
     <AppShell workspaceName={org?.name}>
@@ -335,7 +341,8 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                       type="radio"
                       name="layout"
                       value="single"
-                      defaultChecked
+                      checked={layout === "single"}
+                      onChange={() => setLayout("single")}
                       className="mt-1 accent-primary"
                     />
                     <span>
@@ -351,6 +358,8 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                       type="radio"
                       name="layout"
                       value="team"
+                      checked={layout === "team"}
+                      onChange={() => setLayout("team")}
                       className="mt-1 accent-primary"
                     />
                     <span>
@@ -358,7 +367,7 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                       <span className="block text-xs text-muted-foreground">
                         A monorepo of agents under{" "}
                         <span className="font-mono">agents/</span> — each member has its
-                        own runtime. Starts with one member.
+                        own runtime, channels, schedules, and secrets.
                       </span>
                     </span>
                   </label>
@@ -380,16 +389,34 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                     <Input
                       id="name"
                       name="name"
-                      placeholder="my-agent"
+                      placeholder={layout === "team" ? "my-team" : "my-agent"}
                       className="w-56 font-mono"
                     />
                   </div>
+                  {layout === "team" && (
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="firstMember">First member</Label>
+                      <Input
+                        id="firstMember"
+                        name="firstMember"
+                        placeholder="product-manager"
+                        className="w-48 font-mono"
+                      />
+                    </div>
+                  )}
                   <Button type="submit" disabled={busyData != null}>
                     {busyIntent === "create"
                       ? "Creating & opening…"
                       : "Create & scaffold"}
                   </Button>
                 </div>
+                {layout === "team" && (
+                  <p className="text-xs text-muted-foreground">
+                    The first member is scaffolded at{" "}
+                    <span className="font-mono">agents/&lt;member&gt;/</span> — recruit more
+                    from the team page after creation.
+                  </p>
+                )}
               </Form>
             </CardContent>
           </Card>

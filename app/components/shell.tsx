@@ -55,7 +55,7 @@ export function AppShell({
             )}
           </Link>
           <nav className="ml-4 flex items-center gap-1 text-sm">
-            <HeaderLink to="/dashboard">Agents</HeaderLink>
+            <HeaderLink to="/dashboard">Projects</HeaderLink>
             <HeaderLink to="/connect">Connect</HeaderLink>
             <HeaderLink to="/org/settings">Settings</HeaderLink>
           </nav>

@@ -29,6 +29,8 @@ export interface CreateRepoInput {
   model?: string;
   /** Repo layout: one agent at the root, or a team monorepo. Defaults to "single". */
   layout?: RepoLayout;
+  /** Team layout: the first roster member's name (e.g. "product-manager"). */
+  firstMember?: string;
 }
 
 export interface CreatedRepo {
@@ -110,9 +112,9 @@ export function memberScaffold(member: string, model: string = DEFAULT_MODEL): F
  * A fresh team monorepo skeleton (PRD §7.9): npm workspaces, each member a complete eve
  * project under `agents/<member>/`, detected by convention. `eden.json` is metadata only.
  */
-function teamFiles(name: string, model: string): FileChange[] {
+function teamFiles(name: string, model: string, firstMember: string): FileChange[] {
   return [
-    ...memberScaffold(STARTER_MEMBER, model),
+    ...memberScaffold(firstMember, model),
     {
       path: "package.json",
       content: packageJson({
@@ -230,7 +232,9 @@ export async function createEveRepo(
   // One commit for the whole scaffold via the Git Data API (blobs upload in parallel).
   const model = input.model ?? DEFAULT_MODEL;
   const files =
-    layout === "team" ? teamFiles(input.name, model) : singleAgentFiles(input.name, model);
+    layout === "team"
+      ? teamFiles(input.name, model, input.firstMember || STARTER_MEMBER)
+      : singleAgentFiles(input.name, model);
   await commitFiles(
     octokit,
     { owner: input.owner, repo: input.name },

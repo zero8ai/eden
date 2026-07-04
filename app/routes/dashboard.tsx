@@ -1,4 +1,5 @@
 import { authkitLoader, signOut } from "@workos-inc/authkit-react-router";
+import { Users } from "lucide-react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link } from "react-router";
 
@@ -11,10 +12,18 @@ import {
   CardHeader,
   CardTitle,
 } from "~/components/ui/card";
-import { listProjects } from "~/db/queries.server";
+import { listAgents, listProjects, type Project } from "~/db/queries.server";
 import { syncTenant } from "~/auth/tenant.server";
 import { ensureWorkspace } from "~/auth/workspace.server";
 import type { Route } from "./+types/dashboard";
+
+/** A project annotated with its roster, so the dashboard can split teams from agents. */
+interface ProjectCard {
+  project: Project;
+  /** Member names; `isTeam` when the repo uses the agents/* layout (PRD §7.9). */
+  members: string[];
+  isTeam: boolean;
+}
 
 // `ensureSignedIn: true` redirects anonymous visitors to WorkOS sign-in. The inner
 // loader only runs for authenticated users, so `auth` is always populated here.
@@ -26,7 +35,17 @@ export const loader = (args: LoaderFunctionArgs) =>
       await ensureWorkspace(args.request, auth);
       const { org } = await syncTenant(auth);
       const projects = org ? await listProjects(org.id) : [];
-      return { org, projects };
+      const cards: ProjectCard[] = await Promise.all(
+        projects.map(async (project) => {
+          const roster = await listAgents(project.id);
+          return {
+            project,
+            members: roster.map((a) => a.name),
+            isTeam: roster.length > 0 && roster[0].root !== "agent",
+          };
+        }),
+      );
+      return { org, cards };
     },
     { ensureSignedIn: true },
   );
@@ -36,28 +55,30 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Agents · Eden" }];
+  return [{ title: "Projects · Eden" }];
 }
 
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
-  const { user, org, projects } = loaderData;
+  const { user, org, cards } = loaderData;
+  const teams = cards.filter((c) => c.isTeam);
+  const singles = cards.filter((c) => !c.isTeam);
 
   return (
     <AppShell workspaceName={org?.name} userEmail={user.email}>
       <PageHeader
-        title="Agents"
-        description="Each agent is an eve repository — its instructions, tools, and subagents live in git."
+        title="Projects"
+        description="A project is one eve repository — a single agent, or a team of agents that work together."
         actions={
           <Button asChild>
-            <Link to="/connect">New agent</Link>
+            <Link to="/connect">New project</Link>
           </Button>
         }
       />
 
-      {projects.length === 0 ? (
+      {cards.length === 0 ? (
         <Card className="border-dashed">
           <CardHeader className="items-center py-12 text-center">
-            <CardTitle className="text-lg">No agents yet</CardTitle>
+            <CardTitle className="text-lg">No projects yet</CardTitle>
             <CardDescription>
               Connect an existing eve repository or create a new one to get started.
             </CardDescription>
@@ -67,33 +88,89 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
           </CardHeader>
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
-          {projects.map((p) => (
-            <Link key={p.id} to={`/projects/${p.id}`} className="group">
-              <Card className="h-full transition-colors group-hover:border-ring/60">
-                <CardHeader>
-                  <div className="flex items-center justify-between gap-2">
-                    <CardTitle className="truncate text-base">{p.name}</CardTitle>
-                    {p.repoOwner ? (
-                      <Badge variant="secondary" className="shrink-0 font-mono text-xs">
-                        {p.repoOwner}/{p.repoName}
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="shrink-0">
-                        no repo
-                      </Badge>
-                    )}
-                  </div>
-                  <CardDescription>
-                    Default branch{" "}
-                    <span className="font-mono">{p.defaultBranch}</span>
-                  </CardDescription>
-                </CardHeader>
-              </Card>
-            </Link>
-          ))}
+        <div className="space-y-8">
+          {teams.length > 0 && (
+            <section>
+              <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+                <Users className="h-4 w-4" aria-hidden /> Teams
+              </h2>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {teams.map((c) => (
+                  <TeamCard key={c.project.id} card={c} />
+                ))}
+              </div>
+            </section>
+          )}
+          {singles.length > 0 && (
+            <section>
+              {teams.length > 0 && (
+                <h2 className="mb-3 text-sm font-semibold text-muted-foreground">
+                  Agents
+                </h2>
+              )}
+              <div className="grid gap-4 sm:grid-cols-2">
+                {singles.map((c) => (
+                  <AgentCard key={c.project.id} project={c.project} />
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       )}
     </AppShell>
+  );
+}
+
+/** A team: its roster is the headline — members are the thing you manage. */
+function TeamCard({ card }: { card: ProjectCard }) {
+  const { project, members } = card;
+  return (
+    <Link to={`/projects/${project.id}`} className="group">
+      <Card className="h-full border-primary/20 transition-colors group-hover:border-ring/60">
+        <CardHeader>
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="flex items-center gap-2 truncate text-base">
+              <Users className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+              {project.name}
+            </CardTitle>
+            <Badge className="shrink-0">
+              Team · {members.length} member{members.length === 1 ? "" : "s"}
+            </Badge>
+          </div>
+          <CardDescription className="truncate">
+            <span className="font-mono">
+              {members.slice(0, 4).join(" · ")}
+              {members.length > 4 ? ` · +${members.length - 4}` : ""}
+            </span>
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    </Link>
+  );
+}
+
+function AgentCard({ project }: { project: Project }) {
+  return (
+    <Link to={`/projects/${project.id}`} className="group">
+      <Card className="h-full transition-colors group-hover:border-ring/60">
+        <CardHeader>
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="truncate text-base">{project.name}</CardTitle>
+            {project.repoOwner ? (
+              <Badge variant="secondary" className="shrink-0 font-mono text-xs">
+                {project.repoOwner}/{project.repoName}
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="shrink-0">
+                no repo
+              </Badge>
+            )}
+          </div>
+          <CardDescription>
+            Default branch <span className="font-mono">{project.defaultBranch}</span>
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    </Link>
   );
 }

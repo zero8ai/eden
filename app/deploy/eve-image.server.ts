@@ -21,6 +21,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { getInstallationOctokit } from "~/github/client.server";
+import { lowercaseLegacyId } from "~/lib/id";
 import type { BuiltArtifact } from "~/seams/types";
 
 const exec = promisify(execFile);
@@ -57,7 +58,8 @@ const EDEN_DOCKERIGNORE = `node_modules
  */
 function imageTags(projectId: string, ref: string, member: string | null) {
   const suffix = member ? `-${member.toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : "";
-  const tag = `eden/proj-${projectId.slice(0, 8)}${suffix}:${ref.slice(0, 12)}`;
+  // Docker repository names must be lowercase — safe for new ids, folds legacy mixed-case ones.
+  const tag = `eden/proj-${lowercaseLegacyId(projectId.slice(0, 8))}${suffix}:${ref.slice(0, 12)}`;
   return { runtime: tag, buildStage: `${tag}-build` };
 }
 
@@ -176,7 +178,8 @@ export async function checkEveBuild(
 
     const { dir } = projectDirOf(input.agentRoot);
     const buildDir = path.join(srcDir, dir);
-    const tag = `eden/publish-check:proj-${input.projectId.slice(0, 8)}`;
+    // Repository name must be lowercase (see imageTags / lowercaseLegacyId).
+    const tag = `eden/publish-check:proj-${lowercaseLegacyId(input.projectId.slice(0, 8))}`;
     try {
       await exec("docker", ["build", "--target", "build", "-t", tag, buildDir], {
         maxBuffer: 64 * 1024 * 1024,

@@ -13,6 +13,7 @@ import {
   Link,
   data,
   redirect,
+  useFetcher,
   useNavigation,
   useSubmit,
   type ActionFunctionArgs,
@@ -20,8 +21,9 @@ import {
 } from "react-router";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
+import { ModelSelect } from "~/components/model-select";
 import { NewResourceDialog } from "~/components/new-resource-dialog";
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, SectionHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -42,8 +44,9 @@ import {
 } from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
-import { syncProjectAgents, type Agent } from "~/db/queries.server";
-import { listDrafts } from "~/drafts/drafts.server";
+import { syncProjectAgents, withPreservedNames, type Agent } from "~/db/queries.server";
+import { listDrafts, resolveFileView, stageDraft } from "~/drafts/drafts.server";
+import { readModel, scaffoldAgentModule, setModel } from "~/eve/agentModule";
 import { buildAgentConfig, detectAgentRoots } from "~/eve/parse";
 import { RESOURCE_KINDS, slugifyResourceName } from "~/eve/templates";
 import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
@@ -123,12 +126,12 @@ export const loader = (args: LoaderFunctionArgs) =>
         ]);
 
         // Self-heal the roster from the repo (external pushes don't always hit our webhook).
-        const detected = detectAgentRoots(source.paths);
         const requestedAgent = agentParam(args.request);
         let { roster, active, isTeam } = await resolveAgentContext(
           project.id,
           requestedAgent,
         );
+        const detected = withPreservedNames(roster, detectAgentRoots(source.paths));
         const known = new Set(roster.map((a) => `${a.name}:${a.root}`));
         if (
           detected.length > 0 &&
@@ -162,6 +165,15 @@ export const loader = (args: LoaderFunctionArgs) =>
               })
             : null;
 
+        // The model shown inline must reflect the newest intent: a staged agent.ts draft
+        // wins over the repo value (same rule the editors follow).
+        const config = view === "member" ? buildAgentConfig(source, active.root) : null;
+        const agentTsDraft = drafts.find((d) => d.path === `${active.root}/agent.ts`);
+        if (config && agentTsDraft) {
+          config.model = readModel(agentTsDraft.content) ?? config.model;
+          config.hasAgentModule = true;
+        }
+
         return {
           project,
           roster: roster.map((a) => ({ name: a.name })),
@@ -170,7 +182,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           teamLayout,
           view,
           members,
-          config: view === "member" ? buildAgentConfig(source, active.root) : null,
+          config,
           error: null,
           draftPaths: drafts.map((d) => d.path),
         };
@@ -211,6 +223,28 @@ export async function action(args: ActionFunctionArgs) {
   const repo = { owner: project.repoOwner, repo: project.repoName };
 
   try {
+    // ── Inline model change (the overview's one settings control): stage agent.ts ──
+    if (intent === "set-model") {
+      const model = String(form.get("model") ?? "").trim();
+      if (!model) return { error: "Pick or enter a model." };
+      const { active } = await resolveAgentContext(
+        project.id,
+        String(form.get("agent") ?? "") || null,
+      );
+      const path = `${active.root}/agent.ts`;
+      // Base the targeted edit on the latest intended value (draft → pending → repo) so
+      // setting the model never silently reverts other unmerged edits to this file.
+      const view = await resolveFileView(project, path);
+      const next = view.content ? setModel(view.content, model) : scaffoldAgentModule(model);
+      await stageDraft({
+        projectId: project.id,
+        path,
+        content: next,
+        createdBy: auth.user.id,
+      });
+      return { ok: true as const, staged: path };
+    }
+
     // ── Add a team member: scaffold agents/<name>/ as a change-set ──
     if (intent === "add-member") {
       const name = slugifyResourceName(String(form.get("name") ?? ""));
@@ -284,7 +318,7 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
     error,
     draftPaths,
   } = loaderData;
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
   const agentSuffix =
     view === "member" && teamLayout && active
       ? `?agent=${encodeURIComponent(active.name)}`
@@ -300,7 +334,14 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
     );
 
   return (
-    <AppShell>
+    <AppShell
+      breadcrumbs={repoCrumbs({
+        projectId: project.id,
+        repoName: project.name,
+        isTeam: view === "member" && teamLayout,
+        agentName: active?.name,
+      })}
+    >
       {view === "team" ? (
         <PageHeader
           title={
@@ -360,7 +401,7 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
         </Alert>
       )}
 
-      {actionData?.ok && (
+      {actionData?.ok && "changeUrl" in actionData && (
         <Alert className="mb-6">
           <AlertTitle>Change request opened</AlertTitle>
           <AlertDescription>
@@ -400,6 +441,7 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
         <AgentSurface
           config={config}
           projectId={project.id}
+          agentName={active.name}
           root={active.root}
           agentSuffix={agentSuffix}
           draftPaths={draftPaths}
@@ -561,142 +603,175 @@ const CATEGORY_HINTS: Record<string, string> = {
   connections: "Typed external integrations",
 };
 
+/** How many items a category card previews before deferring to its list page. */
+const CARD_PREVIEW_COUNT = 5;
+
 function AgentSurface({
   config,
   projectId,
+  agentName,
   root,
   agentSuffix,
   draftPaths,
 }: {
   config: AgentConfig;
   projectId: string;
+  agentName: string;
   /** Active member's agent directory ("agent" or "agents/<member>/agent"). */
   root: string;
   /** "" for single-agent repos; "?agent=<name>" for teams (keeps editor links scoped). */
   agentSuffix: string;
   draftPaths: string[];
 }) {
-  const base = `/projects/${projectId}`;
+  const base = `/repos/${projectId}`;
   const drafted = new Set(draftPaths);
+  const modelFetcher = useFetcher<{ ok?: boolean; error?: string }>();
+  const savingModel = modelFetcher.state !== "idle";
+
   return (
-    <div className="space-y-6">
-      {/* The active member: model + instructions. */}
-      <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div className="flex items-center gap-3">
-            <CardTitle>Agent</CardTitle>
-            <Badge variant={config.hasAgentModule ? "secondary" : "outline"}>
-              {config.hasAgentModule ? "agent.ts" : "no agent.ts"}
-            </Badge>
-            {drafted.has(`${root}/agent.ts`) && (
+    <div className="space-y-8">
+      {/* Model — the one runtime setting, edited in place (saving stages agent.ts). */}
+      <section>
+        <SectionHeader
+          title="Model"
+          badges={
+            <>
+              {drafted.has(`${root}/agent.ts`) && (
+                <Badge variant="outline" className="text-xs">
+                  staged
+                </Badge>
+              )}
+              {!config.hasAgentModule && (
+                <Badge variant="outline" className="text-xs">
+                  no agent.ts — picking one scaffolds it
+                </Badge>
+              )}
+            </>
+          }
+        />
+        <ModelSelect
+          value={config.model}
+          busy={savingModel}
+          onCommit={(model) =>
+            modelFetcher.submit(
+              { intent: "set-model", model, agent: agentName },
+              { method: "post" },
+            )
+          }
+        />
+        {modelFetcher.data?.error && (
+          <p className="mt-2 text-sm text-destructive">{modelFetcher.data.error}</p>
+        )}
+      </section>
+
+      {/* Instructions — the always-on system prompt. */}
+      <section>
+        <SectionHeader
+          title="Instructions"
+          badges={
+            drafted.has(`${root}/instructions.md`) && (
               <Badge variant="outline" className="text-xs">
                 staged
               </Badge>
-            )}
-          </div>
-          <Button variant="outline" size="sm" asChild>
-            <Link to={`${base}/edit/agent${agentSuffix}`}>Edit config</Link>
-          </Button>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Model</span>
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono">
-              {config.model ?? "—"}
-            </code>
-          </div>
-        </CardContent>
-      </Card>
+            )
+          }
+          actions={
+            <Button variant="outline" size="sm" asChild>
+              <Link to={`${base}/edit/instructions${agentSuffix}`}>
+                {config.instructions ? "Edit" : "Add instructions"}
+              </Link>
+            </Button>
+          }
+        />
+        {config.instructions ? (
+          <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg border bg-muted/40 p-4 text-sm">
+            {config.instructions}
+          </pre>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No instructions.md yet — this Markdown becomes the agent&rsquo;s always-on
+            system prompt.
+          </p>
+        )}
+      </section>
 
-      <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div className="flex items-center gap-3">
-            <CardTitle>Instructions</CardTitle>
-            {drafted.has(`${root}/instructions.md`) && (
-              <Badge variant="outline" className="text-xs">
-                staged
-              </Badge>
-            )}
-          </div>
-          <Button variant="outline" size="sm" asChild>
-            <Link to={`${base}/edit/instructions${agentSuffix}`}>Edit</Link>
-          </Button>
-        </CardHeader>
-        <CardContent>
-          {config.instructions ? (
-            <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg border bg-muted/40 p-4 text-sm">
-              {config.instructions}
-            </pre>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              No instructions.md found.
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        {AGENT_CATEGORIES.map((cat) => {
-          const repoItems = config[cat.key];
-          // Staged NEW files (drafts not yet in the repo) still belong in their category.
-          const stagedNew = draftPaths.flatMap((p) =>
-            p.startsWith(`${root}/${cat.dir}/`) &&
-            !repoItems.some((i) => i.path === p)
-              ? [{ path: p, name: p.split("/").pop()!, isDirectory: false }]
-              : [],
-          );
-          const items = [...repoItems, ...stagedNew];
-          return (
-            <Card key={cat.key}>
-              <CardHeader className="space-y-1 pb-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-base">{cat.label}</CardTitle>
-                    <Badge variant="secondary">{items.length}</Badge>
+      {/* Resources — at-a-glance cards; each category's list page is the management surface. */}
+      <section>
+        <SectionHeader title="Resources" />
+        <div className="grid gap-4 sm:grid-cols-2">
+          {AGENT_CATEGORIES.map((cat) => {
+            const repoItems = config[cat.key];
+            // Staged NEW files (drafts not yet in the repo) still belong in their category.
+            const stagedNew = draftPaths.flatMap((p) =>
+              p.startsWith(`${root}/${cat.dir}/`) &&
+              !repoItems.some((i) => i.path === p)
+                ? [{ path: p, name: p.split("/").pop()!, isDirectory: false }]
+                : [],
+            );
+            const items = [...repoItems, ...stagedNew];
+            const listTo = `${base}/resources/${cat.key}${agentSuffix}`;
+            return (
+              <Card key={cat.key}>
+                <CardHeader className="space-y-1 pb-3">
+                  <div className="flex items-center justify-between">
+                    <Link to={listTo} className="group flex items-center gap-2">
+                      <CardTitle className="text-base underline-offset-4 group-hover:underline">
+                        {cat.label}
+                      </CardTitle>
+                      <Badge variant="secondary">{items.length}</Badge>
+                    </Link>
+                    <NewResourceDialog
+                      kind={RESOURCE_KINDS[cat.key]}
+                      base={base}
+                      root={root}
+                    />
                   </div>
-                  <NewResourceDialog
-                    kind={RESOURCE_KINDS[cat.key]}
-                    base={base}
-                    root={root}
-                  />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {CATEGORY_HINTS[cat.key]}
-                </p>
-              </CardHeader>
-              <CardContent className="pt-0">
-                {items.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">None</p>
-                ) : (
-                  <ul className="space-y-1 text-sm">
-                    {items.map((item) => (
-                      <li key={item.path} className="flex items-center gap-2">
-                        {item.isDirectory ? (
-                          <span className="font-mono text-muted-foreground">
-                            {item.name}/
-                          </span>
-                        ) : (
-                          <Link
-                            to={`${base}/edit?path=${encodeURIComponent(item.path)}`}
-                            className="font-mono underline-offset-4 hover:underline"
-                          >
-                            {item.name}
-                          </Link>
-                        )}
-                        {drafted.has(item.path) && (
-                          <Badge variant="outline" className="text-xs">
-                            staged
-                          </Badge>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+                  <p className="text-xs text-muted-foreground">
+                    {CATEGORY_HINTS[cat.key]}
+                  </p>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  {items.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">None</p>
+                  ) : (
+                    <>
+                      <ul className="space-y-1 text-sm">
+                        {items.slice(0, CARD_PREVIEW_COUNT).map((item) => (
+                          <li key={item.path} className="flex items-center gap-2">
+                            {item.isDirectory ? (
+                              <span className="font-mono text-muted-foreground">
+                                {item.name}/
+                              </span>
+                            ) : (
+                              <Link
+                                to={`${base}/edit?path=${encodeURIComponent(item.path)}`}
+                                className="font-mono underline-offset-4 hover:underline"
+                              >
+                                {item.name}
+                              </Link>
+                            )}
+                            {drafted.has(item.path) && (
+                              <Badge variant="outline" className="text-xs">
+                                staged
+                              </Badge>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                      <Link
+                        to={listTo}
+                        className="mt-2 inline-block text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                      >
+                        View all {items.length} →
+                      </Link>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      </section>
     </div>
   );
 }

@@ -55,7 +55,7 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Projects · Eden" }];
+  return [{ title: "Repositories · Eden" }];
 }
 
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
@@ -66,11 +66,11 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
   return (
     <AppShell workspaceName={org?.name} userEmail={user.email}>
       <PageHeader
-        title="Projects"
-        description="A project is one eve repository — a single agent, or a team of agents that work together."
+        title="Repositories"
+        description="A repository holds one agent, or a team of agents that work together."
         actions={
           <Button asChild>
-            <Link to="/connect">New project</Link>
+            <Link to="/connect">New repository</Link>
           </Button>
         }
       />
@@ -78,7 +78,7 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
       {cards.length === 0 ? (
         <Card className="border-dashed">
           <CardHeader className="items-center py-12 text-center">
-            <CardTitle className="text-lg">No projects yet</CardTitle>
+            <CardTitle className="text-lg">No repositories yet</CardTitle>
             <CardDescription>
               Connect an existing eve repository or create a new one to get started.
             </CardDescription>
@@ -125,7 +125,7 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
 function TeamCard({ card }: { card: ProjectCard }) {
   const { project, members } = card;
   return (
-    <Link to={`/projects/${project.id}`} className="group">
+    <Link to={`/repos/${project.id}`} className="group">
       <Card className="h-full border-primary/20 transition-colors group-hover:border-ring/60">
         <CardHeader>
           <div className="flex items-center justify-between gap-2">
@@ -151,7 +151,7 @@ function TeamCard({ card }: { card: ProjectCard }) {
 
 function AgentCard({ project }: { project: Project }) {
   return (
-    <Link to={`/projects/${project.id}`} className="group">
+    <Link to={`/repos/${project.id}`} className="group">
       <Card className="h-full transition-colors group-hover:border-ring/60">
         <CardHeader>
           <div className="flex items-center justify-between gap-2">

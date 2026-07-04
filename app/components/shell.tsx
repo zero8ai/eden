@@ -29,13 +29,49 @@ import { Separator } from "~/components/ui/separator";
 import { TooltipProvider } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 
+/** One level of the hierarchy trail. No `to` == the current page (rendered unlinked). */
+export interface Crumb {
+  label: React.ReactNode;
+  to?: string;
+}
+
+/**
+ * Standard trail for repository pages: repo → (team member) → page. The last crumb is
+ * always unlinked (it's where you are); every ancestor links up a level.
+ */
+export function repoCrumbs(opts: {
+  projectId: string;
+  repoName: string;
+  /** Team repos: the active member (adds a member crumb linking to its overview). */
+  agentName?: string | null;
+  isTeam?: boolean;
+  /** Page-level crumbs after repo/member, e.g. [{ label: "Runs" }]. */
+  tail?: Crumb[];
+}): Crumb[] {
+  const base = `/repos/${opts.projectId}`;
+  const crumbs: Crumb[] = [{ label: opts.repoName, to: base }];
+  if (opts.isTeam && opts.agentName) {
+    crumbs.push({
+      label: opts.agentName,
+      to: `${base}?agent=${encodeURIComponent(opts.agentName)}`,
+    });
+  }
+  crumbs.push(...(opts.tail ?? []));
+  const last = crumbs[crumbs.length - 1];
+  delete last.to;
+  return crumbs;
+}
+
 export function AppShell({
   workspaceName,
   userEmail,
+  breadcrumbs,
   children,
 }: {
   workspaceName?: string | null;
   userEmail?: string | null;
+  /** Hierarchy trail: workspace → repo → member → …; the "up" navigation. */
+  breadcrumbs?: Crumb[];
   children: React.ReactNode;
 }) {
   return (
@@ -45,21 +81,21 @@ export function AppShell({
         <div className="mx-auto flex h-14 max-w-5xl items-center gap-4 px-6">
           <Link to="/dashboard" className="flex items-baseline gap-2">
             <span className="text-base font-semibold tracking-tight">Eden</span>
-            {workspaceName && (
-              <>
-                <span className="text-muted-foreground">/</span>
-                <span className="max-w-48 truncate text-sm text-muted-foreground">
-                  {workspaceName}
-                </span>
-              </>
-            )}
           </Link>
-          <nav className="ml-4 flex items-center gap-1 text-sm">
-            <HeaderLink to="/dashboard">Projects</HeaderLink>
-            <HeaderLink to="/connect">Connect</HeaderLink>
+          {breadcrumbs && breadcrumbs.length > 0 ? (
+            <Breadcrumbs crumbs={breadcrumbs} />
+          ) : (
+            workspaceName && (
+              <span className="max-w-48 truncate text-sm text-muted-foreground">
+                {workspaceName}
+              </span>
+            )
+          )}
+          <nav className="ml-auto flex items-center gap-1 text-sm">
+            <HeaderLink to="/dashboard">Repositories</HeaderLink>
             <HeaderLink to="/org/settings">Settings</HeaderLink>
           </nav>
-          <div className="ml-auto flex items-center gap-1">
+          <div className="flex items-center gap-1">
             <ThemeToggle />
             <AccountMenu userEmail={userEmail} />
           </div>
@@ -68,6 +104,54 @@ export function AppShell({
       <main className="mx-auto max-w-5xl px-6 py-8">{children}</main>
     </div>
     </TooltipProvider>
+  );
+}
+
+/** The "up" navigation: each ancestor links to its level; the last crumb is the page. */
+function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }) {
+  return (
+    <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm">
+      {crumbs.map((crumb, i) => (
+        <span key={i} className="flex min-w-0 items-center gap-1.5">
+          <span className="text-muted-foreground">/</span>
+          {crumb.to ? (
+            <Link
+              to={crumb.to}
+              className="max-w-44 truncate text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {crumb.label}
+            </Link>
+          ) : (
+            <span className="max-w-44 truncate font-medium">{crumb.label}</span>
+          )}
+        </span>
+      ))}
+    </nav>
+  );
+}
+
+/**
+ * Standard section heading: title + badges left, actions right, hairline below. The one
+ * pattern for edit affordances on content surfaces — no more buttons floating in card
+ * headers.
+ */
+export function SectionHeader({
+  title,
+  badges,
+  actions,
+}: {
+  title: React.ReactNode;
+  badges?: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div className="mb-3 flex items-center justify-between gap-3 border-b pb-2">
+      <div className="flex items-center gap-2">
+        <h2 className="text-base font-semibold tracking-tight">{title}</h2>
+        {badges}
+      </div>
+      {actions && <div className="flex items-center gap-2">{actions}</div>}
+    </div>
   );
 }
 
@@ -151,7 +235,7 @@ export interface RosterMember {
 }
 
 /**
- * Per-project section navigation. `base` is `/projects/<id>`. For team repos (roster > 1,
+ * Per-project section navigation. `base` is `/repos/<id>`. For team repos (roster > 1,
  * PRD §7.9) a member switcher renders beside the tabs, and every tab link carries the
  * active member as `?agent=<name>` so the selection follows you across tabs.
  */

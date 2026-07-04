@@ -16,7 +16,7 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -140,7 +140,7 @@ export async function action(args: ActionFunctionArgs) {
   const envs = await listAgentEnvironments(agent.id);
   const { environmentId } = resolveScope(envRaw, envs);
   const key = String(form.get("key") ?? "").trim();
-  const back = `/projects/${project.id}/secrets?env=${encodeURIComponent(envRaw)}&agent=${encodeURIComponent(agent.name)}`;
+  const back = `/repos/${project.id}/secrets?env=${encodeURIComponent(envRaw)}&agent=${encodeURIComponent(agent.name)}`;
 
   const secrets = getRuntime().secrets;
   const ref = { projectId: project.id, agentId: agent.id, environmentId, key };
@@ -172,10 +172,10 @@ export default function Secrets({ loaderData, actionData }: Route.ComponentProps
   const busy = navigation.state === "submitting";
   const envValue = scope.environmentId ?? ALL;
 
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
 
   return (
-    <AppShell workspaceName={project.name}>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: isTeam, agentName: activeAgent, tail: [{ label: "Secrets" }] })}>
       <PageHeader
         title={isTeam ? `Secrets — ${activeAgent}` : "Secrets"}
         description={

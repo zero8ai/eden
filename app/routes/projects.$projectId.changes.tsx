@@ -21,7 +21,7 @@ import {
 } from "react-router";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -82,7 +82,7 @@ export async function action(args: ActionFunctionArgs) {
 
   const form = await args.request.formData();
   const intent = String(form.get("intent") ?? "");
-  const back = `/projects/${project.id}/changes`;
+  const back = `/repos/${project.id}/changes`;
 
   try {
     // ── Publish the checked drafts as one PR ──
@@ -144,7 +144,7 @@ export async function action(args: ActionFunctionArgs) {
       // 3. Hand off to Deployments, where the human deploys the version at a chosen weight.
       const version = results[0]?.release.version ?? "";
       throw redirect(
-        `/projects/${project.id}/deployments?released=${encodeURIComponent(version)}`,
+        `/repos/${project.id}/deployments?released=${encodeURIComponent(version)}`,
       );
     }
 
@@ -161,7 +161,7 @@ export function meta() {
 
 export default function Changes({ loaderData, actionData }: Route.ComponentProps) {
   const { project, drafts, changes, roster, activeAgent } = loaderData;
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
   const navigation = useNavigation();
   const submit = useSubmit();
   // One action serves several forms — identify WHICH submission is in flight from its form
@@ -174,7 +174,7 @@ export default function Changes({ loaderData, actionData }: Route.ComponentProps
     activeIntent === "delete" ? Number(navigation.formData!.get("pullNumber")) : null;
 
   return (
-    <AppShell>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: "Changes" }] })}>
       <PageHeader
         title="Changes"
         description="Staged edits publish together as one change request; merging a change request cuts a new version."

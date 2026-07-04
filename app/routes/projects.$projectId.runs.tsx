@@ -12,7 +12,7 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -127,10 +127,10 @@ function statusVariant(
 export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
   const { project, roster, activeAgent, isTeam, runs, releases, tokens, releaseId } =
     loaderData;
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
 
   return (
-    <AppShell>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: isTeam, agentName: activeAgent, tail: [{ label: "Runs" }] })}>
       <PageHeader
         title={isTeam ? `Runs — ${activeAgent}` : "Runs"}
         description="Per-run summary metrics, filterable by release to compare versions."
@@ -191,7 +191,7 @@ export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
                   <TableRow key={r.id}>
                     <TableCell>
                       <Link
-                        to={`/projects/${project.id}/runs/${r.id}`}
+                        to={`/repos/${project.id}/runs/${r.id}`}
                         className="font-mono underline-offset-4 hover:underline"
                       >
                         {r.externalRunId?.slice(0, 12) ?? r.id.slice(0, 8)}

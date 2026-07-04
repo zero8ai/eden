@@ -29,8 +29,11 @@ export interface CreateRepoInput {
   model?: string;
   /** Repo layout: one agent at the root, or a team monorepo. Defaults to "single". */
   layout?: RepoLayout;
-  /** Team layout: the first roster member's name (e.g. "product-manager"). */
-  firstMember?: string;
+  /**
+   * The agent's name: the single agent's display name, or the first team member's
+   * directory name (e.g. "product-manager").
+   */
+  agentName?: string;
 }
 
 export interface CreatedRepo {
@@ -66,9 +69,9 @@ function packageJson(fields: Record<string, unknown>): string {
 }
 
 /** A fresh single-agent eve skeleton: `agent/` at the repo root. */
-function singleAgentFiles(name: string, model: string): FileChange[] {
+function singleAgentFiles(name: string, model: string, agentName: string): FileChange[] {
   return [
-    ...agentDirFiles("agent", name, model),
+    ...agentDirFiles("agent", agentName, model),
     {
       path: "package.json",
       content: packageJson({
@@ -233,8 +236,8 @@ export async function createEveRepo(
   const model = input.model ?? DEFAULT_MODEL;
   const files =
     layout === "team"
-      ? teamFiles(input.name, model, input.firstMember || STARTER_MEMBER)
-      : singleAgentFiles(input.name, model);
+      ? teamFiles(input.name, model, input.agentName || STARTER_MEMBER)
+      : singleAgentFiles(input.name, model, input.agentName || input.name);
   await commitFiles(
     octokit,
     { owner: input.owner, repo: input.name },

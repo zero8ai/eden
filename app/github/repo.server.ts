@@ -113,6 +113,58 @@ export async function fetchAgentSource(
 
 type InstallationOctokit = Awaited<ReturnType<typeof getInstallationOctokit>>;
 
+/** Last-commit metadata for one path (the resource list's "last updated / by" columns). */
+export interface LastCommitInfo {
+  authorLogin: string | null;
+  authorName: string | null;
+  date: string | null;
+  sha: string;
+}
+
+/**
+ * Last commit touching each path, for resource list metadata. One commits-API call per
+ * path (GitHub has no batch form), run with a small concurrency cap; failures degrade to
+ * a missing entry — the list must render fine without metadata (staged-new files have
+ * none by definition).
+ */
+export async function fetchLastCommitForPaths(
+  installationId: string | number,
+  { owner, repo, ref }: RepoRef,
+  paths: string[],
+): Promise<Record<string, LastCommitInfo>> {
+  const octokit = await getInstallationOctokit(installationId);
+  const out: Record<string, LastCommitInfo> = {};
+  const queue = [...paths];
+  const CONCURRENCY = 8;
+
+  async function worker() {
+    for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+      try {
+        const res = await octokit.rest.repos.listCommits({
+          owner,
+          repo,
+          path,
+          per_page: 1,
+          ...(ref ? { sha: ref } : {}),
+        });
+        const c = res.data[0];
+        if (c) {
+          out[path] = {
+            authorLogin: c.author?.login ?? null,
+            authorName: c.commit.author?.name ?? null,
+            date: c.commit.author?.date ?? null,
+            sha: c.sha,
+          };
+        }
+      } catch {
+        // metadata is best-effort
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  return out;
+}
+
 /**
  * Read one text file from the repo (default branch unless `ref` given). Public entry for
  * editors that need a single file's current contents; returns null if missing/binary.

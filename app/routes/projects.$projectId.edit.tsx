@@ -20,7 +20,7 @@ import {
 
 import { CodeEditor } from "~/components/code-editor";
 import { FileStateBanner } from "~/components/file-state-banner";
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -77,7 +77,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       const url = new URL(args.request.url);
       const path = normalizeAgentPath(url.searchParams.get("path") ?? "");
       // No (valid) target — nothing to edit; back to the overview, where creation lives.
-      if (!path) throw redirect(`/projects/${project.id}`);
+      if (!path) throw redirect(`/repos/${project.id}`);
 
       // Markdown schedules get the structured editor (cron + message); ?raw=1 is its own
       // "advanced" escape hatch back to this code editor.
@@ -86,7 +86,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         !url.searchParams.get("raw")
       ) {
         throw redirect(
-          `/projects/${project.id}/edit/schedule?path=${encodeURIComponent(path)}`,
+          `/repos/${project.id}/edit/schedule?path=${encodeURIComponent(path)}`,
         );
       }
 
@@ -190,10 +190,10 @@ function Editor({
     }
   };
 
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
 
   return (
-    <AppShell>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: path.split("/").pop() }] })}>
       <PageHeader
         title={
           <span className="flex items-center gap-3">

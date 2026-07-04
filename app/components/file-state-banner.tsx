@@ -20,7 +20,7 @@ export function FileStateBanner({
   saved: boolean;
   source: FileView["source"];
   change: FileView["change"];
-  /** Project base path, e.g. /projects/:id */
+  /** Repository base path, e.g. /repos/:id */
   base: string;
 }) {
   if (saved || source === "draft") {

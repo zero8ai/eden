@@ -21,7 +21,7 @@ import {
 
 import { CronField } from "~/components/cron-field";
 import { FileStateBanner } from "~/components/file-state-banner";
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -61,7 +61,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       const path = schedulePath(
         new URL(args.request.url).searchParams.get("path") ?? "",
       );
-      if (!path) throw redirect(`/projects/${project.id}`);
+      if (!path) throw redirect(`/repos/${project.id}`);
 
       const [view, { roster, active }] = await Promise.all([
         resolveFileView(project, path),
@@ -149,11 +149,11 @@ function ScheduleForm({
   const [cron, setCron] = useState(loaderData.cron);
   const [message, setMessage] = useState(loaderData.message);
 
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
   const name = path.split("/").pop()!.replace(/\.md$/, "");
 
   return (
-    <AppShell>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: path.split("/").pop() }] })}>
       <PageHeader
         title={
           <span className="flex items-center gap-3">

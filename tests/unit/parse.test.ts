@@ -84,3 +84,19 @@ describe("buildAgentConfig with a member root", () => {
     expect(config.tools.map((t) => t.name)).toEqual(["example"]);
   });
 });
+
+describe("withPreservedNames", () => {
+  it("keeps the human-given name for the root-layout member", async () => {
+    const { withPreservedNames } = await import("~/db/queries.server");
+    const existing = [
+      { id: "a1", projectId: "p", name: "pm", root: "agent", createdAt: new Date(), updatedAt: new Date() },
+    ];
+    expect(withPreservedNames(existing, [{ name: "agent", root: "agent" }])).toEqual([
+      { name: "pm", root: "agent" },
+    ]);
+    // Team members are named by directory — untouched.
+    expect(
+      withPreservedNames(existing, [{ name: "qa", root: "agents/qa/agent" }]),
+    ).toEqual([{ name: "qa", root: "agents/qa/agent" }]);
+  });
+});

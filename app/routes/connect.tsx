@@ -150,11 +150,12 @@ export async function action(args: ActionFunctionArgs) {
     const owner = String(form.get("owner") ?? "").trim();
     const name = String(form.get("name") ?? "").trim();
     const layout = form.get("layout") === "team" ? ("team" as const) : ("single" as const);
-    const firstMember =
-      slugifyResourceName(String(form.get("firstMember") ?? "")) || "assistant";
-    if (!owner || !name) return { error: "Owner and repo name are required." };
+    // Both branches ask the same two questions: repository name + agent name.
+    const agentName = slugifyResourceName(String(form.get("agentName") ?? ""));
+    if (!owner || !name) return { error: "Owner and repository name are required." };
+    if (!agentName) return { error: "Agent name is required." };
     try {
-      const repo = await createEveRepo(installationId, { owner, name, layout, firstMember });
+      const repo = await createEveRepo(installationId, { owner, name, layout, agentName });
       const project = await createProject({
         orgId: org.id,
         name,
@@ -165,10 +166,10 @@ export async function action(args: ActionFunctionArgs) {
         // The scaffold's roster is known without re-reading the repo (§7.9).
         roster:
           layout === "team"
-            ? [{ name: firstMember, root: `agents/${firstMember}/agent` }]
-            : undefined,
+            ? [{ name: agentName, root: `agents/${agentName}/agent` }]
+            : [{ name: agentName, root: "agent" }],
       });
-      throw redirect(`/projects/${project.id}`);
+      throw redirect(`/repos/${project.id}`);
     } catch (error) {
       if (error instanceof Response) throw error;
       return { error: (error as Error).message };
@@ -205,11 +206,11 @@ export async function action(args: ActionFunctionArgs) {
     roster: detectAgentRoots(source.paths).map((r) => ({ name: r.name, root: r.root })),
   });
 
-  throw redirect(`/projects/${project.id}`);
+  throw redirect(`/repos/${project.id}`);
 }
 
 export function meta() {
-  return [{ title: "Connect a repo · Eden" }];
+  return [{ title: "New repository · Eden" }];
 }
 
 export default function Connect({ loaderData, actionData }: Route.ComponentProps) {
@@ -226,8 +227,8 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
   return (
     <AppShell workspaceName={org?.name}>
       <PageHeader
-        title="New project"
-        description="A project is one eve repository — a single agent or a team of agents. Connect an existing repo, or scaffold a fresh one."
+        title="New repository"
+        description="A repository holds one agent or a team of agents. Connect an existing repo, or scaffold a fresh one."
         actions={
           <Button variant="ghost" asChild>
             <Link to="/dashboard">← Back</Link>
@@ -324,7 +325,7 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
 
           <Card>
             <CardHeader>
-              <CardTitle>Create a new eve project</CardTitle>
+              <CardTitle>Create a new repository</CardTitle>
               <CardDescription>
                 Creates a repository in your organization and scaffolds it — a single
                 agent (<span className="font-mono">agent/</span>) or a team of agents
@@ -372,20 +373,19 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                     </span>
                   </label>
                 </div>
-                <div className="flex flex-wrap items-end gap-3">
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="owner">Organization</Label>
+                {/* Same two questions in both branches: repository name, agent name. */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="name">Repository name</Label>
+                  <div className="flex items-center gap-2">
                     <Input
                       id="owner"
                       name="owner"
+                      aria-label="GitHub organization"
                       defaultValue={github.repos[0]?.owner ?? ""}
                       placeholder="org"
                       className="w-40"
                     />
-                  </div>
-                  <span className="pb-2 text-muted-foreground">/</span>
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="name">Repository</Label>
+                    <span className="text-muted-foreground">/</span>
                     <Input
                       id="name"
                       name="name"
@@ -393,30 +393,43 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                       className="w-56 font-mono"
                     />
                   </div>
-                  {layout === "team" && (
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="firstMember">First member</Label>
-                      <Input
-                        id="firstMember"
-                        name="firstMember"
-                        placeholder="product-manager"
-                        className="w-48 font-mono"
-                      />
-                    </div>
-                  )}
-                  <Button type="submit" disabled={busyData != null}>
-                    {busyIntent === "create"
-                      ? "Creating & opening…"
-                      : "Create & scaffold"}
-                  </Button>
-                </div>
-                {layout === "team" && (
                   <p className="text-xs text-muted-foreground">
-                    The first member is scaffolded at{" "}
-                    <span className="font-mono">agents/&lt;member&gt;/</span> — recruit more
-                    from the team page after creation.
+                    Created on GitHub as{" "}
+                    <span className="font-mono">
+                      {github.repos[0]?.owner ?? "org"}/
+                      {layout === "team" ? "my-team" : "my-agent"}
+                    </span>
+                    .
                   </p>
-                )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="agentName">
+                    {layout === "team" ? "First agent's name" : "Agent's name"}
+                  </Label>
+                  <Input
+                    id="agentName"
+                    name="agentName"
+                    placeholder="product-manager"
+                    className="w-72 font-mono"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {layout === "team" ? (
+                      <>
+                        The first team member, scaffolded at{" "}
+                        <span className="font-mono">agents/&lt;name&gt;/</span>. Add more
+                        members from the team page after creation.
+                      </>
+                    ) : (
+                      <>
+                        Your agent's name. Its code lives at{" "}
+                        <span className="font-mono">agent/</span> in the repository.
+                      </>
+                    )}
+                  </p>
+                </div>
+                <Button type="submit" disabled={busyData != null}>
+                  {busyIntent === "create" ? "Creating & opening…" : "Create & scaffold"}
+                </Button>
               </Form>
             </CardContent>
           </Card>

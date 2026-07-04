@@ -19,7 +19,7 @@ import {
 
 import { CodeEditor } from "~/components/code-editor";
 import { FileStateBanner } from "~/components/file-state-banner";
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { syncTenant } from "~/auth/tenant.server";
@@ -127,11 +127,11 @@ export default function EditInstructions({
   const saving = navigation.state !== "idle";
   const [value, setValue] = useState(instructions);
 
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
   const backTo = isTeam ? `${base}?agent=${encodeURIComponent(activeAgent)}` : base;
 
   return (
-    <AppShell>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: "Instructions" }] })}>
       <PageHeader
         title={isTeam ? `Edit instructions — ${activeAgent}` : "Edit instructions"}
         description="Saving stages the change — publish staged changes as one pull request from the Changes tab."

@@ -17,7 +17,7 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -115,7 +115,7 @@ export async function action(args: ActionFunctionArgs) {
   const form = await args.request.formData();
   const intent = String(form.get("intent") ?? "");
   const agentRaw = String(form.get("agent") ?? "");
-  const back = `/projects/${project.id}/deployments${
+  const back = `/repos/${project.id}/deployments${
     agentRaw ? `?agent=${encodeURIComponent(agentRaw)}` : ""
   }`;
 
@@ -174,7 +174,7 @@ export function meta() {
 
 export default function Deployments({ loaderData, actionData }: Route.ComponentProps) {
   const { project, roster, activeAgent, isTeam, releases, envs } = loaderData;
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
   const [params] = useSearchParams();
   // Set when the human just merged a change on the Changes tab — the new version is now here,
   // ready to deploy. Preselect it in the environment deploy selectors below.
@@ -198,7 +198,7 @@ export default function Deployments({ loaderData, actionData }: Route.ComponentP
   }, [inFlight, revalidator]);
 
   return (
-    <AppShell>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: isTeam, agentName: activeAgent, tail: [{ label: "Deployments" }] })}>
       <PageHeader
         title={isTeam ? `Deployments — ${activeAgent}` : "Deployments"}
         description={

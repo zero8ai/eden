@@ -23,7 +23,7 @@ import {
   PendingBubble,
   UserBubble,
 } from "~/components/chat";
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -140,7 +140,7 @@ export function meta() {
 
 export default function Assistant({ loaderData }: Route.ComponentProps) {
   const { project, entries, expired, roster, activeAgent } = loaderData;
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
   const pendingMessage =
@@ -149,7 +149,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
       : null;
 
   return (
-    <AppShell workspaceName={project.name}>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: "Assistant" }] })}>
       <PageHeader
         title="Assistant"
         description="Tell it what the agent should be able to do. It writes the code, verifies the build, and stages everything for your review in Changes."

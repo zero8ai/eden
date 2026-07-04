@@ -83,15 +83,36 @@ export function listAgents(
 }
 
 /**
+ * Layout detection names the root-layout member "agent", but the human may have given it a
+ * real name at create time — the directory convention can't carry it. Preserve the existing
+ * name for the root member so a sync never clobbers it. Team members are named by their
+ * directory, so they pass through untouched.
+ */
+export function withPreservedNames(
+  existing: Agent[],
+  detected: { name: string; root: string }[],
+): { name: string; root: string }[] {
+  const rootMember = existing.find((a) => a.root === "agent");
+  return detected.map((d) =>
+    d.root === "agent" && rootMember ? { name: rootMember.name, root: d.root } : d,
+  );
+}
+
+/**
  * Reconcile the roster with the repo's detected layout (connect revisit, webhook). New
- * members get default environments; removed members cascade away.
+ * members get default environments; removed members cascade away; the root member's
+ * human-given name survives detection.
  */
 export async function syncProjectAgents(
   projectId: string,
   roster: { name: string; root: string }[],
   store: DataStore = getRuntime().data,
 ): Promise<Agent[]> {
-  const agents = await store.agents.syncRoster(projectId, roster);
+  const existing = await store.agents.listByProject(projectId);
+  const agents = await store.agents.syncRoster(
+    projectId,
+    withPreservedNames(existing, roster),
+  );
   await Promise.all(
     agents.map((a) => store.environments.seedDefaults(projectId, a.id, DEFAULT_ENVIRONMENTS)),
   );

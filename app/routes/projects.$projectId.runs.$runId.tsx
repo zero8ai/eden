@@ -7,7 +7,7 @@ import { authkitLoader } from "@workos-inc/authkit-react-router";
 import type { ReactNode } from "react";
 import { Link, data, type LoaderFunctionArgs } from "react-router";
 
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -54,10 +54,10 @@ function statusVariant(
 
 export default function RunTranscript({ loaderData }: Route.ComponentProps) {
   const { project, run, steps, release, roster, activeAgent } = loaderData;
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
 
   return (
-    <AppShell>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: "Run" }] })}>
       <PageHeader
         title={run.externalRunId ?? run.id}
         description="Progressive-disclosure timeline of each model and tool step."

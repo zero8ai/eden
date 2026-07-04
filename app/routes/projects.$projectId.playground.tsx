@@ -25,7 +25,7 @@ import {
   PendingBubble,
   UserBubble,
 } from "~/components/chat";
-import { AgentNav, AppShell, PageHeader } from "~/components/shell";
+import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -191,7 +191,7 @@ export function meta() {
 export default function Playground({ loaderData }: Route.ComponentProps) {
   const { project, targets, entries, expired, lastDeploymentId, roster, activeAgent } =
     loaderData;
-  const base = `/projects/${project.id}`;
+  const base = `/repos/${project.id}`;
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
   const pendingMessage =
@@ -223,7 +223,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   );
 
   return (
-    <AppShell>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: "Playground" }] })}>
       <PageHeader
         title="Playground"
         description="Talk to a live deployment of this agent. Each reply is tagged with the version that produced it."

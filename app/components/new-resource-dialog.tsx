@@ -30,7 +30,7 @@ export function NewResourceDialog({
   root = "agent",
 }: {
   kind: ResourceKind;
-  /** Project base path, e.g. /projects/:id */
+  /** Repository base path, e.g. /repos/:id */
   base: string;
   /** Active agent root ("agent" or "agents/<member>/agent") the file is created under. */
   root?: string;

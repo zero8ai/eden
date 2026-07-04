@@ -1,0 +1,28 @@
+{
+  "templates": [
+    {
+      "id": "cloudflare-deployment-engineer",
+      "type": "agent",
+      "name": "Cloudflare Deployment Engineer",
+      "version": "0.1.0",
+      "description": "An agent that deploys Cloudflare Workers with wrangler — instructions and tool pre-wired.",
+      "hash": "82e27d6d0e07900441eda7c84f2a68ab292ef76d"
+    },
+    {
+      "id": "writing-a-prd",
+      "type": "skill",
+      "name": "Writing a PRD",
+      "version": "0.1.0",
+      "description": "A playbook for writing product requirements documents that lead with the decision.",
+      "hash": "e8e83497f157254486e5ba391d58d81d4bbb6069"
+    },
+    {
+      "id": "cloudflare-deploy",
+      "type": "tool",
+      "name": "Cloudflare Deploy",
+      "version": "0.1.0",
+      "description": "Deploy a Cloudflare Worker with wrangler, using credentials from the environment.",
+      "hash": "7a15a4679f4596af384b69e43d2aebc868de7b7e"
+    }
+  ]
+}

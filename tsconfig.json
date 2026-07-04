@@ -5,6 +5,12 @@
     "**/.client/**/*",
     ".react-router/types/**/*"
   ],
+  "exclude": [
+    // The catalog seed's template files are customer-facing exemplars that import `eve` (not an
+    // Eden dependency) — they ship to customer repos, they aren't Eden source. Don't typecheck
+    // them here; the catalog CI (catalog/scripts/validate.mjs) gates them instead.
+    "catalog/templates/**/*"
+  ],
   "compilerOptions": {
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "types": ["node", "vite/client"],

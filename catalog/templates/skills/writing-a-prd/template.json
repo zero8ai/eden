@@ -1,0 +1,9 @@
+{
+  "id": "writing-a-prd",
+  "type": "skill",
+  "name": "Writing a PRD",
+  "description": "A playbook for writing product requirements documents that lead with the decision.",
+  "version": "0.1.0",
+  "eve": ">=0.1.0",
+  "files": ["skills/writing-a-prd.md"]
+}

@@ -1,0 +1,23 @@
+{
+  "id": "cloudflare-deployment-engineer",
+  "type": "agent",
+  "name": "Cloudflare Deployment Engineer",
+  "description": "An agent that deploys Cloudflare Workers with wrangler — instructions and tool pre-wired.",
+  "version": "0.1.0",
+  "eve": ">=0.1.0",
+  "model": "anthropic/claude-sonnet-5",
+  "files": ["instructions.md", "agent.ts", "tools/cloudflare-deploy.ts"],
+  "dependencies": {
+    "wrangler": "^3.0.0"
+  },
+  "secrets": [
+    {
+      "name": "CLOUDFLARE_API_TOKEN",
+      "description": "API token with the 'Edit Cloudflare Workers' permission for the target account."
+    },
+    {
+      "name": "CLOUDFLARE_ACCOUNT_ID",
+      "description": "The Cloudflare account id the Worker deploys into."
+    }
+  ]
+}

@@ -12,6 +12,8 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "test": "vitest run",
+    "catalog:validate": "node catalog/scripts/validate.mjs",
+    "catalog:index": "node catalog/scripts/build-index.mjs",
     "doctor": "npx react-doctor@latest"
   },
   "dependencies": {

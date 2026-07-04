@@ -12,6 +12,9 @@ const memberRoute = (tail: string, file: string, id: string) =>
 export default [
   index("routes/home.tsx"),
   route("dashboard", "routes/dashboard.tsx"),
+  // Recruit — the marketplace (PRD §7.8, M6). Browse (index.json) + a template detail page.
+  route("marketplace", "routes/marketplace.tsx"),
+  route("marketplace/:type/:id", "routes/marketplace.$type.$id.tsx"),
   route("org/settings", "routes/org.settings.tsx"),
   route("connect", "routes/connect.tsx"),
   // The product noun is REPOSITORY (one connected GitHub repo = a single agent or a team).

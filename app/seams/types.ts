@@ -8,6 +8,11 @@
  *
  * Pure types only (no server imports) so they can be referenced anywhere.
  */
+import type {
+  CatalogIndex,
+  TemplateManifest,
+  TemplateType,
+} from "~/marketplace/manifest";
 import type { DataStore } from "~/data/ports";
 
 export type EdenMode = "oss" | "managed";
@@ -219,6 +224,26 @@ export interface NormalizedRunEvent {
   metadata?: Record<string, unknown>;
 }
 
+// ── CatalogSource ─────────────────────────────────────────────────────────────
+// The marketplace catalog (PRD §7.8, Milestone 6). OSS: fixture-backed by the in-repo
+// `marketplace/` seed for dev/tests, or a GitHub raw pointer at the eve OSS repo's
+// `marketplace/`. The seam keeps browse independent of where the catalog physically lives.
+
+/** A fully-loaded template: its manifest plus every declared file's content, keyed by path. */
+export interface CatalogTemplate {
+  manifest: TemplateManifest;
+  /** install-relative path → file content (exactly the manifest's `files` set). */
+  files: Record<string, string>;
+}
+
+export interface CatalogSource {
+  readonly name: string;
+  /** The browse index — the light projection Eden lists from (never the file bodies). */
+  index(): Promise<CatalogIndex>;
+  /** One template with its files loaded, for the detail page (and, phase 2, install). */
+  template(type: TemplateType, id: string): Promise<CatalogTemplate>;
+}
+
 /** The full set of runtime implementations selected for the current mode. */
 export interface EdenRuntime {
   mode: EdenMode;
@@ -229,4 +254,5 @@ export interface EdenRuntime {
   metering: MeteringSink;
   scheduler: Scheduler;
   telemetry: TelemetrySink;
+  catalog: CatalogSource;
 }

@@ -13,6 +13,8 @@ import { managedMeteringSink } from "~/managed/metering.stripe.server";
 import { managedModelGateway } from "~/managed/gateway.proxy.server";
 import { nomadTarget } from "./adapters/deploy.nomad.server";
 import { vercelTarget } from "./adapters/deploy.vercel.server";
+import { fixtureCatalog } from "./oss/catalog.fixture.server";
+import { githubCatalog } from "./oss/catalog.github.server";
 import { containerPostgresTarget } from "./oss/deploy.container.server";
 import { localDockerTarget } from "./oss/deploy.localdocker.server";
 import { directModelGateway } from "./oss/gateway.direct.server";
@@ -20,7 +22,12 @@ import { localMeteringSink } from "./oss/metering.local.server";
 import { localScheduler } from "./oss/scheduler.local.server";
 import { localSecretsProvider } from "./oss/secrets.local.server";
 import { localTelemetrySink } from "./oss/telemetry.local.server";
-import type { DeployTarget, EdenMode, EdenRuntime } from "./types";
+import type {
+  CatalogSource,
+  DeployTarget,
+  EdenMode,
+  EdenRuntime,
+} from "./types";
 
 function resolveMode(): EdenMode {
   return process.env.EDEN_MODE === "managed" ? "managed" : "oss";
@@ -40,6 +47,11 @@ function resolveDeployTarget(): DeployTarget {
   }
 }
 
+/** Catalog source: the GitHub-raw pointer when `EDEN_CATALOG_REPO` is set, else the in-repo fixture. */
+function resolveCatalog(): CatalogSource {
+  return process.env.EDEN_CATALOG_REPO ? githubCatalog : fixtureCatalog;
+}
+
 function buildRuntime(mode: EdenMode): EdenRuntime {
   // Managed-only implementations (KMS secrets, gateway proxy, Stripe metering, Nomad target)
   // are introduced in M4 and swapped in here by mode. Until then both modes share the OSS
@@ -56,6 +68,8 @@ function buildRuntime(mode: EdenMode): EdenRuntime {
     // Managed swaps in the gateway proxy (keys/metering/caps) and Stripe metering.
     modelGateway: managed ? managedModelGateway : directModelGateway,
     metering: managed ? managedMeteringSink : localMeteringSink,
+    // Marketplace catalog: fixture (in-repo seed) by default; GitHub-raw when EDEN_CATALOG_REPO set.
+    catalog: resolveCatalog(),
   };
 }
 

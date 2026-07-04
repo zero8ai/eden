@@ -96,6 +96,7 @@ export function AppShell({
           )}
           <nav className="ml-auto flex items-center gap-1 text-sm">
             <HeaderLink to="/dashboard">Repositories</HeaderLink>
+            <HeaderLink to="/marketplace">Marketplace</HeaderLink>
             <HeaderLink to="/org/settings">Settings</HeaderLink>
           </nav>
           <div className="flex items-center gap-1">

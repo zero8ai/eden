@@ -62,6 +62,7 @@ import { createIngestToken, listIngestTokens } from "~/observability/store.serve
 import { listDrafts, resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import { readModel, scaffoldAgentModule, setModel } from "~/eve/agentModule";
 import { buildAgentConfig } from "~/eve/parse";
+import { getAgentSource } from "~/github/cached.server";
 import { fetchAgentSource } from "~/github/repo.server";
 import { proposeChange, type FileChange } from "~/github/write.server";
 import { contextPath } from "~/lib/paths";
@@ -158,7 +159,7 @@ export const loader = (args: LoaderFunctionArgs) =>
 
       if (showMember) {
         const [source, drafts, envs] = await Promise.all([
-          fetchAgentSource(project.repoInstallationId, {
+          getAgentSource(project.repoInstallationId, {
             owner: project.repoOwner,
             repo: project.repoName,
           }),

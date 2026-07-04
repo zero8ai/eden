@@ -8,7 +8,7 @@
  * collapse both levels into one merged row.
  */
 import { LogOut, User, Users } from "lucide-react";
-import { Form, Link, NavLink, useLocation, useNavigate } from "react-router";
+import { Form, Link, NavLink, useLocation, useNavigate, useNavigation } from "react-router";
 
 import { ThemeToggle } from "~/components/theme-toggle";
 import { Button } from "~/components/ui/button";
@@ -79,6 +79,7 @@ export function AppShell({
   return (
     <TooltipProvider>
     <div className="min-h-screen">
+      <NavProgress />
       <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-5xl items-center gap-4 px-6">
           <Link to="/dashboard" className="flex items-baseline gap-2">
@@ -109,6 +110,20 @@ export function AppShell({
   );
 }
 
+/**
+ * Global pending-navigation indicator (M5.9). Mounts only while a navigation is in flight; the
+ * CSS fades it in 150ms after mount, so quick navigations resolve before it's ever seen.
+ */
+function NavProgress() {
+  const navigation = useNavigation();
+  if (navigation.state === "idle") return null;
+  return (
+    <div className="eden-nav-progress" aria-hidden>
+      <div className="eden-nav-progress-bar bg-primary" />
+    </div>
+  );
+}
+
 /** The "up" navigation: each ancestor links to its level; the last crumb is the page. */
 function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }) {
   return (
@@ -119,6 +134,7 @@ function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }) {
           {crumb.to ? (
             <Link
               to={crumb.to}
+              prefetch="intent"
               className="max-w-44 truncate text-muted-foreground transition-colors hover:text-foreground"
             >
               {crumb.label}
@@ -197,10 +213,13 @@ function HeaderLink({ to, children }: { to: string; children: React.ReactNode })
   return (
     <NavLink
       to={to}
-      className={({ isActive }) =>
+      prefetch="intent"
+      className={({ isActive, isPending }) =>
         cn(
           "rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground",
           isActive && "bg-accent text-foreground",
+          // Register the click within a frame, before the destination loader resolves.
+          isPending && "bg-accent/60 text-foreground",
         )
       }
     >
@@ -293,10 +312,13 @@ export function AgentNav({
               key={item.label}
               to={`${base}${item.path}`}
               end={item.path === ""}
-              className={({ isActive }) =>
+              prefetch="intent"
+              className={({ isActive, isPending }) =>
                 cn(
                   "rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground",
                   isActive && "bg-accent font-medium text-foreground",
+                  // Highlight the destination tab immediately on click (before its loader resolves).
+                  isPending && "bg-accent/60 font-medium text-foreground",
                 )
               }
             >

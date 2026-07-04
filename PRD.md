@@ -729,6 +729,28 @@ two-source-of-truth reconciliation problem.
 - Punted: repo-level all-runs rollup; per-member assistant transcripts (the shared project
   transcript with member-scoped writes is a known quirk).
 
+**Milestone 5.9 — Performance: GitHub read cache & navigation feedback (shipped)**
+- The measured defect: page navigations sat at 2–3s with zero UI feedback. Every GitHub REST
+  call costs ~600ms from this machine (Australia), and loaders chained several uncached —
+  `fetchAgentSource` alone (repos.get → recursive git tree → per-root file reads) was 1.6–2s per
+  call, and it ran on the Overview, Settings, Resources, Deployment, and assistant surfaces.
+- **SWR read cache** (`github/cache.server.ts` + `cached.server.ts`): an in-memory
+  stale-while-revalidate cache (on `globalThis` to survive HMR, no eviction — keyed per
+  connected repo). A hit returns instantly; a stale hit returns the old value AND refreshes in
+  the background; concurrent reads for one key share a single fetch. Source (60s), open changes
+  (30s), and last-commit metadata (5min) each get a cached wrapper.
+- **The rule: loaders read cached, actions read raw.** A stale read composed into a write could
+  clobber newer content, so every action and the ship/release pipeline keep the raw functions;
+  only the read-only loader surfaces switched. Writes invalidate on success (`proposeChange` /
+  close → changes; merge → changes *and* source, since a merge moves the default branch), and
+  the push/PR webhook re-warms the default-branch source and drops the changes cache so
+  github.com-side activity can't leave a stale value behind. Connect warms the cache with the
+  source it already read to validate the repo, so the first project load is instant.
+- **Navigation feedback**: a global 2px indeterminate progress bar in the shell (CSS keyframes,
+  gated 150ms behind an opacity fade so sub-150ms navigations never flash), `isPending` tab
+  highlighting so a click registers within a frame before its loader resolves, and
+  `prefetch="intent"` on the tab rows, breadcrumbs, and team-member cards.
+
 **Milestone 6 — Recruit (marketplace, §7.8)**
 - Template format (files + manifest: required secrets/connections, version, eve range) and the
   first-party curated catalog (a git repo of templates).

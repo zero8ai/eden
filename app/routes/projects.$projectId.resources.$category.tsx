@@ -42,11 +42,8 @@ import { discardDrafts, listDrafts, stageDeletions } from "~/drafts/drafts.serve
 import { buildAgentConfig } from "~/eve/parse";
 import { RESOURCE_KINDS } from "~/eve/templates";
 import { AGENT_CATEGORIES } from "~/eve/types";
-import {
-  fetchAgentSource,
-  fetchLastCommitForPaths,
-  type LastCommitInfo,
-} from "~/github/repo.server";
+import { getAgentSource, getLastCommitForPaths } from "~/github/cached.server";
+import { fetchAgentSource, type LastCommitInfo } from "~/github/repo.server";
 import { contextPath } from "~/lib/paths";
 import {
   agentFromParams,
@@ -98,7 +95,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
       const repo = { owner: project.repoOwner, repo: project.repoName };
       const [source, drafts] = await Promise.all([
-        fetchAgentSource(project.repoInstallationId, repo),
+        getAgentSource(project.repoInstallationId, repo),
         listDrafts(project.id),
       ]);
 
@@ -118,7 +115,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       );
 
       // Last-commit metadata for repo-backed files only (best-effort; page renders without).
-      const commitMeta = await fetchLastCommitForPaths(
+      const commitMeta = await getLastCommitForPaths(
         project.repoInstallationId,
         repo,
         repoItems.map((i) => i.path),

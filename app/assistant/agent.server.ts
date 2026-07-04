@@ -14,7 +14,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { listDrafts, resolveFileView, stageDraft } from "~/drafts/drafts.server";
-import { fetchAgentSource } from "~/github/repo.server";
+import { getAgentSource } from "~/github/cached.server";
 import { getWorkspaceAssistantModel, getWorkspaceModelKey } from "~/org/workspace.server";
 import type { ConnectedProject } from "~/project/guard.server";
 import { normalizeAgentPath } from "~/project/guard.server";
@@ -145,7 +145,7 @@ type ToolResult = string;
 
 async function listFiles(project: ConnectedProject): Promise<ToolResult> {
   const [source, drafts] = await Promise.all([
-    fetchAgentSource(project.repoInstallationId, {
+    getAgentSource(project.repoInstallationId, {
       owner: project.repoOwner,
       repo: project.repoName,
     }),

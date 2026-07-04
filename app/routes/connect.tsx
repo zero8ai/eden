@@ -47,6 +47,7 @@ import {
   listKnownInstallations,
   rememberInstallation,
 } from "~/github/installations.server";
+import { warmAgentSource } from "~/github/cached.server";
 import {
   fetchAgentSource,
   listInstallationRepos,
@@ -205,6 +206,9 @@ export async function action(args: ActionFunctionArgs) {
     // Detected roster: one member per agent root (single repos are a team of one).
     roster: detectAgentRoots(source.paths).map((r) => ({ name: r.name, root: r.root })),
   });
+
+  // We just read the source to validate — warm the cache so the first project load is instant.
+  warmAgentSource(installationId, { owner, repo }, source);
 
   throw redirect(`/repos/${project.id}`);
 }

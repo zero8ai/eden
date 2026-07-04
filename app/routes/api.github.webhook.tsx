@@ -14,6 +14,11 @@ import { data, type ActionFunctionArgs } from "react-router";
 import { syncProjectAgents } from "~/db/queries.server";
 import { ensureReleasesForCommit, findProjectByRepo } from "~/deploy/controller.server";
 import { detectAgentRoots } from "~/eve/parse";
+import {
+  invalidateRepoChanges,
+  invalidateRepoSource,
+  warmAgentSource,
+} from "~/github/cached.server";
 import { fetchAgentSource } from "~/github/repo.server";
 import { verifyGitHubSignature } from "~/github/webhook.server";
 
@@ -34,7 +39,23 @@ export async function action({ request }: ActionFunctionArgs) {
       base?: { ref?: string };
     };
     repository?: { name?: string; owner?: { login?: string }; default_branch?: string };
+    installation?: { id?: number };
   };
+
+  // Any pull_request event (opened/closed/synchronize/…) changes the open-changes list on
+  // github.com — drop the changes cache so the Deployment tab reflects it on next read. The
+  // delivery always carries its installation id; that's all the key needs (M5.9).
+  if (
+    event === "pull_request" &&
+    payload.installation?.id != null &&
+    payload.repository?.owner?.login &&
+    payload.repository.name
+  ) {
+    invalidateRepoChanges(payload.installation.id, {
+      owner: payload.repository.owner.login,
+      repo: payload.repository.name,
+    });
+  }
 
   // Only act on PRs merged into the default branch — a merge into a feature branch is not
   // a ship signal (PRD §7.3: merge-to-mainline = deploy).
@@ -60,12 +81,23 @@ export async function action({ request }: ActionFunctionArgs) {
   // team member (PRD §7.9). Best-effort: a failed read must not drop the release record.
   if (project.repoInstallationId) {
     try {
+      const owner = payload.repository.owner.login;
+      const repo = payload.repository.name;
       const source = await fetchAgentSource(project.repoInstallationId, {
-        owner: payload.repository.owner.login,
-        repo: payload.repository.name,
+        owner,
+        repo,
         ref: payload.pull_request.merge_commit_sha,
       });
       await syncProjectAgents(project.id, detectAgentRoots(source.paths));
+      // The merge moved the default branch to this commit — drop every ref's source entry,
+      // then warm the default-branch key with what we just read (next load is instant). The
+      // read was pinned to the merge SHA, so restore the branch NAME in the cached `ref` —
+      // consumers of the default-branch key must never see a SHA there.
+      invalidateRepoSource(project.repoInstallationId, { owner, repo });
+      warmAgentSource(project.repoInstallationId, { owner, repo }, {
+        ...source,
+        ref: payload.repository.default_branch ?? source.ref,
+      });
     } catch {
       // roster stays as-is; releases below still cut for the known members
     }

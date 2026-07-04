@@ -65,7 +65,7 @@ import { buildAgentConfig, detectAgentRoots } from "~/eve/parse";
 import { RESOURCE_KINDS, slugifyResourceName } from "~/eve/templates";
 import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
 import { memberScaffold } from "~/github/create.server";
-import { fetchAgentSource } from "~/github/repo.server";
+import { getAgentSource } from "~/github/cached.server";
 import { proposeChange } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
@@ -165,7 +165,7 @@ export const loader = (args: LoaderFunctionArgs) =>
 
       try {
         const [source, drafts] = await Promise.all([
-          fetchAgentSource(project.repoInstallationId, {
+          getAgentSource(project.repoInstallationId, {
             owner: project.repoOwner,
             repo: project.repoName,
           }),
@@ -682,7 +682,12 @@ function TeamSurface({
 
       <div className="grid gap-4 sm:grid-cols-2">
         {members.map((m) => (
-          <Link key={m.name} to={`${base}/agents/${encodeURIComponent(m.name)}`} className="group">
+          <Link
+            key={m.name}
+            to={`${base}/agents/${encodeURIComponent(m.name)}`}
+            prefetch="intent"
+            className="group"
+          >
             <Card className="h-full transition-colors group-hover:border-ring/60">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-2">

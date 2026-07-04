@@ -69,7 +69,8 @@ import {
 } from "~/deploy/environments.server";
 import { listAgentEnvironments, listReleases } from "~/db/queries.server";
 import { discardDrafts, listDrafts, publishDrafts } from "~/drafts/drafts.server";
-import { closePullRequest, listOpenChanges, mergePullRequest } from "~/github/write.server";
+import { getOpenChanges } from "~/github/cached.server";
+import { closePullRequest, mergePullRequest } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
 import { timeAgo } from "~/lib/time";
@@ -136,7 +137,7 @@ export const loader = (args: LoaderFunctionArgs) =>
 
       const [allDrafts, changes, releaseRows] = await Promise.all([
         listDrafts(project.id),
-        listOpenChanges(project.repoInstallationId, {
+        getOpenChanges(project.repoInstallationId, {
           owner: project.repoOwner,
           repo: project.repoName,
         }),

@@ -7,6 +7,7 @@
  * is the ship signal (later wired to deploy). The eve repo stays the single source of truth —
  * we persist nothing about the change locally; its state lives in GitHub.
  */
+import { invalidateRepoChanges, invalidateRepoSource } from "./cached.server";
 import { getInstallationOctokit } from "./client.server";
 
 export interface FileChange {
@@ -161,12 +162,14 @@ export async function proposeChange(
   await ensureBranch(octokit, ref, input.branch, baseRef.data.object.sha);
   await commitFiles(octokit, ref, input.branch, input.files, input.commitMessage ?? input.title);
 
-  return openOrReusePullRequest(octokit, ref, {
+  const result = await openOrReusePullRequest(octokit, ref, {
     base,
     branch: input.branch,
     title: input.title,
     body: input.body,
   });
+  invalidateRepoChanges(installationId, ref);
+  return result;
 }
 
 /** A file touched by a change, with line deltas for a PM-readable diff summary. */
@@ -319,6 +322,7 @@ export async function closePullRequest(
       // protected or already-deleted branch — the close already succeeded
     }
   }
+  invalidateRepoChanges(installationId, { owner, repo });
 }
 
 export interface MergeResult {
@@ -382,6 +386,9 @@ export async function mergePullRequest(
     }
   }
 
+  // A merge lands on the default branch AND closes the PR — drop both source and changes caches.
+  invalidateRepoChanges(installationId, { owner, repo });
+  invalidateRepoSource(installationId, { owner, repo });
   return { mergeSha: merged.data.sha, method };
 }
 

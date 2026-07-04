@@ -209,7 +209,10 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const targetPicker = useMemo(
     () => (
       <Select value={deploymentId} onValueChange={setDeploymentId}>
-        <SelectTrigger className="min-w-44" aria-label="Deployment to talk to">
+        <SelectTrigger
+          className="h-9 min-w-44 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
+          aria-label="Deployment to talk to"
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -280,7 +283,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             {pendingMessage && (
               <>
                 <UserBubble text={pendingMessage} />
-                <PendingBubble label="Thinking…" />
+                <PendingBubble />
               </>
             )}
           </ChatTranscript>
@@ -288,11 +291,10 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           <ChatComposer
             placeholder="Say something to the agent…"
             busy={busy}
-            busyLabel="Thinking…"
             onSend={(message) =>
               fetcher.submit({ message, deploymentId }, { method: "post" })
             }
-            extras={targetPicker}
+            controls={targetPicker}
           />
         </div>
       )}

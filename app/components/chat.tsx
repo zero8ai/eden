@@ -1,10 +1,11 @@
 /**
  * Shared chat surface pieces (assistant + playground): a transcript that keeps itself
- * scrolled to the newest message, user/assistant bubbles, and a composer that submits on
- * Enter (Shift+Enter for a newline) and clears after send. The routes own the data; this
- * owns the conversational feel.
+ * scrolled to the newest message, user/assistant bubbles, a typing indicator for an
+ * in-flight turn, and a composer that submits on Enter (Shift+Enter for a newline) and
+ * clears after send. The routes own the data; this owns the conversational feel.
  */
 import { useEffect, useRef, type ReactNode } from "react";
+import { ArrowUp, Loader2 } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
@@ -22,7 +23,7 @@ export function ChatTranscript({
     endRef.current?.scrollIntoView({ block: "end" });
   }, [dep]);
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {children}
       <div ref={endRef} />
     </div>
@@ -31,7 +32,7 @@ export function ChatTranscript({
 
 export function UserBubble({ text }: { text: string }) {
   return (
-    <div className="ml-auto w-fit max-w-[85%] rounded-xl bg-primary px-4 py-2.5 text-sm text-primary-foreground">
+    <div className="ml-auto w-fit max-w-[85%] rounded-2xl bg-primary px-4 py-2.5 text-sm text-primary-foreground">
       <p className="whitespace-pre-wrap">{text}</p>
     </div>
   );
@@ -39,34 +40,46 @@ export function UserBubble({ text }: { text: string }) {
 
 export function AssistantBubble({ children }: { children: ReactNode }) {
   return (
-    <div className="w-fit max-w-[85%] rounded-xl border bg-card px-4 py-2.5 text-sm">
+    <div className="w-fit max-w-[85%] rounded-2xl border bg-card px-4 py-2.5 text-sm">
       {children}
     </div>
   );
 }
 
-/** A subdued bubble shown while the assistant turn is in flight. */
-export function PendingBubble({ label }: { label: string }) {
+/** Typing indicator shown while the assistant turn is in flight — dots, not prose, so it
+ * never reads like a real reply. */
+export function PendingBubble() {
   return (
-    <div className="w-fit max-w-[85%] rounded-xl border border-dashed bg-card px-4 py-2.5 text-sm text-muted-foreground">
-      {label}
+    <div className="w-fit rounded-2xl border bg-card px-4 py-3">
+      <div className="flex items-center gap-1" aria-hidden="true">
+        <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:-0.3s]" />
+        <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:-0.15s]" />
+        <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground/60" />
+      </div>
+      <span className="sr-only">Working…</span>
     </div>
   );
+}
+
+const MAX_COMPOSER_HEIGHT = 192;
+
+/** Grow the textarea to fit its content, up to a cap (then it scrolls). */
+function autoGrow(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_HEIGHT)}px`;
 }
 
 export function ChatComposer({
   placeholder,
   busy,
-  busyLabel,
   onSend,
-  extras,
+  controls,
 }: {
   placeholder: string;
   busy: boolean;
-  busyLabel: string;
   onSend: (message: string) => void;
-  /** Optional controls rendered next to the send button (e.g. a deployment picker). */
-  extras?: ReactNode;
+  /** Optional controls rendered in the toolbar, left of the send button (e.g. a picker). */
+  controls?: ReactNode;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -74,30 +87,44 @@ export function ChatComposer({
     const message = ref.current?.value.trim();
     if (!message || busy) return;
     onSend(message);
-    if (ref.current) ref.current.value = "";
+    if (ref.current) {
+      ref.current.value = "";
+      ref.current.style.height = "auto";
+    }
   };
 
   return (
-    <div className="flex flex-wrap items-end gap-3 rounded-xl border bg-card p-3">
-      <div className="min-w-0 flex-1">
-        <Textarea
-          ref={ref}
-          placeholder={placeholder}
-          aria-label={placeholder}
-          className="min-h-16 resize-none border-0 p-2 shadow-none focus-visible:ring-0"
+    <div className="rounded-2xl border bg-card shadow-sm transition focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
+      <Textarea
+        ref={ref}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        rows={1}
+        className="max-h-48 min-h-11 resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none focus-visible:ring-0"
+        disabled={busy}
+        onInput={(e) => autoGrow(e.currentTarget)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            send();
+          }
+        }}
+      />
+      <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
+        <div className="flex min-w-0 items-center gap-2">{controls}</div>
+        <Button
+          type="button"
+          size="icon"
+          className="size-9 shrink-0 rounded-full"
+          onClick={send}
           disabled={busy}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-        />
-      </div>
-      <div className="flex flex-col items-stretch gap-2">
-        {extras}
-        <Button onClick={send} disabled={busy}>
-          {busy ? busyLabel : "Send"}
+          aria-label="Send"
+        >
+          {busy ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <ArrowUp className="size-4" />
+          )}
         </Button>
       </div>
     </div>

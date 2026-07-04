@@ -209,7 +209,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           {pendingMessage && (
             <>
               <UserBubble text={pendingMessage} />
-              <PendingBubble label="Working — reading the repo, writing code, verifying the build…" />
+              <PendingBubble />
             </>
           )}
         </ChatTranscript>
@@ -221,7 +221,6 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
               : "What should the agent be able to do?"
           }
           busy={busy}
-          busyLabel="Working…"
           onSend={(message) =>
             fetcher.submit({ message, agent: activeAgent }, { method: "post" })
           }

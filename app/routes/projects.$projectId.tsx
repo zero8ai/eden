@@ -123,8 +123,8 @@ interface ProjectView {
   draftPaths: string[];
   /** Member view: this member's environment names, for the Ship dialog's target picker. */
   envNames: string[];
-  /** Member view: the primary (first) environment's live deployment, for the status line. */
-  liveNow: { version: string; url: string | null; at: string } | null;
+  /** Member view: what's running per environment, for the header status line. */
+  running: { envName: string; version: string; url: string | null; at: string }[];
   /** Deploy progress for a just-shipped commit (?shipped=<sha>&env=<name>&skipped=a,b). */
   ship: { env: string; rows: ShipStatusRow[]; skipped: string[] } | null;
 }
@@ -158,7 +158,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           error: "This project has no connected repo.",
           draftPaths: [],
           envNames: [],
-          liveNow: null,
+          running: [],
           ship: null,
         };
       }
@@ -224,34 +224,37 @@ export const loader = (args: LoaderFunctionArgs) =>
           config.hasAgentModule = true;
         }
 
-        // Deploy status for the member surface: what's live now (header line), the member's
-        // environment names (Ship dialog), and — after a Ship — per-member deploy progress
-        // for the shipped commit, so the banner survives refreshes (state lives in the DB).
+        // Deploy status for the member surface: what's running per environment (header
+        // line), the member's environment names (Ship dialog), and — after a Ship —
+        // per-member deploy progress for the shipped commit, so the banner survives
+        // refreshes (state lives in the DB).
         let envNames: string[] = [];
-        let liveNow: ProjectView["liveNow"] = null;
+        let running: ProjectView["running"] = [];
         let ship: ProjectView["ship"] = null;
         if (view === "member") {
           const envs = await listAgentEnvironments(active.id);
           envNames = envs.map((e) => e.name);
-          // The member's PRIMARY environment is simply its first (environments are
-          // user-defined, M5.7 — no name is special; creation order decides).
-          const primary = envs[0];
-          if (primary) {
-            const live = (await listDeployments(primary.id)).find(
-              (d) => d.status === "live",
-            );
-            if (live) {
-              liveNow = {
-                version: live.version,
-                url: live.url,
-                at: live.createdAt.toISOString(),
-              };
-            }
-          }
+          running = (
+            await Promise.all(
+              envs.map(async (env) => {
+                const current = (await listDeployments(env.id)).find(
+                  (d) => d.status === "live",
+                );
+                return current
+                  ? {
+                      envName: env.name,
+                      version: current.version,
+                      url: current.url,
+                      at: current.createdAt.toISOString(),
+                    }
+                  : null;
+              }),
+            )
+          ).filter((r) => r !== null);
 
           const url = new URL(args.request.url);
           const shippedSha = url.searchParams.get("shipped");
-          const shipEnv = url.searchParams.get("env") ?? primary?.name ?? "default";
+          const shipEnv = url.searchParams.get("env") ?? envs[0]?.name ?? "default";
           const shipSkipped = (url.searchParams.get("skipped") ?? "")
             .split(",")
             .filter(Boolean);
@@ -299,7 +302,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           error: null,
           draftPaths: drafts.map((d) => d.path),
           envNames,
-          liveNow,
+          running,
           ship,
         };
       } catch (error) {
@@ -316,7 +319,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           error: (error as Error).message,
           draftPaths: [],
           envNames: [],
-          liveNow: null,
+          running: [],
           ship: null,
         };
       }
@@ -343,7 +346,7 @@ export async function action(args: ActionFunctionArgs) {
   const repo = { owner: project.repoOwner, repo: project.repoName };
 
   try {
-    // ── Ship: the one-click path — staged changes (or branch head) → live version ──
+    // ── Ship: the one-click path — staged changes (or branch head) → deployed version ──
     if (intent === "ship" || intent === "ship-head") {
       // No fallback name: environments are user-defined (M5.7), so a missing field is a
       // bug to surface, not something to paper over with a guessed target.
@@ -474,7 +477,7 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
     error,
     draftPaths,
     envNames,
-    liveNow,
+    running,
     ship,
   } = loaderData;
   const base = `/repos/${project.id}`;
@@ -559,16 +562,35 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
           }
         />
       )}
-      {view === "member" && liveNow && (
+      {view === "member" && running.length > 0 && (
         <p className="-mt-4 mb-6 text-sm text-muted-foreground">
-          Live: <span className="font-semibold text-foreground">{liveNow.version}</span>
-          {" · "}updated {timeAgo(liveNow.at)}
-          {liveNow.url && (
+          {running.length === 1 ? (
             <>
-              {" · "}
-              <a href={liveNow.url} className="underline underline-offset-4">
-                open
-              </a>
+              Running{" "}
+              <span className="font-semibold text-foreground">
+                {running[0].version}
+              </span>{" "}
+              on {running[0].envName}
+              {" · "}updated {timeAgo(running[0].at)}
+              {running[0].url && (
+                <>
+                  {" · "}
+                  <a href={running[0].url} className="underline underline-offset-4">
+                    open
+                  </a>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              Running —{" "}
+              {running.map((r, i) => (
+                <span key={r.envName}>
+                  {i > 0 && " · "}
+                  {r.envName}:{" "}
+                  <span className="font-semibold text-foreground">{r.version}</span>
+                </span>
+              ))}
             </>
           )}
           {" · "}
@@ -625,7 +647,7 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
         <Alert className="mb-6">
           <AlertTitle>
             {draftPaths.length} staged change{draftPaths.length === 1 ? "" : "s"} not
-            live yet
+            shipped yet
           </AlertTitle>
           <AlertDescription>
             Ship them with the button above, or{" "}
@@ -862,8 +884,8 @@ function ShipDialog({
           </DialogTitle>
           <DialogDescription>
             {draftCount > 0
-              ? "Publishes and merges your staged changes, cuts a new version, and makes it live. The current version keeps serving until the new one is healthy."
-              : `Cuts a version from the newest commit on ${defaultBranch} and makes it live. A commit that already shipped is reused — no rebuild.`}
+              ? "Publishes and merges your staged changes, cuts a new version, and deploys it. The current version keeps serving until the new one is healthy."
+              : `Cuts a version from the newest commit on ${defaultBranch} and deploys it. A commit that already shipped is reused — no rebuild.`}
           </DialogDescription>
         </DialogHeader>
         <Form method="post">
@@ -919,9 +941,9 @@ function ShipProgress({
     <Alert variant={failed.length > 0 ? "destructive" : "default"} className="mb-6">
       <AlertTitle>
         {allLive
-          ? `${version} is live in ${ship.env}`
+          ? `${version} is running on ${ship.env}`
           : failed.length > 0
-            ? `${version} couldn't go live in ${ship.env} — the previous version is still serving`
+            ? `${version} couldn't deploy to ${ship.env} — the previous version is still running`
             : `Shipping ${version} to ${ship.env}…`}
       </AlertTitle>
       <AlertDescription>
@@ -986,7 +1008,7 @@ function ShipProgress({
 function ShipSteps({ status, version }: { status: string; version: string }) {
   const stage =
     status === "live"
-      ? "Live ✓"
+      ? "Running ✓"
       : status === "failed"
         ? "Failed ✗"
         : status === "building"

@@ -1,12 +1,12 @@
 /**
- * Versions — the deploy surface (Deploy pillar, M2 + M6/M5.7 — PRD §7.4/§7.7).
+ * Versions — the deploy surface (Deploy pillar, M2 + M5.6/M5.7 — PRD §7.4/§7.7).
  *
- * The mental model is deliberately small: an agent has VERSIONS; exactly ONE version is live
- * per environment. Environments are user-defined (create/rename/delete below; every member
- * keeps at least one) and the member's PRIMARY — its first — is the page's hero; the version
- * history lets any past version be made live again in one click (fast rollback — the image
- * is reused, no rebuild). Shipping a NEW version happens on the Overview (Ship) or via
- * Changes → merge; this page is where you see and move what's live.
+ * The mental model: SHIP makes versions (Overview); DEPLOY places them (this page). An agent
+ * has immutable versions; environments are independent, user-defined peers and each runs
+ * exactly ONE version — "running on staging" is a per-environment fact, not a global "live"
+ * state. Deploying any version — new or old — to an environment is a clean cutover once the
+ * new instance is healthy, so rollback is just deploying an older version again (image
+ * reused, no rebuild).
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { useEffect, useRef, useState } from "react";
@@ -151,16 +151,17 @@ export async function action(args: ActionFunctionArgs) {
       return { ok: true as const };
     }
 
-    if (intent === "make-live" || intent === "retry") {
-      // Both are a cutover deploy of a chosen release; "make-live" of a past version rides
-      // the rollback job (fast — image reuse), a retry re-runs the forward deploy.
-      // queueDeploy creates the row in `queued` BEFORE enqueueing so the click has an
-      // immediately visible result; the worker takes it to building → live.
+    if (intent === "deploy-version" || intent === "retry") {
+      // Both are a cutover deploy of a chosen release into a chosen environment;
+      // deploy-version rides the rollback job (image reuse — an already-built version
+      // starts in seconds), a retry re-runs the forward deploy. queueDeploy creates the
+      // row in `queued` BEFORE enqueueing so the click has an immediately visible
+      // result; the worker takes it to building → running/failed.
       ensureWorkerStarted();
       await queueDeploy({
         environmentId: String(form.get("environmentId")),
         releaseId: String(form.get("releaseId")),
-        rollback: intent === "make-live",
+        rollback: intent === "deploy-version",
         createdBy: auth.user.id,
       });
       return { ok: true as const };
@@ -184,11 +185,12 @@ type LoaderData = Route.ComponentProps["loaderData"];
 type Env = LoaderData["envs"][number]["env"];
 type DeploymentRow = LoaderData["envs"][number]["deployments"][number];
 type ReleaseRow = LoaderData["releases"][number];
+type EnvState = { env: Env; deployments: DeploymentRow[] };
 
 const IN_FLIGHT = new Set(["queued", "pending", "building"]);
 
-/** Newest live deployment of an environment (post-migration there is at most one). */
-function liveOf(deployments: DeploymentRow[]): DeploymentRow | undefined {
+/** The deployment an environment is currently running (post-M5.6 there is at most one). */
+function runningOf(deployments: DeploymentRow[]): DeploymentRow | undefined {
   return deployments.find((d) => d.status === "live");
 }
 
@@ -197,11 +199,11 @@ export default function Versions({ loaderData, actionData }: Route.ComponentProp
   const base = `/repos/${project.id}`;
   const [params] = useSearchParams();
   // Set when the human just merged a change on the Changes tab — the new version is now
-  // here, ready to be made live.
+  // here, ready to deploy.
   const justReleased = params.get("released");
 
-  // Live progress: while any deployment is queued/building, re-fetch every few seconds so
-  // statuses walk queued → building → live/failed without a manual refresh.
+  // Progress: while any deployment is queued/building, re-fetch every few seconds so
+  // statuses walk queued → building → running/failed without a manual refresh.
   const revalidator = useRevalidator();
   const inFlight = envs.some(({ deployments }) =>
     deployments.some((d) => IN_FLIGHT.has(d.status)),
@@ -214,16 +216,15 @@ export default function Versions({ loaderData, actionData }: Route.ComponentProp
     return () => clearInterval(timer);
   }, [inFlight, revalidator]);
 
-  // The member's PRIMARY environment is its first (creation order; environments are
-  // user-defined — no name is special). It gets the hero card; the rest live below.
-  const primary = envs[0];
-  const others = envs.filter((e) => e !== primary);
-  // Which environments each release is live in, for the history rows' badges.
-  const liveEnvNames = new Map<string, string[]>();
+  // Which environments each release is running on, for the history rows' badges.
+  const runningEnvNames = new Map<string, string[]>();
   for (const { env, deployments } of envs) {
-    const live = liveOf(deployments);
-    if (!live) continue;
-    liveEnvNames.set(live.releaseId, [...(liveEnvNames.get(live.releaseId) ?? []), env.name]);
+    const running = runningOf(deployments);
+    if (!running) continue;
+    runningEnvNames.set(running.releaseId, [
+      ...(runningEnvNames.get(running.releaseId) ?? []),
+      env.name,
+    ]);
   }
 
   return (
@@ -232,8 +233,8 @@ export default function Versions({ loaderData, actionData }: Route.ComponentProp
         title={isTeam ? `Versions — ${activeAgent}` : "Versions"}
         description={
           isTeam
-            ? "This member's versions. One version is live per environment; any past version can be made live again in one click."
-            : "Every version of this agent, newest first. One version is live per environment; any past version can be made live again in one click."
+            ? "This member's environments and versions. Each environment runs one version; deploy any version — new or old — to any environment."
+            : "Each environment runs one version. Deploy any version — new or old — to any environment; rollback is just deploying again."
         }
       />
       <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
@@ -243,8 +244,8 @@ export default function Versions({ loaderData, actionData }: Route.ComponentProp
           <AlertTitle>{justReleased} is ready</AlertTitle>
           <AlertDescription>
             Your change was merged and cut as version{" "}
-            <span className="font-semibold">{justReleased}</span>. Make it live from the
-            version history below.
+            <span className="font-semibold">{justReleased}</span>. Deploy it to an
+            environment from the version history below.
           </AlertDescription>
         </Alert>
       )}
@@ -256,138 +257,200 @@ export default function Versions({ loaderData, actionData }: Route.ComponentProp
         </Alert>
       )}
 
-      {primary && (
-        <PrimaryCard env={primary.env} deployments={primary.deployments} />
-      )}
+      <EnvironmentsCard envs={envs} activeAgent={activeAgent} />
 
       <VersionHistory
         releases={releases}
-        primary={primary?.env ?? null}
-        others={others.map((o) => o.env)}
-        liveEnvNames={liveEnvNames}
+        envs={envs}
+        runningEnvNames={runningEnvNames}
       />
-
-      <EnvironmentsCard envs={envs} primaryId={primary?.env.id} activeAgent={activeAgent} />
     </AppShell>
   );
 }
 
 /**
- * The hero: what the primary environment is running right now, plus in-flight progress and
- * the latest failure (with retry). Superseded/stopped rows are deliberately absent — the
- * version history is the durable record, old deployment rows are infrastructure.
+ * The environments — independent peers, one identical row each: what's running, in-flight
+ * progress, the latest failure (retry/dismiss), and rename/delete. Superseded/stopped
+ * deployment rows are deliberately absent — the version history is the durable record.
  */
-function PrimaryCard({ env, deployments }: { env: Env; deployments: DeploymentRow[] }) {
+function EnvironmentsCard({
+  envs,
+  activeAgent,
+}: {
+  envs: EnvState[];
+  activeAgent: string;
+}) {
   const fetcher = useFetcher<typeof action>();
-  const live = liveOf(deployments);
-  const pending = deployments.find((d) => IN_FLIGHT.has(d.status));
-  // Only a failure newer than the live deployment matters ("v8 failed, v7 still live");
-  // older ones are stale post-mortems the Dismiss button clears anyway.
-  const failed = deployments.find((d) => d.status === "failed");
-  const failedCount = deployments.filter((d) => d.status === "failed").length;
   const busy = fetcher.state !== "idle";
+  const error =
+    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
 
   return (
     <Card className="mb-6">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">{env.name}</CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base">Environments</CardTitle>
+          <EnvNameDialog
+            intent="env-create"
+            agent={activeAgent}
+            trigger={
+              <Button size="sm" variant="outline" disabled={busy}>
+                New environment
+              </Button>
+            }
+            title="New environment"
+            description="A separate place to run this agent — its own running version and its own environment-scoped secrets. Deploy into it from the version history."
+            confirmLabel="Create"
+          />
+        </div>
       </CardHeader>
-      <CardContent className="space-y-3">
-        {live ? (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="text-2xl font-semibold">{live.version}</span>
-            <Badge>Live</Badge>
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-              {live.gitSha.slice(0, 7)}
-            </code>
-            <span className="text-sm text-muted-foreground">
-              deployed {timeAgo(live.createdAt)}
-            </span>
-            {live.url && (
-              <a href={live.url} className="text-sm underline underline-offset-4">
-                open
-              </a>
-            )}
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Nothing live yet. Make a version live below, or Ship from the Overview.
-          </p>
-        )}
-
-        {pending && (
-          <p className="text-sm text-muted-foreground">
-            {pending.version} is {pending.status === "building" ? "building" : "queued"}… it
-            goes live once healthy{live ? `, replacing ${live.version}` : ""}.
-          </p>
-        )}
-
-        {failed && (
-          <Alert variant="destructive">
-            <AlertTitle>
-              {failed.version} failed to go live
-              {live ? ` — ${live.version} is still serving` : ""}
-            </AlertTitle>
-            <AlertDescription>
-              <div className="flex flex-wrap items-center gap-2">
-                {failed.errorDetail && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="cursor-help text-xs underline underline-offset-2">
-                        why?
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-sm">{failed.errorDetail}</TooltipContent>
-                  </Tooltip>
-                )}
-                <fetcher.Form method="post">
-                  <input type="hidden" name="intent" value="retry" />
-                  <input type="hidden" name="environmentId" value={env.id} />
-                  <input type="hidden" name="releaseId" value={failed.releaseId} />
-                  <Button type="submit" size="sm" variant="outline" disabled={busy}>
-                    Retry
-                  </Button>
-                </fetcher.Form>
-                <fetcher.Form method="post">
-                  <input type="hidden" name="intent" value="clear-failed" />
-                  <input type="hidden" name="environmentId" value={env.id} />
-                  <Button type="submit" size="sm" variant="ghost" disabled={busy}>
-                    Dismiss{failedCount > 1 ? ` ${failedCount} failures` : ""}
-                  </Button>
-                </fetcher.Form>
-              </div>
-            </AlertDescription>
+      <CardContent>
+        {error && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertTitle>Couldn&rsquo;t update environments</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
+        <ul className="divide-y rounded-lg border text-sm">
+          {envs.map(({ env, deployments }) => {
+            const running = runningOf(deployments);
+            const pending = deployments.find((d) => IN_FLIGHT.has(d.status));
+            const failed = deployments.find((d) => d.status === "failed");
+            const failedCount = deployments.filter((d) => d.status === "failed").length;
+            return (
+              <li key={env.id} className="px-4 py-2">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className="min-w-32 font-medium">{env.name}</span>
+                  {running ? (
+                    <>
+                      <span className="font-semibold">{running.version}</span>
+                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                        {running.gitSha.slice(0, 7)}
+                      </code>
+                      <span className="text-muted-foreground">
+                        deployed {timeAgo(running.createdAt)}
+                      </span>
+                      {running.url && (
+                        <a href={running.url} className="underline underline-offset-4">
+                          open
+                        </a>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">
+                      Nothing deployed — use Ship on the Overview, or Deploy a version
+                      below.
+                    </span>
+                  )}
+                  <span className="ml-auto flex items-center gap-1">
+                    <EnvNameDialog
+                      intent="env-rename"
+                      environmentId={env.id}
+                      initialName={env.name}
+                      trigger={
+                        <Button size="sm" variant="ghost" disabled={busy}>
+                          Rename
+                        </Button>
+                      }
+                      title={`Rename ${env.name}?`}
+                      description="Deploys, secrets, and history stay attached — only the name changes. On a team, Ship targets members' environments by name."
+                      confirmLabel="Rename"
+                    />
+                    <ConfirmDialog
+                      trigger={
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-destructive hover:text-destructive"
+                          disabled={busy}
+                        >
+                          Delete
+                        </Button>
+                      }
+                      title={`Delete environment "${env.name}"?`}
+                      description={`Stops anything running here and permanently deletes this environment's deployment history and environment-scoped secrets. Agent-wide secrets and versions are untouched.${running ? ` ${running.version} is running here and will be taken down.` : ""}`}
+                      confirmLabel="Delete"
+                      onConfirm={() =>
+                        fetcher.submit(
+                          { intent: "env-delete", environmentId: env.id },
+                          { method: "post" },
+                        )
+                      }
+                    />
+                  </span>
+                </div>
+                {pending && (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {pending.version}{" "}
+                    {pending.status === "building" ? "building" : "queued"}… switches
+                    over once healthy{running ? `; ${running.version} keeps serving` : ""}.
+                  </p>
+                )}
+                {failed && (
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-destructive">
+                    <span>
+                      {failed.version} failed to deploy
+                      {running ? ` — ${running.version} still running` : ""}
+                    </span>
+                    {failed.errorDetail && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="cursor-help text-xs underline underline-offset-2">
+                            why?
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-sm">
+                          {failed.errorDetail}
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                    <fetcher.Form method="post">
+                      <input type="hidden" name="intent" value="retry" />
+                      <input type="hidden" name="environmentId" value={env.id} />
+                      <input type="hidden" name="releaseId" value={failed.releaseId} />
+                      <Button type="submit" size="sm" variant="ghost" disabled={busy}>
+                        Retry
+                      </Button>
+                    </fetcher.Form>
+                    <fetcher.Form method="post">
+                      <input type="hidden" name="intent" value="clear-failed" />
+                      <input type="hidden" name="environmentId" value={env.id} />
+                      <Button type="submit" size="sm" variant="ghost" disabled={busy}>
+                        Dismiss{failedCount > 1 ? ` ${failedCount} failures` : ""}
+                      </Button>
+                    </fetcher.Form>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       </CardContent>
     </Card>
   );
 }
 
 /**
- * Every version, newest first. "Make live" on a non-live row is the deploy AND the revert —
- * direction-neutral by design (the undo of a bad ship is making the previous row live).
+ * Every version, newest first, badged with the environments it's running on. "Deploy" is
+ * deliberately direction-neutral — deploying an older version IS the rollback (cutover on
+ * health; a built image starts in seconds).
  */
 function VersionHistory({
   releases,
-  primary,
-  others,
-  liveEnvNames,
+  envs,
+  runningEnvNames,
 }: {
   releases: ReleaseRow[];
-  primary: Env | null;
-  others: Env[];
-  liveEnvNames: Map<string, string[]>;
+  envs: EnvState[];
+  runningEnvNames: Map<string, string[]>;
 }) {
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
-  const makeLive = (environmentId: string, releaseId: string) =>
+  const deploy = (environmentId: string, releaseId: string) =>
     fetcher.submit(
-      { intent: "make-live", environmentId, releaseId },
+      { intent: "deploy-version", environmentId, releaseId },
       { method: "post" },
     );
-  const liveInPrimary = (r: ReleaseRow) =>
-    (liveEnvNames.get(r.id) ?? []).includes(primary?.name ?? "");
 
   return (
     <Card>
@@ -404,16 +467,12 @@ function VersionHistory({
             {releases.map((r) => (
               <li key={r.id} className="flex items-center gap-2 px-4 py-2">
                 <span className="w-10 shrink-0 font-semibold">{r.version}</span>
-                <span className="flex w-28 shrink-0 items-center gap-1">
-                  {(liveEnvNames.get(r.id) ?? []).map((name) =>
-                    name === primary?.name ? (
-                      <Badge key={name}>Live</Badge>
-                    ) : (
-                      <Badge key={name} variant="outline">
-                        {name}
-                      </Badge>
-                    ),
-                  )}
+                <span className="flex shrink-0 items-center gap-1">
+                  {(runningEnvNames.get(r.id) ?? []).map((name) => (
+                    <Badge key={name} variant="secondary">
+                      {name}
+                    </Badge>
+                  ))}
                 </span>
                 <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                   {r.gitSha.slice(0, 7)}
@@ -424,38 +483,7 @@ function VersionHistory({
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {timeAgo(r.createdAt)}
                 </span>
-                {primary && !liveInPrimary(r) && (
-                  <ConfirmDialog
-                    trigger={
-                      <Button size="sm" variant="secondary" disabled={busy}>
-                        Make live
-                      </Button>
-                    }
-                    title={`Make ${r.version} live in ${primary.name}?`}
-                    description={`This replaces the current live version once ${r.version} is healthy — no rebuild needed, usually seconds. Undo by making the previous version live again.`}
-                    confirmLabel="Make live"
-                    onConfirm={() => makeLive(primary.id, r.id)}
-                  />
-                )}
-                {others.length > 0 && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button size="sm" variant="ghost" disabled={busy} aria-label="More deploy targets">
-                        ⋯
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      {others.map((env) => (
-                        <DropdownMenuItem
-                          key={env.id}
-                          onSelect={() => makeLive(env.id, r.id)}
-                        >
-                          Make live in {env.name}
-                        </DropdownMenuItem>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
+                <DeployControl release={r} envs={envs} busy={busy} onDeploy={deploy} />
               </li>
             ))}
           </ul>
@@ -466,121 +494,97 @@ function VersionHistory({
 }
 
 /**
- * Environment management (M5.7): environments are user-defined, per member. One row per
- * env with its live version, plus rename/delete and a create dialog. The first (primary)
- * env is badged — it's the default Ship target and the hero card above. Delete stops
- * anything running and destroys the env's deploy history + env-scoped secrets (the FK
- * cascade), so the confirm spells that out; a member's last environment can't be deleted.
+ * The per-version deploy affordance. One environment: a plain Deploy button (hidden when
+ * the version is already running there — the badge says so). Several: one "Deploy ▾" menu;
+ * environments already running the version show as checked and disabled. Every deploy
+ * confirms — the dialog names the target (the realistic multi-env mistake) and teaches
+ * that switching back is just another deploy.
  */
-function EnvironmentsCard({
+function DeployControl({
+  release,
   envs,
-  primaryId,
-  activeAgent,
+  busy,
+  onDeploy,
 }: {
-  envs: { env: Env; deployments: DeploymentRow[] }[];
-  primaryId?: string;
-  activeAgent: string;
+  release: ReleaseRow;
+  envs: EnvState[];
+  busy: boolean;
+  onDeploy: (environmentId: string, releaseId: string) => void;
 }) {
-  const fetcher = useFetcher<typeof action>();
-  const busy = fetcher.state !== "idle";
-  const error =
-    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+  const [target, setTarget] = useState<EnvState | null>(null);
+  const runningHere = (s: EnvState) =>
+    runningOf(s.deployments)?.releaseId === release.id;
 
+  const confirmFor = (s: EnvState) => {
+    const current = runningOf(s.deployments);
+    return {
+      title: `Deploy ${release.version} to ${s.env.name}?`,
+      description: current
+        ? `${s.env.name} switches to ${release.version} once it's healthy; ${current.version} keeps serving until then. To switch back, deploy ${current.version} again.`
+        : `${release.version} will start running on ${s.env.name}.`,
+    };
+  };
+
+  if (envs.length === 1) {
+    const only = envs[0];
+    if (runningHere(only)) return null;
+    const copy = confirmFor(only);
+    return (
+      <ConfirmDialog
+        trigger={
+          <Button size="sm" variant="secondary" disabled={busy}>
+            Deploy
+          </Button>
+        }
+        title={copy.title}
+        description={copy.description}
+        confirmLabel="Deploy"
+        variant="default"
+        onConfirm={() => onDeploy(only.env.id, release.id)}
+      />
+    );
+  }
+
+  const everywhere = envs.every(runningHere);
   return (
-    <Card className="mt-6">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-base">Environments</CardTitle>
-          <EnvNameDialog
-            intent="env-create"
-            agent={activeAgent}
-            trigger={
-              <Button size="sm" variant="outline" disabled={busy}>
-                New environment
-              </Button>
-            }
-            title="New environment"
-            description="A separate place to run this agent — its own live version and its own environment-scoped secrets. Deploy into it from the version history's ⋯ menu."
-            confirmLabel="Create"
-          />
-        </div>
-      </CardHeader>
-      <CardContent>
-        {error && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertTitle>Couldn&rsquo;t update environments</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-        <ul className="divide-y rounded-lg border text-sm">
-          {envs.map(({ env, deployments }) => {
-            const live = liveOf(deployments);
-            const pending = deployments.find((d) => IN_FLIGHT.has(d.status));
-            return (
-              <li key={env.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
-                <span className="min-w-32 font-medium">{env.name}</span>
-                {env.id === primaryId && <Badge variant="secondary">primary</Badge>}
-                {live ? (
-                  <>
-                    <span className="font-semibold">{live.version}</span>
-                    <Badge>Live</Badge>
-                    <span className="text-muted-foreground">{timeAgo(live.createdAt)}</span>
-                    {live.url && (
-                      <a href={live.url} className="underline underline-offset-4">
-                        open
-                      </a>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">nothing deployed</span>
-                )}
-                {pending && (
-                  <span className="text-muted-foreground">
-                    · {pending.version} {pending.status}…
-                  </span>
-                )}
-                <span className="ml-auto flex items-center gap-1">
-                  <EnvNameDialog
-                    intent="env-rename"
-                    environmentId={env.id}
-                    initialName={env.name}
-                    trigger={
-                      <Button size="sm" variant="ghost" disabled={busy}>
-                        Rename
-                      </Button>
-                    }
-                    title={`Rename ${env.name}?`}
-                    description="Deploys, secrets, and history stay attached — only the name changes. On a team, Ship targets members' environments by name."
-                    confirmLabel="Rename"
-                  />
-                  <ConfirmDialog
-                    trigger={
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-destructive hover:text-destructive"
-                        disabled={busy}
-                      >
-                        Delete
-                      </Button>
-                    }
-                    title={`Delete environment "${env.name}"?`}
-                    description={`Stops anything running here and permanently deletes this environment's deployment history and environment-scoped secrets. Agent-wide secrets and versions are untouched.${live ? ` ${live.version} is live here right now and will be taken down.` : ""}`}
-                    confirmLabel="Delete"
-                    onConfirm={() =>
-                      fetcher.submit(
-                        { intent: "env-delete", environmentId: env.id },
-                        { method: "post" },
-                      )
-                    }
-                  />
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      </CardContent>
-    </Card>
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="sm" variant="secondary" disabled={busy || everywhere}>
+            Deploy ▾
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {envs.map((s) =>
+            runningHere(s) ? (
+              <DropdownMenuItem key={s.env.id} disabled>
+                ✓ Running on {s.env.name}
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem key={s.env.id} onSelect={() => setTarget(s)}>
+                Deploy to {s.env.name}
+              </DropdownMenuItem>
+            ),
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {target && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setTarget(null);
+          }}
+          title={confirmFor(target).title}
+          description={confirmFor(target).description}
+          confirmLabel="Deploy"
+          variant="default"
+          onConfirm={() => {
+            onDeploy(target.env.id, release.id);
+            setTarget(null);
+          }}
+        />
+      )}
+    </>
   );
 }
 

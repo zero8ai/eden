@@ -23,18 +23,26 @@ export function ConfirmDialog({
   description,
   confirmLabel,
   onConfirm,
+  open,
+  onOpenChange,
+  variant = "destructive",
 }: {
-  /** The button that opens the dialog (rendered as-is via asChild). */
-  trigger: ReactNode;
+  /** The button that opens the dialog (rendered as-is via asChild). Omit when controlled. */
+  trigger?: ReactNode;
   title: string;
   description: string;
-  /** Label for the destructive action, e.g. "Delete". */
+  /** Label for the confirming action, e.g. "Delete" or "Deploy". */
   confirmLabel: string;
   onConfirm: () => void;
+  /** Controlled mode — for callers that open the dialog from a menu item, not a trigger. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Confirm-button weight: destructive (default) for deletions, default for safe actions. */
+  variant?: "destructive" | "default";
 }) {
   return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      {trigger && <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>}
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
@@ -44,7 +52,11 @@ export function ConfirmDialog({
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             onClick={onConfirm}
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            className={
+              variant === "destructive"
+                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                : undefined
+            }
           >
             {confirmLabel}
           </AlertDialogAction>

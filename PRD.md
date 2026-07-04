@@ -235,9 +235,10 @@ Vercel Sandbox, AI Gateway auto-wire) and additional Worlds (Redis/Turso/Cloudfl
 - **Environments are user-defined and per-agent (M5.7).** A new member starts with exactly ONE,
   named `default` — the user renames it and creates/deletes others as their workflow demands
   (someone who wants dev/staging/production makes them; nothing is imposed). Eden enforces one
-  invariant: a member always has at least one environment. The member's **primary** environment
-  is simply its first (creation order) — the default Ship target and the Versions-page hero; no
-  environment *name* is special anywhere in the product. Deleting an environment always works
+  invariant: a member always has at least one environment. Environments render as equal peers
+  everywhere; the member's first (creation order) is only the *mechanical* default the Ship
+  dialog preselects — no environment name or position is special in the UI. Deleting an
+  environment always works
   behind an explicit confirm: it stops anything running there, tears down instance state, and
   permanently removes that environment's deployment history and env-scoped secrets (agent-wide
   secrets and Releases are untouched).
@@ -245,22 +246,25 @@ Vercel Sandbox, AI Gateway auto-wire) and additional Worlds (Redis/Turso/Cloudfl
 - Per-instance: status, logs, runs/observability, secrets, scaling knobs, start/stop, rollback,
   and the channel endpoints (HTTP URL, Slack install, cron status).
 
-**Deploy UX (M5.6) — Ship and Make live.** Two verbs cover the whole deploy surface for a PM:
+**Deploy UX (M5.6, vocabulary revised in M5.7) — Ship and Deploy.** Two verbs cover the whole
+deploy surface for a PM: *Ship makes versions; Deploy places them.* A version is **running on**
+zero or more environments (never globally "live" — with peer environments there is no single
+live slot); each environment runs exactly one version.
 - **Ship** — the one-click path, on the agent's Overview (where the edit was just made): one
-  dialog confirms the target environment (the member's primary preselected), then a single
+  dialog confirms the target environment (the member's first preselected), then a single
   action publishes all
   staged drafts, merges the change request, cuts the Release, and queues a **cutover deploy** —
   the current version keeps serving until the new one is healthy. With nothing staged, Ship offers
   "ship latest from `main`" (absorbing the old "cut release" button). On team repos a Ship deploys
   every member whose files the change touched. A DB-state-driven progress banner (Published →
-  vN created → Building → Live) survives refresh; a failed build leaves the previous version
+  vN created → Building → Running) survives refresh; a failed build leaves the previous version
   serving and offers Retry. The careful path (Changes → review → merge → Versions) is unchanged.
-- **Make live** — the **Versions** tab (renamed from Deployments) shows the primary
-  environment's hero card
-  (what's live now, in-flight progress, latest failure) over the version history; any prior
-  successful Release can be **made live in one click** (image reused — seconds, no rebuild),
-  demoting the current version on health. Deploy and revert are deliberately the same
-  direction-neutral verb: the undo of a bad ship is making the previous row live.
+- **Deploy** — the **Versions** tab (renamed from Deployments) leads with the environments as
+  equal rows (each: running version, in-flight progress, latest failure with retry, rename/
+  delete) over the version history, whose rows are badged with the environment names they run
+  on. Any version — new or old — deploys to any environment in one confirmed click (image
+  reused — seconds, no rebuild), replacing that environment's current version on health.
+  Deploy is deliberately direction-neutral: rollback is just deploying an older version again.
 
 ### 7.5 Managed commercial offering (v1)
 
@@ -655,17 +659,16 @@ two-source-of-truth reconciliation problem.
   stopped). The splitter/`trafficWeight` data model is retained without a product surface
   (§7.7 revision).
 - **Ship:** the one-click deploy from the agent Overview — staged drafts → publish → merge →
-  Release → cutover deploy — with an environment picker (production default; the *primary*
-  environment since M5.7), team fan-out to
+  Release → cutover deploy — with an environment picker (production default; the member's
+  first environment since M5.7), team fan-out to
   affected members, "ship latest from `main`" when nothing is staged, and a refresh-proof
   progress banner with Retry on build failure (§7.4 Deploy UX).
-- **Versions page** (replaces the Deployments tab): hero card for the main environment, version
-  history with
-  **Make live** on any prior successful Release (confirm dialog; overflow menu for the other
-  environments), other environments collapsed to a compact footer card. Weights/split controls,
-  the per-environment deploy selectors, and the "cut release" button are gone.
+- **Versions page** (replaces the Deployments tab): environment status + version history with
+  one-click redeploy of any prior successful Release (confirm dialog). Weights/split controls,
+  the per-environment deploy selectors, and the "cut release" button are gone. (Layout and
+  vocabulary revised in M5.7: environments-first, "Deploy"/"running on".)
 - Rationale: shipping an edit took ~6–8 clicks across three pages, and ordinary deploys silently
-  accumulated live versions. Two verbs (Ship, Make live) + one invariant (one live version per
+  accumulated live versions. Two verbs + one invariant (one running version per
   environment) replace the exposed pipeline; the multi-version primitive waits for a deliberate
   product story (§7.7).
 - Deliberately not built: weights/canary UI, environment-promotion pipelines, per-PR preview
@@ -677,11 +680,14 @@ two-source-of-truth reconciliation problem.
   delete** from the Versions page. Rationale: the trio was arbitrary (most agents used only
   production; the other two sat empty on every member), and imposed vocabulary the user never
   chose. Whoever wants dev/staging/production simply creates them.
-- **Primary = first.** No environment name is special in code anymore; the member's first
-  environment (creation order, id tiebreak) is the default Ship target, the Overview status
-  line, and the Versions hero. A data migration made the previously-implicit primary
-  ("production") explicitly first for existing agents; existing environments were otherwise
-  left exactly as they were.
+- **Environments are equal peers.** No environment name or position is special in the UI; the
+  member's first environment (creation order, id tiebreak) is only the mechanical Ship-dialog
+  preselect. The Versions page leads with the environments as identical rows (running version,
+  in-flight progress, failures) over the version history; version rows are badged with the
+  environment names they run on, and the verb is **Deploy to \<env\>** — "live" vocabulary is
+  gone, since with peer environments a version is only ever *running on* specific environments.
+  A data migration made the previously-implicit primary ("production") sort first for existing
+  agents; existing environments were otherwise left exactly as they were.
 - **Invariant:** a member always has ≥1 environment (`ensureDefault` seeds `default` only for
   members with zero — roster self-heals and webhooks can never re-seed over user CRUD; the
   last environment refuses deletion).

@@ -120,9 +120,10 @@ export async function action(args: ActionFunctionArgs) {
   if (intent === "create") {
     const owner = String(form.get("owner") ?? "").trim();
     const name = String(form.get("name") ?? "").trim();
+    const layout = form.get("layout") === "team" ? ("team" as const) : ("single" as const);
     if (!owner || !name) return { error: "Owner and repo name are required." };
     try {
-      const repo = await createEveRepo(installationId, { owner, name });
+      const repo = await createEveRepo(installationId, { owner, name, layout });
       const project = await createProject({
         orgId: org.id,
         name,
@@ -153,7 +154,7 @@ export async function action(args: ActionFunctionArgs) {
   }
   if (!isEveRepo(source.paths)) {
     return {
-      error: `${owner}/${repo} doesn't look like an eve project — no \`agent/\` directory found.`,
+      error: `${owner}/${repo} doesn't look like an eve project — no \`agent/\` directory (or team \`agents/<member>/agent/\` layout) found.`,
     };
   }
 
@@ -181,8 +182,8 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
   return (
     <AppShell workspaceName={org?.name}>
       <PageHeader
-        title="New agent"
-        description="An agent is one eve repository. Connect an existing repo, or scaffold a fresh one."
+        title="New project"
+        description="A project is one eve repository — a single agent or a team of agents. Connect an existing repo, or scaffold a fresh one."
         actions={
           <Button variant="ghost" asChild>
             <Link to="/dashboard">← Back</Link>
@@ -272,39 +273,76 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
 
           <Card>
             <CardHeader>
-              <CardTitle>Create a new eve agent</CardTitle>
+              <CardTitle>Create a new eve project</CardTitle>
               <CardDescription>
-                Creates a repository in your organization and scaffolds an eve{" "}
-                <span className="font-mono">agent/</span> skeleton.
+                Creates a repository in your organization and scaffolds it — a single
+                agent (<span className="font-mono">agent/</span>) or a team of agents
+                (<span className="font-mono">agents/&lt;member&gt;/agent/</span>).
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Form method="post" className="flex flex-wrap items-end gap-3">
+              <Form method="post" className="space-y-4">
                 <input type="hidden" name="intent" value="create" />
                 <input type="hidden" name="installationId" value={github.installationId} />
-                <div className="grid gap-1.5">
-                  <Label htmlFor="owner">Organization</Label>
-                  <Input
-                    id="owner"
-                    name="owner"
-                    defaultValue={github.repos[0]?.owner ?? ""}
-                    placeholder="org"
-                    className="w-40"
-                  />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-4 has-[:checked]:border-primary has-[:checked]:bg-muted/40">
+                    <input
+                      type="radio"
+                      name="layout"
+                      value="single"
+                      defaultChecked
+                      className="mt-1 accent-primary"
+                    />
+                    <span>
+                      <span className="block text-sm font-medium">Single agent</span>
+                      <span className="block text-xs text-muted-foreground">
+                        One agent, one runtime. The repo root holds{" "}
+                        <span className="font-mono">agent/</span>.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-4 has-[:checked]:border-primary has-[:checked]:bg-muted/40">
+                    <input
+                      type="radio"
+                      name="layout"
+                      value="team"
+                      className="mt-1 accent-primary"
+                    />
+                    <span>
+                      <span className="block text-sm font-medium">Team</span>
+                      <span className="block text-xs text-muted-foreground">
+                        A monorepo of agents under{" "}
+                        <span className="font-mono">agents/</span> — each member has its
+                        own runtime. Starts with one member.
+                      </span>
+                    </span>
+                  </label>
                 </div>
-                <span className="pb-2 text-muted-foreground">/</span>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="name">Repository</Label>
-                  <Input
-                    id="name"
-                    name="name"
-                    placeholder="my-agent"
-                    className="w-56 font-mono"
-                  />
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="owner">Organization</Label>
+                    <Input
+                      id="owner"
+                      name="owner"
+                      defaultValue={github.repos[0]?.owner ?? ""}
+                      placeholder="org"
+                      className="w-40"
+                    />
+                  </div>
+                  <span className="pb-2 text-muted-foreground">/</span>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="name">Repository</Label>
+                    <Input
+                      id="name"
+                      name="name"
+                      placeholder="my-agent"
+                      className="w-56 font-mono"
+                    />
+                  </div>
+                  <Button type="submit" disabled={submitting}>
+                    {submitting ? "Creating…" : "Create & scaffold"}
+                  </Button>
                 </div>
-                <Button type="submit" disabled={submitting}>
-                  {submitting ? "Creating…" : "Create & scaffold"}
-                </Button>
               </Form>
             </CardContent>
           </Card>

@@ -6,7 +6,7 @@
  * agent.ts). Nothing here mutates the repo — Connect/visualize is read-only in M0; writes
  * (branch -> PR) come in M1.
  */
-import { AGENT_ROOT, type AgentSource } from "~/eve/parse";
+import { AGENT_ROOT, TEAM_ROOT, detectAgentRoots, type AgentSource } from "~/eve/parse";
 import { getInstallationOctokit } from "./client.server";
 
 export interface InstallationRepo {
@@ -56,12 +56,11 @@ interface RepoRef {
   ref?: string;
 }
 
-/** Files we eagerly fetch contents for (relative to repo root). */
-const EAGER_FILES = [`${AGENT_ROOT}/instructions.md`, `${AGENT_ROOT}/agent.ts`];
-
 /**
- * Fetch the repo listing (under `agent/`) plus known file contents. Returns the ref actually
- * read and whether the git tree was truncated (very large repos), so callers can surface it.
+ * Fetch the repo listing (under `agent/` for single-agent repos, `agents/` for teams) plus
+ * known file contents — instructions.md and agent.ts for every detected agent root. Returns
+ * the ref actually read and whether the git tree was truncated (very large repos), so
+ * callers can surface it.
  */
 export async function fetchAgentSource(
   installationId: string | number,
@@ -81,17 +80,24 @@ export async function fetchAgentSource(
   });
 
   const agentPrefix = `${AGENT_ROOT}/`;
+  const teamPrefix = `${TEAM_ROOT}/`;
   const paths = tree.data.tree.flatMap((e) =>
     e.type === "blob" &&
     typeof e.path === "string" &&
-    (e.path === AGENT_ROOT || e.path.startsWith(agentPrefix))
+    (e.path === AGENT_ROOT ||
+      e.path.startsWith(agentPrefix) ||
+      e.path.startsWith(teamPrefix))
       ? [e.path]
       : [],
   );
 
+  const eager = detectAgentRoots(paths).flatMap(({ root }) => [
+    `${root}/instructions.md`,
+    `${root}/agent.ts`,
+  ]);
   const files: Record<string, string> = {};
   await Promise.all(
-    EAGER_FILES.flatMap((path) =>
+    eager.flatMap((path) =>
       paths.includes(path)
         ? [
             readTextFile(octokit, { owner, repo, ref: branch }, path).then((content) => {

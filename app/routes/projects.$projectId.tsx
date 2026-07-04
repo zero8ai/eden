@@ -21,16 +21,26 @@ import {
 import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
 import { listDrafts } from "~/drafts/drafts.server";
-import { buildAgentConfig } from "~/eve/parse";
+import { AGENT_ROOT, buildAgentConfig, detectAgentRoots } from "~/eve/parse";
 import { RESOURCE_KINDS } from "~/eve/templates";
 import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
 import { fetchAgentSource } from "~/github/repo.server";
 import type { Project } from "~/db/queries.server";
 import type { Route } from "./+types/projects.$projectId";
 
+/** One team member and its parsed config (team repos, PRD §7.9). */
+interface TeamMemberView {
+  name: string;
+  root: string;
+  config: AgentConfig;
+}
+
 interface ProjectView {
   project: Project;
+  /** Single-agent repos: the parsed config. Null for team repos (see `members`). */
   config: AgentConfig | null;
+  /** Team repos: the roster, one entry per `agents/<member>/agent/`. Null for single. */
+  members: TeamMemberView[] | null;
   error: string | null;
   /** Paths with staged (unpublished) drafts, so the config surface can flag them. */
   draftPaths: string[];
@@ -54,6 +64,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         return {
           project,
           config: null,
+          members: null,
           error: "This project has no connected repo.",
           draftPaths: [],
         };
@@ -67,14 +78,25 @@ export const loader = (args: LoaderFunctionArgs) =>
           }),
           listDrafts(project.id),
         ]);
+        const roots = detectAgentRoots(source.paths);
+        const isTeam = roots.length > 0 && roots[0].root !== AGENT_ROOT;
         return {
           project,
-          config: buildAgentConfig(source),
+          config: isTeam ? null : buildAgentConfig(source),
+          members: isTeam
+            ? roots.map((r) => ({ ...r, config: buildAgentConfig(source, r.root) }))
+            : null,
           error: null,
           draftPaths: drafts.map((d) => d.path),
         };
       } catch (error) {
-        return { project, config: null, error: (error as Error).message, draftPaths: [] };
+        return {
+          project,
+          config: null,
+          members: null,
+          error: (error as Error).message,
+          draftPaths: [],
+        };
       }
     },
     { ensureSignedIn: true },
@@ -85,7 +107,7 @@ export function meta() {
 }
 
 export default function ProjectDetail({ loaderData }: Route.ComponentProps) {
-  const { project, config, error, draftPaths } = loaderData;
+  const { project, config, members, error, draftPaths } = loaderData;
   const base = `/projects/${project.id}`;
 
   return (
@@ -140,7 +162,58 @@ export default function ProjectDetail({ loaderData }: Route.ComponentProps) {
           draftPaths={draftPaths}
         />
       )}
+
+      {members && <TeamSurface members={members} />}
     </AppShell>
+  );
+}
+
+/**
+ * Read-only roster for a team repo (`agents/<member>/agent/`, PRD §7.9). Per-member editing
+ * arrives with the projects → agents schema split (Milestone 5.5); until then the roster is
+ * visible but edited via the repo/assistant.
+ */
+function TeamSurface({ members }: { members: TeamMemberView[] }) {
+  return (
+    <div className="space-y-6">
+      <Alert>
+        <AlertTitle>This is a team repository</AlertTitle>
+        <AlertDescription>
+          {members.length} member{members.length === 1 ? "" : "s"} under{" "}
+          <span className="font-mono">agents/</span>. In-app editors for individual team
+          members are coming with the agents split — for now, edit members through the
+          assistant or directly in the repo.
+        </AlertDescription>
+      </Alert>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {members.map((m) => (
+          <Card key={m.root}>
+            <CardHeader className="flex-row items-center justify-between space-y-0">
+              <CardTitle className="font-mono text-base">{m.name}</CardTitle>
+              <Badge variant={m.config.hasAgentModule ? "secondary" : "outline"}>
+                {m.config.hasAgentModule ? "agent.ts" : "no agent.ts"}
+              </Badge>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-muted-foreground">Model</span>
+                <code className="rounded bg-muted px-1.5 py-0.5 font-mono">
+                  {m.config.model ?? "—"}
+                </code>
+              </div>
+              <ul className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                {AGENT_CATEGORIES.map((cat) => (
+                  <li key={cat.key} className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{cat.label}</span>
+                    <span>{m.config[cat.key].length}</span>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
   );
 }
 

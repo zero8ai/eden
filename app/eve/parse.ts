@@ -13,6 +13,8 @@ import {
 
 /** Root directory that marks an eve agent. */
 export const AGENT_ROOT = "agent";
+/** Root directory that marks a team monorepo (PRD §7.9): `agents/<member>/agent/...`. */
+export const TEAM_ROOT = "agents";
 
 export interface AgentSource {
   /** Every file path in the repo, repo-relative, forward-slashed. */
@@ -21,19 +23,53 @@ export interface AgentSource {
   files: Record<string, string>;
 }
 
-/** True when the repo looks like an eve project (has an `agent/` directory). */
-export function isEveRepo(paths: string[]): boolean {
-  const prefix = `${AGENT_ROOT}/`;
-  return paths.some((p) => p === AGENT_ROOT || p.startsWith(prefix));
+/** One member of the repo: its display name and the agent directory it lives under. */
+export interface AgentRoot {
+  /** "agent" for a single-agent repo; the member directory name for a team member. */
+  name: string;
+  /** Repo-relative agent directory, e.g. "agent" or "agents/product-manager/agent". */
+  root: string;
 }
 
 /**
- * Collect the immediate children of `agent/<dir>/` as resources. A child is either a file
+ * Detect the repo layout by convention (PRD §7.9): `agent/` at the root is a single-agent
+ * repo; otherwise each `agents/<member>/agent/` directory is a team member. Single-agent
+ * takes precedence so today's repos are unaffected by a stray `agents/` directory.
+ */
+export function detectAgentRoots(paths: string[]): AgentRoot[] {
+  const singlePrefix = `${AGENT_ROOT}/`;
+  if (paths.some((p) => p === AGENT_ROOT || p.startsWith(singlePrefix))) {
+    return [{ name: AGENT_ROOT, root: AGENT_ROOT }];
+  }
+
+  const teamPrefix = `${TEAM_ROOT}/`;
+  const members = new Map<string, AgentRoot>();
+  for (const path of paths) {
+    if (!path.startsWith(teamPrefix)) continue;
+    const rest = path.slice(teamPrefix.length);
+    const slash = rest.indexOf("/");
+    if (slash <= 0) continue;
+    const member = rest.slice(0, slash);
+    const inner = rest.slice(slash + 1);
+    if (inner === AGENT_ROOT || inner.startsWith(singlePrefix)) {
+      members.set(member, { name: member, root: `${TEAM_ROOT}/${member}/${AGENT_ROOT}` });
+    }
+  }
+  return [...members.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** True when the repo looks like an eve project — single-agent or team layout. */
+export function isEveRepo(paths: string[]): boolean {
+  return detectAgentRoots(paths).length > 0;
+}
+
+/**
+ * Collect the immediate children of `<root>/<dir>/` as resources. A child is either a file
  * (`agent/tools/foo.ts` -> "foo") or a directory (`agent/skills/bar/skill.ts` -> "bar",
  * marked isDirectory). Deduped by name, sorted.
  */
-function childrenOf(paths: string[], dir: string): AgentResource[] {
-  const prefix = `${AGENT_ROOT}/${dir}/`;
+function childrenOf(paths: string[], root: string, dir: string): AgentResource[] {
+  const prefix = `${root}/${dir}/`;
   const byName = new Map<string, AgentResource>();
 
   for (const path of paths) {
@@ -82,19 +118,23 @@ function extractModel(agentModuleSource: string | undefined): string | null {
   return match ? match[2] : null;
 }
 
-/** Build the normalized config from a repo listing + known file contents. */
-export function buildAgentConfig(source: AgentSource): AgentConfig {
+/**
+ * Build the normalized config from a repo listing + known file contents. `root` selects
+ * which agent directory to read — "agent" (default, single-agent repos) or a team member's
+ * `agents/<name>/agent` (§7.9).
+ */
+export function buildAgentConfig(source: AgentSource, root: string = AGENT_ROOT): AgentConfig {
   const { paths, files } = source;
 
   const categories = Object.fromEntries(
-    AGENT_CATEGORIES.map((c) => [c.key, childrenOf(paths, c.dir)]),
+    AGENT_CATEGORIES.map((c) => [c.key, childrenOf(paths, root, c.dir)]),
   ) as Pick<
     AgentConfig,
     "tools" | "skills" | "subagents" | "channels" | "schedules" | "connections"
   >;
 
-  const agentModulePath = `${AGENT_ROOT}/agent.ts`;
-  const instructionsPath = `${AGENT_ROOT}/instructions.md`;
+  const agentModulePath = `${root}/agent.ts`;
+  const instructionsPath = `${root}/instructions.md`;
 
   return {
     hasAgentModule: paths.includes(agentModulePath),

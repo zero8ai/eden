@@ -68,6 +68,30 @@ describe("deployRelease", () => {
     expect(store.auditEntries).toContainEqual({ action: "deploy", target: "v1", orgId: ORG });
   });
 
+  it("inherits the workspace OpenRouter key unless a secret overrides it (PRD §12)", async () => {
+    const release = await createRelease({ projectId: PROJECT, gitSha: "a1".repeat(20) }, store);
+    const deployedEnvs: Record<string, string>[] = [];
+    const base = {
+      store,
+      deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedEnvs }),
+      workspaceModelKey: async () => "sk-or-workspace",
+    };
+
+    // No project secret → the workspace key is injected.
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      { ...base, secrets: fakeSecrets() },
+    );
+    expect(deployedEnvs[0].OPENROUTER_API_KEY).toBe("sk-or-workspace");
+
+    // A project/environment secret with the same name wins.
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      { ...base, secrets: fakeSecrets({ OPENROUTER_API_KEY: "sk-or-project" }) },
+    );
+    expect(deployedEnvs[1].OPENROUTER_API_KEY).toBe("sk-or-project");
+  });
+
   it("records failed status WITH the reason when the target throws", async () => {
     const release = await createRelease({ projectId: PROJECT, gitSha: "f".repeat(40) }, store);
     const dep = await deployRelease(

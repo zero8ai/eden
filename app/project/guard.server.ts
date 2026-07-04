@@ -39,9 +39,14 @@ export function requireRepo(project: Project): ConnectedProject {
  * Validate a user-supplied repo path stays within the agent surface. Prevents editing files
  * outside `agent/` and path-traversal. Returns the normalized path or null if invalid.
  */
+const ROOT_FILE_ALLOWLIST = new Set(["package.json", "package-lock.json"]);
+
 export function normalizeAgentPath(raw: string): string | null {
   const p = raw.trim().replace(/^\/+/, "");
-  if (!p.startsWith("agent/")) return null;
   if (p.includes("..") || p.endsWith("/")) return null;
+  // Change-sets may carry the dependency manifest (a tool can need an npm package); anything
+  // else outside agent/ (CI config, Dockerfile, app code) stays off-limits to edits from Eden.
+  if (ROOT_FILE_ALLOWLIST.has(p)) return p;
+  if (!p.startsWith("agent/")) return null;
   return p;
 }

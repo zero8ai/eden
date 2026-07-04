@@ -17,13 +17,16 @@ export function fakeDeployTarget(opts: {
   health?: InstanceHealth;
   deployError?: string;
   buildImageRef?: string;
+  /** Captures the env each deploy() received, for injection assertions. */
+  deployedEnvs?: Record<string, string>[];
 }): DeployTarget {
   return {
     name: "fake",
     async build() {
       return { imageRef: opts.buildImageRef ?? "img:fake", digest: "sha256:fake" };
     },
-    async deploy(): Promise<InstanceHealth> {
+    async deploy(req): Promise<InstanceHealth> {
+      opts.deployedEnvs?.push(req.env);
       if (opts.deployError) throw new Error(opts.deployError);
       return opts.health ?? { status: "live", url: "http://fake.local" };
     },

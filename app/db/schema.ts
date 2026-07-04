@@ -453,3 +453,18 @@ export const jobs = pgTable(
   },
   (t) => [index("jobs_status_run_at_idx").on(t.status, t.runAt)],
 );
+
+/**
+ * Workspace-level model provider key (PRD §12 resolution): one OpenRouter key per org that
+ * every deploy inherits as OPENROUTER_API_KEY unless a project/environment secret overrides
+ * it, and that the authoring assistant uses. Sealed with the same AES-GCM box as secrets.
+ */
+export const workspaceSettings = pgTable("workspace_settings", {
+  orgId: text("org_id")
+    .primaryKey()
+    .references(() => orgs.id, { onDelete: "cascade" }),
+  modelKeyCiphertext: text("model_key_ciphertext"),
+  modelKeyIv: text("model_key_iv"),
+  modelKeyAuthTag: text("model_key_auth_tag"),
+  updatedAt: updatedAt(),
+});

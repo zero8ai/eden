@@ -24,6 +24,7 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { syncTenant, type Org } from "~/auth/tenant.server";
 import { listAudit, recordAudit } from "~/managed/audit.server";
+import { hasWorkspaceModelKey, setWorkspaceModelKey } from "~/org/workspace.server";
 import {
   getSpendLimit,
   setSpendLimit,
@@ -41,6 +42,8 @@ interface OrgSettingsView {
   limit: SpendLimit | null;
   used: number;
   audit: (typeof auditLog.$inferSelect)[];
+  /** A workspace OpenRouter key is configured (value never leaves the server). */
+  hasModelKey: boolean;
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -52,13 +55,23 @@ export const loader = (args: LoaderFunctionArgs) =>
         organizationId: auth.organizationId,
         role: auth.role,
       });
-      if (!org) return { org: null, mode: getRuntime().mode, limit: null, used: 0, audit: [] };
-      const [limit, used, audit] = await Promise.all([
+      if (!org) {
+        return {
+          org: null,
+          mode: getRuntime().mode,
+          limit: null,
+          used: 0,
+          audit: [],
+          hasModelKey: false,
+        };
+      }
+      const [limit, used, audit, hasModelKey] = await Promise.all([
         getSpendLimit(org.id),
         tokensUsedSince(org.id),
         listAudit(org.id, 50),
+        hasWorkspaceModelKey(org.id),
       ]);
-      return { org, mode: getRuntime().mode, limit: limit ?? null, used, audit };
+      return { org, mode: getRuntime().mode, limit: limit ?? null, used, audit, hasModelKey };
     },
     { ensureSignedIn: true },
   );
@@ -74,6 +87,24 @@ export async function action(args: ActionFunctionArgs) {
   if (!org) return { error: "No organization." };
 
   const form = await args.request.formData();
+
+  // ── Workspace model key (PRD §12): set or clear the org's OpenRouter key ──
+  const intent = String(form.get("intent") ?? "");
+  if (intent === "set-model-key" || intent === "clear-model-key") {
+    const value =
+      intent === "set-model-key" ? String(form.get("modelKey") ?? "").trim() : "";
+    if (intent === "set-model-key" && !value) {
+      return { error: "Paste an OpenRouter API key." };
+    }
+    await setWorkspaceModelKey(org.id, value || null);
+    await recordAudit({
+      orgId: org.id,
+      actorUserId: auth.user.id,
+      action: value ? "workspace_model_key_set" : "workspace_model_key_cleared",
+    });
+    throw redirect("/org/settings");
+  }
+
   const capRaw = String(form.get("monthlyTokenCap") ?? "").trim();
   const monthlyTokenCap = capRaw === "" ? null : Math.max(0, Number(capRaw) || 0);
   const killSwitch = form.get("killSwitch") === "on";
@@ -93,7 +124,7 @@ export function meta() {
 }
 
 export default function OrgSettings({ loaderData }: Route.ComponentProps) {
-  const { user, org, mode, limit, used, audit } = loaderData;
+  const { user, org, mode, limit, used, audit, hasModelKey } = loaderData;
 
   if (!org) {
     return (
@@ -122,6 +153,48 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
       />
 
       <div className="space-y-6">
+        {/* Model provider (PRD §12): the key every agent needs, set once per workspace */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Model provider</CardTitle>
+            <CardDescription>
+              Every agent needs a model key. Deploys inject this OpenRouter key as{" "}
+              <span className="font-mono">OPENROUTER_API_KEY</span> automatically (a
+              project or environment secret with that name overrides it), and the
+              authoring assistant uses it too.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {hasModelKey ? (
+              <Form method="post" className="flex items-center gap-3">
+                <input type="hidden" name="intent" value="clear-model-key" />
+                <p className="text-sm">
+                  OpenRouter key: <span className="font-medium">configured</span>{" "}
+                  <span className="text-muted-foreground">(write-only; value never shown)</span>
+                </p>
+                <Button type="submit" variant="outline" size="sm">
+                  Remove key
+                </Button>
+              </Form>
+            ) : (
+              <Form method="post" className="flex max-w-xl items-end gap-2">
+                <input type="hidden" name="intent" value="set-model-key" />
+                <div className="flex-1 space-y-1.5">
+                  <Label htmlFor="modelKey">OpenRouter API key</Label>
+                  <Input
+                    id="modelKey"
+                    name="modelKey"
+                    type="password"
+                    placeholder="sk-or-v1-…"
+                    autoComplete="off"
+                  />
+                </div>
+                <Button type="submit">Save key</Button>
+              </Form>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Spend controls */}
         <Card>
           <CardHeader>

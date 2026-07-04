@@ -152,6 +152,26 @@ export async function checkEveBuild(
       await exec("docker", ["build", "--target", "build", "-t", tag, srcDir], {
         maxBuffer: 64 * 1024 * 1024,
       });
+      // Beyond compiling: run the repo's own typecheck/lint scripts (when defined) inside
+      // the built image — `--if-present` makes repos without them pass trivially.
+      try {
+        await exec(
+          "docker",
+          [
+            "run",
+            "--rm",
+            "--entrypoint",
+            "sh",
+            tag,
+            "-lc",
+            "npm run typecheck --if-present && npm run lint --if-present",
+          ],
+          { maxBuffer: 16 * 1024 * 1024 },
+        );
+      } catch (error) {
+        const raw = error instanceof Error ? error.message : String(error);
+        return { ok: false, output: raw.split("\n").slice(-30).join("\n") };
+      }
       return { ok: true };
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error);

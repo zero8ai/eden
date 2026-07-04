@@ -43,6 +43,13 @@
       "when": 1783016728965,
       "tag": "0005_spotty_gladiator",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783146182968,
+      "tag": "0006_silky_tenebrous",
+      "breakpoints": true
     }
   ]
 }

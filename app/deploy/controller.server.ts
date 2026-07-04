@@ -27,11 +27,19 @@ export interface DeployDeps {
   store: DataStore;
   deployTarget: DeployTarget;
   secrets: SecretsProvider;
+  /** Org-level model key lookup (PRD §12): deploys inherit OPENROUTER_API_KEY from it. */
+  workspaceModelKey?: (orgId: string) => Promise<string | null>;
 }
 
 function deployDeps(): DeployDeps {
   const r = getRuntime();
-  return { store: r.data, deployTarget: r.deployTarget, secrets: r.secrets };
+  return {
+    store: r.data,
+    deployTarget: r.deployTarget,
+    secrets: r.secrets,
+    workspaceModelKey: (orgId) =>
+      import("~/org/workspace.server").then((m) => m.getWorkspaceModelKey(orgId)),
+  };
 }
 
 /**
@@ -145,6 +153,12 @@ export async function deployRelease(
     }
 
     const envVars = await secrets.resolve(release.projectId, input.environmentId);
+    // A model key is a prerequisite for every agent (PRD §12): inherit the workspace-level
+    // OpenRouter key unless a project/environment secret explicitly overrides it.
+    if (!envVars.OPENROUTER_API_KEY && project && deps.workspaceModelKey) {
+      const wsKey = await deps.workspaceModelKey(project.orgId);
+      if (wsKey) envVars.OPENROUTER_API_KEY = wsKey;
+    }
     const health = await deployTarget.deploy({
       deploymentId: dep.id,
       imageRef: imageRef ?? "",

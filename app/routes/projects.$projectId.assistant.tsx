@@ -1,32 +1,39 @@
 /**
- * Embedded authoring assistant (Author pillar, PRD §7.2 / D4).
- *
- * The PM describes what they want; the assistant AGENT (assistant/agent.server.ts) explores
- * the repo, writes files to the conventional locations, adds npm dependencies when justified
- * (lockfile regenerated properly), and runs the build/typecheck gate until green — all per
- * the METHOD system prompt. Everything it writes lands as staged drafts, reviewed and
- * published from the Changes tab like any human edit. Model access is OpenRouter via the
- * workspace key (Org settings), per PRD §12.
+ * Embedded authoring assistant (Author pillar, PRD §7.2 / D4) — a persistent CONVERSATION,
+ * not a request form. Each user message runs the authoring agent (assistant/agent.server.ts)
+ * with the conversation's model-level history, so follow-ups build on earlier turns. The
+ * transcript + history persist server-side (chat/conversation.server.ts): navigate away and
+ * back and it's still here; idle for 24h and it starts fresh. One conversation per user per
+ * project — no session management.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import {
-  Form,
-  Link,
-  redirect,
-  useNavigation,
-  type ActionFunctionArgs,
-  type LoaderFunctionArgs,
-} from "react-router";
+import { Link, redirect, useFetcher, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
 
+import { runAuthoringAgent, type ChatMessage } from "~/assistant/agent.server";
+import {
+  loadConversation,
+  resetConversation,
+  saveConversation,
+} from "~/chat/conversation.server";
+import type { ChatEntry } from "~/chat/types";
+import {
+  AssistantBubble,
+  ChatComposer,
+  ChatTranscript,
+  PendingBubble,
+  UserBubble,
+} from "~/components/chat";
 import { AgentNav, AppShell, PageHeader } from "~/components/shell";
-import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
-import { Textarea } from "~/components/ui/textarea";
-import { runAuthoringAgent, type AuthoringRunResult } from "~/assistant/agent.server";
+import { newId } from "~/lib/id";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.assistant";
+
+interface AssistantState extends Record<string, unknown> {
+  history: ChatMessage[];
+}
 
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
@@ -42,16 +49,18 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
-      return { project };
+      const conversation = await loadConversation<AssistantState>(
+        project.id,
+        "assistant",
+        auth.user!.id,
+        { history: [] },
+      );
+      return { project, entries: conversation.entries, expired: conversation.expired };
     },
     { ensureSignedIn: true },
   );
 
-type ActionResult =
-  | { kind: "done"; result: AuthoringRunResult }
-  | { kind: "error"; message: string };
-
-export async function action(args: ActionFunctionArgs): Promise<ActionResult> {
+export async function action(args: ActionFunctionArgs) {
   const auth = await withAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
@@ -66,18 +75,54 @@ export async function action(args: ActionFunctionArgs): Promise<ActionResult> {
   );
 
   const form = await args.request.formData();
-  const instruction = String(form.get("instruction") ?? "").trim();
-  if (!instruction) return { kind: "error", message: "Describe what you want built." };
+  if (String(form.get("intent")) === "reset") {
+    await resetConversation(project.id, "assistant", auth.user.id);
+    return { ok: true as const };
+  }
+
+  const message = String(form.get("message") ?? "").trim();
+  if (!message) return { error: "Say what you want built." };
+
+  const conversation = await loadConversation<AssistantState>(
+    project.id,
+    "assistant",
+    auth.user.id,
+    { history: [] },
+  );
+  const entries = [...conversation.entries];
+  entries.push({ id: newId(), role: "user", text: message });
 
   try {
     const result = await runAuthoringAgent({
       project,
-      instruction,
+      instruction: message,
       createdBy: auth.user.id,
+      history: conversation.state.history,
     });
-    return { kind: "done", result };
+    entries.push({
+      id: newId(),
+      role: "assistant",
+      text: result.summary,
+      files: result.files,
+      secrets: result.secretsNeeded,
+      checks: result.checks.ran ? { ran: true, ok: result.checks.ok } : undefined,
+    });
+    await saveConversation(project.id, "assistant", auth.user.id, entries, {
+      history: result.history,
+    });
+    return { ok: true as const };
   } catch (error) {
-    return { kind: "error", message: (error as Error).message };
+    // Persist the user's message + the failure so the conversation stays coherent.
+    entries.push({
+      id: newId(),
+      role: "assistant",
+      text: "",
+      error: (error as Error).message,
+    });
+    await saveConversation(project.id, "assistant", auth.user.id, entries, {
+      history: conversation.state.history,
+    });
+    return { ok: true as const };
   }
 }
 
@@ -85,125 +130,128 @@ export function meta() {
   return [{ title: "Assistant · Eden" }];
 }
 
-export default function Assistant({ loaderData, actionData }: Route.ComponentProps) {
-  const { project } = loaderData;
-  const navigation = useNavigation();
-  const busy = navigation.state !== "idle";
-  const done = actionData?.kind === "done" ? actionData.result : null;
-
+export default function Assistant({ loaderData }: Route.ComponentProps) {
+  const { project, entries, expired } = loaderData;
   const base = `/projects/${project.id}`;
+  const fetcher = useFetcher<typeof action>();
+  const busy = fetcher.state !== "idle";
+  const pendingMessage =
+    busy && fetcher.formData?.get("intent") !== "reset"
+      ? String(fetcher.formData?.get("message") ?? "")
+      : null;
 
   return (
     <AppShell workspaceName={project.name}>
       <PageHeader
-        title="Authoring assistant"
-        description="Describe what you want in plain language. The assistant writes the code, adds any dependencies, and verifies the build — then you review and publish from Changes."
+        title="Assistant"
+        description="Tell it what the agent should be able to do. It writes the code, verifies the build, and stages everything for your review in Changes."
         actions={
-          <Button variant="outline" asChild>
-            <Link to={base}>← {project.name}</Link>
-          </Button>
+          entries.length > 0 ? (
+            <fetcher.Form method="post">
+              <input type="hidden" name="intent" value="reset" />
+              <Button type="submit" variant="outline" size="sm" disabled={busy}>
+                New conversation
+              </Button>
+            </fetcher.Form>
+          ) : undefined
         }
       />
       <AgentNav base={base} />
 
-      {actionData?.kind === "error" && (
-        <Alert variant="destructive" className="mb-6">
-          <AlertDescription className="whitespace-pre-wrap">
-            {actionData.message}
+      {expired && entries.length === 0 && (
+        <Alert className="mb-4">
+          <AlertDescription>
+            Your previous conversation expired after a day of inactivity — starting fresh.
           </AlertDescription>
         </Alert>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>What should the agent be able to do?</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Form method="post">
-            <Textarea
-              name="instruction"
-              rows={3}
-              placeholder="e.g. Add a tool that sends a message to our Discord channel."
-            />
-            <div className="mt-3 flex items-center gap-3">
-              <Button type="submit" disabled={busy}>
-                {busy ? "Working… (writes, builds & verifies — can take a minute)" : "Build it"}
-              </Button>
-            </div>
-          </Form>
-        </CardContent>
-      </Card>
-
-      {done && (
-        <section className="mt-8 space-y-4">
-          <Alert>
-            <AlertTitle>
-              {done.checks.ran
-                ? done.checks.ok
-                  ? "Done — checks passed"
-                  : "Finished with failing checks"
-                : "Done"}
-            </AlertTitle>
-            <AlertDescription className="space-y-2">
-              <p className="whitespace-pre-wrap">{done.summary}</p>
-              {done.secretsNeeded.length > 0 && (
-                <p>
-                  Secrets to set before deploying:{" "}
-                  {done.secretsNeeded.map((s) => (
-                    <Badge key={s} variant="secondary" className="mr-1 font-mono">
-                      {s}
-                    </Badge>
-                  ))}
-                  —{" "}
-                  <Link className="underline" to={`${base}/secrets`}>
-                    set them in Secrets
-                  </Link>
-                  .
-                </p>
-              )}
-            </AlertDescription>
-          </Alert>
-
-          {done.files.length > 0 && (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Staged files</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ul className="divide-y rounded-lg border text-sm">
-                  {done.files.map((f) => (
-                    <li key={f} className="px-3 py-2">
-                      <Link
-                        to={`${base}/edit?path=${encodeURIComponent(f)}`}
-                        className="font-mono text-xs underline-offset-4 hover:underline"
-                      >
-                        {f}
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-                <p className="mt-3 text-sm">
-                  <Link
-                    to={`${base}/changes`}
-                    className="font-medium underline underline-offset-4"
-                  >
-                    Review &amp; publish in Changes →
-                  </Link>
-                </p>
-              </CardContent>
-            </Card>
+      <div className="space-y-4 pb-4">
+        <ChatTranscript dep={`${entries.length}:${pendingMessage ?? ""}`}>
+          {entries.length === 0 && !pendingMessage && (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              e.g. &ldquo;Add a tool that sends a message to our Discord channel.&rdquo;
+            </p>
           )}
-
-          {done.checks.ran && !done.checks.ok && done.checks.output && (
-            <Alert variant="destructive">
-              <AlertTitle>Last check output</AlertTitle>
-              <AlertDescription className="whitespace-pre-wrap font-mono text-xs">
-                {done.checks.output}
-              </AlertDescription>
-            </Alert>
+          {(entries as ChatEntry[]).map((e) =>
+            e.role === "user" ? (
+              <UserBubble key={e.id} text={e.text} />
+            ) : (
+              <AssistantEntry key={e.id} entry={e} base={base} />
+            ),
           )}
-        </section>
-      )}
+          {pendingMessage && (
+            <>
+              <UserBubble text={pendingMessage} />
+              <PendingBubble label="Working — reading the repo, writing code, verifying the build…" />
+            </>
+          )}
+        </ChatTranscript>
+
+        <ChatComposer
+          placeholder="What should the agent be able to do?"
+          busy={busy}
+          busyLabel="Working…"
+          onSend={(message) => fetcher.submit({ message }, { method: "post" })}
+        />
+      </div>
     </AppShell>
+  );
+}
+
+function AssistantEntry({ entry, base }: { entry: ChatEntry; base: string }) {
+  return (
+    <AssistantBubble>
+      {entry.error ? (
+        <p className="whitespace-pre-wrap text-destructive">{entry.error}</p>
+      ) : (
+        <p className="whitespace-pre-wrap">{entry.text}</p>
+      )}
+
+      {entry.checks && (
+        <p className="mt-2">
+          <Badge variant={entry.checks.ok ? "secondary" : "destructive"} className="text-xs">
+            {entry.checks.ok ? "checks passed" : "checks failed"}
+          </Badge>
+        </p>
+      )}
+
+      {entry.files && entry.files.length > 0 && (
+        <div className="mt-2 space-y-1 border-t pt-2 text-xs">
+          <p className="font-medium text-muted-foreground">Staged files</p>
+          <ul className="space-y-0.5">
+            {entry.files.map((f) => (
+              <li key={f}>
+                <Link
+                  to={`${base}/edit?path=${encodeURIComponent(f)}`}
+                  className="font-mono underline-offset-4 hover:underline"
+                >
+                  {f}
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <p>
+            <Link to={`${base}/changes`} className="font-medium underline underline-offset-4">
+              Review &amp; publish in Changes →
+            </Link>
+          </p>
+        </div>
+      )}
+
+      {entry.secrets && entry.secrets.length > 0 && (
+        <p className="mt-2 text-xs">
+          Secrets to set:{" "}
+          {entry.secrets.map((s) => (
+            <Badge key={s} variant="secondary" className="mr-1 font-mono">
+              {s}
+            </Badge>
+          ))}
+          <Link to={`${base}/secrets`} className="underline underline-offset-4">
+            open Secrets →
+          </Link>
+        </p>
+      )}
+    </AssistantBubble>
   );
 }

@@ -1,23 +1,34 @@
 /**
- * Playground — a direct line to a deployed agent (Observe/operate: PRD channels treat web chat
- * as an entry point; this is the platform-testing version of it).
+ * Playground — a persistent conversation with a live deployment of this agent.
  *
- * Pick a live deployment (explicit version — useful when several run behind the splitter),
- * type a message, and the server proxies one turn over eve's session API (agent/talk.server.ts)
- * and renders the reply plus the agent's steps. Prose renders as text; structured (JSON)
- * replies render as code. The transcript lives in component state — this is a testing surface,
- * not a durable channel; real conversations belong to the agent's own channels.
+ * The transcript and the eve session (id + continuation token) persist server-side
+ * (chat/conversation.server.ts): navigate away and back, the conversation is still here and
+ * follow-up turns keep the agent's context. Idle 24h → fresh start. Switching to a different
+ * deployment keeps the visible transcript but starts a new eve session (versions don't share
+ * memory).
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { redirect, useFetcher, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
 
-import { sendTurn, type TurnResult } from "~/agent/talk.server";
+import { sendTurn } from "~/agent/talk.server";
+import {
+  loadConversation,
+  resetConversation,
+  saveConversation,
+} from "~/chat/conversation.server";
+import type { ChatEntry } from "~/chat/types";
+import {
+  AssistantBubble,
+  ChatComposer,
+  ChatTranscript,
+  PendingBubble,
+  UserBubble,
+} from "~/components/chat";
 import { AgentNav, AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { Card, CardContent } from "~/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -25,10 +36,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
-import { Textarea } from "~/components/ui/textarea";
 import { listDeployments } from "~/deploy/controller.server";
-import { newId } from "~/lib/id";
 import { listEnvironments } from "~/db/queries.server";
+import { newId } from "~/lib/id";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.playground";
 
@@ -38,6 +48,18 @@ interface Target {
   version: string;
   environmentName: string;
 }
+
+interface PlaygroundState extends Record<string, unknown> {
+  deploymentId: string | null;
+  sessionId: string | null;
+  continuationToken: string | null;
+}
+
+const EMPTY_STATE: PlaygroundState = {
+  deploymentId: null,
+  sessionId: null,
+  continuationToken: null,
+};
 
 async function liveTargets(projectId: string): Promise<Target[]> {
   const envs = await listEnvironments(projectId);
@@ -71,7 +93,22 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
-      return { project, targets: await liveTargets(project.id) };
+      const [targets, conversation] = await Promise.all([
+        liveTargets(project.id),
+        loadConversation<PlaygroundState>(
+          project.id,
+          "playground",
+          auth.user!.id,
+          EMPTY_STATE,
+        ),
+      ]);
+      return {
+        project,
+        targets,
+        entries: conversation.entries,
+        expired: conversation.expired,
+        lastDeploymentId: conversation.state.deploymentId,
+      };
     },
     { ensureSignedIn: true },
   );
@@ -91,84 +128,94 @@ export async function action(args: ActionFunctionArgs) {
   );
 
   const form = await args.request.formData();
+  if (String(form.get("intent")) === "reset") {
+    await resetConversation(project.id, "playground", auth.user.id);
+    return { ok: true as const };
+  }
+
   const deploymentId = String(form.get("deploymentId") ?? "");
   const message = String(form.get("message") ?? "").trim();
-  const sessionId = String(form.get("sessionId") ?? "") || null;
-  const continuationToken = String(form.get("continuationToken") ?? "") || null;
-  if (!message) return { error: "Type a message first." } as const;
+  if (!message) return { error: "Type a message first." };
 
   // Only talk to live deployments that belong to THIS project (tenancy guard).
   const targets = await liveTargets(project.id);
   const target = targets.find((t) => t.deploymentId === deploymentId);
   if (!target) {
-    return {
-      error: "That deployment isn't live (or isn't part of this agent). Deploy first.",
-    } as const;
+    return { error: "That deployment isn't live (or isn't part of this agent). Deploy first." };
   }
 
-  const result = await sendTurn({ baseUrl: target.url, message, sessionId, continuationToken });
-  return { result, version: target.version } as const;
+  const conversation = await loadConversation<PlaygroundState>(
+    project.id,
+    "playground",
+    auth.user.id,
+    EMPTY_STATE,
+  );
+  // A different deployment doesn't share the eve session — keep the transcript, drop tokens.
+  const sameTarget = conversation.state.deploymentId === deploymentId;
+  const entries = [...conversation.entries];
+  entries.push({ id: newId(), role: "user", text: message });
+
+  const result = await sendTurn({
+    baseUrl: target.url,
+    message,
+    sessionId: sameTarget ? conversation.state.sessionId : null,
+    continuationToken: sameTarget ? conversation.state.continuationToken : null,
+  });
+  entries.push({
+    id: newId(),
+    role: "assistant",
+    text: result.reply ?? "",
+    structured: result.replyIsStructured,
+    version: target.version,
+    modelId: result.modelId,
+    steps: result.steps,
+    error: result.error,
+  });
+
+  await saveConversation(project.id, "playground", auth.user.id, entries, {
+    deploymentId,
+    sessionId: result.sessionId ?? null,
+    continuationToken: result.continuationToken ?? null,
+  } satisfies PlaygroundState);
+  return { ok: true as const };
 }
 
 export function meta() {
   return [{ title: "Playground · Eden" }];
 }
 
-interface ChatEntry {
-  /** Stable render key — transcript entries are append-only client state. */
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  structured?: boolean;
-  version?: string;
-  modelId?: string | null;
-  steps?: TurnResult["steps"];
-  error?: string | null;
-}
-
 export default function Playground({ loaderData }: Route.ComponentProps) {
-  const { project, targets } = loaderData;
+  const { project, targets, entries, expired, lastDeploymentId } = loaderData;
   const base = `/projects/${project.id}`;
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
+  const pendingMessage =
+    busy && fetcher.formData?.get("intent") !== "reset"
+      ? String(fetcher.formData?.get("message") ?? "")
+      : null;
 
-  const [entries, setEntries] = useState<ChatEntry[]>([]);
-  // Session continuity: follow-up turns POST to the same eve session with its token.
-  const [session, setSession] = useState<{ id: string; token: string } | null>(null);
-  const lastHandled = useRef<unknown>(null);
+  const defaultTarget =
+    targets.find((t) => t.deploymentId === lastDeploymentId) ?? targets[0];
+  const [deploymentId, setDeploymentId] = useState(defaultTarget?.deploymentId ?? "");
 
-  // Append the assistant reply when a turn returns (once per response object).
-  useEffect(() => {
-    const data = fetcher.data;
-    if (!data || fetcher.state !== "idle" || lastHandled.current === data) return;
-    lastHandled.current = data;
-    if ("error" in data && data.error) {
-      setEntries((prev) => [
-        ...prev,
-        { id: newId(), role: "assistant", text: "", error: data.error },
-      ]);
-      return;
-    }
-    if ("result" in data && data.result) {
-      const r = data.result;
-      setEntries((prev) => [
-        ...prev,
-        {
-          id: newId(),
-          role: "assistant",
-          text: r.reply ?? "",
-          structured: r.replyIsStructured,
-          version: data.version,
-          modelId: r.modelId,
-          steps: r.steps,
-          error: r.error,
-        },
-      ]);
-      if (r.sessionId && r.continuationToken) {
-        setSession({ id: r.sessionId, token: r.continuationToken });
-      }
-    }
-  }, [fetcher.data, fetcher.state]);
+  // Stable element between renders so the composer (and any memoized child) doesn't redraw.
+  const targetPicker = useMemo(
+    () => (
+      <Select value={deploymentId} onValueChange={setDeploymentId}>
+        <SelectTrigger className="min-w-44" aria-label="Deployment to talk to">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {targets.map((t) => (
+            <SelectItem key={t.deploymentId} value={t.deploymentId}>
+              {t.version} · {t.environmentName}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    ),
+    [deploymentId, targets],
+  );
 
   return (
     <AppShell>
@@ -177,16 +224,12 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         description="Talk to a live deployment of this agent. Each reply is tagged with the version that produced it."
         actions={
           entries.length > 0 ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setEntries([]);
-                setSession(null);
-              }}
-            >
-              New conversation
-            </Button>
+            <fetcher.Form method="post">
+              <input type="hidden" name="intent" value="reset" />
+              <Button type="submit" variant="outline" size="sm" disabled={busy}>
+                New conversation
+              </Button>
+            </fetcher.Form>
           ) : undefined
         }
       />
@@ -200,92 +243,72 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           </AlertDescription>
         </Alert>
       ) : (
-        <div className="space-y-4">
-          {/* Transcript */}
-          {entries.length > 0 && (
-            <div className="space-y-3">
-              {entries.map((e) => (
-                <ChatBubble key={e.id} entry={e} />
-              ))}
-            </div>
+        <div className="space-y-4 pb-4">
+          {expired && entries.length === 0 && (
+            <Alert>
+              <AlertDescription>
+                Your previous conversation expired after a day of inactivity — starting fresh.
+              </AlertDescription>
+            </Alert>
+          )}
+          {actionError(fetcher.data) && (
+            <Alert variant="destructive">
+              <AlertDescription>{actionError(fetcher.data)}</AlertDescription>
+            </Alert>
           )}
 
-          {/* Composer */}
-          <Card>
-            <CardContent className="pt-6">
-              <fetcher.Form
-                method="post"
-                onSubmit={(event) => {
-                  const message = String(
-                    new FormData(event.currentTarget).get("message") ?? "",
-                  ).trim();
-                  if (message) {
-                    setEntries((prev) => [
-                      ...prev,
-                      { id: newId(), role: "user", text: message },
-                    ]);
-                  }
-                }}
-              >
-                <input type="hidden" name="sessionId" value={session?.id ?? ""} />
-                <input type="hidden" name="continuationToken" value={session?.token ?? ""} />
-                <div className="flex flex-wrap items-end gap-3">
-                  <div className="min-w-0 flex-1">
-                    <Textarea
-                      name="message"
-                      key={entries.length /* clear after each send */}
-                      placeholder="Say something to the agent…"
-                      aria-label="Message to the agent"
-                      className="min-h-20"
-                      disabled={busy}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <Select name="deploymentId" defaultValue={targets[0].deploymentId}>
-                      <SelectTrigger className="min-w-44" aria-label="Deployment to talk to">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {targets.map((t) => (
-                          <SelectItem key={t.deploymentId} value={t.deploymentId}>
-                            {t.version} · {t.environmentName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button type="submit" disabled={busy}>
-                      {busy ? "Thinking…" : "Send"}
-                    </Button>
-                  </div>
-                </div>
-              </fetcher.Form>
-            </CardContent>
-          </Card>
+          <ChatTranscript dep={`${entries.length}:${pendingMessage ?? ""}`}>
+            {entries.length === 0 && !pendingMessage && (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                Say something to the agent — the conversation keeps its context across turns.
+              </p>
+            )}
+            {(entries as ChatEntry[]).map((e) =>
+              e.role === "user" ? (
+                <UserBubble key={e.id} text={e.text} />
+              ) : (
+                <AgentEntry key={e.id} entry={e} />
+              ),
+            )}
+            {pendingMessage && (
+              <>
+                <UserBubble text={pendingMessage} />
+                <PendingBubble label="Thinking…" />
+              </>
+            )}
+          </ChatTranscript>
+
+          <ChatComposer
+            placeholder="Say something to the agent…"
+            busy={busy}
+            busyLabel="Thinking…"
+            onSend={(message) =>
+              fetcher.submit({ message, deploymentId }, { method: "post" })
+            }
+            extras={targetPicker}
+          />
         </div>
       )}
     </AppShell>
   );
 }
 
-function ChatBubble({ entry }: { entry: ChatEntry }) {
-  if (entry.role === "user") {
-    return (
-      <div className="ml-auto max-w-[85%] rounded-xl bg-primary px-4 py-2.5 text-sm text-primary-foreground">
-        <p className="whitespace-pre-wrap">{entry.text}</p>
-      </div>
-    );
-  }
+function actionError(data: unknown): string | null {
+  return data && typeof data === "object" && "error" in data
+    ? String((data as { error: unknown }).error)
+    : null;
+}
+
+function AgentEntry({ entry }: { entry: ChatEntry }) {
   return (
-    <div className="max-w-[85%] rounded-xl border bg-card px-4 py-2.5 text-sm">
+    <AssistantBubble>
       {entry.version && (
         <span className="mb-1.5 flex items-center gap-1.5">
           <Badge variant="secondary" className="text-xs">
             {entry.version}
           </Badge>
           {entry.modelId && (
-            <span className="font-mono text-xs text-muted-foreground">
-              {entry.modelId}
-            </span>
+            <span className="font-mono text-xs text-muted-foreground">{entry.modelId}</span>
           )}
         </span>
       )}
@@ -318,6 +341,6 @@ function ChatBubble({ entry }: { entry: ChatEntry }) {
           </ul>
         </details>
       )}
-    </div>
+    </AssistantBubble>
   );
 }

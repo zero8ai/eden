@@ -32,6 +32,8 @@ export interface AuthoringRunInput {
   project: ConnectedProject;
   instruction: string;
   createdBy: string;
+  /** Prior model-level turns (no system message) — the conversation's memory. */
+  history?: ChatMessage[];
 }
 
 export interface AuthoringRunResult {
@@ -41,6 +43,8 @@ export interface AuthoringRunResult {
   secretsNeeded: string[];
   /** Result of the last run_checks call, if any. */
   checks: { ran: boolean; ok: boolean; output?: string };
+  /** Updated model-level history to persist for the next turn. */
+  history: ChatMessage[];
 }
 
 // ── OpenAI-format tool declarations (OpenRouter tool calling) ────────────────
@@ -260,7 +264,7 @@ async function runChecks(
 
 // ── The loop ─────────────────────────────────────────────────────────────────
 
-interface ChatMessage {
+export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
   tool_calls?: {
@@ -323,18 +327,28 @@ export async function runAuthoringAgent(
   const staged: string[] = [];
   const checks: AuthoringRunResult["checks"] = { ran: false, ok: false };
 
+  // The system prompt is prepended fresh each run (METHOD updates apply to old
+  // conversations); the persisted history carries only the turns.
   const messages: ChatMessage[] = [
     { role: "system", content: METHOD },
+    ...(input.history ?? []),
     { role: "user", content: instruction },
   ];
+  const historyOut = () => trimHistory(messages.slice(1));
 
   for (let step = 0; step < MAX_STEPS; step++) {
     const reply = await chat(key, model, messages);
     messages.push(reply);
 
     if (!reply.tool_calls?.length) {
-      // Model answered in prose without finish() — accept it as the summary.
-      return { summary: reply.content ?? "Done.", files: staged, secretsNeeded: [], checks };
+      // A prose reply is a conversational turn (answer, clarifying question) — valid.
+      return {
+        summary: reply.content ?? "Done.",
+        files: staged,
+        secretsNeeded: [],
+        checks,
+        history: historyOut(),
+      };
     }
 
     for (const call of reply.tool_calls) {
@@ -346,6 +360,7 @@ export async function runAuthoringAgent(
       }
 
       if (call.function.name === "finish") {
+        messages.push({ role: "tool", content: "Session ended.", tool_call_id: call.id });
         return {
           summary: String(args.summary ?? "Done."),
           files: staged,
@@ -353,6 +368,7 @@ export async function runAuthoringAgent(
             ? args.secretsNeeded.map(String)
             : [],
           checks,
+          history: historyOut(),
         };
       }
 
@@ -401,5 +417,28 @@ export async function runAuthoringAgent(
     files: staged,
     secretsNeeded: [],
     checks,
+    history: historyOut(),
   };
+}
+
+const MAX_HISTORY_MESSAGES = 60;
+const MAX_TOOL_RESULT_CHARS = 2_000;
+
+/**
+ * Bound what a conversation carries forward: big tool outputs (file contents, build logs)
+ * are truncated — the assistant re-reads files when it needs them — and the tail is capped,
+ * always cutting at a user message so assistant/tool call pairs stay intact.
+ */
+function trimHistory(history: ChatMessage[]): ChatMessage[] {
+  let out = history.map((m) =>
+    m.role === "tool" && m.content && m.content.length > MAX_TOOL_RESULT_CHARS
+      ? { ...m, content: `${m.content.slice(0, MAX_TOOL_RESULT_CHARS)}
+…[truncated]` }
+      : m,
+  );
+  if (out.length > MAX_HISTORY_MESSAGES) {
+    out = out.slice(-MAX_HISTORY_MESSAGES);
+    while (out.length > 0 && out[0].role !== "user") out.shift();
+  }
+  return out;
 }

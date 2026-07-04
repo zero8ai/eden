@@ -14,6 +14,8 @@
  * `text("id").primaryKey().$defaultFn(newId)` with `newId` from ~/lib/id — see that module.
  */
 import { sql } from "drizzle-orm";
+
+import { newId } from "~/lib/id";
 import {
   boolean,
   index,
@@ -470,3 +472,30 @@ export const workspaceSettings = pgTable("workspace_settings", {
   assistantModel: text("assistant_model"),
   updatedAt: updatedAt(),
 });
+
+/**
+ * Persistent chat transcripts for Eden's conversational surfaces (assistant, playground).
+ * Exactly ONE active conversation per (project, kind, user) — no session management; it
+ * survives navigation and expires after idle (see chat/conversation.server.ts). `messages`
+ * is the display transcript; `state` is kind-specific continuation state (the assistant's
+ * model-message history / the playground's eve session tokens).
+ */
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: text("id").primaryKey().$defaultFn(newId),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** assistant | playground */
+    kind: text("kind").notNull(),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    messages: jsonb("messages").$type<unknown[]>().notNull().default([]),
+    state: jsonb("state").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("conversations_scope_uq").on(t.projectId, t.kind, t.createdBy)],
+);

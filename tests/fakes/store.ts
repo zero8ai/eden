@@ -6,6 +6,7 @@
  * level, per the test strategy.
  */
 import type {
+  Conversation,
   DataStore,
   Deployment,
   DraftChange,
@@ -43,6 +44,7 @@ export function makeFakeStore(): FakeStore {
   const deployments = new Map<string, Deployment>();
   const jobs = new Map<string, Job>();
   const drafts = new Map<string, DraftChange>(); // key: projectId|path
+  const conversations = new Map<string, Conversation>(); // key: projectId|kind|user
   const auditEntries: { action: string; target?: string | null; orgId: string }[] = [];
   let forcedCollisions = 0;
 
@@ -326,6 +328,32 @@ export function makeFakeStore(): FakeStore {
       },
       async deleteByPaths(projectId, paths) {
         for (const p of paths) drafts.delete(`${projectId}|${p}`);
+      },
+    },
+
+    conversations: {
+      async get(projectId, kind, userId) {
+        return conversations.get(`${projectId}|${kind}|${userId}`) ?? null;
+      },
+      async save(input) {
+        const k = `${input.projectId}|${input.kind}|${input.createdBy}`;
+        const existing = conversations.get(k);
+        const row: Conversation = {
+          id: existing?.id ?? id("conv"),
+          projectId: input.projectId,
+          kind: input.kind,
+          createdBy: input.createdBy,
+          messages: input.messages,
+          state: input.state,
+          // Real wall-clock (unlike the seq-clock elsewhere): expiry compares against now.
+          createdAt: existing?.createdAt ?? new Date(),
+          updatedAt: new Date(),
+        };
+        conversations.set(k, row);
+        return row;
+      },
+      async delete(projectId, kind, userId) {
+        conversations.delete(`${projectId}|${kind}|${userId}`);
       },
     },
 

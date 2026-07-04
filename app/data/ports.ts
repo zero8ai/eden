@@ -149,6 +149,33 @@ export interface AuditRepo {
 }
 
 /** The full data seam handed to control-plane logic. */
+/** A persisted chat transcript (assistant / playground) — one per (project, kind, user). */
+export interface Conversation {
+  id: string;
+  projectId: string;
+  kind: string;
+  createdBy: string;
+  /** Display transcript entries (shape owned by the surface). */
+  messages: unknown[];
+  /** Kind-specific continuation state (model history, eve session tokens). */
+  state: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ConversationRepo {
+  get(projectId: string, kind: string, userId: string): Promise<Conversation | null>;
+  /** Upsert the single conversation for (project, kind, user). */
+  save(input: {
+    projectId: string;
+    kind: string;
+    createdBy: string;
+    messages: unknown[];
+    state: Record<string, unknown>;
+  }): Promise<Conversation>;
+  delete(projectId: string, kind: string, userId: string): Promise<void>;
+}
+
 export interface DataStore {
   releases: ReleaseRepo;
   deployments: DeploymentRepo;
@@ -156,5 +183,6 @@ export interface DataStore {
   projects: ProjectRepo;
   jobs: JobRepo;
   drafts: DraftRepo;
+  conversations: ConversationRepo;
   audit: AuditRepo;
 }

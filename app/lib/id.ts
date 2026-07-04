@@ -6,9 +6,9 @@
  * collision odds would need ~90 quadrillion ids). Works in both server and browser code.
  *
  * Convention: ALL identifiers — table PKs, client-side keys, external references — use
- * `newId()`, never crypto.randomUUID(). Every table PK is
- * `text("id").primaryKey().$defaultFn(newId)`; rows minted before the cutover keep their
- * old UUID strings (columns were converted uuid → text in place).
+ * `newId()`, never crypto.randomUUID(). Every table PK we mint is
+ * `varchar("id", { length: 12 }).primaryKey().$defaultFn(newId)` (WorkOS-issued org/user
+ * ids stay text). The column width enforces the format at the DB layer.
  */
 import { customAlphabet } from "nanoid";
 

@@ -10,9 +10,9 @@
  *  - D9: a Release = an immutable merge-commit + content-addressed image. Deployments bind a
  *    release to an environment with a traffic weight for the multi-version splitter (D9/D10).
  *
- * IDs: every PK is `text("id").primaryKey().$defaultFn(newId)` with `newId` from ~/lib/id
- * (12-char [a-zA-Z] nanoid). Rows created before the cutover keep their old UUID strings —
- * the columns were converted uuid → text in place, values untouched.
+ * IDs: every PK we mint is `varchar("id", { length: 12 }).primaryKey().$defaultFn(newId)`
+ * with `newId` from ~/lib/id (12-char [a-zA-Z] nanoid). orgs/users keep WorkOS-issued text
+ * ids. Legacy UUID rows were rewritten to nanoids in a one-off dev-DB pass (2026-07-04).
  */
 import { sql } from "drizzle-orm";
 
@@ -28,6 +28,7 @@ import {
   timestamp,
   unique,
   uniqueIndex,
+  varchar,
 } from "drizzle-orm/pg-core";
 
 const createdAt = () =>
@@ -78,7 +79,7 @@ export const memberships = pgTable(
 export const githubInstallations = pgTable(
   "github_installations",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
     orgId: text("org_id")
       .notNull()
       .references(() => orgs.id, { onDelete: "cascade" }),
@@ -94,7 +95,7 @@ export const githubInstallations = pgTable(
 export const projects = pgTable(
   "projects",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
     orgId: text("org_id")
       .notNull()
       .references(() => orgs.id, { onDelete: "cascade" }),
@@ -121,8 +122,8 @@ export const projects = pgTable(
 export const agents = pgTable(
   "agents",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    projectId: text("project_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
@@ -137,11 +138,11 @@ export const agents = pgTable(
 export const environments = pgTable(
   "environments",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    projectId: text("project_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    agentId: text("agent_id")
+    agentId: varchar("agent_id", { length: 12 })
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
@@ -157,11 +158,11 @@ export const environments = pgTable(
 export const releases = pgTable(
   "releases",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    projectId: text("project_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    agentId: text("agent_id")
+    agentId: varchar("agent_id", { length: 12 })
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
     version: text("version").notNull(),
@@ -188,11 +189,11 @@ export const releases = pgTable(
 export const deployments = pgTable(
   "deployments",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    environmentId: text("environment_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    environmentId: varchar("environment_id", { length: 12 })
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
-    releaseId: text("release_id")
+    releaseId: varchar("release_id", { length: 12 })
       .notNull()
       .references(() => releases.id, { onDelete: "restrict" }),
     // pending | building | live | draining | stopped | failed
@@ -219,15 +220,15 @@ export const deployments = pgTable(
 export const draftChanges = pgTable(
   "draft_changes",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    projectId: text("project_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     /**
      * The roster member the path belongs to (derived from the path's agent root). Null for
      * project-shared files outside every member (e.g. the root package.json).
      */
-    agentId: text("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, { onDelete: "cascade" }),
     /** Repo-relative path under the agent's root (e.g. "agent/instructions.md"). */
     path: text("path").notNull(),
     /** Full new file contents (drafts are whole-file, like the editors). */
@@ -248,16 +249,16 @@ export const draftChanges = pgTable(
 export const secretsMetadata = pgTable(
   "secrets_metadata",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    projectId: text("project_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     /** Per-agent scope (PRD §7.9 decision): a teammate never sees another's credentials. */
-    agentId: text("agent_id")
+    agentId: varchar("agent_id", { length: 12 })
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
     // null environmentId == agent-wide secret (all of that agent's environments)
-    environmentId: text("environment_id").references(() => environments.id, {
+    environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
       onDelete: "cascade",
     }),
     key: text("key").notNull(),
@@ -279,19 +280,19 @@ export const secretsMetadata = pgTable(
 export const runs = pgTable(
   "runs",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    projectId: text("project_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     /** Roster member the run belongs to; nullable — telemetry may arrive unattributed. */
-    agentId: text("agent_id").references(() => agents.id, { onDelete: "set null" }),
-    deploymentId: text("deployment_id").references(() => deployments.id, {
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, { onDelete: "set null" }),
+    deploymentId: varchar("deployment_id", { length: 12 }).references(() => deployments.id, {
       onDelete: "set null",
     }),
-    releaseId: text("release_id").references(() => releases.id, {
+    releaseId: varchar("release_id", { length: 12 }).references(() => releases.id, {
       onDelete: "set null",
     }),
-    sessionId: text("session_id"),
+    sessionId: varchar("session_id", { length: 12 }),
     // Correlates to the eve/Workflow run id in the telemetry store.
     externalRunId: text("external_run_id"),
     channel: text("channel"),
@@ -322,11 +323,11 @@ export const runs = pgTable(
 export const sessions = pgTable(
   "sessions",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    projectId: text("project_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    agentId: text("agent_id").references(() => agents.id, { onDelete: "set null" }),
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, { onDelete: "set null" }),
     externalSessionId: text("external_session_id"),
     trigger: text("trigger"),
     channel: text("channel"),
@@ -350,8 +351,8 @@ export const sessions = pgTable(
 export const runSteps = pgTable(
   "run_steps",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    runId: text("run_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    runId: varchar("run_id", { length: 12 })
       .notNull()
       .references(() => runs.id, { onDelete: "cascade" }),
     seq: integer("seq").notNull(),
@@ -377,8 +378,8 @@ export const runSteps = pgTable(
 export const ingestTokens = pgTable(
   "ingest_tokens",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    projectId: text("project_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
@@ -398,14 +399,14 @@ export const ingestTokens = pgTable(
 export const secretValues = pgTable(
   "secret_values",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    projectId: text("project_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    agentId: text("agent_id")
+    agentId: varchar("agent_id", { length: 12 })
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
-    environmentId: text("environment_id").references(() => environments.id, {
+    environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
       onDelete: "cascade",
     }),
     key: text("key").notNull(),
@@ -428,8 +429,8 @@ export const secretValues = pgTable(
 export const schedules = pgTable(
   "schedules",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    deploymentId: text("deployment_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    deploymentId: varchar("deployment_id", { length: 12 })
       .notNull()
       .references(() => deployments.id, { onDelete: "cascade" }),
     cron: text("cron").notNull(),
@@ -460,7 +461,7 @@ export const spendLimits = pgTable("spend_limits", {
 export const auditLog = pgTable(
   "audit_log",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
     orgId: text("org_id")
       .notNull()
       .references(() => orgs.id, { onDelete: "cascade" }),
@@ -482,11 +483,11 @@ export const auditLog = pgTable(
 export const usageEvents = pgTable(
   "usage_events",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
     orgId: text("org_id")
       .notNull()
       .references(() => orgs.id, { onDelete: "cascade" }),
-    deploymentId: text("deployment_id").references(() => deployments.id, {
+    deploymentId: varchar("deployment_id", { length: 12 }).references(() => deployments.id, {
       onDelete: "set null",
     }),
     // model_tokens | compute_seconds | sandbox_exec
@@ -507,7 +508,7 @@ export const usageEvents = pgTable(
 export const jobs = pgTable(
   "jobs",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
     // e.g. deploy_release
     kind: text("kind").notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
@@ -551,8 +552,8 @@ export const workspaceSettings = pgTable("workspace_settings", {
 export const conversations = pgTable(
   "conversations",
   {
-    id: text("id").primaryKey().$defaultFn(newId),
-    projectId: text("project_id")
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     /** assistant | playground */

@@ -99,6 +99,13 @@
       "when": 1783162104384,
       "tag": "0013_nano_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1783162564182,
+      "tag": "0014_id_varchar12",
+      "breakpoints": true
     }
   ]
 }

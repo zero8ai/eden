@@ -24,7 +24,12 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { syncTenant, type Org } from "~/auth/tenant.server";
 import { listAudit, recordAudit } from "~/managed/audit.server";
-import { hasWorkspaceModelKey, setWorkspaceModelKey } from "~/org/workspace.server";
+import {
+  getWorkspaceAssistantModel,
+  hasWorkspaceModelKey,
+  setWorkspaceAssistantModel,
+  setWorkspaceModelKey,
+} from "~/org/workspace.server";
 import {
   getSpendLimit,
   setSpendLimit,
@@ -44,6 +49,8 @@ interface OrgSettingsView {
   audit: (typeof auditLog.$inferSelect)[];
   /** A workspace OpenRouter key is configured (value never leaves the server). */
   hasModelKey: boolean;
+  /** OpenRouter model id the authoring assistant uses (null = Eden default). */
+  assistantModel: string | null;
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -63,15 +70,25 @@ export const loader = (args: LoaderFunctionArgs) =>
           used: 0,
           audit: [],
           hasModelKey: false,
+          assistantModel: null,
         };
       }
-      const [limit, used, audit, hasModelKey] = await Promise.all([
+      const [limit, used, audit, hasModelKey, assistantModel] = await Promise.all([
         getSpendLimit(org.id),
         tokensUsedSince(org.id),
         listAudit(org.id, 50),
         hasWorkspaceModelKey(org.id),
+        getWorkspaceAssistantModel(org.id),
       ]);
-      return { org, mode: getRuntime().mode, limit: limit ?? null, used, audit, hasModelKey };
+      return {
+        org,
+        mode: getRuntime().mode,
+        limit: limit ?? null,
+        used,
+        audit,
+        hasModelKey,
+        assistantModel,
+      };
     },
     { ensureSignedIn: true },
   );
@@ -105,6 +122,18 @@ export async function action(args: ActionFunctionArgs) {
     throw redirect("/org/settings");
   }
 
+  if (intent === "set-assistant-model") {
+    const model = String(form.get("assistantModel") ?? "").trim();
+    await setWorkspaceAssistantModel(org.id, model || null);
+    await recordAudit({
+      orgId: org.id,
+      actorUserId: auth.user.id,
+      action: "workspace_assistant_model_set",
+      meta: { model: model || "(default)" },
+    });
+    throw redirect("/org/settings");
+  }
+
   const capRaw = String(form.get("monthlyTokenCap") ?? "").trim();
   const monthlyTokenCap = capRaw === "" ? null : Math.max(0, Number(capRaw) || 0);
   const killSwitch = form.get("killSwitch") === "on";
@@ -124,7 +153,7 @@ export function meta() {
 }
 
 export default function OrgSettings({ loaderData }: Route.ComponentProps) {
-  const { user, org, mode, limit, used, audit, hasModelKey } = loaderData;
+  const { user, org, mode, limit, used, audit, hasModelKey, assistantModel } = loaderData;
 
   if (!org) {
     return (
@@ -192,6 +221,30 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                 <Button type="submit">Save key</Button>
               </Form>
             )}
+
+            <Form method="post" className="mt-6 flex max-w-xl items-end gap-2 border-t pt-4">
+              <input type="hidden" name="intent" value="set-assistant-model" />
+              <div className="flex-1 space-y-1.5">
+                <Label htmlFor="assistantModel">Assistant model</Label>
+                <Input
+                  id="assistantModel"
+                  name="assistantModel"
+                  defaultValue={assistantModel ?? ""}
+                  placeholder="anthropic/claude-sonnet-5 (default)"
+                  className="font-mono"
+                  spellCheck={false}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Any OpenRouter model id, e.g.{" "}
+                  <span className="font-mono">z-ai/glm-5.2</span> or{" "}
+                  <span className="font-mono">anthropic/claude-fable-latest</span>. Needs
+                  tool-calling support. Leave empty for the default.
+                </p>
+              </div>
+              <Button type="submit" variant="secondary">
+                Save model
+              </Button>
+            </Form>
           </CardContent>
         </Card>
 

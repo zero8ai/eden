@@ -466,5 +466,7 @@ export const workspaceSettings = pgTable("workspace_settings", {
   modelKeyCiphertext: text("model_key_ciphertext"),
   modelKeyIv: text("model_key_iv"),
   modelKeyAuthTag: text("model_key_auth_tag"),
+  /** OpenRouter model id the authoring assistant uses (null = Eden's default). */
+  assistantModel: text("assistant_model"),
   updatedAt: updatedAt(),
 });

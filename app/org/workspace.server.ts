@@ -54,6 +54,30 @@ export async function getWorkspaceModelKey(orgId: string): Promise<string | null
   });
 }
 
+/** Set (or clear, with null) the OpenRouter model id the authoring assistant uses. */
+export async function setWorkspaceAssistantModel(
+  orgId: string,
+  model: string | null,
+): Promise<void> {
+  await db
+    .insert(workspaceSettings)
+    .values({ orgId, assistantModel: model })
+    .onConflictDoUpdate({
+      target: workspaceSettings.orgId,
+      set: { assistantModel: model, updatedAt: new Date() },
+    });
+}
+
+/** The org's configured assistant model id, or null for Eden's default. */
+export async function getWorkspaceAssistantModel(orgId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ model: workspaceSettings.assistantModel })
+    .from(workspaceSettings)
+    .where(eq(workspaceSettings.orgId, orgId))
+    .limit(1);
+  return row?.model ?? null;
+}
+
 /** Whether a key is configured (for UI state; never returns the value). */
 export async function hasWorkspaceModelKey(orgId: string): Promise<boolean> {
   const [row] = await db

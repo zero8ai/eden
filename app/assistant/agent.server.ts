@@ -15,7 +15,7 @@ import { promisify } from "node:util";
 
 import { listDrafts, resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import { fetchAgentSource } from "~/github/repo.server";
-import { getWorkspaceModelKey } from "~/org/workspace.server";
+import { getWorkspaceAssistantModel, getWorkspaceModelKey } from "~/org/workspace.server";
 import type { ConnectedProject } from "~/project/guard.server";
 import { normalizeAgentPath } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
@@ -24,7 +24,8 @@ import { METHOD } from "./method";
 const exec = promisify(execFile);
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL = process.env.EDEN_ASSISTANT_MODEL ?? "anthropic/claude-sonnet-5";
+/** Fallback when the org hasn't picked one (Org settings → Model provider). */
+const DEFAULT_MODEL = process.env.EDEN_ASSISTANT_MODEL ?? "anthropic/claude-sonnet-5";
 const MAX_STEPS = 24;
 
 export interface AuthoringRunInput {
@@ -281,7 +282,7 @@ async function resolveModelKey(orgId: string): Promise<string> {
   return key;
 }
 
-async function chat(key: string, messages: ChatMessage[]): Promise<ChatMessage> {
+async function chat(key: string, model: string, messages: ChatMessage[]): Promise<ChatMessage> {
   const res = await fetch(OPENROUTER_URL, {
     method: "POST",
     headers: {
@@ -289,7 +290,7 @@ async function chat(key: string, messages: ChatMessage[]): Promise<ChatMessage> 
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: MODEL,
+      model,
       messages,
       tools: TOOLS,
       tool_choice: "auto",
@@ -316,6 +317,8 @@ export async function runAuthoringAgent(
 ): Promise<AuthoringRunResult> {
   const { project, instruction, createdBy } = input;
   const key = await resolveModelKey(project.orgId);
+  const model =
+    (await getWorkspaceAssistantModel(project.orgId).catch(() => null)) ?? DEFAULT_MODEL;
 
   const staged: string[] = [];
   const checks: AuthoringRunResult["checks"] = { ran: false, ok: false };
@@ -326,7 +329,7 @@ export async function runAuthoringAgent(
   ];
 
   for (let step = 0; step < MAX_STEPS; step++) {
-    const reply = await chat(key, messages);
+    const reply = await chat(key, model, messages);
     messages.push(reply);
 
     if (!reply.tool_calls?.length) {

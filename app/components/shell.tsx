@@ -3,7 +3,7 @@
  *   workspace (org) → agents (projects, 1 repo == 1 root agent) → environments/deployments.
  *
  * AppShell renders the workspace-level header; AgentNav renders the per-agent section nav
- * (Overview = the repo-backed config surface, then Deployments / Runs / Secrets / Assistant).
+ * (Overview = the repo-backed config surface, then Versions / Runs / Secrets / Assistant).
  */
 import { LogOut, User, Users } from "lucide-react";
 import { Form, Link, NavLink, useLocation, useNavigate } from "react-router";
@@ -254,7 +254,7 @@ export function AgentNav({
   const items = [
     { to: `${base}${suffix}`, label: "Overview", end: true },
     { to: `${base}/changes${suffix}`, label: "Changes" },
-    { to: `${base}/deployments${suffix}`, label: "Deployments" },
+    { to: `${base}/deployments${suffix}`, label: "Versions" },
     { to: `${base}/playground${suffix}`, label: "Playground" },
     { to: `${base}/runs${suffix}`, label: "Runs" },
     { to: `${base}/secrets${suffix}`, label: "Secrets" },

@@ -7,7 +7,7 @@
  * change-sets (branch → PR) like every other edit; the roster row itself syncs on merge.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Form,
   Link,
@@ -15,6 +15,7 @@ import {
   redirect,
   useFetcher,
   useNavigation,
+  useRevalidator,
   useSubmit,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
@@ -44,7 +45,21 @@ import {
 } from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
-import { syncProjectAgents, withPreservedNames, type Agent } from "~/db/queries.server";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import {
+  listAgentEnvironments,
+  syncProjectAgents,
+  withPreservedNames,
+  type Agent,
+} from "~/db/queries.server";
+import { listDeployments, queueDeploy } from "~/deploy/controller.server";
+import { shipHead, shipStagedChanges } from "~/deploy/ship.server";
 import { listDrafts, resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import { readModel, scaffoldAgentModule, setModel } from "~/eve/agentModule";
 import { buildAgentConfig, detectAgentRoots } from "~/eve/parse";
@@ -53,6 +68,8 @@ import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
 import { memberScaffold } from "~/github/create.server";
 import { fetchAgentSource } from "~/github/repo.server";
 import { proposeChange, type FileChange } from "~/github/write.server";
+import { ensureWorkerStarted } from "~/jobs/worker.server";
+import { timeAgo } from "~/lib/time";
 import {
   agentParam,
   resolveAgentContext,
@@ -69,6 +86,17 @@ interface MemberSummary {
   skills: number;
   schedules: number;
   channels: number;
+}
+
+/** One affected member's deploy progress after a Ship (drives the progress banner). */
+interface ShipStatusRow {
+  agentName: string;
+  version: string;
+  status: string;
+  url: string | null;
+  errorDetail: string | null;
+  environmentId: string;
+  releaseId: string;
 }
 
 interface ProjectView {
@@ -90,6 +118,12 @@ interface ProjectView {
   error: string | null;
   /** Paths with staged (unpublished) drafts, so the config surface can flag them. */
   draftPaths: string[];
+  /** Member view: this member's environment names, for the Ship dialog's target picker. */
+  envNames: string[];
+  /** Member view: the production live deployment, for the header status line. */
+  liveNow: { version: string; url: string | null; at: string } | null;
+  /** Deploy progress for a just-shipped commit (?shipped=<sha>&env=<name>). */
+  ship: { env: string; rows: ShipStatusRow[] } | null;
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -113,6 +147,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           config: null,
           error: "This project has no connected repo.",
           draftPaths: [],
+          envNames: [],
+          liveNow: null,
+          ship: null,
         };
       }
 
@@ -174,6 +211,57 @@ export const loader = (args: LoaderFunctionArgs) =>
           config.hasAgentModule = true;
         }
 
+        // Deploy status for the member surface: what's live now (header line), the member's
+        // environment names (Ship dialog), and — after a Ship — per-member deploy progress
+        // for the shipped commit, so the banner survives refreshes (state lives in the DB).
+        let envNames: string[] = [];
+        let liveNow: ProjectView["liveNow"] = null;
+        let ship: ProjectView["ship"] = null;
+        if (view === "member") {
+          const envs = await listAgentEnvironments(active.id);
+          envNames = envs.map((e) => e.name);
+          const prod = envs.find((e) => e.name === "production") ?? envs[0];
+          if (prod) {
+            const live = (await listDeployments(prod.id)).find((d) => d.status === "live");
+            if (live) {
+              liveNow = {
+                version: live.version,
+                url: live.url,
+                at: live.createdAt.toISOString(),
+              };
+            }
+          }
+
+          const url = new URL(args.request.url);
+          const shippedSha = url.searchParams.get("shipped");
+          const shipEnv = url.searchParams.get("env") ?? "production";
+          if (shippedSha) {
+            const rows: ShipStatusRow[] = [];
+            for (const member of roster) {
+              const memberEnvs =
+                member.id === active.id ? envs : await listAgentEnvironments(member.id);
+              const env = memberEnvs.find((e) => e.name === shipEnv);
+              if (!env) continue;
+              // Newest-first list; the first row at the shipped commit is the ship's deploy
+              // (or its retry). Members untouched by the ship simply have no such row.
+              const match = (await listDeployments(env.id)).find(
+                (d) => d.gitSha === shippedSha,
+              );
+              if (!match) continue;
+              rows.push({
+                agentName: member.name,
+                version: match.version,
+                status: match.status,
+                url: match.url,
+                errorDetail: match.errorDetail,
+                environmentId: env.id,
+                releaseId: match.releaseId,
+              });
+            }
+            if (rows.length > 0) ship = { env: shipEnv, rows };
+          }
+        }
+
         return {
           project,
           roster: roster.map((a) => ({ name: a.name })),
@@ -185,6 +273,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           config,
           error: null,
           draftPaths: drafts.map((d) => d.path),
+          envNames,
+          liveNow,
+          ship,
         };
       } catch (error) {
         return {
@@ -198,6 +289,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           config: null,
           error: (error as Error).message,
           draftPaths: [],
+          envNames: [],
+          liveNow: null,
+          ship: null,
         };
       }
     },
@@ -223,6 +317,35 @@ export async function action(args: ActionFunctionArgs) {
   const repo = { owner: project.repoOwner, repo: project.repoName };
 
   try {
+    // ── Ship: the one-click path — staged changes (or branch head) → live version ──
+    if (intent === "ship" || intent === "ship-head") {
+      const envName = String(form.get("env") ?? "production");
+      const agentName = String(form.get("agent") ?? "");
+      ensureWorkerStarted();
+      // Publish/merge/release run synchronously (same as the Changes publish button); the
+      // build + deploy are queued, and the redirect's ?shipped drives the progress banner.
+      const result =
+        intent === "ship"
+          ? await shipStagedChanges({ project, envName, createdBy: auth.user.id })
+          : await shipHead({ project, envName, createdBy: auth.user.id });
+      const qs = new URLSearchParams();
+      if (agentName) qs.set("agent", agentName);
+      qs.set("shipped", result.gitSha);
+      qs.set("env", envName);
+      throw redirect(`/repos/${project.id}?${qs.toString()}`);
+    }
+
+    // ── Retry a failed shipped deploy (same release, same environment) ──
+    if (intent === "retry-deploy") {
+      ensureWorkerStarted();
+      await queueDeploy({
+        environmentId: String(form.get("environmentId")),
+        releaseId: String(form.get("releaseId")),
+        createdBy: auth.user.id,
+      });
+      return { ok: true as const };
+    }
+
     // ── Inline model change (the overview's one settings control): stage agent.ts ──
     if (intent === "set-model") {
       const model = String(form.get("model") ?? "").trim();
@@ -317,12 +440,29 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
     config,
     error,
     draftPaths,
+    envNames,
+    liveNow,
+    ship,
   } = loaderData;
   const base = `/repos/${project.id}`;
   const agentSuffix =
     view === "member" && teamLayout && active
       ? `?agent=${encodeURIComponent(active.name)}`
       : "";
+
+  // While a shipped deploy is queued/building, poll so the banner walks to live/failed
+  // without a manual refresh (same cadence as the Versions page).
+  const revalidator = useRevalidator();
+  const shipInFlight = !!ship?.rows.some((r) =>
+    ["queued", "pending", "building"].includes(r.status),
+  );
+  useEffect(() => {
+    if (!shipInFlight) return;
+    const timer = setInterval(() => {
+      if (revalidator.state === "idle") revalidator.revalidate();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [shipInFlight, revalidator]);
 
   const repoLine =
     project.repoOwner && project.repoName ? (
@@ -374,12 +514,38 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
               {teamLayout && isTeam && active && (
                 <RemoveMemberButton member={active.name} />
               )}
-              <Button asChild>
-                <Link to={`${base}/deployments${agentSuffix}`}>Deploy</Link>
-              </Button>
+              {!error && (
+                <ShipDialog
+                  draftCount={draftPaths.length}
+                  envNames={envNames}
+                  defaultBranch={project.defaultBranch}
+                  agentName={teamLayout && active ? active.name : ""}
+                />
+              )}
             </div>
           }
         />
+      )}
+      {view === "member" && liveNow && (
+        <p className="-mt-4 mb-6 text-sm text-muted-foreground">
+          Live: <span className="font-semibold text-foreground">{liveNow.version}</span>
+          {" · "}updated {timeAgo(liveNow.at)}
+          {liveNow.url && (
+            <>
+              {" · "}
+              <a href={liveNow.url} className="underline underline-offset-4">
+                open
+              </a>
+            </>
+          )}
+          {" · "}
+          <Link
+            to={`${base}/deployments${agentSuffix}`}
+            className="underline underline-offset-4"
+          >
+            View versions →
+          </Link>
+        </p>
       )}
       <AgentNav
         base={base}
@@ -396,9 +562,15 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
-          <AlertTitle>Couldn&rsquo;t update the team</AlertTitle>
-          <AlertDescription>{actionData.error}</AlertDescription>
+          <AlertTitle>Something went wrong</AlertTitle>
+          <AlertDescription className="whitespace-pre-wrap">
+            {actionData.error}
+          </AlertDescription>
         </Alert>
+      )}
+
+      {ship && (
+        <ShipProgress ship={ship} dismissTo={`${base}${agentSuffix}`} />
       )}
 
       {actionData?.ok && "changeUrl" in actionData && (
@@ -420,14 +592,15 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
         <Alert className="mb-6">
           <AlertTitle>
             {draftPaths.length} staged change{draftPaths.length === 1 ? "" : "s"} not
-            published yet
+            live yet
           </AlertTitle>
           <AlertDescription>
+            Ship them with the button above, or{" "}
             <Link
               to={`${base}/changes${agentSuffix}`}
               className="font-medium underline underline-offset-4"
             >
-              Review &amp; publish in Changes →
+              review &amp; publish in Changes →
             </Link>
           </AlertDescription>
         </Alert>
@@ -569,6 +742,197 @@ function AddMemberDialog() {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Ship — the one-click deploy. One dialog confirms the target environment (production by
+ * default), then a single action publishes + merges the staged changes (or reuses the branch
+ * head), cuts the version, and queues the deploy. The current version keeps serving until
+ * the new one is healthy, so shipping is never a step backwards.
+ */
+function ShipDialog({
+  draftCount,
+  envNames,
+  defaultBranch,
+  agentName,
+}: {
+  draftCount: number;
+  envNames: string[];
+  defaultBranch: string;
+  agentName: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [env, setEnv] = useState(
+    envNames.includes("production") ? "production" : (envNames[0] ?? "production"),
+  );
+  const navigation = useNavigation();
+  const shipping =
+    navigation.state !== "idle" &&
+    ["ship", "ship-head"].includes(String(navigation.formData?.get("intent") ?? ""));
+  // Publish + merge run synchronously, so hold the dialog open with a progress label until
+  // the submission settles — the redirect's banner (success) or page alert (error) takes over.
+  const wasShipping = useRef(false);
+  useEffect(() => {
+    if (shipping) {
+      wasShipping.current = true;
+      return;
+    }
+    if (wasShipping.current) {
+      wasShipping.current = false;
+      setOpen(false);
+    }
+  }, [shipping]);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button disabled={navigation.state !== "idle"}>
+          {draftCount > 0
+            ? `Ship ${draftCount} change${draftCount === 1 ? "" : "s"}`
+            : `Ship latest from ${defaultBranch}`}
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {draftCount > 0
+              ? `Ship ${draftCount} staged change${draftCount === 1 ? "" : "s"}?`
+              : `Ship the latest ${defaultBranch}?`}
+          </DialogTitle>
+          <DialogDescription>
+            {draftCount > 0
+              ? "Publishes and merges your staged changes, cuts a new version, and makes it live. The current version keeps serving until the new one is healthy."
+              : `Cuts a version from the newest commit on ${defaultBranch} and makes it live. A commit that already shipped is reused — no rebuild.`}
+          </DialogDescription>
+        </DialogHeader>
+        <Form method="post">
+          <input type="hidden" name="intent" value={draftCount > 0 ? "ship" : "ship-head"} />
+          <input type="hidden" name="agent" value={agentName} />
+          <div className="space-y-1.5">
+            <Label htmlFor="ship-env">Environment</Label>
+            <Select name="env" value={env} onValueChange={setEnv}>
+              <SelectTrigger id="ship-env" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {envNames.map((n) => (
+                  <SelectItem key={n} value={n}>
+                    {n}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter className="mt-4">
+            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={shipping}>
+              {shipping ? "Shipping…" : `Ship to ${env}`}
+            </Button>
+          </DialogFooter>
+        </Form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Deploy progress for a shipped commit. Driven purely from deployment rows (via ?shipped=),
+ * so it survives refreshes and walks queued → building → live/failed with the poller.
+ */
+function ShipProgress({
+  ship,
+  dismissTo,
+}: {
+  ship: { env: string; rows: ShipStatusRow[] };
+  dismissTo: string;
+}) {
+  const retry = useFetcher();
+  const failed = ship.rows.filter((r) => r.status === "failed");
+  const allLive = ship.rows.every((r) => r.status === "live");
+  const version = ship.rows[0]?.version ?? "";
+  const single = ship.rows.length === 1;
+
+  return (
+    <Alert variant={failed.length > 0 ? "destructive" : "default"} className="mb-6">
+      <AlertTitle>
+        {allLive
+          ? `${version} is live in ${ship.env}`
+          : failed.length > 0
+            ? `${version} couldn't go live in ${ship.env} — the previous version is still serving`
+            : `Shipping ${version} to ${ship.env}…`}
+      </AlertTitle>
+      <AlertDescription>
+        <div className="mt-1 space-y-2">
+          {ship.rows.map((r) => (
+            <div key={r.environmentId} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              {!single && <span className="font-medium">{r.agentName}:</span>}
+              <ShipSteps status={r.status} version={r.version} />
+              {r.status === "live" && r.url && (
+                <a href={r.url} className="underline underline-offset-4">
+                  open
+                </a>
+              )}
+              {r.status === "failed" && (
+                <retry.Form method="post">
+                  <input type="hidden" name="intent" value="retry-deploy" />
+                  <input type="hidden" name="environmentId" value={r.environmentId} />
+                  <input type="hidden" name="releaseId" value={r.releaseId} />
+                  <Button
+                    type="submit"
+                    size="sm"
+                    variant="outline"
+                    disabled={retry.state !== "idle"}
+                  >
+                    {retry.state !== "idle" ? "Retrying…" : "Retry"}
+                  </Button>
+                </retry.Form>
+              )}
+            </div>
+          ))}
+          {failed.map(
+            (r) =>
+              r.errorDetail && (
+                <p
+                  key={`err-${r.environmentId}`}
+                  className="whitespace-pre-wrap font-mono text-xs"
+                >
+                  {r.errorDetail}
+                </p>
+              ),
+          )}
+          {(allLive || failed.length > 0) && (
+            <p>
+              <Link to={dismissTo} className="text-xs underline underline-offset-4">
+                Dismiss
+              </Link>
+            </p>
+          )}
+        </div>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/** The pipeline as PM-readable steps: the sync stages are done by construction. */
+function ShipSteps({ status, version }: { status: string; version: string }) {
+  const stage =
+    status === "live"
+      ? "Live ✓"
+      : status === "failed"
+        ? "Failed ✗"
+        : status === "building"
+          ? "Building…"
+          : status === "stopped" || status === "draining"
+            ? "Superseded"
+            : "Queued…";
+  return (
+    <span className="text-sm">
+      Published ✓ <span className="text-muted-foreground">→</span> {version} created ✓{" "}
+      <span className="text-muted-foreground">→</span> {stage}
+    </span>
   );
 }
 

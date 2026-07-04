@@ -237,6 +237,21 @@ Vercel Sandbox, AI Gateway auto-wire) and additional Worlds (Redis/Turso/Cloudfl
 - Per-instance: status, logs, runs/observability, secrets, scaling knobs, start/stop, rollback,
   and the channel endpoints (HTTP URL, Slack install, cron status).
 
+**Deploy UX (M5.6) — Ship and Make live.** Two verbs cover the whole deploy surface for a PM:
+- **Ship** — the one-click path, on the agent's Overview (where the edit was just made): one
+  dialog confirms the target environment (production default), then a single action publishes all
+  staged drafts, merges the change request, cuts the Release, and queues a **cutover deploy** —
+  the current version keeps serving until the new one is healthy. With nothing staged, Ship offers
+  "ship latest from `main`" (absorbing the old "cut release" button). On team repos a Ship deploys
+  every member whose files the change touched. A DB-state-driven progress banner (Published →
+  vN created → Building → Live) survives refresh; a failed build leaves the previous version
+  serving and offers Retry. The careful path (Changes → review → merge → Versions) is unchanged.
+- **Make live** — the **Versions** tab (renamed from Deployments) shows a production hero card
+  (what's live now, in-flight progress, latest failure) over the version history; any prior
+  successful Release can be **made live in one click** (image reused — seconds, no rebuild),
+  demoting the current version on health. Deploy and revert are deliberately the same
+  direction-neutral verb: the undo of a bad ship is making the previous row live.
+
 ### 7.5 Managed commercial offering (v1)
 
 The managed mode turns Eden into a hosted service:
@@ -313,17 +328,26 @@ already generates for the PR, author, and timestamp. Environments/deployments po
 2. **Safe iteration / revert.** *Fast rollback* re-points an environment at a previous Release (its
    image is retained) — near-instant, no rebuild. *Git revert* opens an undo PR so the repo stays
    honest. PMs can be cavalier because undo is one click.
-3. **Run multiple versions at once (the core primitive).** Eden can deploy **more than one Release of
-   the same agent concurrently** behind a **weighted, session-sticky traffic splitter** at ingress
-   (a conversation stays pinned to one version for its lifetime). This is a generalization of "one
-   deployment per environment" to "N deployments behind a splitter."
+3. **Run multiple versions at once (data-plane primitive; product surface deferred in M5.6).** The
+   deploy plane can run **more than one Release of the same agent concurrently** behind a
+   **weighted, session-sticky traffic splitter** at ingress (a conversation stays pinned to one
+   version for its lifetime). **Revised (M5.6):** the *product* model is now **one live Release per
+   environment** — a deploy is a clean cutover that demotes whatever else was live once the new
+   instance is healthy, and the weights/split UI is removed. In practice, surfacing N-live as the
+   default outcome of ordinary deploys confused users (environments silently accumulated live
+   versions) without a clear multi-version product story to justify it. The splitter,
+   `trafficWeight`, and the concurrent-deployments data model are all retained, so the primitive
+   can return behind a deliberate surface (progressive rollout, explicit A/B) when that story
+   exists.
 
 **"A/B" is emergent, not a first-class feature.** Eden deliberately does **not** build an automated
 experimentation framework — no thumbs UI, no eval-gated winner selection, no auto-rollout engine in
-v1. The product gives PMs (a) the ability to run multiple versions live and (b) **per-version
-telemetry** (Runs are already version-tagged, so observability groups/filters/compares by Release).
-The human looks at each version's telemetry and decides. Progressive/auto rollout can come later as a
-policy on top of the splitter + per-version metrics, but it is not required for the value.
+v1. The product gives PMs (a) **per-version telemetry** (Runs are already version-tagged, so
+observability groups/filters/compares by Release) and (b) one-click movement between versions.
+While single-live is in effect (M5.6), "compare versions" means telemetry across sequential
+deploys; concurrent-version comparison returns with the multi-version surface. Progressive/auto
+rollout can come later as a policy on top of the splitter + per-version metrics, but it is not
+required for the value.
 
 **Immutability caveat:** a Release pins everything *in the repo* (config, tools, skills, instructions)
 but **not secrets/env vars**, which live outside git and change independently. For faithful
@@ -510,7 +534,8 @@ downstream** — releases, deployments, runs, schedules, and drafts key by *agen
 - **Release registry:** immutable Releases (label, commit SHA, image digest, changelog) and the
   Release each environment/deployment points at — the version layer over git (§7.7).
 - **Traffic splitter (ingress):** weighted, session-sticky routing across concurrent Releases of one
-  agent, so multiple versions can run live at once (§7.7).
+  agent — data-plane capability retained; the product runs one live Release per environment since
+  M5.6 (§7.7).
 - **Eden datastore:** projects, repos, environments, instances, releases, members, secrets metadata,
   runs index, billing — *not* agent config (that lives in the repo).
 
@@ -573,7 +598,8 @@ two-source-of-truth reconciliation problem.
 - **Releases** (immutable = commit SHA + image digest, labels, changelog); version history;
   **fast rollback** (re-point to prior Release) + git-revert.
 - **Multiple Releases live at once** behind a **weighted, session-sticky traffic splitter** at ingress
-  (the core "run two versions" primitive — §7.7).
+  (the core "run two versions" primitive — §7.7; product surface later removed in M5.6, data
+  plane retained).
 - Environments (dev/preview/prod), instance status/logs.
 - Merge-triggers-deploy pipeline; optional PR preview instances.
 
@@ -609,6 +635,28 @@ two-source-of-truth reconciliation problem.
   the agent; editors/drafts resolve paths against the agent's root.
 - Rationale: hard-committed direction (§7.9 decision) + the migration is cheapest while data is
   small; deferring means every intervening feature deepens it.
+
+**Milestone 5.6 — Deploy UX: single-live + Ship (shipped)**
+- **Single-live cutover:** a deployment that lands live now demotes the environment's every other
+  live deployment (controller-enforced; rollback rides the same path, so a failed deploy or
+  rollback never takes the serving version down). A one-time data migration reconciled
+  environments that had accumulated multiple live versions (newest kept at weight 100, rest
+  stopped). The splitter/`trafficWeight` data model is retained without a product surface
+  (§7.7 revision).
+- **Ship:** the one-click deploy from the agent Overview — staged drafts → publish → merge →
+  Release → cutover deploy — with an environment picker (production default), team fan-out to
+  affected members, "ship latest from `main`" when nothing is staged, and a refresh-proof
+  progress banner with Retry on build failure (§7.4 Deploy UX).
+- **Versions page** (replaces the Deployments tab): production hero card, version history with
+  **Make live** on any prior successful Release (confirm dialog on production; overflow menu for
+  preview/dev), other environments collapsed to a compact footer card. Weights/split controls,
+  the per-environment deploy selectors, and the "cut release" button are gone.
+- Rationale: shipping an edit took ~6–8 clicks across three pages, and ordinary deploys silently
+  accumulated live versions. Two verbs (Ship, Make live) + one invariant (one live version per
+  environment) replace the exposed pipeline; the multi-version primitive waits for a deliberate
+  product story (§7.7).
+- Deliberately not built: weights/canary UI, environment-promotion pipelines, per-PR preview
+  deploys, deploy approvals/locks (consistent with §7.7's no-experimentation stance).
 
 **Milestone 6 — Recruit (marketplace, §7.8)**
 - Template format (files + manifest: required secrets/connections, version, eve range) and the

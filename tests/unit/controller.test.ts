@@ -1,7 +1,8 @@
 /**
  * Deploy controller orchestration — against in-memory fakes (no DB, no docker). Verifies the
  * logic the controller owns: version labelling + collision retry, release idempotency, the
- * build→deploy→record pipeline (success and failure), rollback draining, and scoped splits.
+ * build→deploy→record pipeline (success and failure), single-live cutover, rollback, and
+ * scoped splits.
  * Row-locking / real constraint enforcement is the store impl's job (trusted at schema level).
  */
 import { beforeEach, describe, expect, it } from "vitest";
@@ -133,8 +134,8 @@ describe("queueDeploy", () => {
   });
 });
 
-describe("redeploying the same release", () => {
-  it("supersedes the previous live instance (stopped, weight 0) — never two live copies", async () => {
+describe("cutover on deploy", () => {
+  it("redeploying the same release supersedes the previous live instance — never two live copies", async () => {
     const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "8".repeat(40) }, store);
     const deps = {
       store,
@@ -154,22 +155,60 @@ describe("redeploying the same release", () => {
     // Exactly one live copy of the release remains.
     expect(all.filter((d) => d.status === "live")).toHaveLength(1);
   });
+
+  it("deploying a DIFFERENT release demotes the previously live one (single live per env)", async () => {
+    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "3".repeat(40) }, store);
+    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "4".repeat(40) }, store);
+    const deps = {
+      store,
+      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }),
+      secrets: fakeSecrets(),
+    };
+    const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
+    expect(depA.status).toBe("live");
+
+    const depB = await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
+    expect(depB.status).toBe("live");
+
+    const all = await listDeployments(ENV, store);
+    const oldRow = all.find((d) => d.id === depA.id);
+    expect(oldRow?.status).toBe("stopped");
+    expect(oldRow?.trafficWeight).toBe(0);
+    expect(all.filter((d) => d.status === "live")).toHaveLength(1);
+  });
+
+  it("a FAILED deploy leaves the current live version serving (cutover only on success)", async () => {
+    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "5".repeat(40) }, store);
+    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "6".repeat(40) }, store);
+    const good = { store, deployTarget: fakeDeployTarget({ health: { status: "live" as const, url: "http://a" } }), secrets: fakeSecrets() };
+    const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, good);
+    expect(depA.status).toBe("live");
+
+    const bad = { store, deployTarget: fakeDeployTarget({ deployError: "boom" }), secrets: fakeSecrets() };
+    const depB = await deployRelease({ environmentId: ENV, releaseId: rB.id }, bad);
+    expect(depB.status).toBe("failed");
+
+    const all = await listDeployments(ENV, store);
+    expect(all.find((d) => d.id === depA.id)?.status).toBe("live");
+  });
 });
 
 describe("rollbackTo", () => {
-  it("drains live deployments and redeploys the prior release at 100", async () => {
+  it("redeploys the prior release at 100 and demotes the current live version", async () => {
     const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "1".repeat(40) }, store);
     const deps = { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }), secrets: fakeSecrets() };
     const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
     expect(depA.status).toBe("live");
 
     const rolled = await rollbackTo({ environmentId: ENV, releaseId: rA.id }, deps);
+    expect(rolled.status).toBe("live");
     expect(rolled.trafficWeight).toBe(100);
 
     const all = await listDeployments(ENV, store);
-    const drained = all.find((d) => d.id === depA.id);
-    expect(drained?.status).toBe("draining");
-    expect(drained?.trafficWeight).toBe(0);
+    const demoted = all.find((d) => d.id === depA.id);
+    expect(demoted?.status).toBe("stopped");
+    expect(demoted?.trafficWeight).toBe(0);
+    expect(all.filter((d) => d.status === "live")).toHaveLength(1);
   });
 });
 

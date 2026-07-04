@@ -2,9 +2,10 @@
  * Deploy controller + release registry (Deploy pillar, M2 — PRD §7.4/§7.7, ARCH §3.1/§3.9).
  *
  * Orchestrates the pipeline over the seams: cut an immutable Release (merge commit +
- * content-addressed image), deploy it to an environment as a weighted deployment, fast-rollback
- * by re-pointing to a prior Release, and set the session-sticky traffic split across
- * concurrently-live Releases.
+ * content-addressed image), deploy it to an environment — a clean cutover that demotes the
+ * previously live version once the new one is healthy — and fast-rollback by re-pointing to a
+ * prior Release. The weighted traffic split (setTrafficSplit + the ingress splitter) stays in
+ * the data model for later, but the product model is one live Release per environment.
  *
  * Persistence goes through the `DataStore` seam (data/ports.ts) and infra through the
  * DeployTarget/SecretsProvider seams, all injected with `getRuntime()` defaults — so every
@@ -199,14 +200,14 @@ export async function deployRelease(
       errorDetail: health.status === "failed" ? (health.detail ?? null) : null,
     });
 
-    // Redeploying the SAME release supersedes its previous instances in this environment:
-    // stop them and zero their weight. (Different releases stay live side by side — that's
-    // the multi-version primitive; identical duplicates are never what the human meant.)
+    // Cutover: a deployment that lands live becomes THE live version of this environment.
+    // Every other live deployment — any release — is demoted (stopped, weight 0). The old
+    // version keeps serving until this moment, so a failed deploy never takes anything down.
+    // (The weighted multi-version splitter survives in the data model, but the product model
+    // is single-live-per-environment for now.)
     if (updated.status === "live") {
       const siblings = await store.deployments.listByEnvironment(input.environmentId);
-      const superseded = siblings.filter(
-        (d) => d.releaseId === release.id && d.id !== dep.id && d.status === "live",
-      );
+      const superseded = siblings.filter((d) => d.id !== dep.id && d.status === "live");
       await Promise.all(
         superseded.map(async (d) => {
           await store.deployments.update(d.id, { status: "stopped", trafficWeight: 0 });
@@ -238,8 +239,9 @@ export async function deployRelease(
 }
 
 /**
- * Fast rollback (D9): deploy a prior Release again at full weight and drain the others in the
- * environment. The prior image is reused (no rebuild) when it's already been built.
+ * Fast rollback (D9): deploy a prior Release again at full weight. The prior image is reused
+ * (no rebuild) when it's already been built, and deployRelease's cutover demotes the current
+ * version only once the rollback is actually live — a failed rollback leaves it serving.
  */
 export async function rollbackTo(
   input: {
@@ -250,7 +252,6 @@ export async function rollbackTo(
   },
   deps: DeployDeps = deployDeps(),
 ): Promise<Deployment> {
-  await deps.store.deployments.drainLive(input.environmentId);
   return deployRelease({ ...input, trafficWeight: 100 }, deps);
 }
 

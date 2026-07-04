@@ -138,12 +138,15 @@ A reverse proxy (**Caddy or Traefik**) on the box with **wildcard TLS** (`*.eden
 `agent-<id>.eden.app` → the instance container, integrated with the wake-proxy (§2.3). Also terminates
 channel webhooks (Slack/HTTP) per instance.
 
-**Version-aware traffic splitting (§3.9, PRD §7.7).** An agent's environment can have **multiple
-Releases live at once**. The proxy does **weighted, session-sticky** routing across their instance
-containers: a weight per Release (e.g. 90/10 canary or 50/50) and a **session pin** (cookie /
-`x-eve-session-id` / channel thread id) so a conversation stays on one version for its whole life —
-you cannot flip an agent mid-turn. Wake-on-request composes with this (each Release's container sleeps
-/ wakes independently). Runs are version-tagged (§3.7), so per-version telemetry comparison is free.
+**Version-aware traffic splitting (§3.9, PRD §7.7 — data plane only since M5.6).** The data model
+admits **multiple Releases live at once** in one environment; the proxy does **weighted,
+session-sticky** routing across their instance containers: a weight per Release (e.g. 90/10 canary
+or 50/50) and a **session pin** (cookie / `x-eve-session-id` / channel thread id) so a conversation
+stays on one version for its whole life — you cannot flip an agent mid-turn. Wake-on-request
+composes with this (each Release's container sleeps / wakes independently). Runs are version-tagged
+(§3.7), so per-version telemetry comparison is free. **Product model since M5.6:** the deploy
+controller enforces a single live Release per environment (a deploy that lands healthy demotes the
+rest), so the splitter trivially routes to one instance until a multi-version surface returns.
 
 ### 3.7 Observability / run-observability subsystem
 First-class subsystem (PRD pillar §7.6), not an afterthought — teams must be able to open any agent
@@ -245,8 +248,10 @@ PR merged ──► Deploy Controller:
   8. health + smoke       → mark live; keep previous Release image for fast rollback
   9. idle                 → scheduler stops container after idle timeout
 ```
-Multiple Releases of one agent can be live at once (§3.6/§3.9); the split config assigns weights and
-session-stickiness across their containers. Rollback re-points weights to a prior Release's image.
+The data plane admits multiple live Releases per environment (§3.6/§3.9), but since M5.6 the
+controller enforces single-live: step 8's "mark live" also demotes the environment's other live
+deployments (cutover on health — a failed deploy leaves the old version serving). Rollback ("Make
+live" on a prior Release) is the same path with the retained image — seconds, no rebuild.
 
 ---
 

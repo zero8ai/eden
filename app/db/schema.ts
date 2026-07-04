@@ -179,9 +179,11 @@ export const releases = pgTable(
 );
 
 /**
- * Binds a release to an environment. Multiple active deployments per environment enable
- * multi-version-live behind a weighted, session-sticky splitter (D9/D10). `trafficWeight`
- * is a relative integer weight; the ingress splitter normalizes across active rows.
+ * Binds a release to an environment. The PRODUCT model is one live deployment per environment
+ * (M6): a deploy that lands live demotes the env's other live rows (cutover, controller-
+ * enforced — no unique constraint, since a cutover transiently has two live rows). The DATA
+ * model still admits multi-version-live behind a weighted, session-sticky splitter (D9/D10);
+ * `trafficWeight` is a relative integer the ingress splitter normalizes across active rows.
  */
 export const deployments = pgTable(
   "deployments",

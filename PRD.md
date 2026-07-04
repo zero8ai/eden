@@ -1,7 +1,7 @@
 # Eden — Product Requirements Document
 
 > **Working name:** Eden (a companion to Vercel's **eve**). Rename TBD.
-> **Status:** Draft v0.1 · **Owner:** asiraky@gmail.com · **Last updated:** 2026-07-01
+> **Status:** Draft v0.2 · **Owner:** asiraky@gmail.com · **Last updated:** 2026-07-04
 
 ---
 
@@ -119,7 +119,7 @@ model keys. This is the foundation of Eden's deployment design.
 
 ## 6. Product pillars
 
-Eden has five pillars. v1 delivers all five; depth is phased (§11).
+Eden has seven pillars. v1 delivers the first five; **Recruit** and **Teams** follow (§11).
 
 1. **Connect** — GitHub App integration: create a new eve repo or connect an existing one; run
    `eve init`; detect and parse the agent structure.
@@ -133,6 +133,14 @@ Eden has five pillars. v1 delivers all five; depth is phased (§11).
 5. **Observe** — first-class run observability: for every agent, browse every execution and open the
    **full transcript** — the triggering input, each model call and tool call (with inputs, outputs,
    and errors), the final answer, plus tokens, wall-clock time, and execution context.
+6. **Recruit** — a **marketplace of templates** at every level of the hierarchy (tools, skills,
+   subagents, whole agents): browse, click install, answer an onboarding wizard (secrets,
+   connections), and the item lands in your repo as a normal reviewable change-set. Templates are a
+   shortcut for creation, not a new runtime concept.
+7. **Teams** — model an **organisation**, not just an agent: a team of top-level eve agents
+   (PM, designer, developers, QA, deployer) living in one **monorepo by convention**, each with its
+   own channels, schedules, credentials, Releases, and run history — auto-wired by Eden so
+   teammates can delegate to each other.
 
 ---
 
@@ -322,6 +330,138 @@ but **not secrets/env vars**, which live outside git and change independently. F
 "what ran then" we version secret *metadata/generation* (never values), and note that a Release is
 code+config, not full runtime state.
 
+### 7.8 Recruit — the marketplace
+
+Building a capable agent from scratch is laborious — a Cloudflare deployer needs a dozen carefully
+written tools, skills, and connection wiring before it does anything useful. The marketplace removes
+that cost: **pre-built, expert-authored templates a customer instantiates instead of authoring**.
+"Recruit this agent into your team" is the product moment.
+
+**Templates exist at every level of the hierarchy** — turtles all the way down, mirroring eve's own
+composition model:
+
+| Template type | Installs into | Example |
+|---|---|---|
+| **Tool** | an existing agent's `tools/` | `cloudflare_deploy_worker` — a `defineTool` with Zod schema + execute body |
+| **Skill** | an existing agent's `skills/` | "Writing a PRD" playbook |
+| **Subagent** | an existing agent's `subagents/` | a code-review specialist invoked by a developer agent |
+| **Agent** | a **new top-level agent** (new single-agent repo, or a new member of a team monorepo — §7.9) *or* a subagent of an existing agent | "Cloudflare Deployment Engineer" — instructions + tools + skills, pre-wired |
+
+**A template = files + a manifest.** The manifest declares: name, type, version, description,
+**required secrets** (by name), **required connections**, suggested model, and the eve version range
+it targets. No new runtime concept exists — a template is a shortcut for creating the same files a
+customer could author by hand.
+
+**Install = a change-set.** Installing an item:
+1. Eden materializes the template's files into the right location on a **working branch** (the
+   normal §7.3 flow — review, history, rollback for free).
+2. An **onboarding wizard** walks the customer through the manifest's requirements: "this agent
+   needs `CLOUDFLARE_API_TOKEN` — set it now." Secret *values* go to the secrets store (§7.2), never
+   the repo; the wizard creates the per-environment placeholders.
+3. The change-set opens a PR; merge ships it like any other edit.
+
+For agent templates the wizard first asks the **install target**: *new top-level agent* or
+*subagent of an existing agent*. This one question is how customers choose between the two team
+fidelities in §7.9 — no separate "team builder" needed for the simple case.
+
+**After install it's just a regular agent.** The customer edits its instructions, removes tools,
+adds skills — the template was a starting point, not a subscription. Files are theirs.
+
+**Update-from-source (provenance).** Each install is recorded in a repo-root **`eden-lock.json`**
+(generalizing the existing `skills-lock.json` pattern): source registry, template id, version,
+content hash. When the upstream template publishes a new version, Eden shows "update available";
+accepting opens a **PR with the diff**. If the customer has locally modified the installed files,
+the PR surfaces the conflict and a human resolves it in review — git review *is* the merge
+machinery; Eden does not build three-way merge tooling.
+
+**Distribution.** v1 is a **first-party curated catalog** — itself a git repo of templates, which
+dogfoods the format. The manifest is designed so third-party registries can exist later; publishing,
+trust/review policy, and revenue share are explicitly out of scope for v1 (§12).
+
+**Team templates are deliberately *not* in the marketplace v1.** A team is an Eden-level construct
+(§7.9); once agent templates and the monorepo convention exist, a team template is trivially a
+scaffold referencing agent templates plus a wiring spec — it can come later without redesign.
+
+### 7.9 Teams — modelling an organisation
+
+The end-state vision: a customer models their **organisation**, not just an agent — a product
+manager that writes PRDs on a Monday-morning cron, a developer that builds and pushes to GitHub, a
+QA tester, a deployer holding Cloudflare credentials. Each role has its own tools, skills,
+schedules, channels, and audit trail.
+
+**Two team fidelities — both supported, deliberately different products:**
+
+1. **Subagent team (v0):** one top-level agent (the "lead") with role-specialists installed as
+   eve subagents. eve-native, one runtime, one deployment, orchestration via the built-in `agent`
+   tool. Cheap and immediate — but subagents **cannot have their own channels or schedules**, and
+   cannot be independently versioned, deployed, or observed. Right when only the lead talks to the
+   outside world.
+2. **Peer team (the real thing):** multiple **top-level eve agents in one repo**. Each teammate has
+   its own channels (the PM sits in its own Slack channel), its own crons, its own secrets scope,
+   its own Releases and run history. This is what "model an organisation" actually requires — the
+   examples above all want top-level-agent properties. Peers, not a hierarchy.
+
+The cost objection to N runtimes is already answered by our own architecture: **compute ⟂ state and
+scale-to-zero** (ARCHITECTURE §2.3–2.4) mean an idle teammate is a *stopped container* — ~zero
+CPU/RAM. A five-agent team is five mostly-sleeping containers, not five machines. Density comes from
+concurrent *active* turns, and a team's members are idle almost always.
+
+**Monorepo convention (convention over discovery).** A repo is either a single agent or a team,
+detected structurally — no dynamic configuration:
+
+```
+repo/                          repo/
+  agent/            (single)     agents/                      (team)
+  package.json                     product-manager/   ← complete eve project
+                                     agent/ …  package.json
+                                   developer/
+                                   deployer/
+                                 packages/shared/   ← optional shared code (npm workspaces)
+                                 eden.json          ← optional: team name, roster metadata
+```
+
+- `agent/` at the repo root → **single-agent mode** (today's behavior, unchanged).
+- `agents/*/agent/` → **team mode**; each subdirectory is a complete, independently buildable eve
+  project. `eden.json` is metadata only (team name, display order) — never required for discovery.
+- Each teammate builds independently: `eve build` in its directory → its own image → its own
+  Release → its own instance container. **Multiple runtimes, one repo.**
+- A single-agent repo is just a team of one; the UI stays simple for the common case.
+
+**One repo, atomic team changes.** Because the team shares a repo, a single PR can change multiple
+teammates **atomically** — "PM now hands the developer a structured ticket; developer expects that
+format" ships as one reviewable change-set. This is the core argument for team-in-one-repo over
+team-as-N-repos.
+
+**Teammate wiring — what makes it a *team*, not a folder of agents.** eve exposes a stable HTTP
+contract per agent (`POST /eve/v1/session` + stream). When Eden knows two agents are teammates, it
+**auto-generates a delegation tool in each** — a `defineTool` (e.g. `ask_developer(...)`) that calls
+the peer's channel endpoint, with the route-auth secret injected from the secrets store and the
+peer's role description baked into the tool description so the model knows when to delegate. Eden
+generates and keeps these tools in sync as the roster changes.
+
+**Cross-agent observability.** Every delegation carries a **correlation id**, so a task that flows
+PM → developer → deployer renders as **one linked trace** across the teammates' run transcripts
+(§7.6). This is a genuinely differentiated capability over raw eve.
+
+**"Team" is an Eden construct, not an eve construct.** eve knows nothing about teams; the repo
+convention, the roster, the generated delegation tools, and the linked traces are all Eden's product
+layer. In Eden's data model this introduces an **`agents` entity between `projects` and everything
+downstream** — releases, deployments, runs, schedules, and drafts key by *agent*, not project.
+
+> **Decision (2026-07-04): teams are a hard commitment, and the schema lands now.** The
+> `projects → agents` split is not deferred to the Teams milestone — it lands **pre-emptively,
+> while production data is small**, with every existing single-agent repo migrating as a team of
+> one. All new features from this point key by *agent*, never by project, so nothing built in the
+> interim deepens the migration.
+
+> **Decision (2026-07-04): environments and secrets scope per agent, for security.** Each team
+> member has its own environments and its own secret scope — the deployer holds
+> `CLOUDFLARE_API_TOKEN`; the PM agent cannot see it. Least privilege is the point of modelling
+> roles as separate agents, and per-project scoping would silently grant every teammate every
+> credential. Members deploy independently, so their environments are independent too.
+> Single-agent repos are unaffected (a team of one scopes identically to today). Workspace-level
+> defaults (e.g. the OpenRouter key, §12) still cascade: workspace → agent-environment override.
+
 ---
 
 ## 8. System architecture (high level)
@@ -398,7 +538,8 @@ two-source-of-truth reconciliation problem.
 - **Approvals surfaced in UI:** tool `needsApproval` events must render as actionable items in Eden
   (and in Slack where used), pausing the durable session with no compute cost until resolved.
 - **Multi-repo / multi-agent:** an org may manage many eve projects; Eden lists and switches between
-  them.
+  them. Within one repo, the team convention (§7.9) allows many agents; a project is a repo, an
+  agent is a member of it (single-agent repos are teams of one).
 
 ---
 
@@ -457,6 +598,38 @@ two-source-of-truth reconciliation problem.
 - Optional **progressive rollout** policy (auto-ramp/auto-rollback on thresholds) over the §7.7
   splitter — only if demand appears; not required for the multi-version value.
 
+**Milestone 5.5 — Agents schema split (committed, do next)**
+- Land the `agents` entity under `projects` **now, ahead of Milestones 6–7**: releases, deployments,
+  runs, schedules, and drafts re-key by agent. Existing single-agent repos migrate as teams of one;
+  the UI stays unchanged for the single-agent case.
+- **Environments and secrets are per-agent** (§7.9 decision) — each member gets its own
+  environments and secret scope; workspace defaults cascade workspace → agent-environment.
+- Roster sync: connect and repo webhooks reconcile agent rows from the layout convention
+  (`detectAgentRoots`); the deploy controller builds per member directory; runs ingestion tags
+  the agent; editors/drafts resolve paths against the agent's root.
+- Rationale: hard-committed direction (§7.9 decision) + the migration is cheapest while data is
+  small; deferring means every intervening feature deepens it.
+
+**Milestone 6 — Recruit (marketplace, §7.8)**
+- Template format (files + manifest: required secrets/connections, version, eve range) and the
+  first-party curated catalog (a git repo of templates).
+- Install flow: browse → pick install target (new agent / subagent / into-agent for tools & skills)
+  → onboarding wizard (secret placeholders, connections) → change-set → PR.
+- Provenance via `eden-lock.json`; "update available" → diff PR (no three-way merge tooling).
+- Mostly additive — no schema surgery; team v0 (orchestrator + installed subagents) works here.
+  **Guardrail:** don't ship team-v0 UX that assumes one runtime (e.g. a "team dashboard" that is
+  really the orchestrator's run list) — Milestone 7 must not become a UX migration.
+
+**Milestone 7 — Teams (peer teams, §7.9)**
+- The `agents/*` monorepo convention: detection, per-member parse, per-member build → image →
+  Release → instance.
+- (Schema split already landed in Milestone 5.5.)
+- Auto-generated teammate delegation tools (peer HTTP channel + route-auth secret injection),
+  kept in sync with the roster.
+- Cross-agent correlation ids → linked traces in observability.
+- (Later, cheap once 6+7 exist:) team templates in the marketplace — a scaffold referencing agent
+  templates plus a wiring spec.
+
 ---
 
 ## 12. Open questions & risks
@@ -480,6 +653,15 @@ two-source-of-truth reconciliation problem.
 - **Managed multi-tenant security.** Isolation guarantees for customer agents (which run
   model-generated code in sandboxes) in shared Eden infra.
 - **Naming/branding & licensing** of the OSS core vs. managed service (open-core boundaries).
+- **Marketplace trust & safety.** Templates contain executable TypeScript that will run in customer
+  instances. v1's first-party curated catalog sidesteps this; third-party publishing needs a
+  review/signing story before it exists. Related: how template versions pin against eve version
+  churn (manifest declares an eve range, but enforcement/UX is undesigned).
+- **Teammate delegation semantics.** Generated delegation tools call the peer's HTTP channel —
+  fire-and-forget vs. wait-for-completion vs. streaming intermediate progress back into the caller's
+  turn; and how approval gates (`needsApproval`) compose across a delegation chain. Needs a spike.
+- **Monorepo build scope.** On merge, build only the team members whose files changed (path-based
+  change detection) vs. rebuild all — affects Release semantics when `packages/shared` changes.
 - **RESOLVED (2026-07-04): model API key placement.** Implemented the workspace-level model
   provider key: Org settings holds one OpenRouter key (encrypted, write-only). Every deploy
   inherits it as `OPENROUTER_API_KEY` unless a project/environment secret with that name

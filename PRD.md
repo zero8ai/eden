@@ -793,18 +793,37 @@ two-source-of-truth reconciliation problem.
   `prefetch="intent"` on the tab rows, breadcrumbs, and team-member cards.
 
 **Milestone 6 — Recruit (marketplace, §7.8)**
-- Template format (files + manifest: file list, npm dependencies, required secrets/connections,
-  version, eve range) with a JSON schema; the first-party catalog as `marketplace/` in the eve
-  repo, validated + indexed by catalog CI (no build step — templates are source).
-- `CatalogSource` seam in Eden (config pointer: repo + path + ref; fixture-backed for dev/tests),
-  browse from `index.json` only.
-- Install flow: browse → pick install target (new agent / new team member / subagent / into-agent
-  for tools & skills) → onboarding wizard (secret placeholders, connections, dependency merge with
-  intersect-keep/disjoint-ask conflict policy) → change-set → PR.
-- Provenance via `eden-lock.json`; "update available" → diff PR (no three-way merge tooling).
-  Uninstall removes owned files, leaves npm deps (listed in the PR for the reviewer).
-- Mostly additive — no schema surgery. (The team-v0 guardrail below is largely moot: real peer
-  teams shipped in M5.5–5.8, so "new team member" is a first-class install target.)
+
+- **Phase 1 — format + catalog + browse (shipped).** The template format (files + a
+  `template.json` manifest: file list, npm dependencies, required secrets/connections, version,
+  eve range) as a Zod schema that makes path traversal impossible at the schema layer; the
+  first-party catalog as a `marketplace/` tree (`catalog/` in-repo) validated + indexed by
+  catalog CI (no build step — templates are source; the index carries a content hash per
+  template). The `CatalogSource` seam (config pointer: repo + path + ref; fixture-backed for
+  dev/tests, GitHub-raw in production) with browse from `index.json` only, a type-filtered browse
+  page, and a per-template detail page.
+- **Phase 2 — install / update / uninstall (shipped).** Install is a change-set: a **pure
+  planner** (`app/marketplace/install.server.ts`, unit-tested against literals) maps a template
+  to final repo paths and hands the wizard route writes/deletions/conflicts/warnings; the route
+  stages them as drafts and hands off to the existing Deployment-tab publish/ship pipeline (Eden
+  does not open the PR itself). The **wizard** (`marketplace/:type/:id/install`) is
+  searchParams-driven SSR — the URL is the state — with a target picker (tool/skill/subagent →
+  member; agent → new team member), a live plan preview, and secret inputs (stored per-agent,
+  agent-wide). The **dependency merge** follows the PRD policy — absent → add; ranges intersect
+  → keep the agent's silently; disjoint → keep + warn (real `semver`, the one dependency added).
+  **Provenance** is a repo-root `eden-lock.json` (final paths + version + hash + registry +
+  member), folded into the cached `fetchAgentSource` read so loaders get it for free. The
+  Deployment tab shows a **Marketplace installs** card per member: **Update to x.y.z** when the
+  catalog has a newer version (`semver.gt`), and **Uninstall** (stages deletions of owned files;
+  npm deps are left and listed for the reviewer). A catalog outage degrades gracefully (no update
+  buttons) rather than breaking the tab.
+- Mostly additive — no schema surgery. Real peer teams shipped in M5.5–5.8, so "new team member"
+  is a first-class install target here.
+- **Deliberately punted:** the other two agent-template targets from §7.8 — a **new standalone
+  repo** and a **subagent of an existing agent** (member + new-team-member are the shipped two);
+  **connections wiring** (the manifest reserves `connections` but nothing consumes it yet); and
+  the **rung-2 "publish to marketplace" flow** (extracting a live-tested tool/agent from a
+  workspace into a catalog PR) — rung 1 (PR the catalog, CI-gated) stands.
 
 **Milestone 7 — Teams (peer teams, §7.9)**
 - The `agents/*` monorepo convention: detection, per-member parse, per-member build → image →

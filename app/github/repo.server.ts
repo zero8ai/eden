@@ -5,9 +5,18 @@
  * (recursive) and pull the handful of text files the read-only view needs (instructions.md,
  * agent.ts). Nothing here mutates the repo — Connect/visualize is read-only in M0; writes
  * (branch -> PR) come in M1.
+ *
+ * We also surface the repo-root `eden-lock.json` (marketplace install provenance, PRD §7.8) in
+ * the tree + eager reads when present: the Deployment tab and the install wizard both need the
+ * lock, and folding it into this one cached read spares them a separate ~600ms round trip. It
+ * sits OUTSIDE every agent root, so the prefix-based parser (`detectAgentRoots`,
+ * `buildAgentConfig`) never sees it — it's carried in `paths`/`files` for lock-aware callers only.
  */
 import { AGENT_ROOT, TEAM_ROOT, detectAgentRoots, type AgentSource } from "~/eve/parse";
 import { getInstallationOctokit } from "./client.server";
+
+/** Repo-root marketplace install ledger (PRD §7.8) — carried alongside the agent tree. */
+const EDEN_LOCK = "eden-lock.json";
 
 export interface InstallationRepo {
   owner: string;
@@ -85,16 +94,20 @@ export async function fetchAgentSource(
     e.type === "blob" &&
     typeof e.path === "string" &&
     (e.path === AGENT_ROOT ||
+      e.path === EDEN_LOCK ||
       e.path.startsWith(agentPrefix) ||
       e.path.startsWith(teamPrefix))
       ? [e.path]
       : [],
   );
 
-  const eager = detectAgentRoots(paths).flatMap(({ root }) => [
-    `${root}/instructions.md`,
-    `${root}/agent.ts`,
-  ]);
+  const eager = [
+    ...detectAgentRoots(paths).flatMap(({ root }) => [
+      `${root}/instructions.md`,
+      `${root}/agent.ts`,
+    ]),
+    EDEN_LOCK,
+  ];
   const files: Record<string, string> = {};
   await Promise.all(
     eager.flatMap((path) =>

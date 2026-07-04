@@ -15,6 +15,7 @@ export default [
   // Recruit — the marketplace (PRD §7.8, M6). Browse (index.json) + a template detail page.
   route("marketplace", "routes/marketplace.tsx"),
   route("marketplace/:type/:id", "routes/marketplace.$type.$id.tsx"),
+  route("marketplace/:type/:id/install", "routes/marketplace.$type.$id.install.tsx"),
   route("org/settings", "routes/org.settings.tsx"),
   route("connect", "routes/connect.tsx"),
   // The product noun is REPOSITORY (one connected GitHub repo = a single agent or a team).

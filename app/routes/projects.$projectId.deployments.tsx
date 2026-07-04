@@ -78,12 +78,25 @@ import {
   discardDrafts,
   listDrafts,
   publishDrafts,
+  stageDeletions,
+  stageDraft,
 } from "~/drafts/drafts.server";
-import { getOpenChanges } from "~/github/cached.server";
+import { getAgentSource, getOpenChanges } from "~/github/cached.server";
+import { fetchAgentSource, readAgentFile } from "~/github/repo.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
 import { timeAgo } from "~/lib/time";
+import {
+  catalogLocator,
+  packageJsonPathForRoot,
+  planInstall,
+  planUninstall,
+} from "~/marketplace/install.server";
+import { overlayLock } from "~/marketplace/lock";
+import type { TemplateType } from "~/marketplace/manifest";
+import { getRuntime } from "~/seams/index.server";
+import semver from "semver";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -99,6 +112,22 @@ import type {
 import type { ConnectedProject } from "~/project/guard.server";
 import type { OpenChange } from "~/github/write.server";
 import type { Route } from "./+types/projects.$projectId.deployments";
+
+/** A marketplace install as the Deployment tab shows it — provenance + update availability. */
+interface InstallDisplay {
+  id: string;
+  type: TemplateType;
+  name: string;
+  version: string;
+  /** Owning member; null = the single-agent repo's root agent. */
+  member: string | null;
+  /** Files uninstall would delete (from the lock). */
+  files: string[];
+  /** npm packages uninstall leaves for the reviewer to prune. */
+  depsLeft: string[];
+  /** The newer catalog version when an update is available, else null. */
+  update: string | null;
+}
 
 /** One shape for both views so the loader's branches unify (member fields empty on repo). */
 interface DeploymentData {
@@ -117,6 +146,42 @@ interface DeploymentData {
     name: string;
     latest: { version: string; gitSha: string; createdAt: Date } | null;
   }[];
+  /** Marketplace installs: this member's (member view) or all, attributed (repo view). */
+  installs: InstallDisplay[];
+}
+
+/**
+ * Build the install display rows from the effective lock, tagging each with the newer catalog
+ * version when one exists. The catalog is remote/optional — a caller that couldn't reach it
+ * passes an empty index, and every row simply reports no update (the tab must never break just
+ * because the marketplace is down).
+ */
+function buildInstalls(
+  lock: ReturnType<typeof overlayLock>,
+  index: { id: string; type: TemplateType; version: string }[],
+  keep: (member: string | null) => boolean,
+): InstallDisplay[] {
+  return lock.installs
+    .filter((e) => keep(e.member))
+    .map((e) => {
+      const row = index.find((r) => r.id === e.id && r.type === e.type);
+      let update: string | null = null;
+      try {
+        if (row && semver.gt(row.version, e.version)) update = row.version;
+      } catch {
+        update = null;
+      }
+      return {
+        id: e.id,
+        type: e.type,
+        name: e.name,
+        version: e.version,
+        member: e.member,
+        files: e.files,
+        depsLeft: Object.keys(e.dependencies ?? {}),
+        update,
+      };
+    });
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -145,14 +210,31 @@ export const loader = (args: LoaderFunctionArgs) =>
       const level: NavLevel = agentName ? "member" : isTeam ? "repo" : "single";
       const view = level === "repo" ? ("repo" as const) : ("member" as const);
 
-      const [allDrafts, changes, releaseRows] = await Promise.all([
+      const [allDrafts, changes, releaseRows, source] = await Promise.all([
         listDrafts(project.id),
         getOpenChanges(project.repoInstallationId, {
           owner: project.repoOwner,
           repo: project.repoName,
         }),
         listReleases(project.id),
+        getAgentSource(project.repoInstallationId, {
+          owner: project.repoOwner,
+          repo: project.repoName,
+        }),
       ]);
+
+      // Install provenance: the effective lock (staged draft wins), tagged with catalog updates.
+      // A catalog outage must not break this tab — degrade to no update buttons.
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        allDrafts.map((d) => ({ path: d.path, content: d.content })),
+      );
+      let index: { id: string; type: TemplateType; version: string }[] = [];
+      try {
+        index = (await getRuntime().catalog.index()).templates;
+      } catch (error) {
+        console.warn("[deployment] catalog index unavailable:", error);
+      }
 
       if (view === "repo") {
         // Team rollup: drafts grouped by owning member (null = shared), latest version per
@@ -194,6 +276,8 @@ export const loader = (args: LoaderFunctionArgs) =>
           drafts: [],
           releases: [],
           envs: [],
+          // Repo rollup: every install, attributed by its member.
+          installs: buildInstalls(lock, index, () => true),
         };
       }
 
@@ -223,6 +307,12 @@ export const loader = (args: LoaderFunctionArgs) =>
         envs,
         draftGroups: [],
         members: [],
+        // This member's installs (single-agent: the null-member root installs).
+        installs: buildInstalls(
+          lock,
+          index,
+          (member) => member === active.name || (member === null && !isTeam),
+        ),
       };
     },
     { ensureSignedIn: true },
@@ -291,6 +381,96 @@ export async function action(args: ActionFunctionArgs) {
       });
       const version = results[0]?.release.version ?? "";
       throw redirect(`${back}?released=${encodeURIComponent(version)}`);
+    }
+
+    // ── Marketplace installs (PRD §7.8): update / uninstall re-stage a change-set ──
+    if (intent === "update-install") {
+      const type = String(form.get("type") ?? "") as TemplateType;
+      const id = String(form.get("id") ?? "");
+      const member = String(form.get("member") ?? "") || null;
+      if (!type || !id) return { error: "Missing install to update." };
+      const { roster, active } = await resolveAgentContext(project.id, member);
+      const template = await getRuntime().catalog.template(type, id);
+      // Actions read raw — a stale read merged into a write could clobber newer content.
+      const [source, drafts] = await Promise.all([
+        fetchAgentSource(project.repoInstallationId, repo),
+        listDrafts(project.id),
+      ]);
+      const draftPaths = drafts.map((d) => ({ path: d.path, content: d.content }));
+      const lock = overlayLock(source.files["eden-lock.json"] ?? null, draftPaths);
+      // A staged package.json draft wins over the branch copy — merging over the branch would
+      // drop dependencies a previously staged install already added.
+      const pkgPath = packageJsonPathForRoot(active.root);
+      const pkgDraft = drafts.find((d) => d.path === pkgPath);
+      const packageJson =
+        pkgDraft !== undefined
+          ? pkgDraft.content
+          : await readAgentFile(project.repoInstallationId, repo, pkgPath);
+      const plan = planInstall({
+        template,
+        registry: catalogLocator(),
+        repoPaths: source.paths,
+        drafts: draftPaths,
+        packageJson,
+        lock,
+        rosterNames: roster.map((a) => a.name),
+        target: { kind: "member", memberName: member, root: active.root },
+      });
+      if (plan.conflicts.length > 0) {
+        return {
+          error: `Update blocked — these files were changed locally:\n${plan.conflicts.join("\n")}`,
+        };
+      }
+      for (const w of plan.writes) {
+        await stageDraft({
+          projectId: project.id,
+          path: w.path,
+          content: w.content,
+          createdBy: auth.user.id,
+        });
+      }
+      if (plan.deletions.length > 0) {
+        await stageDeletions({
+          projectId: project.id,
+          paths: plan.deletions,
+          createdBy: auth.user.id,
+        });
+      }
+      throw redirect(`${back}?installed=${encodeURIComponent(id)}`);
+    }
+    if (intent === "uninstall") {
+      const id = String(form.get("id") ?? "");
+      const member = String(form.get("member") ?? "") || null;
+      if (!id) return { error: "Missing install to remove." };
+      const [source, drafts] = await Promise.all([
+        fetchAgentSource(project.repoInstallationId, repo),
+        listDrafts(project.id),
+      ]);
+      const draftPaths = drafts.map((d) => ({ path: d.path, content: d.content }));
+      const lock = overlayLock(source.files["eden-lock.json"] ?? null, draftPaths);
+      const plan = planUninstall({
+        lock,
+        id,
+        memberName: member,
+        repoPaths: source.paths,
+      });
+      if (plan.notFound) {
+        return { error: "That install isn't recorded in eden-lock.json." };
+      }
+      if (plan.deletions.length > 0) {
+        await stageDeletions({
+          projectId: project.id,
+          paths: plan.deletions,
+          createdBy: auth.user.id,
+        });
+      }
+      await stageDraft({
+        projectId: project.id,
+        path: plan.lockWrite.path,
+        content: plan.lockWrite.content,
+        createdBy: auth.user.id,
+      });
+      throw redirect(`${back}?uninstalled=${encodeURIComponent(id)}`);
     }
 
     // ── Environment CRUD (M5.7: user-defined, per member) ──
@@ -378,6 +558,8 @@ export default function Deployment({
   );
   const [params] = useSearchParams();
   const justReleased = params.get("released");
+  const justInstalled = params.get("installed");
+  const justUninstalled = params.get("uninstalled");
 
   // Progress: while any deployment is queued/building, re-fetch every few seconds.
   const revalidator = useRevalidator();
@@ -430,6 +612,19 @@ export default function Deployment({
         </Alert>
       )}
 
+      {(justInstalled || justUninstalled) && (
+        <Alert className="mb-6">
+          <AlertTitle>
+            {justInstalled
+              ? `${justInstalled} install staged`
+              : `${justUninstalled} uninstall staged`}
+          </AlertTitle>
+          <AlertDescription>
+            Review and publish it with your other staged changes below.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
           <AlertTitle>Something went wrong</AlertTitle>
@@ -451,15 +646,92 @@ export default function Deployment({
 /* ────────────────────────────── member pipeline ────────────────────────────── */
 
 function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
-  const { drafts, changes, releases, envs, activeAgent, isTeam } = loaderData;
+  const { drafts, changes, releases, envs, activeAgent, isTeam, installs } =
+    loaderData;
 
   return (
     <>
       <StagedChangesCard drafts={drafts} isTeam={isTeam} />
+      <MarketplaceInstalls installs={installs} />
       <ChangeRequests changes={changes} isTeam={isTeam} />
       <EnvironmentsCard envs={envs} activeAgent={activeAgent} />
       <VersionHistory releases={releases} envs={envs} />
     </>
+  );
+}
+
+/**
+ * Marketplace installs recorded in eden-lock.json for this member (PRD §7.8 provenance): each
+ * with an Update button when the catalog has a newer version, and an Uninstall that stages a
+ * change-set removing the owned files (npm packages are left for the reviewer to prune).
+ */
+function MarketplaceInstalls({ installs }: { installs: InstallDisplay[] }) {
+  const submit = useSubmit();
+  const navigation = useNavigation();
+  const busy = navigation.state !== "idle" && navigation.formData != null;
+
+  if (installs.length === 0) return null;
+  return (
+    <Card className="mb-6">
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <CardTitle className="text-base">Marketplace installs</CardTitle>
+          <Badge variant="secondary">{installs.length}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <ul className="divide-y rounded-lg border text-sm">
+          {installs.map((i) => (
+            <li key={`${i.type}/${i.id}`} className="flex flex-wrap items-center gap-3 px-3 py-2">
+              <span className="min-w-0 flex-1 truncate font-medium">{i.name}</span>
+              <span className="font-mono text-xs text-muted-foreground">
+                v{i.version}
+              </span>
+              <Badge variant="outline">{i.type}</Badge>
+              {i.update && (
+                <Form method="post">
+                  <input type="hidden" name="intent" value="update-install" />
+                  <input type="hidden" name="type" value={i.type} />
+                  <input type="hidden" name="id" value={i.id} />
+                  <input type="hidden" name="member" value={i.member ?? ""} />
+                  <Button type="submit" size="sm" variant="secondary" disabled={busy}>
+                    Update to {i.update}
+                  </Button>
+                </Form>
+              )}
+              <ConfirmDialog
+                trigger={
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive"
+                    disabled={busy}
+                  >
+                    Uninstall
+                  </Button>
+                }
+                title={`Uninstall ${i.name}?`}
+                description={
+                  `Stages a change-set deleting ${i.files.length} file${i.files.length === 1 ? "" : "s"}:\n` +
+                  i.files.join("\n") +
+                  (i.depsLeft.length > 0
+                    ? `\n\nnpm packages left for review: ${i.depsLeft.join(", ")}`
+                    : "")
+                }
+                confirmLabel="Uninstall"
+                onConfirm={() =>
+                  submit(
+                    { intent: "uninstall", id: i.id, member: i.member ?? "" },
+                    { method: "post" },
+                  )
+                }
+              />
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -745,7 +1017,7 @@ function MergeabilityBadge({
 /* ────────────────────────────── team rollup ────────────────────────────── */
 
 function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
-  const { project, draftGroups, changes, members } = loaderData;
+  const { project, draftGroups, changes, members, installs } = loaderData;
   const totalDrafts = draftGroups.reduce((n, g) => n + g.drafts.length, 0);
 
   return (
@@ -825,6 +1097,51 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
       </Card>
 
       <ChangeRequests changes={changes} isTeam />
+
+      {installs.length > 0 && (
+        <Card className="mb-6">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base">Marketplace installs</CardTitle>
+              <Badge variant="secondary">{installs.length}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ul className="divide-y rounded-lg border text-sm">
+              {installs.map((i) => (
+                <li
+                  key={`${i.type}/${i.id}`}
+                  className="flex flex-wrap items-center gap-3 px-3 py-2"
+                >
+                  <span className="min-w-0 flex-1 truncate font-medium">
+                    {i.name}
+                  </span>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    v{i.version}
+                  </span>
+                  <Badge variant="outline">{i.type}</Badge>
+                  {i.member ? (
+                    <Link
+                      to={`${contextPath(project.id, i.member)}/deployment`}
+                      className="text-xs underline-offset-4 hover:underline"
+                    >
+                      {i.member}
+                    </Link>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">shared</span>
+                  )}
+                  {i.update && (
+                    <Badge variant="secondary">update → {i.update}</Badge>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Update or uninstall from the owning member&rsquo;s Deployment tab.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="pb-3">

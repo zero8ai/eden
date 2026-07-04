@@ -93,12 +93,11 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
         }
         description={manifest.description}
         actions={
-          <div className="flex flex-col items-end gap-1">
-            <Button disabled>Install</Button>
-            <span className="text-xs text-muted-foreground">
-              Install lands in the next milestone phase.
-            </span>
-          </div>
+          <Button asChild>
+            <Link to="./install" prefetch="intent">
+              Install
+            </Link>
+          </Button>
         }
       />
 

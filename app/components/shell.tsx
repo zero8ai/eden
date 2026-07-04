@@ -1,9 +1,11 @@
 /**
- * Shared application chrome, encoding the product hierarchy (D2/D3 + the eve model):
- *   workspace (org) → agents (projects, 1 repo == 1 root agent) → environments/deployments.
+ * Shared application chrome, encoding the product hierarchy (D2/D3 + the eve model, M5.8):
+ *   workspace (org) → repository → team member (agents/:name URL level) → page.
  *
- * AppShell renders the workspace-level header; AgentNav renders the per-agent section nav
- * (Overview = the repo-backed config surface, then Versions / Runs / Secrets / Assistant).
+ * AppShell renders the workspace-level header. AgentNav renders the section tabs — a
+ * DIFFERENT set per level, because the scopes differ: repo level (team landing) gets the
+ * repo-wide surfaces, member level gets the member-scoped ones, and single-agent repos
+ * collapse both levels into one merged row.
  */
 import { LogOut, User, Users } from "lucide-react";
 import { Form, Link, NavLink, useLocation, useNavigate } from "react-router";
@@ -53,7 +55,7 @@ export function repoCrumbs(opts: {
   if (opts.isTeam && opts.agentName) {
     crumbs.push({
       label: opts.agentName,
-      to: `${base}?agent=${encodeURIComponent(opts.agentName)}`,
+      to: `${base}/agents/${encodeURIComponent(opts.agentName)}`,
     });
   }
   crumbs.push(...(opts.tail ?? []));
@@ -234,41 +236,63 @@ export interface RosterMember {
   name: string;
 }
 
+/** Which level of the hierarchy the current page belongs to (M5.8). */
+export type NavLevel = "single" | "repo" | "member";
+
+const TABS: Record<NavLevel, { path: string; label: string }[]> = {
+  // Single-agent repos: the repo IS the agent — one merged row.
+  single: [
+    { path: "", label: "Overview" },
+    { path: "/deployment", label: "Deployment" },
+    { path: "/playground", label: "Playground" },
+    { path: "/runs", label: "Runs" },
+    { path: "/assistant", label: "Assistant" },
+    { path: "/settings", label: "Settings" },
+  ],
+  // Team landing: only the repo-wide surfaces.
+  repo: [
+    { path: "", label: "Overview" },
+    { path: "/deployment", label: "Deployment" },
+    { path: "/playground", label: "Playground" },
+    { path: "/settings", label: "Settings" },
+  ],
+  // One team member: the member-scoped surfaces (+ the switcher).
+  member: [
+    { path: "", label: "Overview" },
+    { path: "/deployment", label: "Deployment" },
+    { path: "/runs", label: "Runs" },
+    { path: "/assistant", label: "Assistant" },
+    { path: "/settings", label: "Settings" },
+  ],
+};
+
 /**
- * Per-project section navigation. `base` is `/repos/<id>`. For team repos (roster > 1,
- * PRD §7.9) a member switcher renders beside the tabs, and every tab link carries the
- * active member as `?agent=<name>` so the selection follows you across tabs.
+ * Section tabs for one hierarchy level. `base` is `/repos/<id>` (single/repo levels) or
+ * `/repos/<id>/agents/<name>` (member level). The tab SET differs per level — that is the
+ * point: a tab row never changes meaning underneath you (M5.8).
  */
 export function AgentNav({
   base,
+  level,
   roster,
   activeAgent,
 }: {
   base: string;
+  level: NavLevel;
+  /** Member level: the roster for the switcher. */
   roster?: RosterMember[];
+  /** Member level: the current member (switcher value). */
   activeAgent?: string;
 }) {
-  const isTeam = (roster?.length ?? 0) > 1;
-  const suffix =
-    isTeam && activeAgent ? `?agent=${encodeURIComponent(activeAgent)}` : "";
-  const items = [
-    { to: `${base}${suffix}`, label: "Overview", end: true },
-    { to: `${base}/changes${suffix}`, label: "Changes" },
-    { to: `${base}/deployments${suffix}`, label: "Versions" },
-    { to: `${base}/playground${suffix}`, label: "Playground" },
-    { to: `${base}/runs${suffix}`, label: "Runs" },
-    { to: `${base}/secrets${suffix}`, label: "Secrets" },
-    { to: `${base}/assistant${suffix}`, label: "Assistant" },
-  ];
   return (
     <div className="mb-8">
       <div className="flex items-center justify-between gap-3">
         <nav className="flex items-center gap-1 text-sm">
-          {items.map((item) => (
+          {TABS[level].map((item) => (
             <NavLink
               key={item.label}
-              to={item.to}
-              end={item.end}
+              to={`${base}${item.path}`}
+              end={item.path === ""}
               className={({ isActive }) =>
                 cn(
                   "rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground",
@@ -280,7 +304,7 @@ export function AgentNav({
             </NavLink>
           ))}
         </nav>
-        {isTeam && roster && activeAgent && (
+        {level === "member" && roster && activeAgent && (
           <AgentSwitcher roster={roster} activeAgent={activeAgent} />
         )}
       </div>
@@ -289,7 +313,7 @@ export function AgentNav({
   );
 }
 
-/** Team member picker: swaps `?agent=` on the current tab (state follows across tabs). */
+/** Team member picker: swaps the `/agents/<name>` segment, keeping the current tab. */
 function AgentSwitcher({
   roster,
   activeAgent,
@@ -305,9 +329,11 @@ function AgentSwitcher({
       <Select
         value={activeAgent}
         onValueChange={(name) => {
-          const params = new URLSearchParams(location.search);
-          params.set("agent", name);
-          navigate(`${location.pathname}?${params}`);
+          const pathname = location.pathname.replace(
+            /\/agents\/[^/]+/,
+            `/agents/${encodeURIComponent(name)}`,
+          );
+          navigate(`${pathname}${location.search}`);
         }}
       >
         <SelectTrigger className="h-8 min-w-36 font-mono text-xs" aria-label="Team member">

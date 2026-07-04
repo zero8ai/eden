@@ -1,0 +1,109 @@
+/**
+ * Repository deletion (M5.8) — the full Eden-side teardown against in-memory fakes.
+ * Verifies the ordering the feature hangs on: instance infra is destroyed BEFORE the row
+ * delete (afterwards nothing could find the containers), the audit entry lands, the cascade
+ * removes dependent rows, and a missing destroy() falls back to stop().
+ */
+import { beforeEach, describe, expect, it } from "vitest";
+
+import { createRelease, deployRelease } from "~/deploy/controller.server";
+import { deleteRepository } from "~/deploy/repository.server";
+import { createProject } from "~/db/queries.server";
+import { fakeDeployTarget, fakeSecrets } from "../fakes/infra";
+import { makeFakeStore, type FakeStore } from "../fakes/store";
+
+let store: FakeStore;
+const ORG = "org_1";
+
+async function seedRunningProject() {
+  const project = await createProject(
+    { orgId: ORG, name: "Doomed", repoOwner: "acme", repoName: "doomed" },
+    store,
+  );
+  const agentId = (await store.agents.listByProject(project.id))[0].id;
+  const [env] = await store.environments.listByAgent(agentId);
+  const release = await createRelease(
+    { projectId: project.id, agentId, gitSha: "d".repeat(40) },
+    store,
+  );
+  const dep = await deployRelease(
+    { environmentId: env.id, releaseId: release.id },
+    {
+      store,
+      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://x" } }),
+      secrets: fakeSecrets(),
+    },
+  );
+  expect(dep.status).toBe("live");
+  return { project, agentId, env, release, dep };
+}
+
+beforeEach(() => {
+  store = makeFakeStore();
+});
+
+describe("deleteRepository", () => {
+  it("destroys every instance, audits, then deletes the project (cascade)", async () => {
+    const { project, env, dep } = await seedRunningProject();
+    const destroyed: string[] = [];
+    const target = {
+      ...fakeDeployTarget(),
+      destroy: async (id: string) => {
+        destroyed.push(id);
+      },
+    };
+
+    await deleteRepository(
+      { projectId: project.id, createdBy: "user_1" },
+      { store, deployTarget: target },
+    );
+
+    expect(destroyed).toContain(dep.id);
+    expect(await store.projects.findById(project.id)).toBeNull();
+    expect(await store.agents.listByProject(project.id)).toHaveLength(0);
+    expect(await store.environments.listByProject(project.id)).toHaveLength(0);
+    expect(await store.deployments.listByEnvironment(env.id)).toHaveLength(0);
+    expect(await store.releases.listByProject(project.id)).toHaveLength(0);
+    expect(store.auditEntries).toContainEqual({
+      action: "repository.delete",
+      target: "Doomed",
+      orgId: ORG,
+    });
+  });
+
+  it("falls back to stop() when the target has no destroy()", async () => {
+    const { project, dep } = await seedRunningProject();
+    const stopped: string[] = [];
+    const target = {
+      ...fakeDeployTarget(),
+      destroy: undefined,
+      stop: async (id: string) => {
+        stopped.push(id);
+      },
+    };
+    await deleteRepository({ projectId: project.id }, { store, deployTarget: target });
+    expect(stopped).toContain(dep.id);
+    expect(await store.projects.findById(project.id)).toBeNull();
+  });
+
+  it("a failing teardown never blocks the delete (best-effort infra)", async () => {
+    const { project } = await seedRunningProject();
+    const target = {
+      ...fakeDeployTarget(),
+      destroy: async () => {
+        throw new Error("docker unreachable");
+      },
+    };
+    await deleteRepository({ projectId: project.id }, { store, deployTarget: target });
+    expect(await store.projects.findById(project.id)).toBeNull();
+  });
+
+  it("throws for an unknown repository", async () => {
+    await expect(
+      deleteRepository(
+        { projectId: "nope" },
+        { store, deployTarget: fakeDeployTarget() },
+      ),
+    ).rejects.toThrow(/not found/i);
+  });
+});

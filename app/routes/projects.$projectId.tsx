@@ -22,8 +22,6 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
-import { ConfirmDialog } from "~/components/confirm-dialog";
-import { ModelSelect } from "~/components/model-select";
 import { NewResourceDialog } from "~/components/new-resource-dialog";
 import { AgentNav, AppShell, PageHeader, SectionHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
@@ -61,18 +59,20 @@ import {
 } from "~/db/queries.server";
 import { listDeployments, queueDeploy } from "~/deploy/controller.server";
 import { shipHead, shipStagedChanges } from "~/deploy/ship.server";
-import { listDrafts, resolveFileView, stageDraft } from "~/drafts/drafts.server";
-import { readModel, scaffoldAgentModule, setModel } from "~/eve/agentModule";
+import { listDrafts } from "~/drafts/drafts.server";
+import { readModel } from "~/eve/agentModule";
 import { buildAgentConfig, detectAgentRoots } from "~/eve/parse";
 import { RESOURCE_KINDS, slugifyResourceName } from "~/eve/templates";
 import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
 import { memberScaffold } from "~/github/create.server";
 import { fetchAgentSource } from "~/github/repo.server";
-import { proposeChange, type FileChange } from "~/github/write.server";
+import { proposeChange } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
+import { contextPath } from "~/lib/paths";
 import { timeAgo } from "~/lib/time";
 import {
-  agentParam,
+  agentFromParams,
+  agentParamRedirect,
   resolveAgentContext,
 } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
@@ -173,7 +173,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         ]);
 
         // Self-heal the roster from the repo (external pushes don't always hit our webhook).
-        const requestedAgent = agentParam(args.request);
+        const requestedAgent = agentFromParams(args.params);
+        if (!requestedAgent) {
+          const legacy = agentParamRedirect(args.request, project.id);
+          if (legacy) throw legacy;
+        }
         let { roster, active, isTeam } = await resolveAgentContext(
           project.id,
           requestedAgent,
@@ -352,22 +356,22 @@ export async function action(args: ActionFunctionArgs) {
       // bug to surface, not something to paper over with a guessed target.
       const envName = String(form.get("env") ?? "").trim();
       if (!envName) return { error: "Pick an environment to ship to." };
-      const agentName = String(form.get("agent") ?? "");
       ensureWorkerStarted();
-      // Publish/merge/release run synchronously (same as the Changes publish button); the
-      // build + deploy are queued, and the redirect's ?shipped drives the progress banner.
+      // Publish/merge/release run synchronously (same as the Deployment publish button);
+      // the build + deploy are queued, and the redirect's ?shipped drives the banner.
       const result =
         intent === "ship"
           ? await shipStagedChanges({ project, envName, createdBy: auth.user.id })
           : await shipHead({ project, envName, createdBy: auth.user.id });
       const qs = new URLSearchParams();
-      if (agentName) qs.set("agent", agentName);
       qs.set("shipped", result.gitSha);
       qs.set("env", envName);
       if (result.skipped.length > 0) {
         qs.set("skipped", result.skipped.map((s) => s.agentName).join(","));
       }
-      throw redirect(`/repos/${project.id}?${qs.toString()}`);
+      throw redirect(
+        `${contextPath(project.id, agentFromParams(args.params))}?${qs.toString()}`,
+      );
     }
 
     // ── Retry a failed shipped deploy (same release, same environment) ──
@@ -381,27 +385,7 @@ export async function action(args: ActionFunctionArgs) {
       return { ok: true as const };
     }
 
-    // ── Inline model change (the overview's one settings control): stage agent.ts ──
-    if (intent === "set-model") {
-      const model = String(form.get("model") ?? "").trim();
-      if (!model) return { error: "Pick or enter a model." };
-      const { active } = await resolveAgentContext(
-        project.id,
-        String(form.get("agent") ?? "") || null,
-      );
-      const path = `${active.root}/agent.ts`;
-      // Base the targeted edit on the latest intended value (draft → pending → repo) so
-      // setting the model never silently reverts other unmerged edits to this file.
-      const view = await resolveFileView(project, path);
-      const next = view.content ? setModel(view.content, model) : scaffoldAgentModule(model);
-      await stageDraft({
-        projectId: project.id,
-        path,
-        content: next,
-        createdBy: auth.user.id,
-      });
-      return { ok: true as const, staged: path };
-    }
+    // (Model and member removal moved to the Settings tab, M5.8.)
 
     // ── Add a team member: scaffold agents/<name>/ as a change-set ──
     if (intent === "add-member") {
@@ -419,35 +403,6 @@ export async function action(args: ActionFunctionArgs) {
         body:
           `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, an ` +
           `example tool, package.json). Eden picks the member up on merge.`,
-      });
-      return { ok: true as const, changeUrl: change.pullRequestUrl, member: name };
-    }
-
-    // ── Remove a team member: delete agents/<name>/ as a change-set ──
-    if (intent === "remove-member") {
-      const name = String(form.get("name") ?? "");
-      const { roster } = await resolveAgentContext(project.id, null);
-      const member = roster.find((a) => a.name === name);
-      if (!member || member.root === "agent") {
-        return { error: "Only team members (agents/<name>/) can be removed." };
-      }
-      if (roster.length <= 1) {
-        return { error: "A team needs at least one member." };
-      }
-      const source = await fetchAgentSource(project.repoInstallationId, repo);
-      const memberDir = `agents/${name}/`;
-      const files: FileChange[] = source.paths.flatMap((p) =>
-        p.startsWith(memberDir) ? [{ path: p, content: null }] : [],
-      );
-      if (files.length === 0) return { error: `No files found under ${memberDir}.` };
-      const change = await proposeChange(project.repoInstallationId, repo, {
-        base: project.defaultBranch,
-        branch: `eden/remove-member-${name}`,
-        files,
-        title: `Remove team member: ${name}`,
-        body:
-          `Deletes \`agents/${name}/\` (${files.length} files). Merging removes the member; ` +
-          `its releases and run history remain until then.`,
       });
       return { ok: true as const, changeUrl: change.pullRequestUrl, member: name };
     }
@@ -481,10 +436,9 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
     ship,
   } = loaderData;
   const base = `/repos/${project.id}`;
-  const agentSuffix =
-    view === "member" && teamLayout && active
-      ? `?agent=${encodeURIComponent(active.name)}`
-      : "";
+  // The page's hierarchy level decides its tab set and where its links point (M5.8).
+  const level = view === "team" ? "repo" : teamLayout ? "member" : "single";
+  const ctx = contextPath(project.id, level === "member" ? active?.name : null);
 
   // While a shipped deploy is queued/building, poll so the banner walks to live/failed
   // without a manual refresh (same cadence as the Versions page).
@@ -546,19 +500,14 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
             )
           }
           actions={
-            <div className="flex items-center gap-2">
-              {teamLayout && isTeam && active && (
-                <RemoveMemberButton member={active.name} />
-              )}
-              {!error && (
-                <ShipDialog
-                  draftCount={draftPaths.length}
-                  envNames={envNames}
-                  defaultBranch={project.defaultBranch}
-                  agentName={teamLayout && active ? active.name : ""}
-                />
-              )}
-            </div>
+            !error && (
+              <ShipDialog
+                draftCount={draftPaths.length}
+                envNames={envNames}
+                defaultBranch={project.defaultBranch}
+                agentName={teamLayout && active ? active.name : ""}
+              />
+            )
           }
         />
       )}
@@ -595,17 +544,18 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
           )}
           {" · "}
           <Link
-            to={`${base}/deployments${agentSuffix}`}
+            to={`${ctx}/deployment`}
             className="underline underline-offset-4"
           >
-            View versions →
+            View deployment →
           </Link>
         </p>
       )}
       <AgentNav
-        base={base}
+        base={ctx}
+        level={level}
         roster={roster}
-        activeAgent={view === "member" ? active?.name : undefined}
+        activeAgent={level === "member" ? active?.name : undefined}
       />
 
       {error && (
@@ -624,9 +574,7 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
         </Alert>
       )}
 
-      {ship && (
-        <ShipProgress ship={ship} dismissTo={`${base}${agentSuffix}`} />
-      )}
+      {ship && <ShipProgress ship={ship} dismissTo={ctx} />}
 
       {actionData?.ok && "changeUrl" in actionData && (
         <Alert className="mb-6">
@@ -634,16 +582,16 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
           <AlertDescription>
             The roster updates when the change merges.{" "}
             <Link
-              to={`${base}/changes${agentSuffix}`}
+              to={`${ctx}/deployment`}
               className="font-medium underline underline-offset-4"
             >
-              Review it in Changes →
+              Review it on the Deployment tab →
             </Link>
           </AlertDescription>
         </Alert>
       )}
 
-      {draftPaths.length > 0 && (
+      {view === "member" && draftPaths.length > 0 && (
         <Alert className="mb-6">
           <AlertTitle>
             {draftPaths.length} staged change{draftPaths.length === 1 ? "" : "s"} not
@@ -652,10 +600,10 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
           <AlertDescription>
             Ship them with the button above, or{" "}
             <Link
-              to={`${base}/changes${agentSuffix}`}
+              to={`${ctx}/deployment`}
               className="font-medium underline underline-offset-4"
             >
-              review &amp; publish in Changes →
+              review &amp; publish on the Deployment tab →
             </Link>
           </AlertDescription>
         </Alert>
@@ -672,10 +620,8 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
       {view === "member" && config && active && (
         <AgentSurface
           config={config}
-          projectId={project.id}
-          agentName={active.name}
+          ctx={ctx}
           root={active.root}
-          agentSuffix={agentSuffix}
           draftPaths={draftPaths}
         />
       )}
@@ -734,7 +680,7 @@ function TeamSurface({
 
       <div className="grid gap-4 sm:grid-cols-2">
         {members.map((m) => (
-          <Link key={m.name} to={`${base}?agent=${encodeURIComponent(m.name)}`} className="group">
+          <Link key={m.name} to={`${base}/agents/${encodeURIComponent(m.name)}`} className="group">
             <Card className="h-full transition-colors group-hover:border-ring/60">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-2">
@@ -1024,27 +970,6 @@ function ShipSteps({ status, version }: { status: string; version: string }) {
   );
 }
 
-/** "Remove member" → a change-set deleting agents/<name>/ (confirmed, git-recoverable). */
-function RemoveMemberButton({ member }: { member: string }) {
-  const submit = useSubmit();
-  const navigation = useNavigation();
-  return (
-    <ConfirmDialog
-      trigger={
-        <Button variant="outline" disabled={navigation.state !== "idle"}>
-          Remove member
-        </Button>
-      }
-      title={`Remove ${member} from the team?`}
-      description={`Opens a change request deleting agents/${member}/. Nothing is removed until it merges, and git can restore it after.`}
-      confirmLabel="Open change request"
-      onConfirm={() =>
-        submit({ intent: "remove-member", name: member }, { method: "post" })
-      }
-    />
-  );
-}
-
 /** One-line hint per category, so the config surface teaches the eve model as you scan it. */
 const CATEGORY_HINTS: Record<string, string> = {
   tools: "TypeScript functions the agent can call",
@@ -1060,46 +985,21 @@ const CARD_PREVIEW_COUNT = 5;
 
 function AgentSurface({
   config,
-  projectId,
-  agentName,
+  ctx,
   root,
-  agentSuffix,
   draftPaths,
 }: {
   config: AgentConfig;
-  projectId: string;
-  agentName: string;
+  /** The member's base path (repo base for single-agent repos) — editor links hang off it. */
+  ctx: string;
   /** Active member's agent directory ("agent" or "agents/<member>/agent"). */
   root: string;
-  /** "" for single-agent repos; "?agent=<name>" for teams (keeps editor links scoped). */
-  agentSuffix: string;
   draftPaths: string[];
 }) {
-  const base = `/repos/${projectId}`;
   const drafted = new Set(draftPaths);
-  const modelFetcher = useFetcher<{ ok?: boolean; error?: string }>();
-  const savingModel = modelFetcher.state !== "idle";
 
   // Stable elements between renders (JSX props otherwise defeat memoized children).
-  const agentTsStaged = drafted.has(`${root}/agent.ts`);
   const instructionsStaged = drafted.has(`${root}/instructions.md`);
-  const modelBadges = useMemo(
-    () => (
-      <>
-        {agentTsStaged && (
-          <Badge variant="outline" className="text-xs">
-            staged
-          </Badge>
-        )}
-        {!config.hasAgentModule && (
-          <Badge variant="outline" className="text-xs">
-            no agent.ts — picking one scaffolds it
-          </Badge>
-        )}
-      </>
-    ),
-    [agentTsStaged, config.hasAgentModule],
-  );
   const instructionsBadges = useMemo(
     () =>
       instructionsStaged ? (
@@ -1112,24 +1012,7 @@ function AgentSurface({
 
   return (
     <div className="space-y-8">
-      {/* Model — the one runtime setting, edited in place (saving stages agent.ts). */}
-      <section>
-        <SectionHeader title="Model" badges={modelBadges} />
-        <ModelSelect
-          value={config.model}
-          busy={savingModel}
-          onCommit={(model) =>
-            modelFetcher.submit(
-              { intent: "set-model", model, agent: agentName },
-              { method: "post" },
-            )
-          }
-        />
-        {modelFetcher.data?.error && (
-          <p className="mt-2 text-sm text-destructive">{modelFetcher.data.error}</p>
-        )}
-      </section>
-
+      {/* Model moved to the Settings tab (M5.8). */}
       {/* Instructions — the always-on system prompt. */}
       <section>
         <SectionHeader
@@ -1137,7 +1020,7 @@ function AgentSurface({
           badges={instructionsBadges}
           actions={
             <Button variant="outline" size="sm" asChild>
-              <Link to={`${base}/edit/instructions${agentSuffix}`}>
+              <Link to={`${ctx}/edit/instructions`}>
                 {config.instructions ? "Edit" : "Add instructions"}
               </Link>
             </Button>
@@ -1169,7 +1052,7 @@ function AgentSurface({
                 : [],
             );
             const items = [...repoItems, ...stagedNew];
-            const listTo = `${base}/resources/${cat.key}${agentSuffix}`;
+            const listTo = `${ctx}/resources/${cat.key}`;
             return (
               <Card key={cat.key}>
                 <CardHeader className="space-y-1 pb-3">
@@ -1182,7 +1065,7 @@ function AgentSurface({
                     </Link>
                     <NewResourceDialog
                       kind={RESOURCE_KINDS[cat.key]}
-                      base={base}
+                      base={ctx}
                       root={root}
                     />
                   </div>
@@ -1203,7 +1086,7 @@ function AgentSurface({
                             </span>
                           ) : (
                             <Link
-                              to={`${base}/edit?path=${encodeURIComponent(item.path)}`}
+                              to={`${ctx}/edit?path=${encodeURIComponent(item.path)}`}
                               className="font-mono underline-offset-4 hover:underline"
                             >
                               {item.name}

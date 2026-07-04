@@ -373,6 +373,21 @@ export function makeFakeStore(): FakeStore {
         projects.set(row.id, row);
         return row;
       },
+      async deleteById(pid) {
+        projects.delete(pid);
+        // Mirror the FK cascade the schema enforces.
+        for (const [aid, a] of agents) if (a.projectId === pid) agents.delete(aid);
+        for (const [eid, e] of environments) {
+          if (e.projectId === pid) {
+            environments.delete(eid);
+            for (const [did, d] of deployments) {
+              if (d.environmentId === eid) deployments.delete(did);
+            }
+          }
+        }
+        for (const [rid, r] of releases) if (r.projectId === pid) releases.delete(rid);
+        for (const [k, d] of drafts) if (d.projectId === pid) drafts.delete(k);
+      },
     },
 
     jobs: {

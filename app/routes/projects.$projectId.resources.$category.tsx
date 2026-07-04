@@ -2,7 +2,8 @@
  * Resource category list — the management surface behind each overview card. Every file in
  * the category (repo + staged-new drafts) with last-commit metadata, open-in-editor, and a
  * git-native delete: removing a resource opens a change request (a staged-only draft is
- * just discarded). Works per roster member like every repo page (?agent=).
+ * just discarded). Member-scoped (M5.8): team members' lists live at
+ * /repos/:id/agents/:name/resources/:category; single-agent repos at the repo level.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { MoreHorizontal } from "lucide-react";
@@ -46,7 +47,12 @@ import {
   type LastCommitInfo,
 } from "~/github/repo.server";
 import { proposeChange } from "~/github/write.server";
-import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
+import { contextPath } from "~/lib/paths";
+import {
+  agentFromParams,
+  agentParamRedirect,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.resources.$category";
 
@@ -77,10 +83,17 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
+      const agentName = agentFromParams(args.params);
+      if (!agentName) {
+        const legacy = agentParamRedirect(args.request, project.id);
+        if (legacy) throw legacy;
+      }
       const { roster, active, isTeam } = await resolveAgentContext(
         project.id,
-        agentParam(args.request),
+        agentName,
       );
+      // Teams have no repo-level resource lists — they exist only at the member level.
+      if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
       const repo = { owner: project.repoOwner, repo: project.repoName };
       const [source, drafts] = await Promise.all([
         fetchAgentSource(project.repoInstallationId, repo),
@@ -218,8 +231,7 @@ const CATEGORY_HINTS: Record<string, string> = {
 
 export default function ResourceCategory({ loaderData, actionData }: Route.ComponentProps) {
   const { project, category, roster, activeAgent, activeRoot, isTeam, rows } = loaderData;
-  const base = `/repos/${project.id}`;
-  const agentSuffix = isTeam ? `?agent=${encodeURIComponent(activeAgent)}` : "";
+  const ctx = contextPath(project.id, isTeam ? activeAgent : null);
   const submit = useSubmit();
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
@@ -238,9 +250,14 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
       <PageHeader
         title={category.label}
         description={CATEGORY_HINTS[category.key]}
-        actions={<NewResourceDialog kind={kind} base={base} root={activeRoot} />}
+        actions={<NewResourceDialog kind={kind} base={ctx} root={activeRoot} />}
       />
-      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
@@ -255,10 +272,10 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
             <span className="font-mono">{actionData.deleted}</span> is removed when it
             merges.{" "}
             <Link
-              to={`${base}/changes${agentSuffix}`}
+              to={`${ctx}/deployment`}
               className="font-medium underline underline-offset-4"
             >
-              Review it in Changes →
+              Review it on the Deployment tab →
             </Link>
           </AlertDescription>
         </Alert>
@@ -279,7 +296,7 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
             <CardTitle className="text-lg">No {category.label.toLowerCase()} yet</CardTitle>
             <CardDescription>{CATEGORY_HINTS[category.key]}</CardDescription>
             <div className="mt-4">
-              <NewResourceDialog kind={kind} base={base} root={activeRoot} />
+              <NewResourceDialog kind={kind} base={ctx} root={activeRoot} />
             </div>
           </CardHeader>
         </Card>
@@ -304,7 +321,7 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
                         <span className="font-mono">{row.name}/</span>
                       ) : (
                         <Link
-                          to={`${base}/edit?path=${encodeURIComponent(row.path)}`}
+                          to={`${ctx}/edit?path=${encodeURIComponent(row.path)}`}
                           className="font-mono underline-offset-4 hover:underline"
                         >
                           {row.name}
@@ -328,7 +345,7 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
                       <div className="flex items-center justify-end gap-1">
                         {!row.isDirectory && (
                           <Button variant="ghost" size="sm" asChild>
-                            <Link to={`${base}/edit?path=${encodeURIComponent(row.path)}`}>
+                            <Link to={`${ctx}/edit?path=${encodeURIComponent(row.path)}`}>
                               Open
                             </Link>
                           </Button>

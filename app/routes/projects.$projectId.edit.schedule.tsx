@@ -30,7 +30,13 @@ import { Textarea } from "~/components/ui/textarea";
 import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import { buildScheduleFile, parseScheduleFile } from "~/eve/scheduleFile";
 import { isValidCron } from "~/lib/cron";
-import { memberFromPath, resolveAgentContext } from "~/project/agent-context.server";
+import { contextPath } from "~/lib/paths";
+import {
+  agentFromParams,
+  agentParamRedirect,
+  memberFromPath,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
 import { normalizeAgentPath, requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.edit.schedule";
 
@@ -58,14 +64,21 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
+      // The member is the path segment when present (member-level route); otherwise the
+      // schedule file's path implies it. Legacy ?agent= links 301 into the member path.
+      const paramAgent = agentFromParams(args.params);
+      if (!paramAgent) {
+        const legacy = agentParamRedirect(args.request, project.id);
+        if (legacy) throw legacy;
+      }
       const path = schedulePath(
         new URL(args.request.url).searchParams.get("path") ?? "",
       );
-      if (!path) throw redirect(`/repos/${project.id}`);
+      if (!path) throw redirect(contextPath(project.id, paramAgent));
 
-      const [view, { roster, active }] = await Promise.all([
+      const [view, { roster, active, isTeam }] = await Promise.all([
         resolveFileView(project, path),
-        resolveAgentContext(project.id, memberFromPath(path)),
+        resolveAgentContext(project.id, paramAgent ?? memberFromPath(path)),
       ]);
       const parsed = view.content ? parseScheduleFile(view.content) : null;
       return {
@@ -73,6 +86,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         path,
         roster: roster.map((a) => ({ name: a.name })),
         activeAgent: active.name,
+        isTeam,
         cron: parsed?.cron || DEFAULT_CRON,
         message: parsed?.message ?? "",
         extraFrontmatter: parsed?.extraFrontmatter ?? [],
@@ -141,7 +155,7 @@ function ScheduleForm({
   loaderData,
   actionData,
 }: Pick<Route.ComponentProps, "loaderData" | "actionData">) {
-  const { project, path, roster, activeAgent, exists, isNew } = loaderData;
+  const { project, path, roster, activeAgent, isTeam, exists, isNew } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const saving = navigation.state !== "idle";
@@ -150,10 +164,11 @@ function ScheduleForm({
   const [message, setMessage] = useState(loaderData.message);
 
   const base = `/repos/${project.id}`;
+  const ctx = contextPath(project.id, isTeam ? activeAgent : null);
   const name = path.split("/").pop()!.replace(/\.md$/, "");
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: path.split("/").pop() }] })}>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam, agentName: activeAgent, tail: [{ label: path.split("/").pop() }] })}>
       <PageHeader
         title={
           <span className="flex items-center gap-3">
@@ -163,7 +178,12 @@ function ScheduleForm({
         }
         description="When the schedule fires, the agent receives the message below and acts on it."
       />
-      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
@@ -206,11 +226,11 @@ function ScheduleForm({
             {saving ? "Saving…" : "Save"}
           </Button>
           <Button variant="ghost" asChild>
-            <Link to={base}>Cancel</Link>
+            <Link to={ctx}>Cancel</Link>
           </Button>
           {!isNew && (
             <Link
-              to={`${base}/edit?path=${encodeURIComponent(path)}&raw=1`}
+              to={`${ctx}/edit?path=${encodeURIComponent(path)}&raw=1`}
               className="ml-auto text-xs text-muted-foreground underline-offset-4 hover:underline"
             >
               Advanced: edit raw markdown

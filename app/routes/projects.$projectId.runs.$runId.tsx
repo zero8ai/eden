@@ -5,14 +5,19 @@
  */
 import { authkitLoader } from "@workos-inc/authkit-react-router";
 import type { ReactNode } from "react";
-import { Link, data, type LoaderFunctionArgs } from "react-router";
+import { Link, data, redirect, type LoaderFunctionArgs } from "react-router";
 
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import { contextPath } from "~/lib/paths";
 import { getRunWithSteps } from "~/observability/store.server";
-import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
+import {
+  agentFromParams,
+  agentParamRedirect,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
 import { requireProject } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.runs.$runId";
 
@@ -24,16 +29,24 @@ export const loader = (args: LoaderFunctionArgs) =>
         { user: auth.user, organizationId: auth.organizationId, role: auth.role },
         args.params.projectId,
       );
-      const [result, { roster, active }] = await Promise.all([
+      const agentName = agentFromParams(args.params);
+      if (!agentName) {
+        const legacy = agentParamRedirect(args.request, project.id);
+        if (legacy) throw legacy;
+      }
+      const [result, { roster, active, isTeam }] = await Promise.all([
         getRunWithSteps(project.id, args.params.runId!),
-        resolveAgentContext(project.id, agentParam(args.request)),
+        resolveAgentContext(project.id, agentName),
       ]);
+      // Teams have no repo-level run pages — the transcript lives at the member level.
+      if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
       if (!result) throw data("Run not found", { status: 404 });
       return {
         project,
         ...result,
         roster: roster.map((a) => ({ name: a.name })),
         activeAgent: active.name,
+        isTeam,
       };
     },
     { ensureSignedIn: true },
@@ -53,21 +66,26 @@ function statusVariant(
 }
 
 export default function RunTranscript({ loaderData }: Route.ComponentProps) {
-  const { project, run, steps, release, roster, activeAgent } = loaderData;
-  const base = `/repos/${project.id}`;
+  const { project, run, steps, release, roster, activeAgent, isTeam } = loaderData;
+  const ctx = contextPath(project.id, isTeam ? activeAgent : null);
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: "Run" }] })}>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam, agentName: activeAgent, tail: [{ label: "Run" }] })}>
       <PageHeader
         title={run.externalRunId ?? run.id}
         description="Progressive-disclosure timeline of each model and tool step."
         actions={
           <Button variant="outline" asChild>
-            <Link to={`${base}/runs`}>← Runs</Link>
+            <Link to={`${ctx}/runs`}>← Runs</Link>
           </Button>
         }
       />
-      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
 
       {/* Summary */}
       <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">

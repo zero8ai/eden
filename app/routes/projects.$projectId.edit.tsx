@@ -27,7 +27,13 @@ import { Button } from "~/components/ui/button";
 import { resolveFileView, stageDraft, type FileView } from "~/drafts/drafts.server";
 import { RESOURCE_KINDS } from "~/eve/templates";
 import { formatSource, isFormattable } from "~/lib/format";
-import { memberFromPath, resolveAgentContext } from "~/project/agent-context.server";
+import { contextPath } from "~/lib/paths";
+import {
+  agentFromParams,
+  agentParamRedirect,
+  memberFromPath,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
 import {
   normalizeAgentPath,
   requireProject,
@@ -41,6 +47,7 @@ interface FileEditView {
   path: string;
   roster: { name: string }[];
   activeAgent: string;
+  isTeam: boolean;
   content: string;
   /** File exists on the default branch. */
   exists: boolean;
@@ -74,10 +81,18 @@ export const loader = (args: LoaderFunctionArgs) =>
         ),
       );
 
+      // The member is the path segment when present (member-level route); otherwise the
+      // edited file's path implies it. Legacy ?agent= links 301 into the member path.
+      const paramAgent = agentFromParams(args.params);
+      if (!paramAgent) {
+        const legacy = agentParamRedirect(args.request, project.id);
+        if (legacy) throw legacy;
+      }
+
       const url = new URL(args.request.url);
       const path = normalizeAgentPath(url.searchParams.get("path") ?? "");
       // No (valid) target — nothing to edit; back to the overview, where creation lives.
-      if (!path) throw redirect(`/repos/${project.id}`);
+      if (!path) throw redirect(contextPath(project.id, paramAgent));
 
       // Markdown schedules get the structured editor (cron + message); ?raw=1 is its own
       // "advanced" escape hatch back to this code editor.
@@ -86,13 +101,13 @@ export const loader = (args: LoaderFunctionArgs) =>
         !url.searchParams.get("raw")
       ) {
         throw redirect(
-          `/repos/${project.id}/edit/schedule?path=${encodeURIComponent(path)}`,
+          `${contextPath(project.id, paramAgent)}/edit/schedule?path=${encodeURIComponent(path)}`,
         );
       }
 
-      const [view, { roster, active }] = await Promise.all([
+      const [view, { roster, active, isTeam }] = await Promise.all([
         resolveFileView(project, path),
-        resolveAgentContext(project.id, memberFromPath(path)),
+        resolveAgentContext(project.id, paramAgent ?? memberFromPath(path)),
       ]);
       const template = view.content === null ? templateFor(path) : null;
       return {
@@ -100,6 +115,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         path,
         roster: roster.map((a) => ({ name: a.name })),
         activeAgent: active.name,
+        isTeam,
         content: view.content ?? template ?? "",
         exists: view.existsInRepo,
         isNew: template !== null,
@@ -156,7 +172,8 @@ function Editor({
   loaderData,
   actionData,
 }: Pick<Route.ComponentProps, "loaderData" | "actionData">) {
-  const { project, path, roster, activeAgent, content, exists, isNew } = loaderData;
+  const { project, path, roster, activeAgent, isTeam, content, exists, isNew } =
+    loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const saving = navigation.state !== "idle";
@@ -191,9 +208,10 @@ function Editor({
   };
 
   const base = `/repos/${project.id}`;
+  const ctx = contextPath(project.id, isTeam ? activeAgent : null);
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: path.split("/").pop() }] })}>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam, agentName: activeAgent, tail: [{ label: path.split("/").pop() }] })}>
       <PageHeader
         title={
           <span className="flex items-center gap-3">
@@ -207,7 +225,12 @@ function Editor({
             : "Saving stages the change — publish staged changes as one pull request from the Changes tab."
         }
       />
-      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
@@ -236,7 +259,7 @@ function Editor({
           </Button>
         )}
         <Button variant="ghost" asChild>
-          <Link to={base}>Cancel</Link>
+          <Link to={ctx}>Cancel</Link>
         </Button>
       </div>
     </AppShell>

@@ -28,7 +28,12 @@ import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { newId } from "~/lib/id";
-import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
+import { contextPath } from "~/lib/paths";
+import {
+  agentFromParams,
+  agentParamRedirect,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.assistant";
 
@@ -50,18 +55,26 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
-      const [conversation, { roster, active }] = await Promise.all([
+      const agentName = agentFromParams(args.params);
+      if (!agentName) {
+        const legacy = agentParamRedirect(args.request, project.id);
+        if (legacy) throw legacy;
+      }
+      const [conversation, { roster, active, isTeam }] = await Promise.all([
         loadConversation<AssistantState>(project.id, "assistant", auth.user!.id, {
           history: [],
         }),
-        resolveAgentContext(project.id, agentParam(args.request)),
+        resolveAgentContext(project.id, agentName),
       ]);
+      // Teams have no repo-level Assistant — the tab exists only at the member level.
+      if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
       return {
         project,
         entries: conversation.entries,
         expired: conversation.expired,
         roster: roster.map((a) => ({ name: a.name })),
         activeAgent: active.name,
+        isTeam,
       };
     },
     { ensureSignedIn: true },
@@ -139,8 +152,8 @@ export function meta() {
 }
 
 export default function Assistant({ loaderData }: Route.ComponentProps) {
-  const { project, entries, expired, roster, activeAgent } = loaderData;
-  const base = `/repos/${project.id}`;
+  const { project, entries, expired, roster, activeAgent, isTeam } = loaderData;
+  const ctx = contextPath(project.id, isTeam ? activeAgent : null);
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
   const pendingMessage =
@@ -149,10 +162,10 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
       : null;
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: "Assistant" }] })}>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam, agentName: activeAgent, tail: [{ label: "Assistant" }] })}>
       <PageHeader
         title="Assistant"
-        description="Tell it what the agent should be able to do. It writes the code, verifies the build, and stages everything for your review in Changes."
+        description="Tell it what the agent should be able to do. It writes the code, verifies the build, and stages everything for your review on the Deployment tab."
         actions={
           entries.length > 0 ? (
             <fetcher.Form method="post">
@@ -164,7 +177,12 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           ) : undefined
         }
       />
-      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
 
       {expired && entries.length === 0 && (
         <Alert className="mb-4">
@@ -185,7 +203,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
             e.role === "user" ? (
               <UserBubble key={e.id} text={e.text} />
             ) : (
-              <AssistantEntry key={e.id} entry={e} base={base} />
+              <AssistantEntry key={e.id} entry={e} base={ctx} />
             ),
           )}
           {pendingMessage && (
@@ -246,8 +264,11 @@ function AssistantEntry({ entry, base }: { entry: ChatEntry; base: string }) {
             ))}
           </ul>
           <p>
-            <Link to={`${base}/changes`} className="font-medium underline underline-offset-4">
-              Review &amp; publish in Changes →
+            <Link
+              to={`${base}/deployment`}
+              className="font-medium underline underline-offset-4"
+            >
+              Review &amp; publish on the Deployment tab →
             </Link>
           </p>
         </div>
@@ -261,8 +282,8 @@ function AssistantEntry({ entry, base }: { entry: ChatEntry; base: string }) {
               {s}
             </Badge>
           ))}
-          <Link to={`${base}/secrets`} className="underline underline-offset-4">
-            open Secrets →
+          <Link to={`${base}/settings`} className="underline underline-offset-4">
+            open Settings →
           </Link>
         </p>
       )}

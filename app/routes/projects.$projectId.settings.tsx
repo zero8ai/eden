@@ -1,0 +1,780 @@
+/**
+ * Settings — configuration that isn't the agent's repo-backed behavior (M5.8).
+ *
+ * Two levels share this module (route ids `settings` + `member-settings`):
+ *  - MEMBER sections (team members at /agents/:name/settings; included for single-agent
+ *    repos): Model (staged into agent.ts like any edit), Secrets (per-member + per-
+ *    environment, write-only values), and the member danger zone (remove agent — a
+ *    change-set PR deleting its directory).
+ *  - REPO sections (team repos at /repos/:id/settings; appended for single-agent repos):
+ *    General (the GitHub connection), Run ingestion tokens, and the repo danger zone —
+ *    Delete repository, a FULL Eden-side teardown (instances stopped and destroyed, every
+ *    row cascaded). The GitHub repository itself is never touched.
+ */
+import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { useState } from "react";
+import {
+  Form,
+  redirect,
+  useFetcher,
+  useNavigation,
+  useSubmit,
+  type ActionFunctionArgs,
+  type LoaderFunctionArgs,
+} from "react-router";
+
+import { ConfirmDialog } from "~/components/confirm-dialog";
+import { ModelSelect } from "~/components/model-select";
+import {
+  AgentNav,
+  AppShell,
+  PageHeader,
+  SectionHeader,
+  repoCrumbs,
+  type NavLevel,
+} from "~/components/shell";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { Card, CardContent } from "~/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "~/components/ui/dialog";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import type { Environment } from "~/data/ports";
+import { deleteRepository } from "~/deploy/repository.server";
+import { listAgentEnvironments } from "~/db/queries.server";
+import { createIngestToken, listIngestTokens } from "~/observability/store.server";
+import { listDrafts, resolveFileView, stageDraft } from "~/drafts/drafts.server";
+import { readModel, scaffoldAgentModule, setModel } from "~/eve/agentModule";
+import { buildAgentConfig } from "~/eve/parse";
+import { fetchAgentSource } from "~/github/repo.server";
+import { proposeChange, type FileChange } from "~/github/write.server";
+import { contextPath } from "~/lib/paths";
+import {
+  agentFromParams,
+  agentParamRedirect,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
+import { requireProject, requireRepo } from "~/project/guard.server";
+import type { ConnectedProject } from "~/project/guard.server";
+import { getRuntime } from "~/seams/index.server";
+import type { Route } from "./+types/projects.$projectId.settings";
+
+const ALL = "all";
+
+interface SettingsView {
+  project: ConnectedProject;
+  roster: { name: string }[];
+  activeAgent: string;
+  isTeam: boolean;
+  level: NavLevel;
+  showMember: boolean;
+  showRepo: boolean;
+  /** Member: whether the active member can be removed (team, not the last member). */
+  canRemoveMember: boolean;
+  /** Member: current model (staged draft wins) + staging state. */
+  model: string | null;
+  hasAgentModule: boolean;
+  modelStaged: boolean;
+  /** Member: secrets scope state. */
+  envs: Environment[];
+  scope: { environmentId: string | null; label: string };
+  secretNames: string[];
+  secretsConfigured: boolean;
+  secretsError: string | null;
+  /** Repo: ingest tokens. */
+  tokens: { id: string; name: string; createdAt: string; lastUsedAt: string | null }[];
+}
+
+/** Resolve the `?env=` param to an environmentId (null == agent-wide), validated. */
+function resolveScope(
+  raw: string | null,
+  envs: Environment[],
+): { environmentId: string | null; label: string } {
+  if (!raw || raw === ALL) return { environmentId: null, label: "All environments" };
+  const env = envs.find((e) => e.id === raw);
+  return env
+    ? { environmentId: env.id, label: env.name }
+    : { environmentId: null, label: "All environments" };
+}
+
+export const loader = (args: LoaderFunctionArgs) =>
+  authkitLoader(
+    args,
+    async ({ auth }): Promise<SettingsView> => {
+      const project = requireRepo(
+        await requireProject(
+          { user: auth.user, organizationId: auth.organizationId, role: auth.role },
+          args.params.projectId,
+        ),
+      );
+      const agentName = agentFromParams(args.params);
+      if (!agentName) {
+        const legacy = agentParamRedirect(args.request, project.id);
+        if (legacy) throw legacy;
+      }
+      const { roster, active, isTeam } = await resolveAgentContext(
+        project.id,
+        agentName,
+      );
+      const level: NavLevel = agentName ? "member" : isTeam ? "repo" : "single";
+      const showMember = level !== "repo";
+      const showRepo = level !== "member";
+
+      const base: SettingsView = {
+        project,
+        roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
+        isTeam,
+        level,
+        showMember,
+        showRepo,
+        canRemoveMember: showMember && isTeam && active.root !== "agent",
+        model: null,
+        hasAgentModule: false,
+        modelStaged: false,
+        envs: [],
+        scope: { environmentId: null, label: "All environments" },
+        secretNames: [],
+        secretsConfigured: true,
+        secretsError: null,
+        tokens: [],
+      };
+
+      if (showMember) {
+        const [source, drafts, envs] = await Promise.all([
+          fetchAgentSource(project.repoInstallationId, {
+            owner: project.repoOwner,
+            repo: project.repoName,
+          }),
+          listDrafts(project.id),
+          listAgentEnvironments(active.id),
+        ]);
+        const config = buildAgentConfig(source, active.root);
+        // The model shown must reflect the newest intent: a staged agent.ts draft wins.
+        const agentTsDraft = drafts.find((d) => d.path === `${active.root}/agent.ts`);
+        base.model = agentTsDraft
+          ? (readModel(agentTsDraft.content) ?? config.model)
+          : config.model;
+        base.hasAgentModule = config.hasAgentModule || !!agentTsDraft;
+        base.modelStaged = !!agentTsDraft;
+        base.envs = envs;
+        base.scope = resolveScope(
+          new URL(args.request.url).searchParams.get("env"),
+          envs,
+        );
+        try {
+          base.secretNames = await getRuntime().secrets.listNames({
+            projectId: project.id,
+            agentId: active.id,
+            environmentId: base.scope.environmentId,
+          });
+        } catch (error) {
+          base.secretsConfigured = false;
+          base.secretsError = (error as Error).message;
+        }
+      }
+      if (showRepo) {
+        const tokens = await listIngestTokens(project.id);
+        base.tokens = tokens.map((t) => ({
+          id: t.id,
+          name: t.name,
+          createdAt: new Date(t.createdAt).toISOString(),
+          lastUsedAt: t.lastUsedAt ? new Date(t.lastUsedAt).toISOString() : null,
+        }));
+      }
+      return base;
+    },
+    { ensureSignedIn: true },
+  );
+
+export async function action(args: ActionFunctionArgs) {
+  const auth = await withAuth(args);
+  if (!auth.user) throw redirect("/login");
+  const project = requireRepo(
+    await requireProject(
+      {
+        user: auth.user,
+        organizationId: auth.organizationId ?? null,
+        role: auth.role ?? null,
+      },
+      args.params.projectId,
+    ),
+  );
+  const form = await args.request.formData();
+  const intent = String(form.get("intent") ?? "");
+  const back = `${contextPath(project.id, agentFromParams(args.params))}/settings`;
+  const repo = { owner: project.repoOwner, repo: project.repoName };
+
+  try {
+    // ── Model: stage agent.ts for the active member (same rails as every edit) ──
+    if (intent === "set-model") {
+      const model = String(form.get("model") ?? "").trim();
+      if (!model) return { error: "Pick or enter a model." };
+      const { active } = await resolveAgentContext(
+        project.id,
+        String(form.get("agent") ?? "") || null,
+      );
+      const path = `${active.root}/agent.ts`;
+      const view = await resolveFileView(project, path);
+      const next = view.content ? setModel(view.content, model) : scaffoldAgentModule(model);
+      await stageDraft({
+        projectId: project.id,
+        path,
+        content: next,
+        createdBy: auth.user.id,
+      });
+      return { ok: true as const };
+    }
+
+    // ── Secrets (per-member + per-environment; values write-only) ──
+    if (intent === "secret-set" || intent === "secret-delete") {
+      const { active } = await resolveAgentContext(
+        project.id,
+        String(form.get("agent") ?? "") || null,
+      );
+      const envs = await listAgentEnvironments(active.id);
+      const envRaw = String(form.get("env") ?? ALL);
+      const { environmentId } = resolveScope(envRaw, envs);
+      const key = String(form.get("key") ?? "").trim();
+      const ref = { projectId: project.id, agentId: active.id, environmentId, key };
+      const secrets = getRuntime().secrets;
+      if (intent === "secret-set") {
+        const value = String(form.get("value") ?? "");
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          return { error: "Key must be a valid env var name (A–Z, 0–9, _)." };
+        }
+        if (!value) return { error: "Value is required." };
+        await secrets.set(ref, value);
+      } else {
+        await secrets.delete(ref);
+      }
+      throw redirect(`${back}?env=${encodeURIComponent(envRaw)}`);
+    }
+
+    // ── Member danger zone: remove agent (change-set PR deleting its directory) ──
+    if (intent === "remove-member") {
+      const name = String(form.get("name") ?? "");
+      const { roster } = await resolveAgentContext(project.id, null);
+      const member = roster.find((a) => a.name === name);
+      if (!member || member.root === "agent") {
+        return { error: "Only team members (agents/<name>/) can be removed." };
+      }
+      if (roster.length <= 1) {
+        return { error: "A team needs at least one member." };
+      }
+      const source = await fetchAgentSource(project.repoInstallationId, repo);
+      const memberDir = `agents/${name}/`;
+      const files: FileChange[] = source.paths
+        .filter((p) => p.startsWith(memberDir))
+        .map((p) => ({ path: p, content: null }));
+      if (files.length === 0) return { error: `No files found under ${memberDir}.` };
+      const change = await proposeChange(project.repoInstallationId, repo, {
+        base: project.defaultBranch,
+        branch: `eden/remove-member-${name}`,
+        files,
+        title: `Remove team member: ${name}`,
+        body:
+          `Deletes \`agents/${name}/\` (${files.length} files). Merging removes the member; ` +
+          `its releases and run history remain until then.`,
+      });
+      return { ok: true as const, changeUrl: change.pullRequestUrl, member: name };
+    }
+
+    // ── Repo: ingest tokens ──
+    if (intent === "create-token") {
+      const token = await createIngestToken(
+        project.id,
+        String(form.get("name") || "ingest"),
+      );
+      return { ok: true as const, token };
+    }
+
+    // ── Repo danger zone: full Eden-side teardown ──
+    if (intent === "delete-repository") {
+      const confirm = String(form.get("confirm") ?? "");
+      if (confirm !== project.name) {
+        return { error: `Type the repository name ("${project.name}") to confirm.` };
+      }
+      await deleteRepository({ projectId: project.id, createdBy: auth.user.id });
+      throw redirect("/dashboard");
+    }
+
+    return { error: "Unknown action." };
+  } catch (error) {
+    if (error instanceof Response) throw error;
+    return { error: (error as Error).message };
+  }
+}
+
+export function meta() {
+  return [{ title: "Settings · Eden" }];
+}
+
+export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
+  const {
+    project,
+    roster,
+    activeAgent,
+    isTeam,
+    level,
+    showMember,
+    showRepo,
+    canRemoveMember,
+  } = loaderData;
+  const base = contextPath(project.id, level === "member" ? activeAgent : null);
+  const newToken =
+    actionData && "token" in actionData ? (actionData.token as string | null) : null;
+  const changeUrl =
+    actionData && "changeUrl" in actionData ? (actionData.changeUrl as string) : null;
+
+  return (
+    <AppShell
+      breadcrumbs={repoCrumbs({
+        projectId: project.id,
+        repoName: project.name,
+        isTeam: level === "member",
+        agentName: activeAgent,
+        tail: [{ label: "Settings" }],
+      })}
+    >
+      <PageHeader
+        title={level === "member" ? `Settings — ${activeAgent}` : "Settings"}
+        description={
+          level === "repo"
+            ? "Repository-wide configuration. Each member's model and secrets live in the member's own Settings."
+            : showRepo
+              ? "This agent's runtime configuration and the repository connection."
+              : "This member's runtime configuration — model, credentials, membership."
+        }
+      />
+      <AgentNav
+        base={base}
+        level={level}
+        roster={roster}
+        activeAgent={level === "member" ? activeAgent : undefined}
+      />
+
+      {actionData?.error && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertTitle>Something went wrong</AlertTitle>
+          <AlertDescription className="whitespace-pre-wrap">
+            {actionData.error}
+          </AlertDescription>
+        </Alert>
+      )}
+      {changeUrl && (
+        <Alert className="mb-6">
+          <AlertTitle>Change request opened</AlertTitle>
+          <AlertDescription>
+            The member is removed when it merges — review it on the Deployment tab.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <div className="space-y-10">
+        {showMember && <ModelSection loaderData={loaderData} />}
+        {showMember && <SecretsSection loaderData={loaderData} />}
+        {showRepo && <GeneralSection project={project} />}
+        {showRepo && <IngestSection loaderData={loaderData} newToken={newToken} />}
+        {(canRemoveMember || showRepo) && (
+          <DangerSection
+            project={project}
+            activeAgent={activeAgent}
+            canRemoveMember={canRemoveMember}
+            showRepo={showRepo}
+            isTeam={isTeam}
+          />
+        )}
+      </div>
+    </AppShell>
+  );
+}
+
+/** Model — the one runtime setting; saving stages agent.ts like any other edit. */
+function ModelSection({ loaderData }: { loaderData: Route.ComponentProps["loaderData"] }) {
+  const { model, hasAgentModule, modelStaged, activeAgent } = loaderData;
+  const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
+  return (
+    <section>
+      <SectionHeader
+        title="Model"
+        badges={
+          <>
+            {modelStaged && (
+              <Badge variant="outline" className="text-xs">
+                staged
+              </Badge>
+            )}
+            {!hasAgentModule && (
+              <Badge variant="outline" className="text-xs">
+                no agent.ts — picking one scaffolds it
+              </Badge>
+            )}
+          </>
+        }
+      />
+      <ModelSelect
+        value={model}
+        busy={fetcher.state !== "idle"}
+        onCommit={(m) =>
+          fetcher.submit(
+            { intent: "set-model", model: m, agent: activeAgent },
+            { method: "post" },
+          )
+        }
+      />
+      {fetcher.data?.error && (
+        <p className="mt-2 text-sm text-destructive">{fetcher.data.error}</p>
+      )}
+      {fetcher.data?.ok && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          Staged — ship or publish it from the Deployment tab.
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** Secrets — per-member, per-environment; values are write-only from the UI. */
+function SecretsSection({
+  loaderData,
+}: {
+  loaderData: Route.ComponentProps["loaderData"];
+}) {
+  const { envs, scope, secretNames, secretsConfigured, secretsError, activeAgent, isTeam } =
+    loaderData;
+  const navigation = useNavigation();
+  const busy = navigation.state === "submitting";
+  const envValue = scope.environmentId ?? ALL;
+
+  return (
+    <section>
+      <SectionHeader
+        title="Secrets"
+        badges={
+          <Badge variant="secondary">
+            {scope.label} · {secretNames.length}
+          </Badge>
+        }
+        actions={
+          <Form method="get" className="flex items-center gap-2">
+            <Select name="env" defaultValue={envValue}>
+              <SelectTrigger className="h-8 min-w-44" aria-label="Secret scope">
+                <SelectValue placeholder="Scope" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All environments</SelectItem>
+                {envs.map((e) => (
+                  <SelectItem key={e.id} value={e.id}>
+                    {e.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button type="submit" size="sm" variant="secondary">
+              Switch
+            </Button>
+          </Form>
+        }
+      />
+      <p className="mb-3 text-sm text-muted-foreground">
+        {isTeam
+          ? "Scoped to this member only — teammates cannot read each other's credentials. Values are injected at deploy time and never shown again."
+          : "Stored encrypted, never in the repo. Reference them by name in tools and connections; values are injected at deploy time and never shown again."}
+      </p>
+
+      {!secretsConfigured && (
+        <Alert className="mb-4">
+          <AlertTitle>Secrets store not configured.</AlertTitle>
+          <AlertDescription>{secretsError}</AlertDescription>
+        </Alert>
+      )}
+
+      {secretNames.length > 0 && (
+        <ul className="mb-4 divide-y rounded-lg border text-sm">
+          {secretNames.map((name) => (
+            <li key={name} className="flex items-center justify-between gap-2 px-4 py-2">
+              <div className="flex items-center gap-2">
+                <span className="font-mono">{name}</span>
+                <Badge variant={scope.environmentId ? "secondary" : "outline"}>
+                  {scope.environmentId ? scope.label : "all environments"}
+                </Badge>
+              </div>
+              <Form method="post">
+                <input type="hidden" name="intent" value="secret-delete" />
+                <input type="hidden" name="env" value={envValue} />
+                <input type="hidden" name="agent" value={activeAgent} />
+                <input type="hidden" name="key" value={name} />
+                <Button
+                  type="submit"
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  className="text-destructive hover:text-destructive"
+                >
+                  Delete
+                </Button>
+              </Form>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Form method="post" className="flex flex-wrap items-end gap-2">
+        <input type="hidden" name="intent" value="secret-set" />
+        <input type="hidden" name="env" value={envValue} />
+        <input type="hidden" name="agent" value={activeAgent} />
+        <div className="grid gap-1.5">
+          <Label htmlFor="secret-key">Key</Label>
+          <Input id="secret-key" name="key" placeholder="API_KEY" className="w-56 font-mono" />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="secret-value">Value</Label>
+          <Input
+            id="secret-value"
+            name="value"
+            type="password"
+            placeholder="value (write-only)"
+            autoComplete="off"
+            className="w-64 font-mono"
+          />
+        </div>
+        <Button type="submit" disabled={busy || !secretsConfigured}>
+          {busy ? "Saving…" : "Save secret"}
+        </Button>
+      </Form>
+    </section>
+  );
+}
+
+/** The GitHub connection this repository is built on (read-mostly). */
+function GeneralSection({ project }: { project: { name: string; repoOwner: string; repoName: string; defaultBranch: string } }) {
+  return (
+    <section>
+      <SectionHeader title="General" />
+      <Card>
+        <CardContent className="space-y-1 py-4 text-sm">
+          <p>
+            <span className="text-muted-foreground">Repository:</span>{" "}
+            <a
+              href={`https://github.com/${project.repoOwner}/${project.repoName}`}
+              className="font-mono underline underline-offset-4"
+              target="_blank"
+              rel="noreferrer"
+            >
+              {project.repoOwner}/{project.repoName}
+            </a>
+          </p>
+          <p>
+            <span className="text-muted-foreground">Default branch:</span>{" "}
+            <span className="font-mono">{project.defaultBranch}</span>
+          </p>
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
+/** Ingest tokens — BYO instances use these to ship run telemetry back to Eden. */
+function IngestSection({
+  loaderData,
+  newToken,
+}: {
+  loaderData: Route.ComponentProps["loaderData"];
+  newToken: string | null;
+}) {
+  const { tokens } = loaderData;
+  const navigation = useNavigation();
+  const busy = navigation.state === "submitting";
+  return (
+    <section>
+      <SectionHeader title="Run ingestion" />
+      <p className="mb-3 text-sm text-muted-foreground">
+        BYO instances ship telemetry to <span className="font-mono">/api/ingest/runs</span>{" "}
+        with one of these tokens.
+      </p>
+      {newToken && (
+        <Alert className="mb-4">
+          <AlertTitle>New token — copy now, shown once</AlertTitle>
+          <AlertDescription>
+            <code className="font-mono">{newToken}</code>
+          </AlertDescription>
+        </Alert>
+      )}
+      {tokens.length > 0 && (
+        <ul className="mb-4 space-y-1 text-sm text-muted-foreground">
+          {tokens.map((t) => (
+            <li key={t.id}>
+              {t.name} · created {new Date(t.createdAt).toLocaleDateString()}
+              {t.lastUsedAt
+                ? ` · last used ${new Date(t.lastUsedAt).toLocaleDateString()}`
+                : " · never used"}
+            </li>
+          ))}
+        </ul>
+      )}
+      <Form method="post" className="flex items-center gap-2">
+        <input type="hidden" name="intent" value="create-token" />
+        <Input name="name" placeholder="production instance" className="max-w-xs" />
+        <Button type="submit" disabled={busy}>
+          Create ingest token
+        </Button>
+      </Form>
+    </section>
+  );
+}
+
+/** Destructive actions, deliberately last and deliberately loud. */
+function DangerSection({
+  project,
+  activeAgent,
+  canRemoveMember,
+  showRepo,
+  isTeam,
+}: {
+  project: { id: string; name: string };
+  activeAgent: string;
+  canRemoveMember: boolean;
+  showRepo: boolean;
+  isTeam: boolean;
+}) {
+  const submit = useSubmit();
+  const navigation = useNavigation();
+  const busy = navigation.state !== "idle";
+
+  return (
+    <section>
+      <SectionHeader title="Danger zone" />
+      <Card className="border-destructive/40">
+        <CardContent className="divide-y py-0">
+          {canRemoveMember && (
+            <div className="flex flex-wrap items-center justify-between gap-3 py-4">
+              <div>
+                <p className="text-sm font-medium">Remove {activeAgent} from the team</p>
+                <p className="text-sm text-muted-foreground">
+                  Opens a change request deleting{" "}
+                  <span className="font-mono">agents/{activeAgent}/</span>. Nothing is
+                  removed until it merges, and git can restore it after.
+                </p>
+              </div>
+              <ConfirmDialog
+                trigger={
+                  <Button variant="outline" disabled={busy}>
+                    Remove member
+                  </Button>
+                }
+                title={`Remove ${activeAgent} from the team?`}
+                description={`Opens a change request deleting agents/${activeAgent}/. Nothing is removed until it merges, and git can restore it after.`}
+                confirmLabel="Open change request"
+                onConfirm={() =>
+                  submit(
+                    { intent: "remove-member", name: activeAgent },
+                    { method: "post" },
+                  )
+                }
+              />
+            </div>
+          )}
+          {showRepo && (
+            <div className="flex flex-wrap items-center justify-between gap-3 py-4">
+              <div>
+                <p className="text-sm font-medium">Delete this repository from Eden</p>
+                <p className="text-sm text-muted-foreground">
+                  Stops and destroys every running instance, then permanently deletes{" "}
+                  {isTeam ? "all members' " : "the agent's "}
+                  versions, environments, secrets, drafts, and run history from Eden. The
+                  GitHub repository itself is not touched.
+                </p>
+              </div>
+              <DeleteRepositoryDialog projectName={project.name} busy={busy} />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
+/** Typed-name confirm for the full teardown — the one action that can't be undone. */
+function DeleteRepositoryDialog({
+  projectName,
+  busy,
+}: {
+  projectName: string;
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  const submit = useSubmit();
+  const confirm = () => {
+    if (typed !== projectName) return;
+    submit({ intent: "delete-repository", confirm: typed }, { method: "post" });
+    setOpen(false);
+  };
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setTyped("");
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="destructive" disabled={busy}>
+          Delete repository
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Delete &ldquo;{projectName}&rdquo; from Eden?</DialogTitle>
+          <DialogDescription>
+            This stops everything that&rsquo;s running and permanently deletes all Eden
+            data for this repository — versions, environments, secrets, drafts, run
+            history. It cannot be undone. The GitHub repository itself is not touched.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-1.5">
+          <Label htmlFor="delete-repo-confirm">
+            Type <span className="font-mono font-semibold">{projectName}</span> to confirm
+          </Label>
+          <Input
+            id="delete-repo-confirm"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={projectName}
+            autoComplete="off"
+            autoFocus
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={typed !== projectName}
+            onClick={confirm}
+          >
+            Delete repository
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

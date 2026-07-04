@@ -302,6 +302,9 @@ export const drizzleDataStore: DataStore = {
       const [row] = await db.insert(projects).values(input).returning();
       return row;
     },
+    async deleteById(id) {
+      await db.delete(projects).where(eq(projects.id, id));
+    },
   },
 
   jobs: {

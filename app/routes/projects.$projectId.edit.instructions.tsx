@@ -25,7 +25,12 @@ import { Button } from "~/components/ui/button";
 import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
 import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
-import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
+import { contextPath } from "~/lib/paths";
+import {
+  agentFromParams,
+  agentParamRedirect,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
 import type { Route } from "./+types/projects.$projectId.edit.instructions";
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -45,9 +50,14 @@ export const loader = (args: LoaderFunctionArgs) =>
         throw data("Project has no connected repo", { status: 400 });
       }
 
+      const agentName = agentFromParams(args.params);
+      if (!agentName) {
+        const legacy = agentParamRedirect(args.request, project.id);
+        if (legacy) throw legacy;
+      }
       const { roster, active, isTeam } = await resolveAgentContext(
         project.id,
-        agentParam(args.request),
+        agentName,
       );
       const path = `${active.root}/instructions.md`;
 
@@ -128,15 +138,21 @@ export default function EditInstructions({
   const [value, setValue] = useState(instructions);
 
   const base = `/repos/${project.id}`;
-  const backTo = isTeam ? `${base}?agent=${encodeURIComponent(activeAgent)}` : base;
+  // Back to the member's overview on teams; the repo overview on single-agent repos.
+  const ctx = contextPath(project.id, isTeam ? activeAgent : null);
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: "Instructions" }] })}>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam, agentName: activeAgent, tail: [{ label: "Instructions" }] })}>
       <PageHeader
         title={isTeam ? `Edit instructions — ${activeAgent}` : "Edit instructions"}
         description="Saving stages the change — publish staged changes as one pull request from the Changes tab."
       />
-      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
@@ -163,7 +179,7 @@ export default function EditInstructions({
           {saving ? "Saving…" : "Save"}
         </Button>
         <Button variant="ghost" asChild>
-          <Link to={backTo}>Cancel</Link>
+          <Link to={ctx}>Cancel</Link>
         </Button>
       </div>
     </AppShell>

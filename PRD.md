@@ -259,12 +259,13 @@ live slot); each environment runs exactly one version.
   every member whose files the change touched. A DB-state-driven progress banner (Published →
   vN created → Building → Running) survives refresh; a failed build leaves the previous version
   serving and offers Retry. The careful path (Changes → review → merge → Versions) is unchanged.
-- **Deploy** — the **Versions** tab (renamed from Deployments) leads with the environments as
-  equal rows (each: running version, in-flight progress, latest failure with retry, rename/
-  delete) over the version history, whose rows are badged with the environment names they run
-  on. Any version — new or old — deploys to any environment in one confirmed click (image
-  reused — seconds, no rebuild), replacing that environment's current version on health.
-  Deploy is deliberately direction-neutral: rollback is just deploying an older version again.
+- **Deploy** — the **Deployment** tab (Changes + Versions consolidated, M5.8) tells the
+  pipeline top-to-bottom: staged changes → change requests → environments as equal rows
+  (each: running version, in-flight progress, latest failure with retry, rename/delete) →
+  version history, whose rows are badged with the environment names they run on. Any
+  version — new or old — deploys to any environment in one confirmed click (image reused —
+  seconds, no rebuild), replacing that environment's current version on health. Deploy is
+  deliberately direction-neutral: rollback is just deploying an older version again.
 
 ### 7.5 Managed commercial offering (v1)
 
@@ -663,7 +664,8 @@ two-source-of-truth reconciliation problem.
   first environment since M5.7), team fan-out to
   affected members, "ship latest from `main`" when nothing is staged, and a refresh-proof
   progress banner with Retry on build failure (§7.4 Deploy UX).
-- **Versions page** (replaces the Deployments tab): environment status + version history with
+- **Versions page** (replaced the Deployments tab; folded into the Deployment tab in M5.8):
+  environment status + version history with
   one-click redeploy of any prior successful Release (confirm dialog). Weights/split controls,
   the per-environment deploy selectors, and the "cut release" button are gone. (Layout and
   vocabulary revised in M5.7: environments-first, "Deploy"/"running on".)
@@ -677,12 +679,12 @@ two-source-of-truth reconciliation problem.
 **Milestone 5.7 — User-defined environments (shipped)**
 - The static seeded trio (production/preview/development) is gone: a new member starts with ONE
   environment named `default`, and environments are ordinary user data — **create, rename,
-  delete** from the Versions page. Rationale: the trio was arbitrary (most agents used only
+  delete** from the deploy surface. Rationale: the trio was arbitrary (most agents used only
   production; the other two sat empty on every member), and imposed vocabulary the user never
   chose. Whoever wants dev/staging/production simply creates them.
 - **Environments are equal peers.** No environment name or position is special in the UI; the
   member's first environment (creation order, id tiebreak) is only the mechanical Ship-dialog
-  preselect. The Versions page leads with the environments as identical rows (running version,
+  preselect. The deploy surface leads with the environments as identical rows (running version,
   in-flight progress, failures) over the version history; version rows are badged with the
   environment names they run on, and the verb is **Deploy to \<env\>** — "live" vocabulary is
   gone, since with peer environments a version is only ever *running on* specific environments.
@@ -700,6 +702,32 @@ two-source-of-truth reconciliation problem.
   ship banner rather than silently skipped.
 - Deliberately not built: cross-member environment sync ("create staging for every member"),
   per-environment protection rules, environment-scoped roles.
+
+**Milestone 5.8 — IA: two-level hierarchy (shipped)**
+- The root defect: ONE tab row (Overview · Changes · Versions · Playground · Runs · Secrets ·
+  Assistant) served three scopes, and lied in both directions — Changes and Playground are
+  repo-wide but carried the member selector; Versions/Secrets were strictly per-member; tabs
+  clicked from a team landing silently landed on the first member.
+- **Member context is a URL level.** Team members' pages live at
+  `/repos/:id/agents/:name/…` with their own tab row; the repo level has a smaller row;
+  single-agent repos collapse both levels into one (no `/agents/…` ever appears). Old
+  `?agent=` links and retired tab URLs 301 into the hierarchy. Tab rows per context:
+  single-agent = Overview · Deployment · Playground · Runs · Assistant · Settings; team
+  landing = Overview · Deployment · Playground · Settings; team member = Overview ·
+  Deployment · Runs · Assistant · Settings (+ member switcher).
+- **Deployment tab** = Changes + Versions merged into the pipeline story: staged changes
+  (the member's drafts + shared ones, badged) → change requests (repo-wide, labeled) →
+  environments → version history. Team repos additionally get a repo-level Deployment
+  rollup: drafts grouped by member, merge, and each member's latest version. Ship stays on
+  the Overview (owner decision — the quick path lives where the edit just happened).
+- **Settings tab** (member level; merged with repo sections on single-agent repos): Model
+  (moved off the Overview), Secrets (the former tab, env scoping intact), danger zone with
+  Remove agent (moved off the Overview header). Repo level: General (GitHub connection),
+  Run-ingestion tokens (moved out of Runs), and **Delete repository** — a full Eden-side
+  teardown (owner decision): instances stopped and destroyed, every row cascaded; the
+  GitHub repository is never touched; typed-name confirm.
+- Punted: repo-level all-runs rollup; per-member assistant transcripts (the shared project
+  transcript with member-scoped writes is a known quirk).
 
 **Milestone 6 — Recruit (marketplace, §7.8)**
 - Template format (files + manifest: required secrets/connections, version, eve range) and the

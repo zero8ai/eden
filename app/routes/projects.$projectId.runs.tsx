@@ -1,19 +1,13 @@
 /**
  * Run list (Observe pillar, M3 — PRD §7.6). Scannable per-run summary metrics, filterable by
- * Release (compare-by-version — the emergent "A/B", D10). Also mints per-project ingest tokens
- * so BYO instances can ship telemetry back.
+ * Release (compare-by-version — the emergent "A/B", D10). Member-scoped (M5.8): team members'
+ * runs live at /repos/:id/agents/:name/runs; single-agent repos at /repos/:id/runs. Ingest
+ * tokens are minted on the repository's Settings tab.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import {
-  Form,
-  Link,
-  redirect,
-  type ActionFunctionArgs,
-  type LoaderFunctionArgs,
-} from "react-router";
+import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { Form, Link, redirect, type LoaderFunctionArgs } from "react-router";
 
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
-import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
@@ -23,7 +17,6 @@ import {
   CardHeader,
   CardTitle,
 } from "~/components/ui/card";
-import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import {
   Select,
@@ -41,12 +34,13 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { listReleases } from "~/db/queries.server";
+import { listRuns } from "~/observability/store.server";
+import { contextPath } from "~/lib/paths";
 import {
-  createIngestToken,
-  listIngestTokens,
-  listRuns,
-} from "~/observability/store.server";
-import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
+  agentFromParams,
+  agentParamRedirect,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
 import { requireProject } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.runs";
 
@@ -58,18 +52,24 @@ export const loader = (args: LoaderFunctionArgs) =>
         { user: auth.user, organizationId: auth.organizationId, role: auth.role },
         args.params.projectId,
       );
+      const agentName = agentFromParams(args.params);
+      if (!agentName) {
+        const legacy = agentParamRedirect(args.request, project.id);
+        if (legacy) throw legacy;
+      }
       const { roster, active, isTeam } = await resolveAgentContext(
         project.id,
-        agentParam(args.request),
+        agentName,
       );
+      // Teams have no repo-level Runs — the tab exists only at the member level.
+      if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
       const raw = new URL(args.request.url).searchParams.get("release");
       // "all" is the picker's explicit no-filter sentinel (Radix items can't be empty).
       const releaseId = raw && raw !== "all" ? raw : undefined;
-      const [runsList, releasesList, tokens] = await Promise.all([
-        // Teams: this member's runs only (unattributed runs appear under no member).
-        listRuns(project.id, { releaseId, agentId: isTeam ? active.id : undefined }),
+      const [runsList, releasesList] = await Promise.all([
+        // Always the active member's runs (single-agent repos: the only member).
+        listRuns(project.id, { releaseId, agentId: active.id }),
         listReleases(project.id),
-        listIngestTokens(project.id),
       ]);
       return {
         project,
@@ -78,34 +78,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         isTeam,
         runs: runsList,
         releases: releasesList.filter((r) => !isTeam || r.agentId === active.id),
-        tokens,
         releaseId,
       };
     },
     { ensureSignedIn: true },
   );
-
-export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
-  if (!auth.user) throw redirect("/login");
-  const project = await requireProject(
-    {
-      user: auth.user,
-      organizationId: auth.organizationId ?? null,
-      role: auth.role ?? null,
-    },
-    args.params.projectId,
-  );
-  const form = await args.request.formData();
-  if (String(form.get("intent")) === "create-token") {
-    const token = await createIngestToken(
-      project.id,
-      String(form.get("name") || "ingest"),
-    );
-    return { token };
-  }
-  return { token: null };
-}
 
 export function meta() {
   return [{ title: "Runs · Eden" }];
@@ -124,10 +101,10 @@ function statusVariant(
   return "outline";
 }
 
-export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, roster, activeAgent, isTeam, runs, releases, tokens, releaseId } =
+export default function Runs({ loaderData }: Route.ComponentProps) {
+  const { project, roster, activeAgent, isTeam, runs, releases, releaseId } =
     loaderData;
-  const base = `/repos/${project.id}`;
+  const ctx = contextPath(project.id, isTeam ? activeAgent : null);
 
   return (
     <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: isTeam, agentName: activeAgent, tail: [{ label: "Runs" }] })}>
@@ -135,11 +112,15 @@ export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
         title={isTeam ? `Runs — ${activeAgent}` : "Runs"}
         description="Per-run summary metrics, filterable by release to compare versions."
       />
-      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
 
-      {/* Compare-by-version filter */}
+      {/* Compare-by-version filter (the path carries the member context) */}
       <Form method="get" className="mb-6 flex items-end gap-2">
-        {isTeam && <input type="hidden" name="agent" value={activeAgent} />}
         <div className="grid gap-1.5">
           <Label htmlFor="release">Version</Label>
           <Select name="release" defaultValue={releaseId ?? "all"}>
@@ -168,7 +149,8 @@ export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
             <CardDescription>
               Point an instance at{" "}
               <span className="font-mono">/api/ingest/runs</span> with an ingest
-              token to start recording runs.
+              token to start recording runs — tokens are created on the
+              repository&rsquo;s Settings tab.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -191,7 +173,7 @@ export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
                   <TableRow key={r.id}>
                     <TableCell>
                       <Link
-                        to={`/repos/${project.id}/runs/${r.id}`}
+                        to={`${ctx}/runs/${r.id}`}
                         className="font-mono underline-offset-4 hover:underline"
                       >
                         {r.externalRunId?.slice(0, 12) ?? r.id.slice(0, 8)}
@@ -222,48 +204,6 @@ export default function Runs({ loaderData, actionData }: Route.ComponentProps) {
           </CardContent>
         </Card>
       )}
-
-      {/* Ingest tokens */}
-      <Card className="mt-8">
-        <CardHeader>
-          <CardTitle className="text-base">Ingest tokens</CardTitle>
-          <CardDescription>
-            BYO instances use these tokens to ship telemetry back to Eden.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {actionData?.token && (
-            <Alert>
-              <AlertTitle>New token — copy now, shown once</AlertTitle>
-              <AlertDescription>
-                <code className="font-mono">{actionData.token}</code>
-              </AlertDescription>
-            </Alert>
-          )}
-          {tokens.length > 0 && (
-            <ul className="space-y-1 text-sm text-muted-foreground">
-              {tokens.map((t) => (
-                <li key={t.id}>
-                  {t.name} · created{" "}
-                  {new Date(t.createdAt).toLocaleDateString()}
-                  {t.lastUsedAt
-                    ? ` · last used ${new Date(t.lastUsedAt).toLocaleDateString()}`
-                    : " · never used"}
-                </li>
-              ))}
-            </ul>
-          )}
-          <Form method="post" className="flex items-center gap-2">
-            <input type="hidden" name="intent" value="create-token" />
-            <Input
-              name="name"
-              placeholder="production instance"
-              className="max-w-xs"
-            />
-            <Button type="submit">Create ingest token</Button>
-          </Form>
-        </CardContent>
-      </Card>
     </AppShell>
   );
 }

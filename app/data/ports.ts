@@ -135,6 +135,8 @@ export interface ProjectRepo {
     repoInstallationId?: string | null;
     defaultBranch?: string;
   }): Promise<Project>;
+  /** Delete the project row — the FK cascade takes every dependent row with it (M5.8). */
+  deleteById(id: string): Promise<void>;
 }
 
 export interface JobRepo {

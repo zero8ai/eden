@@ -39,7 +39,7 @@ import {
 import { listDeployments } from "~/deploy/controller.server";
 import { listEnvironments } from "~/db/queries.server";
 import { newId } from "~/lib/id";
-import { agentParam, resolveAgentContext } from "~/project/agent-context.server";
+import { resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.playground";
 
@@ -94,7 +94,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
-      const [targets, conversation, { roster, active }] = await Promise.all([
+      // Repo-level page (M5.8): no member variant exists — the agent context is only
+      // resolved for the nav roster and the single/repo level split.
+      const [targets, conversation, { roster, isTeam }] = await Promise.all([
         liveTargets(project.id),
         loadConversation<PlaygroundState>(
           project.id,
@@ -102,7 +104,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           auth.user!.id,
           EMPTY_STATE,
         ),
-        resolveAgentContext(project.id, agentParam(args.request)),
+        resolveAgentContext(project.id, null),
       ]);
       return {
         project,
@@ -111,7 +113,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         expired: conversation.expired,
         lastDeploymentId: conversation.state.deploymentId,
         roster: roster.map((a) => ({ name: a.name })),
-        activeAgent: active.name,
+        isTeam,
       };
     },
     { ensureSignedIn: true },
@@ -189,7 +191,7 @@ export function meta() {
 }
 
 export default function Playground({ loaderData }: Route.ComponentProps) {
-  const { project, targets, entries, expired, lastDeploymentId, roster, activeAgent } =
+  const { project, targets, entries, expired, lastDeploymentId, roster, isTeam } =
     loaderData;
   const base = `/repos/${project.id}`;
   const fetcher = useFetcher<typeof action>();
@@ -223,7 +225,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   );
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: roster.length > 1, agentName: activeAgent, tail: [{ label: "Playground" }] })}>
+    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, tail: [{ label: "Playground" }] })}>
       <PageHeader
         title="Playground"
         description="Talk to a live deployment of this agent. Each reply is tagged with the version that produced it."
@@ -238,13 +240,13 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           ) : undefined
         }
       />
-      <AgentNav base={base} roster={roster} activeAgent={activeAgent} />
+      <AgentNav base={base} level={isTeam ? "repo" : "single"} roster={roster} />
 
       {targets.length === 0 ? (
         <Alert>
           <AlertTitle>No live deployment to talk to</AlertTitle>
           <AlertDescription>
-            Deploy a release first (Deployments tab), then come back here to try it.
+            Deploy a release first (Deployment tab), then come back here to try it.
           </AlertDescription>
         </Alert>
       ) : (

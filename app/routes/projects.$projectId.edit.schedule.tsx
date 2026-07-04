@@ -37,13 +37,18 @@ import {
   memberFromPath,
   resolveAgentContext,
 } from "~/project/agent-context.server";
-import { normalizeAgentPath, requireProject, requireRepo } from "~/project/guard.server";
+import {
+  normalizeAgentPath,
+  requireProject,
+  requireRepo,
+} from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.edit.schedule";
 
 /** This editor only understands markdown-form schedules (root agent or a team member). */
 function schedulePath(raw: string): string | null {
   const path = normalizeAgentPath(raw);
-  return path && /^(?:agent|agents\/[^/]+\/agent)\/schedules\/[^/]+\.md$/.test(path)
+  return path &&
+    /^(?:agent|agents\/[^/]+\/agent)\/schedules\/[^/]+\.md$/.test(path)
     ? path
     : null;
 }
@@ -120,7 +125,8 @@ export async function action(args: ActionFunctionArgs) {
   const cron = String(form.get("cron") ?? "").trim();
   const message = String(form.get("message") ?? "").trim();
   if (!isValidCron(cron)) return { error: "That cron expression isn't valid." };
-  if (!message) return { error: "Say what the agent should do when this fires." };
+  if (!message)
+    return { error: "Say what the agent should do when this fires." };
 
   // Re-read the current file so frontmatter keys this form doesn't own survive the save.
   const view = await resolveFileView(project, path);
@@ -145,10 +151,17 @@ export function meta() {
   return [{ title: "Edit schedule · Eden" }];
 }
 
-export default function EditSchedule({ loaderData, actionData }: Route.ComponentProps) {
+export default function EditSchedule({
+  loaderData,
+  actionData,
+}: Route.ComponentProps) {
   // Keyed by path so switching schedules remounts with fresh state.
   return (
-    <ScheduleForm key={loaderData.path} loaderData={loaderData} actionData={actionData} />
+    <ScheduleForm
+      key={loaderData.path}
+      loaderData={loaderData}
+      actionData={actionData}
+    />
   );
 }
 
@@ -156,7 +169,8 @@ function ScheduleForm({
   loaderData,
   actionData,
 }: Pick<Route.ComponentProps, "loaderData" | "actionData">) {
-  const { project, path, roster, activeAgent, isTeam, exists, isNew } = loaderData;
+  const { project, path, roster, activeAgent, isTeam, exists, isNew } =
+    loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const saving = navigation.state !== "idle";
@@ -165,8 +179,16 @@ function ScheduleForm({
   const [message, setMessage] = useState(loaderData.message);
   // Same route, different ?path (or a fresh save) — re-seed the form from the loader
   // inline instead of holding the previous file's values in state.
-  const [prevSeed, setPrevSeed] = useState({ path, cron: loaderData.cron, message: loaderData.message });
-  if (prevSeed.path !== path || prevSeed.cron !== loaderData.cron || prevSeed.message !== loaderData.message) {
+  const [prevSeed, setPrevSeed] = useState({
+    path,
+    cron: loaderData.cron,
+    message: loaderData.message,
+  });
+  if (
+    prevSeed.path !== path ||
+    prevSeed.cron !== loaderData.cron ||
+    prevSeed.message !== loaderData.message
+  ) {
     setPrevSeed({ path, cron: loaderData.cron, message: loaderData.message });
     setCron(loaderData.cron);
     setMessage(loaderData.message);
@@ -177,7 +199,21 @@ function ScheduleForm({
   const name = path.split("/").pop()!.replace(/\.md$/, "");
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam, agentName: activeAgent, tail: [{ label: path.split("/").pop() }] })}>
+    <AppShell
+      breadcrumbs={repoCrumbs({
+        projectId: project.id,
+        repoName: project.name,
+        isTeam,
+        agentName: activeAgent,
+        tail: [{ label: path.split("/").pop() }],
+      })}
+    >
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
       <PageHeader
         title={
           <span className="flex items-center gap-3">
@@ -186,12 +222,6 @@ function ScheduleForm({
           </span>
         }
         description="When the schedule fires, the agent receives the message below and acts on it."
-      />
-      <AgentNav
-        base={ctx}
-        level={isTeam ? "member" : "single"}
-        roster={roster}
-        activeAgent={isTeam ? activeAgent : undefined}
       />
 
       {actionData?.error && (
@@ -224,7 +254,8 @@ function ScheduleForm({
             className="min-h-32"
           />
           <p className="text-xs text-muted-foreground">
-            Sent to the agent as a prompt each time the schedule fires (fire-and-forget).
+            Sent to the agent as a prompt each time the schedule fires
+            (fire-and-forget).
           </p>
         </div>
 
@@ -250,8 +281,9 @@ function ScheduleForm({
 
         <p className="text-xs text-muted-foreground">
           Need logic instead of a message? Author the schedule as TypeScript
-          (`agent/schedules/{name}.ts`) with a <span className="font-mono">run()</span>{" "}
-          handler — code-file schedules open in the code editor.
+          (`agent/schedules/{name}.ts`) with a{" "}
+          <span className="font-mono">run()</span> handler — code-file schedules
+          open in the code editor.
         </p>
       </div>
     </AppShell>

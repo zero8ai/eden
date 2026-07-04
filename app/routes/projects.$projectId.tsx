@@ -23,16 +23,17 @@ import {
 } from "react-router";
 
 import { NewResourceDialog } from "~/components/new-resource-dialog";
-import { AgentNav, AppShell, PageHeader, SectionHeader, repoCrumbs } from "~/components/shell";
+import {
+  AgentNav,
+  AppShell,
+  PageHeader,
+  SectionHeader,
+  repoCrumbs,
+} from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "~/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -124,7 +125,12 @@ interface ProjectView {
   /** Member view: this member's environment names, for the Ship dialog's target picker. */
   envNames: string[];
   /** Member view: what's running per environment, for the header status line. */
-  running: { envName: string; version: string; url: string | null; at: string }[];
+  running: {
+    envName: string;
+    version: string;
+    url: string | null;
+    at: string;
+  }[];
   /** Deploy progress for a just-shipped commit (?shipped=<sha>&env=<name>&skipped=a,b). */
   ship: { env: string; rows: ShipStatusRow[]; skipped: string[] } | null;
 }
@@ -140,11 +146,19 @@ export const loader = (args: LoaderFunctionArgs) =>
     args,
     async ({ auth }): Promise<ProjectView> => {
       const project = await requireProject(
-        { user: auth.user, organizationId: auth.organizationId, role: auth.role },
+        {
+          user: auth.user,
+          organizationId: auth.organizationId,
+          role: auth.role,
+        },
         args.params.projectId,
       );
 
-      if (!project.repoInstallationId || !project.repoOwner || !project.repoName) {
+      if (
+        !project.repoInstallationId ||
+        !project.repoOwner ||
+        !project.repoName
+      ) {
         return {
           project,
           roster: [],
@@ -182,7 +196,10 @@ export const loader = (args: LoaderFunctionArgs) =>
           project.id,
           requestedAgent,
         );
-        const detected = withPreservedNames(roster, detectAgentRoots(source.paths));
+        const detected = withPreservedNames(
+          roster,
+          detectAgentRoots(source.paths),
+        );
         const known = new Set(roster.map((a) => `${a.name}:${a.root}`));
         if (
           detected.length > 0 &&
@@ -200,7 +217,10 @@ export const loader = (args: LoaderFunctionArgs) =>
         // The hierarchy: a team repo LANDS on the team (roster) view; a member's config
         // surface is a drill-in (?agent=<name>). Single-agent repos go straight to their
         // one member, exactly as before teams existed.
-        const view = teamLayout && !requestedAgent ? ("team" as const) : ("member" as const);
+        const view =
+          teamLayout && !requestedAgent
+            ? ("team" as const)
+            : ("member" as const);
         const members =
           view === "team"
             ? roster.map((a) => {
@@ -221,7 +241,8 @@ export const loader = (args: LoaderFunctionArgs) =>
 
         // The model shown inline must reflect the newest intent: a staged agent.ts draft
         // wins over the repo value (same rule the editors follow).
-        const config = view === "member" ? buildAgentConfig(source, active.root) : null;
+        const config =
+          view === "member" ? buildAgentConfig(source, active.root) : null;
         const agentTsDraft = drafts.find(
           (d) => d.path === `${active.root}/agent.ts` && d.content !== null,
         );
@@ -260,7 +281,8 @@ export const loader = (args: LoaderFunctionArgs) =>
 
           const url = new URL(args.request.url);
           const shippedSha = url.searchParams.get("shipped");
-          const shipEnv = url.searchParams.get("env") ?? envs[0]?.name ?? "default";
+          const shipEnv =
+            url.searchParams.get("env") ?? envs[0]?.name ?? "default";
           const shipSkipped = (url.searchParams.get("skipped") ?? "")
             .split(",")
             .filter(Boolean);
@@ -270,7 +292,9 @@ export const loader = (args: LoaderFunctionArgs) =>
               await Promise.all(
                 roster.map(async (member): Promise<ShipStatusRow | null> => {
                   const memberEnvs =
-                    member.id === active.id ? envs : await listAgentEnvironments(member.id);
+                    member.id === active.id
+                      ? envs
+                      : await listAgentEnvironments(member.id);
                   const env = memberEnvs.find((e) => e.name === shipEnv);
                   if (!env) return null;
                   // Newest-first list; the first row at the shipped commit is the ship's
@@ -291,7 +315,8 @@ export const loader = (args: LoaderFunctionArgs) =>
                 }),
               )
             ).filter((r): r is ShipStatusRow => r !== null);
-            if (rows.length > 0) ship = { env: shipEnv, rows, skipped: shipSkipped };
+            if (rows.length > 0)
+              ship = { env: shipEnv, rows, skipped: shipSkipped };
           }
         }
 
@@ -363,7 +388,11 @@ export async function action(args: ActionFunctionArgs) {
       // the build + deploy are queued, and the redirect's ?shipped drives the banner.
       const result =
         intent === "ship"
-          ? await shipStagedChanges({ project, envName, createdBy: auth.user.id })
+          ? await shipStagedChanges({
+              project,
+              envName,
+              createdBy: auth.user.id,
+            })
           : await shipHead({ project, envName, createdBy: auth.user.id });
       const qs = new URLSearchParams();
       qs.set("shipped", result.gitSha);
@@ -406,7 +435,11 @@ export async function action(args: ActionFunctionArgs) {
           `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, an ` +
           `example tool, package.json). Eden picks the member up on merge.`,
       });
-      return { ok: true as const, changeUrl: change.pullRequestUrl, member: name };
+      return {
+        ok: true as const,
+        changeUrl: change.pullRequestUrl,
+        member: name,
+      };
     }
 
     return { error: "Unknown action." };
@@ -420,7 +453,10 @@ export function meta() {
   return [{ title: "Project · Eden" }];
 }
 
-export default function ProjectDetail({ loaderData, actionData }: Route.ComponentProps) {
+export default function ProjectDetail({
+  loaderData,
+  actionData,
+}: Route.ComponentProps) {
   const {
     project,
     roster,
@@ -474,12 +510,20 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
         agentName: active?.name,
       })}
     >
+      <AgentNav
+        base={ctx}
+        level={level}
+        roster={roster}
+        activeAgent={level === "member" ? active?.name : undefined}
+      />
       {view === "team" ? (
         <PageHeader
           title={
             <span className="flex items-center gap-3">
               {project.name}
-              <Badge>Team · {roster.length} member{roster.length === 1 ? "" : "s"}</Badge>
+              <Badge>
+                Team · {roster.length} member{roster.length === 1 ? "" : "s"}
+              </Badge>
             </span>
           }
           description={repoLine}
@@ -492,7 +536,10 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
             teamLayout ? (
               <span>
                 Member of{" "}
-                <Link to={base} className="font-medium underline underline-offset-4">
+                <Link
+                  to={base}
+                  className="font-medium underline underline-offset-4"
+                >
                   {project.name}
                 </Link>{" "}
                 · {repoLine}
@@ -526,7 +573,10 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
               {running[0].url && (
                 <>
                   {" · "}
-                  <a href={running[0].url} className="underline underline-offset-4">
+                  <a
+                    href={running[0].url}
+                    className="underline underline-offset-4"
+                  >
                     open
                   </a>
                 </>
@@ -539,7 +589,9 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
                 <span key={r.envName}>
                   {i > 0 && " · "}
                   {r.envName}:{" "}
-                  <span className="font-semibold text-foreground">{r.version}</span>
+                  <span className="font-semibold text-foreground">
+                    {r.version}
+                  </span>
                 </span>
               ))}
             </>
@@ -553,12 +605,6 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
           </Link>
         </p>
       )}
-      <AgentNav
-        base={ctx}
-        level={level}
-        roster={roster}
-        activeAgent={level === "member" ? active?.name : undefined}
-      />
 
       {error && (
         <Alert className="mb-6">
@@ -596,8 +642,8 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
       {view === "member" && draftPaths.length > 0 && (
         <Alert className="mb-6">
           <AlertTitle>
-            {draftPaths.length} staged change{draftPaths.length === 1 ? "" : "s"} not
-            shipped yet
+            {draftPaths.length} staged change
+            {draftPaths.length === 1 ? "" : "s"} not shipped yet
           </AlertTitle>
           <AlertDescription>
             Ship them with the button above, or{" "}
@@ -666,15 +712,17 @@ function TeamSurface({
           </Button>
           <CardContent className="pt-6 pr-10 text-sm text-muted-foreground">
             <p>
-              This is a <span className="font-medium text-foreground">team</span>: each member
-              below is a complete agent with its own runtime, channels, schedules, secrets, and
-              deployments. Members are versioned and deployed independently, and changes to
-              several members ship atomically in one change request.
+              This is a{" "}
+              <span className="font-medium text-foreground">team</span>: each
+              member below is a complete agent with its own runtime, channels,
+              schedules, secrets, and deployments. Members are versioned and
+              deployed independently, and changes to several members ship
+              atomically in one change request.
             </p>
             <p className="mt-2">
-              Coming next: teammates get auto-wired <em>delegation channels</em> — each member
-              receives tools to hand work to the others, so the team behaves like an
-              organisation, not a folder of agents.
+              Coming next: teammates get auto-wired <em>delegation channels</em>{" "}
+              — each member receives tools to hand work to the others, so the
+              team behaves like an organisation, not a folder of agents.
             </p>
           </CardContent>
         </Card>
@@ -691,18 +739,31 @@ function TeamSurface({
             <Card className="h-full transition-colors group-hover:border-ring/60">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-2">
-                  <CardTitle className="truncate font-mono text-base">{m.name}</CardTitle>
-                  <Badge variant="secondary" className="shrink-0 font-mono text-xs">
+                  <CardTitle className="truncate font-mono text-base">
+                    {m.name}
+                  </CardTitle>
+                  <Badge
+                    variant="secondary"
+                    className="shrink-0 font-mono text-xs"
+                  >
                     {m.model ?? "no model"}
                   </Badge>
                 </div>
               </CardHeader>
               <CardContent className="pt-0">
                 <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                  <li>{m.tools} tool{m.tools === 1 ? "" : "s"}</li>
-                  <li>{m.skills} skill{m.skills === 1 ? "" : "s"}</li>
-                  <li>{m.schedules} schedule{m.schedules === 1 ? "" : "s"}</li>
-                  <li>{m.channels} channel{m.channels === 1 ? "" : "s"}</li>
+                  <li>
+                    {m.tools} tool{m.tools === 1 ? "" : "s"}
+                  </li>
+                  <li>
+                    {m.skills} skill{m.skills === 1 ? "" : "s"}
+                  </li>
+                  <li>
+                    {m.schedules} schedule{m.schedules === 1 ? "" : "s"}
+                  </li>
+                  <li>
+                    {m.channels} channel{m.channels === 1 ? "" : "s"}
+                  </li>
                 </ul>
               </CardContent>
             </Card>
@@ -740,8 +801,8 @@ function AddMemberDialog() {
         <DialogHeader>
           <DialogTitle>Add a team member</DialogTitle>
           <DialogDescription>
-            Scaffolds a complete eve agent and opens a change request — the member joins
-            the roster when it merges.
+            Scaffolds a complete eve agent and opens a change request — the
+            member joins the roster when it merges.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">
@@ -804,7 +865,9 @@ function ShipDialog({
   const navigation = useNavigation();
   const shipping =
     navigation.state !== "idle" &&
-    ["ship", "ship-head"].includes(String(navigation.formData?.get("intent") ?? ""));
+    ["ship", "ship-head"].includes(
+      String(navigation.formData?.get("intent") ?? ""),
+    );
   // Publish + merge run synchronously, so hold the dialog open with a progress label until
   // the submission settles — the redirect's banner (success) or page alert (error) takes over.
   const wasShipping = useRef(false);
@@ -842,7 +905,11 @@ function ShipDialog({
           </DialogDescription>
         </DialogHeader>
         <Form method="post">
-          <input type="hidden" name="intent" value={draftCount > 0 ? "ship" : "ship-head"} />
+          <input
+            type="hidden"
+            name="intent"
+            value={draftCount > 0 ? "ship" : "ship-head"}
+          />
           <input type="hidden" name="agent" value={agentName} />
           <div className="space-y-1.5">
             <Label htmlFor="ship-env">Environment</Label>
@@ -860,7 +927,11 @@ function ShipDialog({
             </Select>
           </div>
           <DialogFooter className="mt-4">
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setOpen(false)}
+            >
               Cancel
             </Button>
             <Button type="submit" disabled={shipping}>
@@ -891,7 +962,10 @@ function ShipProgress({
   const single = ship.rows.length === 1;
 
   return (
-    <Alert variant={failed.length > 0 ? "destructive" : "default"} className="mb-6">
+    <Alert
+      variant={failed.length > 0 ? "destructive" : "default"}
+      className="mb-6"
+    >
       <AlertTitle>
         {allLive
           ? `${version} is running on ${ship.env}`
@@ -902,7 +976,10 @@ function ShipProgress({
       <AlertDescription>
         <div className="mt-1 space-y-2">
           {ship.rows.map((r) => (
-            <div key={r.environmentId} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <div
+              key={r.environmentId}
+              className="flex flex-wrap items-center gap-x-2 gap-y-1"
+            >
               {!single && <span className="font-medium">{r.agentName}:</span>}
               <ShipSteps status={r.status} version={r.version} />
               {r.status === "live" && r.url && (
@@ -913,7 +990,11 @@ function ShipProgress({
               {r.status === "failed" && (
                 <retry.Form method="post">
                   <input type="hidden" name="intent" value="retry-deploy" />
-                  <input type="hidden" name="environmentId" value={r.environmentId} />
+                  <input
+                    type="hidden"
+                    name="environmentId"
+                    value={r.environmentId}
+                  />
                   <input type="hidden" name="releaseId" value={r.releaseId} />
                   <Button
                     type="submit"
@@ -946,7 +1027,10 @@ function ShipProgress({
           )}
           {(allLive || failed.length > 0) && (
             <p>
-              <Link to={dismissTo} className="text-xs underline underline-offset-4">
+              <Link
+                to={dismissTo}
+                className="text-xs underline underline-offset-4"
+              >
                 Dismiss
               </Link>
             </p>
@@ -971,8 +1055,8 @@ function ShipSteps({ status, version }: { status: string; version: string }) {
             : "Queued…";
   return (
     <span className="text-sm">
-      Published ✓ <span className="text-muted-foreground">→</span> {version} created ✓{" "}
-      <span className="text-muted-foreground">→</span> {stage}
+      Published ✓ <span className="text-muted-foreground">→</span> {version}{" "}
+      created ✓ <span className="text-muted-foreground">→</span> {stage}
     </span>
   );
 }
@@ -1039,8 +1123,8 @@ function AgentSurface({
           </pre>
         ) : (
           <p className="text-sm text-muted-foreground">
-            No instructions.md yet — this Markdown becomes the agent&rsquo;s always-on
-            system prompt.
+            No instructions.md yet — this Markdown becomes the agent&rsquo;s
+            always-on system prompt.
           </p>
         )}
       </section>

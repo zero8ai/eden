@@ -46,7 +46,11 @@ export const loader = (args: LoaderFunctionArgs) =>
 
       const project = await getProject(org.id, args.params.projectId!);
       if (!project) throw data("Project not found", { status: 404 });
-      if (!project.repoInstallationId || !project.repoOwner || !project.repoName) {
+      if (
+        !project.repoInstallationId ||
+        !project.repoOwner ||
+        !project.repoName
+      ) {
         throw data("Project has no connected repo", { status: 400 });
       }
 
@@ -131,8 +135,16 @@ export default function EditInstructions({
   loaderData,
   actionData,
 }: Route.ComponentProps) {
-  const { project, path, roster, activeAgent, isTeam, instructions, source, change } =
-    loaderData;
+  const {
+    project,
+    path,
+    roster,
+    activeAgent,
+    isTeam,
+    instructions,
+    source,
+    change,
+  } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const saving = navigation.state !== "idle";
@@ -143,16 +155,26 @@ export default function EditInstructions({
   const ctx = contextPath(project.id, isTeam ? activeAgent : null);
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam, agentName: activeAgent, tail: [{ label: "Instructions" }] })}>
-      <PageHeader
-        title={isTeam ? `Edit instructions — ${activeAgent}` : "Edit instructions"}
-        description="Saving stages the change — publish staged changes as one pull request from the Changes tab."
-      />
+    <AppShell
+      breadcrumbs={repoCrumbs({
+        projectId: project.id,
+        repoName: project.name,
+        isTeam,
+        agentName: activeAgent,
+        tail: [{ label: "Instructions" }],
+      })}
+    >
       <AgentNav
         base={ctx}
         level={isTeam ? "member" : "single"}
         roster={roster}
         activeAgent={isTeam ? activeAgent : undefined}
+      />
+      <PageHeader
+        title={
+          isTeam ? `Edit instructions — ${activeAgent}` : "Edit instructions"
+        }
+        description="Saving stages the change — publish staged changes as one pull request from the Changes tab."
       />
 
       {actionData?.error && (

@@ -29,7 +29,13 @@ import {
 } from "react-router";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
-import { AgentNav, AppShell, PageHeader, repoCrumbs, type NavLevel } from "~/components/shell";
+import {
+  AgentNav,
+  AppShell,
+  PageHeader,
+  repoCrumbs,
+  type NavLevel,
+} from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -68,7 +74,11 @@ import {
   renameEnvironment,
 } from "~/deploy/environments.server";
 import { listAgentEnvironments, listReleases } from "~/db/queries.server";
-import { discardDrafts, listDrafts, publishDrafts } from "~/drafts/drafts.server";
+import {
+  discardDrafts,
+  listDrafts,
+  publishDrafts,
+} from "~/drafts/drafts.server";
 import { getOpenChanges } from "~/github/cached.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
@@ -150,7 +160,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         const nameById = new Map(roster.map((a) => [a.id, a.name]));
         const groups = new Map<string, typeof allDrafts>();
         for (const d of allDrafts) {
-          const key = d.agentId ? (nameById.get(d.agentId) ?? "shared") : "shared";
+          const key = d.agentId
+            ? (nameById.get(d.agentId) ?? "shared")
+            : "shared";
           groups.set(key, [...(groups.get(key) ?? []), d]);
         }
         const members = roster.map((a) => {
@@ -158,7 +170,11 @@ export const loader = (args: LoaderFunctionArgs) =>
           return {
             name: a.name,
             latest: latest
-              ? { version: latest.version, gitSha: latest.gitSha, createdAt: latest.createdAt }
+              ? {
+                  version: latest.version,
+                  gitSha: latest.gitSha,
+                  createdAt: latest.createdAt,
+                }
               : null,
           };
         });
@@ -246,7 +262,12 @@ export async function action(args: ActionFunctionArgs) {
       const pullNumber = Number(form.get("pullNumber"));
       const branch = String(form.get("branch") ?? "") || undefined;
       if (!pullNumber) return { error: "Missing change to delete." };
-      await closePullRequest(project.repoInstallationId, repo, pullNumber, branch);
+      await closePullRequest(
+        project.repoInstallationId,
+        repo,
+        pullNumber,
+        branch,
+      );
       throw redirect(back);
     }
     if (intent === "merge") {
@@ -346,9 +367,15 @@ function runningOf(deployments: DeploymentRow[]): DeploymentRow | undefined {
   return deployments.find((d) => d.status === "live");
 }
 
-export default function Deployment({ loaderData, actionData }: Route.ComponentProps) {
+export default function Deployment({
+  loaderData,
+  actionData,
+}: Route.ComponentProps) {
   const { project, roster, activeAgent, isTeam, level, view } = loaderData;
-  const memberBase = contextPath(project.id, level === "member" ? activeAgent : null);
+  const memberBase = contextPath(
+    project.id,
+    level === "member" ? activeAgent : null,
+  );
   const [params] = useSearchParams();
   const justReleased = params.get("released");
 
@@ -375,19 +402,21 @@ export default function Deployment({ loaderData, actionData }: Route.ComponentPr
         tail: [{ label: "Deployment" }],
       })}
     >
-      <PageHeader
-        title={level === "member" ? `Deployment — ${activeAgent}` : "Deployment"}
-        description={
-          view === "repo"
-            ? "The team's pipeline: staged changes by member, change requests (merging cuts a version for every member), and each member's latest version."
-            : "The pipeline for this agent: staged changes become a change request; merging cuts a version; each environment runs one version. Rollback is just deploying an older version again."
-        }
-      />
       <AgentNav
         base={memberBase}
         level={level}
         roster={roster}
         activeAgent={level === "member" ? activeAgent : undefined}
+      />
+      <PageHeader
+        title={
+          level === "member" ? `Deployment — ${activeAgent}` : "Deployment"
+        }
+        description={
+          view === "repo"
+            ? "The team's pipeline: staged changes by member, change requests (merging cuts a version for every member), and each member's latest version."
+            : "The pipeline for this agent: staged changes become a change request; merging cuts a version; each environment runs one version. Rollback is just deploying an older version again."
+        }
       />
 
       {justReleased && (
@@ -435,11 +464,19 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
 }
 
 /** Stage 1: this member's unpublished drafts (+ shared files, which affect everyone). */
-function StagedChangesCard({ drafts, isTeam }: { drafts: DraftRow[]; isTeam: boolean }) {
+function StagedChangesCard({
+  drafts,
+  isTeam,
+}: {
+  drafts: DraftRow[];
+  isTeam: boolean;
+}) {
   const navigation = useNavigation();
   const submit = useSubmit();
   const busy = navigation.state !== "idle" && navigation.formData != null;
-  const activeIntent = busy ? String(navigation.formData!.get("intent") ?? "") : null;
+  const activeIntent = busy
+    ? String(navigation.formData!.get("intent") ?? "")
+    : null;
 
   return (
     <Card className="mb-6">
@@ -452,8 +489,8 @@ function StagedChangesCard({ drafts, isTeam }: { drafts: DraftRow[]; isTeam: boo
       <CardContent>
         {drafts.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            Nothing staged. Edits you save — instructions, model, any agent file — collect
-            here until you publish them (or Ship from the Overview).
+            Nothing staged. Edits you save — instructions, model, any agent file
+            — collect here until you publish them (or Ship from the Overview).
           </p>
         ) : (
           <Form method="post">
@@ -471,7 +508,9 @@ function StagedChangesCard({ drafts, isTeam }: { drafts: DraftRow[]; isTeam: boo
                   />
                   <span
                     className={`min-w-0 flex-1 truncate font-mono text-xs ${
-                      d.content === null ? "line-through decoration-destructive/60" : ""
+                      d.content === null
+                        ? "line-through decoration-destructive/60"
+                        : ""
                     }`}
                   >
                     {d.path}
@@ -485,14 +524,21 @@ function StagedChangesCard({ drafts, isTeam }: { drafts: DraftRow[]; isTeam: boo
                     </Badge>
                   )}
                   {d.shared && isTeam && (
-                    <Badge variant="outline">shared · affects all members</Badge>
+                    <Badge variant="outline">
+                      shared · affects all members
+                    </Badge>
                   )}
                   <span className="shrink-0 text-xs text-muted-foreground">
                     {timeAgo(d.updatedAt)}
                   </span>
                   <ConfirmDialog
                     trigger={
-                      <Button variant="ghost" size="sm" type="button" disabled={busy}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        type="button"
+                        disabled={busy}
+                      >
                         Discard
                       </Button>
                     }
@@ -504,7 +550,10 @@ function StagedChangesCard({ drafts, isTeam }: { drafts: DraftRow[]; isTeam: boo
                     }
                     confirmLabel="Discard"
                     onConfirm={() =>
-                      submit({ intent: "discard", path: d.path }, { method: "post" })
+                      submit(
+                        { intent: "discard", path: d.path },
+                        { method: "post" },
+                      )
                     }
                   />
                 </li>
@@ -530,12 +579,22 @@ function StagedChangesCard({ drafts, isTeam }: { drafts: DraftRow[]; isTeam: boo
 }
 
 /** Stage 2: open change requests (repo-wide — a merge cuts a version for every member). */
-function ChangeRequests({ changes, isTeam }: { changes: ChangeRow[]; isTeam: boolean }) {
+function ChangeRequests({
+  changes,
+  isTeam,
+}: {
+  changes: ChangeRow[];
+  isTeam: boolean;
+}) {
   const navigation = useNavigation();
   const busy = navigation.state !== "idle" && navigation.formData != null;
-  const activeIntent = busy ? String(navigation.formData!.get("intent") ?? "") : null;
+  const activeIntent = busy
+    ? String(navigation.formData!.get("intent") ?? "")
+    : null;
   const mergingNumber =
-    activeIntent === "merge" ? Number(navigation.formData!.get("pullNumber")) : null;
+    activeIntent === "merge"
+      ? Number(navigation.formData!.get("pullNumber"))
+      : null;
   const deletingNumber =
     activeIntent === "delete-change"
       ? Number(navigation.formData!.get("pullNumber"))
@@ -645,10 +704,15 @@ function ChangeCard({
         ) : (
           <ul className="divide-y rounded-lg border text-sm">
             {change.files.map((f) => (
-              <li key={f.path} className="flex items-center justify-between gap-3 px-3 py-1.5">
+              <li
+                key={f.path}
+                className="flex items-center justify-between gap-3 px-3 py-1.5"
+              >
                 <span className="truncate font-mono text-xs">{f.path}</span>
                 <span className="flex shrink-0 items-center gap-2 font-mono text-xs">
-                  <span className="text-emerald-600 dark:text-emerald-400">+{f.additions}</span>
+                  <span className="text-emerald-600 dark:text-emerald-400">
+                    +{f.additions}
+                  </span>
                   <span className="text-destructive">−{f.deletions}</span>
                 </span>
               </li>
@@ -657,7 +721,8 @@ function ChangeCard({
         )}
         {conflicted && (
           <p className="mt-3 text-xs text-destructive">
-            Conflicts with the current default branch — re-stage the files from a fresh edit.
+            Conflicts with the current default branch — re-stage the files from
+            a fresh edit.
           </p>
         )}
       </CardContent>
@@ -695,7 +760,8 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
         <CardContent>
           {totalDrafts === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Nothing staged anywhere. Members' edits collect here until published.
+              Nothing staged anywhere. Members' edits collect here until
+              published.
             </p>
           ) : (
             <div className="space-y-4">
@@ -720,7 +786,10 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                   </p>
                   <ul className="divide-y rounded-lg border text-sm">
                     {g.drafts.map((d) => (
-                      <li key={d.id} className="flex items-center gap-3 px-3 py-1.5">
+                      <li
+                        key={d.id}
+                        className="flex items-center gap-3 px-3 py-1.5"
+                      >
                         <span
                           className={`min-w-0 flex-1 truncate font-mono text-xs ${
                             d.content === null
@@ -747,7 +816,8 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                 </div>
               ))}
               <p className="text-xs text-muted-foreground">
-                Publish from a member&rsquo;s Deployment tab (or Ship from their Overview).
+                Publish from a member&rsquo;s Deployment tab (or Ship from their
+                Overview).
               </p>
             </div>
           )}
@@ -763,7 +833,10 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
         <CardContent>
           <ul className="divide-y rounded-lg border text-sm">
             {members.map((m) => (
-              <li key={m.name} className="flex flex-wrap items-center gap-3 px-4 py-2">
+              <li
+                key={m.name}
+                className="flex flex-wrap items-center gap-3 px-4 py-2"
+              >
                 <Link
                   to={`${contextPath(project.id, m.name)}/deployment`}
                   className="min-w-32 font-medium underline-offset-4 hover:underline"
@@ -842,7 +915,9 @@ function EnvironmentsCard({
             const running = runningOf(deployments);
             const pending = deployments.find((d) => IN_FLIGHT.has(d.status));
             const failed = deployments.find((d) => d.status === "failed");
-            const failedCount = deployments.filter((d) => d.status === "failed").length;
+            const failedCount = deployments.filter(
+              (d) => d.status === "failed",
+            ).length;
             return (
               <li key={env.id} className="px-4 py-2">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -857,15 +932,18 @@ function EnvironmentsCard({
                         deployed {timeAgo(running.createdAt)}
                       </span>
                       {running.url && (
-                        <a href={running.url} className="underline underline-offset-4">
+                        <a
+                          href={running.url}
+                          className="underline underline-offset-4"
+                        >
                           open
                         </a>
                       )}
                     </>
                   ) : (
                     <span className="text-muted-foreground">
-                      Nothing deployed — use Ship on the Overview, or Deploy a version
-                      below.
+                      Nothing deployed — use Ship on the Overview, or Deploy a
+                      version below.
                     </span>
                   )}
                   <span className="ml-auto flex items-center gap-1">
@@ -908,8 +986,9 @@ function EnvironmentsCard({
                 {pending && (
                   <p className="mt-1 text-sm text-muted-foreground">
                     {pending.version}{" "}
-                    {pending.status === "building" ? "building" : "queued"}… switches
-                    over once healthy{running ? `; ${running.version} keeps serving` : ""}.
+                    {pending.status === "building" ? "building" : "queued"}…
+                    switches over once healthy
+                    {running ? `; ${running.version} keeps serving` : ""}.
                   </p>
                 )}
                 {failed && (
@@ -932,17 +1011,40 @@ function EnvironmentsCard({
                     )}
                     <fetcher.Form method="post">
                       <input type="hidden" name="intent" value="retry" />
-                      <input type="hidden" name="environmentId" value={env.id} />
-                      <input type="hidden" name="releaseId" value={failed.releaseId} />
-                      <Button type="submit" size="sm" variant="ghost" disabled={busy}>
+                      <input
+                        type="hidden"
+                        name="environmentId"
+                        value={env.id}
+                      />
+                      <input
+                        type="hidden"
+                        name="releaseId"
+                        value={failed.releaseId}
+                      />
+                      <Button
+                        type="submit"
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                      >
                         Retry
                       </Button>
                     </fetcher.Form>
                     <fetcher.Form method="post">
                       <input type="hidden" name="intent" value="clear-failed" />
-                      <input type="hidden" name="environmentId" value={env.id} />
-                      <Button type="submit" size="sm" variant="ghost" disabled={busy}>
-                        Dismiss{failedCount > 1 ? ` ${failedCount} failures` : ""}
+                      <input
+                        type="hidden"
+                        name="environmentId"
+                        value={env.id}
+                      />
+                      <Button
+                        type="submit"
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                      >
+                        Dismiss
+                        {failedCount > 1 ? ` ${failedCount} failures` : ""}
                       </Button>
                     </fetcher.Form>
                   </div>
@@ -994,7 +1096,8 @@ function VersionHistory({
       <CardContent>
         {releases.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No versions yet. Ship from the Overview, or merge a change request above.
+            No versions yet. Ship from the Overview, or merge a change request
+            above.
           </p>
         ) : (
           <ul className="divide-y rounded-lg border text-sm">
@@ -1017,7 +1120,12 @@ function VersionHistory({
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {timeAgo(r.createdAt)}
                 </span>
-                <DeployControl release={r} envs={envs} busy={busy} onDeploy={deploy} />
+                <DeployControl
+                  release={r}
+                  envs={envs}
+                  busy={busy}
+                  onDeploy={deploy}
+                />
               </li>
             ))}
           </ul>
@@ -1146,7 +1254,8 @@ function EnvNameDialog({
   const [name, setName] = useState(initialName ?? "");
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
-  const error = fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+  const error =
+    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
   // Stay open until OUR submission settles — success closes, an error (e.g. duplicate
   // name) shows inline so the human can fix the name and retry. The close happens inline
   // on the render where fetcher.data changes (no effect, no stale-frame flash).
@@ -1185,7 +1294,9 @@ function EnvNameDialog({
           </Alert>
         )}
         <div className="space-y-1.5">
-          <Label htmlFor={`env-name-${intent}-${environmentId ?? "new"}`}>Name</Label>
+          <Label htmlFor={`env-name-${intent}-${environmentId ?? "new"}`}>
+            Name
+          </Label>
           <Input
             id={`env-name-${intent}-${environmentId ?? "new"}`}
             value={name}

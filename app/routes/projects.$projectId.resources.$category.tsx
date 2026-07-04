@@ -24,7 +24,13 @@ import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,7 +44,11 @@ import {
   TableHeader,
   TableRow,
 } from "~/components/ui/table";
-import { discardDrafts, listDrafts, stageDeletions } from "~/drafts/drafts.server";
+import {
+  discardDrafts,
+  listDrafts,
+  stageDeletions,
+} from "~/drafts/drafts.server";
 import { buildAgentConfig } from "~/eve/parse";
 import { RESOURCE_KINDS } from "~/eve/templates";
 import { AGENT_CATEGORIES } from "~/eve/types";
@@ -78,7 +88,11 @@ export const loader = (args: LoaderFunctionArgs) =>
       const cat = categoryOf(args.params.category);
       const project = requireRepo(
         await requireProject(
-          { user: auth.user, organizationId: auth.organizationId, role: auth.role },
+          {
+            user: auth.user,
+            organizationId: auth.organizationId,
+            role: auth.role,
+          },
           args.params.projectId,
         ),
       );
@@ -110,7 +124,13 @@ export const loader = (args: LoaderFunctionArgs) =>
         d.content !== null &&
         d.path.startsWith(`${active.root}/${cat.dir}/`) &&
         !repoItems.some((i) => i.path === d.path)
-          ? [{ name: d.path.split("/").pop()!, path: d.path, isDirectory: false }]
+          ? [
+              {
+                name: d.path.split("/").pop()!,
+                path: d.path,
+                isDirectory: false,
+              },
+            ]
           : [],
       );
 
@@ -183,7 +203,10 @@ export async function action(args: ActionFunctionArgs) {
     String(form.get("agent") ?? "") || null,
   );
   // The path must be a resource of THIS member's category — no arbitrary deletions.
-  if (!target.startsWith(`${active.root}/${cat.dir}/`) || target.includes("..")) {
+  if (
+    !target.startsWith(`${active.root}/${cat.dir}/`) ||
+    target.includes("..")
+  ) {
     return { error: "Invalid resource path." };
   }
 
@@ -196,7 +219,9 @@ export async function action(args: ActionFunctionArgs) {
       listDrafts(project.id),
     ]);
     // Directory resources delete every file under them; files delete themselves.
-    const repoFiles = source.paths.filter((p) => p === target || p.startsWith(`${target}/`));
+    const repoFiles = source.paths.filter(
+      (p) => p === target || p.startsWith(`${target}/`),
+    );
     const stagedHere = drafts.flatMap((d) =>
       d.path === target || d.path.startsWith(`${target}/`) ? [d.path] : [],
     );
@@ -218,8 +243,13 @@ export async function action(args: ActionFunctionArgs) {
     // Deployment tab decides when. Staged edits on these paths are superseded; staged-new
     // files that never reached the repo are simply discarded.
     const stagedNewHere = stagedHere.filter((p) => !repoFiles.includes(p));
-    if (stagedNewHere.length > 0) await discardDrafts(project.id, stagedNewHere);
-    await stageDeletions({ projectId: project.id, paths: repoFiles, createdBy: auth.user.id });
+    if (stagedNewHere.length > 0)
+      await discardDrafts(project.id, stagedNewHere);
+    await stageDeletions({
+      projectId: project.id,
+      paths: repoFiles,
+      createdBy: auth.user.id,
+    });
     return { ok: true as const, staged: name };
   } catch (error) {
     return { error: (error as Error).message };
@@ -227,7 +257,9 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta({ params }: Route.MetaArgs) {
-  const label = AGENT_CATEGORIES.find((c) => c.key === params.category)?.label ?? "Resources";
+  const label =
+    AGENT_CATEGORIES.find((c) => c.key === params.category)?.label ??
+    "Resources";
   return [{ title: `${label} · Eden` }];
 }
 
@@ -253,8 +285,12 @@ const CATEGORY_HINTS: Record<string, string> = {
   connections: "Typed external integrations",
 };
 
-export default function ResourceCategory({ loaderData, actionData }: Route.ComponentProps) {
-  const { project, category, roster, activeAgent, activeRoot, isTeam, rows } = loaderData;
+export default function ResourceCategory({
+  loaderData,
+  actionData,
+}: Route.ComponentProps) {
+  const { project, category, roster, activeAgent, activeRoot, isTeam, rows } =
+    loaderData;
   const ctx = contextPath(project.id, isTeam ? activeAgent : null);
   const submit = useSubmit();
   const navigation = useNavigation();
@@ -271,16 +307,16 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
         tail: [{ label: category.label }],
       })}
     >
-      <PageHeader
-        title={category.label}
-        description={CATEGORY_HINTS[category.key]}
-        actions={<NewResourceDialog kind={kind} base={ctx} root={activeRoot} />}
-      />
       <AgentNav
         base={ctx}
         level={isTeam ? "member" : "single"}
         roster={roster}
         activeAgent={isTeam ? activeAgent : undefined}
+      />
+      <PageHeader
+        title={category.label}
+        description={CATEGORY_HINTS[category.key]}
+        actions={<NewResourceDialog kind={kind} base={ctx} root={activeRoot} />}
       />
 
       {actionData?.error && (
@@ -293,9 +329,9 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
         <Alert className="mb-6">
           <AlertTitle>Deletion staged</AlertTitle>
           <AlertDescription>
-            <span className="font-mono">{actionData.staged}</span> is marked for deletion —
-            it stacks with your other staged changes and nothing touches the repository
-            until you publish or ship.{" "}
+            <span className="font-mono">{actionData.staged}</span> is marked for
+            deletion — it stacks with your other staged changes and nothing
+            touches the repository until you publish or ship.{" "}
             <Link
               to={`${ctx}/deployment`}
               className="font-medium underline underline-offset-4"
@@ -309,8 +345,8 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
         <Alert className="mb-6">
           <AlertTitle>Deletion undone</AlertTitle>
           <AlertDescription>
-            <span className="font-mono">{actionData.restored}</span> is no longer staged for
-            deletion.
+            <span className="font-mono">{actionData.restored}</span> is no
+            longer staged for deletion.
           </AlertDescription>
         </Alert>
       )}
@@ -318,8 +354,9 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
         <Alert className="mb-6">
           <AlertTitle>Draft discarded</AlertTitle>
           <AlertDescription>
-            <span className="font-mono">{actionData.discarded}</span> was only staged — it
-            never reached the repository, so discarding the draft removed it entirely.
+            <span className="font-mono">{actionData.discarded}</span> was only
+            staged — it never reached the repository, so discarding the draft
+            removed it entirely.
           </AlertDescription>
         </Alert>
       )}
@@ -327,7 +364,9 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
       {rows.length === 0 ? (
         <Card className="border-dashed">
           <CardHeader className="items-center py-12 text-center">
-            <CardTitle className="text-lg">No {category.label.toLowerCase()} yet</CardTitle>
+            <CardTitle className="text-lg">
+              No {category.label.toLowerCase()} yet
+            </CardTitle>
             <CardDescription>{CATEGORY_HINTS[category.key]}</CardDescription>
             <div className="mt-4">
               <NewResourceDialog kind={kind} base={ctx} root={activeRoot} />
@@ -380,13 +419,17 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
                       {relativeTime(row.lastCommit?.date ?? null)}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {row.lastCommit?.authorLogin ?? row.lastCommit?.authorName ?? "—"}
+                      {row.lastCommit?.authorLogin ??
+                        row.lastCommit?.authorName ??
+                        "—"}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
                         {!row.isDirectory && (
                           <Button variant="ghost" size="sm" asChild>
-                            <Link to={`${ctx}/edit?path=${encodeURIComponent(row.path)}`}>
+                            <Link
+                              to={`${ctx}/edit?path=${encodeURIComponent(row.path)}`}
+                            >
                               Open
                             </Link>
                           </Button>
@@ -439,7 +482,11 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
                                     ? `Stages the deletion of ${row.path}. It stacks with your other staged changes — nothing is removed until you publish or ship, and you can undo it any time before then.`
                                     : `${row.name} is only a staged draft — deleting discards it immediately.`
                                 }
-                                confirmLabel={row.inRepo ? "Stage deletion" : "Discard draft"}
+                                confirmLabel={
+                                  row.inRepo
+                                    ? "Stage deletion"
+                                    : "Discard draft"
+                                }
                                 onConfirm={() =>
                                   submit(
                                     {

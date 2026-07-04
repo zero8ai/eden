@@ -58,8 +58,15 @@ import {
 import type { Environment } from "~/data/ports";
 import { deleteRepository } from "~/deploy/repository.server";
 import { listAgentEnvironments } from "~/db/queries.server";
-import { createIngestToken, listIngestTokens } from "~/observability/store.server";
-import { listDrafts, resolveFileView, stageDraft } from "~/drafts/drafts.server";
+import {
+  createIngestToken,
+  listIngestTokens,
+} from "~/observability/store.server";
+import {
+  listDrafts,
+  resolveFileView,
+  stageDraft,
+} from "~/drafts/drafts.server";
 import { readModel, scaffoldAgentModule, setModel } from "~/eve/agentModule";
 import { buildAgentConfig } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
@@ -99,7 +106,12 @@ interface SettingsView {
   secretsConfigured: boolean;
   secretsError: string | null;
   /** Repo: ingest tokens. */
-  tokens: { id: string; name: string; createdAt: string; lastUsedAt: string | null }[];
+  tokens: {
+    id: string;
+    name: string;
+    createdAt: string;
+    lastUsedAt: string | null;
+  }[];
 }
 
 /** Resolve the `?env=` param to an environmentId (null == agent-wide), validated. */
@@ -107,7 +119,8 @@ function resolveScope(
   raw: string | null,
   envs: Environment[],
 ): { environmentId: string | null; label: string } {
-  if (!raw || raw === ALL) return { environmentId: null, label: "All environments" };
+  if (!raw || raw === ALL)
+    return { environmentId: null, label: "All environments" };
   const env = envs.find((e) => e.id === raw);
   return env
     ? { environmentId: env.id, label: env.name }
@@ -120,7 +133,11 @@ export const loader = (args: LoaderFunctionArgs) =>
     async ({ auth }): Promise<SettingsView> => {
       const project = requireRepo(
         await requireProject(
-          { user: auth.user, organizationId: auth.organizationId, role: auth.role },
+          {
+            user: auth.user,
+            organizationId: auth.organizationId,
+            role: auth.role,
+          },
           args.params.projectId,
         ),
       );
@@ -199,7 +216,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           id: t.id,
           name: t.name,
           createdAt: new Date(t.createdAt).toISOString(),
-          lastUsedAt: t.lastUsedAt ? new Date(t.lastUsedAt).toISOString() : null,
+          lastUsedAt: t.lastUsedAt
+            ? new Date(t.lastUsedAt).toISOString()
+            : null,
         }));
       }
       return base;
@@ -236,7 +255,9 @@ export async function action(args: ActionFunctionArgs) {
       );
       const path = `${active.root}/agent.ts`;
       const view = await resolveFileView(project, path);
-      const next = view.content ? setModel(view.content, model) : scaffoldAgentModule(model);
+      const next = view.content
+        ? setModel(view.content, model)
+        : scaffoldAgentModule(model);
       await stageDraft({
         projectId: project.id,
         path,
@@ -256,7 +277,12 @@ export async function action(args: ActionFunctionArgs) {
       const envRaw = String(form.get("env") ?? ALL);
       const { environmentId } = resolveScope(envRaw, envs);
       const key = String(form.get("key") ?? "").trim();
-      const ref = { projectId: project.id, agentId: active.id, environmentId, key };
+      const ref = {
+        projectId: project.id,
+        agentId: active.id,
+        environmentId,
+        key,
+      };
       const secrets = getRuntime().secrets;
       if (intent === "secret-set") {
         const value = String(form.get("value") ?? "");
@@ -287,7 +313,8 @@ export async function action(args: ActionFunctionArgs) {
       const files: FileChange[] = source.paths.flatMap((p) =>
         p.startsWith(memberDir) ? [{ path: p, content: null }] : [],
       );
-      if (files.length === 0) return { error: `No files found under ${memberDir}.` };
+      if (files.length === 0)
+        return { error: `No files found under ${memberDir}.` };
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
         branch: `eden/remove-member-${name}`,
@@ -297,7 +324,11 @@ export async function action(args: ActionFunctionArgs) {
           `Deletes \`agents/${name}/\` (${files.length} files). Merging removes the member; ` +
           `its releases and run history remain until then.`,
       });
-      return { ok: true as const, changeUrl: change.pullRequestUrl, member: name };
+      return {
+        ok: true as const,
+        changeUrl: change.pullRequestUrl,
+        member: name,
+      };
     }
 
     // ── Repo: ingest tokens ──
@@ -313,9 +344,14 @@ export async function action(args: ActionFunctionArgs) {
     if (intent === "delete-repository") {
       const confirm = String(form.get("confirm") ?? "");
       if (confirm !== project.name) {
-        return { error: `Type the repository name ("${project.name}") to confirm.` };
+        return {
+          error: `Type the repository name ("${project.name}") to confirm.`,
+        };
       }
-      await deleteRepository({ projectId: project.id, createdBy: auth.user.id });
+      await deleteRepository({
+        projectId: project.id,
+        createdBy: auth.user.id,
+      });
       throw redirect("/dashboard");
     }
 
@@ -330,7 +366,10 @@ export function meta() {
   return [{ title: "Settings · Eden" }];
 }
 
-export default function Settings({ loaderData, actionData }: Route.ComponentProps) {
+export default function Settings({
+  loaderData,
+  actionData,
+}: Route.ComponentProps) {
   const {
     project,
     roster,
@@ -343,9 +382,13 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
   } = loaderData;
   const base = contextPath(project.id, level === "member" ? activeAgent : null);
   const newToken =
-    actionData && "token" in actionData ? (actionData.token as string | null) : null;
+    actionData && "token" in actionData
+      ? (actionData.token as string | null)
+      : null;
   const changeUrl =
-    actionData && "changeUrl" in actionData ? (actionData.changeUrl as string) : null;
+    actionData && "changeUrl" in actionData
+      ? (actionData.changeUrl as string)
+      : null;
 
   return (
     <AppShell
@@ -357,6 +400,12 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         tail: [{ label: "Settings" }],
       })}
     >
+      <AgentNav
+        base={base}
+        level={level}
+        roster={roster}
+        activeAgent={level === "member" ? activeAgent : undefined}
+      />
       <PageHeader
         title={level === "member" ? `Settings — ${activeAgent}` : "Settings"}
         description={
@@ -366,12 +415,6 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
               ? "This agent's runtime configuration and the repository connection."
               : "This member's runtime configuration — model, credentials, membership."
         }
-      />
-      <AgentNav
-        base={base}
-        level={level}
-        roster={roster}
-        activeAgent={level === "member" ? activeAgent : undefined}
       />
 
       {actionData?.error && (
@@ -386,7 +429,8 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         <Alert className="mb-6">
           <AlertTitle>Change request opened</AlertTitle>
           <AlertDescription>
-            The member is removed when it merges — review it on the Deployment tab.
+            The member is removed when it merges — review it on the Deployment
+            tab.
           </AlertDescription>
         </Alert>
       )}
@@ -395,7 +439,9 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
         {showMember && <ModelSection loaderData={loaderData} />}
         {showMember && <SecretsSection loaderData={loaderData} />}
         {showRepo && <GeneralSection project={project} />}
-        {showRepo && <IngestSection loaderData={loaderData} newToken={newToken} />}
+        {showRepo && (
+          <IngestSection loaderData={loaderData} newToken={newToken} />
+        )}
         {(canRemoveMember || showRepo) && (
           <DangerSection
             project={project}
@@ -411,7 +457,11 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
 }
 
 /** Model — the one runtime setting; saving stages agent.ts like any other edit. */
-function ModelSection({ loaderData }: { loaderData: Route.ComponentProps["loaderData"] }) {
+function ModelSection({
+  loaderData,
+}: {
+  loaderData: Route.ComponentProps["loaderData"];
+}) {
   const { model, hasAgentModule, modelStaged, activeAgent } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const modelBadges = useMemo(
@@ -462,8 +512,15 @@ function SecretsSection({
 }: {
   loaderData: Route.ComponentProps["loaderData"];
 }) {
-  const { envs, scope, secretNames, secretsConfigured, secretsError, activeAgent, isTeam } =
-    loaderData;
+  const {
+    envs,
+    scope,
+    secretNames,
+    secretsConfigured,
+    secretsError,
+    activeAgent,
+    isTeam,
+  } = loaderData;
   const navigation = useNavigation();
   const busy = navigation.state === "submitting";
   const envValue = scope.environmentId ?? ALL;
@@ -518,7 +575,10 @@ function SecretsSection({
       {secretNames.length > 0 && (
         <ul className="mb-4 divide-y rounded-lg border text-sm">
           {secretNames.map((name) => (
-            <li key={name} className="flex items-center justify-between gap-2 px-4 py-2">
+            <li
+              key={name}
+              className="flex items-center justify-between gap-2 px-4 py-2"
+            >
               <div className="flex items-center gap-2">
                 <span className="font-mono">{name}</span>
                 <Badge variant={scope.environmentId ? "secondary" : "outline"}>
@@ -551,7 +611,12 @@ function SecretsSection({
         <input type="hidden" name="agent" value={activeAgent} />
         <div className="grid gap-1.5">
           <Label htmlFor="secret-key">Key</Label>
-          <Input id="secret-key" name="key" placeholder="API_KEY" className="w-56 font-mono" />
+          <Input
+            id="secret-key"
+            name="key"
+            placeholder="API_KEY"
+            className="w-56 font-mono"
+          />
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="secret-value">Value</Label>
@@ -573,7 +638,16 @@ function SecretsSection({
 }
 
 /** The GitHub connection this repository is built on (read-mostly). */
-function GeneralSection({ project }: { project: { name: string; repoOwner: string; repoName: string; defaultBranch: string } }) {
+function GeneralSection({
+  project,
+}: {
+  project: {
+    name: string;
+    repoOwner: string;
+    repoName: string;
+    defaultBranch: string;
+  };
+}) {
   return (
     <section>
       <SectionHeader title="General" />
@@ -615,8 +689,9 @@ function IngestSection({
     <section>
       <SectionHeader title="Run ingestion" />
       <p className="mb-3 text-sm text-muted-foreground">
-        BYO instances ship telemetry to <span className="font-mono">/api/ingest/runs</span>{" "}
-        with one of these tokens.
+        BYO instances ship telemetry to{" "}
+        <span className="font-mono">/api/ingest/runs</span> with one of these
+        tokens.
       </p>
       {newToken && (
         <Alert className="mb-4">
@@ -640,7 +715,11 @@ function IngestSection({
       )}
       <Form method="post" className="flex items-center gap-2">
         <input type="hidden" name="intent" value="create-token" />
-        <Input name="name" placeholder="production instance" className="max-w-xs" />
+        <Input
+          name="name"
+          placeholder="production instance"
+          className="max-w-xs"
+        />
         <Button type="submit" disabled={busy}>
           Create ingest token
         </Button>
@@ -675,11 +754,14 @@ function DangerSection({
           {canRemoveMember && (
             <div className="flex flex-wrap items-center justify-between gap-3 py-4">
               <div>
-                <p className="text-sm font-medium">Remove {activeAgent} from the team</p>
+                <p className="text-sm font-medium">
+                  Remove {activeAgent} from the team
+                </p>
                 <p className="text-sm text-muted-foreground">
                   Opens a change request deleting{" "}
-                  <span className="font-mono">agents/{activeAgent}/</span>. Nothing is
-                  removed until it merges, and git can restore it after.
+                  <span className="font-mono">agents/{activeAgent}/</span>.
+                  Nothing is removed until it merges, and git can restore it
+                  after.
                 </p>
               </div>
               <ConfirmDialog
@@ -703,12 +785,14 @@ function DangerSection({
           {showRepo && (
             <div className="flex flex-wrap items-center justify-between gap-3 py-4">
               <div>
-                <p className="text-sm font-medium">Delete this repository from Eden</p>
+                <p className="text-sm font-medium">
+                  Delete this repository from Eden
+                </p>
                 <p className="text-sm text-muted-foreground">
-                  Stops and destroys every running instance, then permanently deletes{" "}
-                  {isTeam ? "all members' " : "the agent's "}
-                  versions, environments, secrets, drafts, and run history from Eden. The
-                  GitHub repository itself is not touched.
+                  Stops and destroys every running instance, then permanently
+                  deletes {isTeam ? "all members' " : "the agent's "}
+                  versions, environments, secrets, drafts, and run history from
+                  Eden. The GitHub repository itself is not touched.
                 </p>
               </div>
               <DeleteRepositoryDialog projectName={project.name} busy={busy} />
@@ -751,16 +835,20 @@ function DeleteRepositoryDialog({
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Delete &ldquo;{projectName}&rdquo; from Eden?</DialogTitle>
+          <DialogTitle>
+            Delete &ldquo;{projectName}&rdquo; from Eden?
+          </DialogTitle>
           <DialogDescription>
-            This stops everything that&rsquo;s running and permanently deletes all Eden
-            data for this repository — versions, environments, secrets, drafts, run
-            history. It cannot be undone. The GitHub repository itself is not touched.
+            This stops everything that&rsquo;s running and permanently deletes
+            all Eden data for this repository — versions, environments, secrets,
+            drafts, run history. It cannot be undone. The GitHub repository
+            itself is not touched.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">
           <Label htmlFor="delete-repo-confirm">
-            Type <span className="font-mono font-semibold">{projectName}</span> to confirm
+            Type <span className="font-mono font-semibold">{projectName}</span>{" "}
+            to confirm
           </Label>
           <Input
             id="delete-repo-confirm"

@@ -100,7 +100,7 @@ export function ChatComposer({
         placeholder={placeholder}
         aria-label={placeholder}
         rows={1}
-        className="max-h-48 min-h-11 resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none focus-visible:ring-0"
+        className="max-h-48 min-h-11 resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
         disabled={busy}
         onInput={(e) => autoGrow(e.currentTarget)}
         onKeyDown={(e) => {

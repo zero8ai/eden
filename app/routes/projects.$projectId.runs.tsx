@@ -49,7 +49,11 @@ export const loader = (args: LoaderFunctionArgs) =>
     args,
     async ({ auth }) => {
       const project = await requireProject(
-        { user: auth.user, organizationId: auth.organizationId, role: auth.role },
+        {
+          user: auth.user,
+          organizationId: auth.organizationId,
+          role: auth.role,
+        },
         args.params.projectId,
       );
       const agentName = agentFromParams(args.params);
@@ -77,7 +81,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         activeAgent: active.name,
         isTeam,
         runs: runsList,
-        releases: releasesList.filter((r) => !isTeam || r.agentId === active.id),
+        releases: releasesList.filter(
+          (r) => !isTeam || r.agentId === active.id,
+        ),
         releaseId,
       };
     },
@@ -107,16 +113,24 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
   const ctx = contextPath(project.id, isTeam ? activeAgent : null);
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam: isTeam, agentName: activeAgent, tail: [{ label: "Runs" }] })}>
-      <PageHeader
-        title={isTeam ? `Runs — ${activeAgent}` : "Runs"}
-        description="Per-run summary metrics, filterable by release to compare versions."
-      />
+    <AppShell
+      breadcrumbs={repoCrumbs({
+        projectId: project.id,
+        repoName: project.name,
+        isTeam: isTeam,
+        agentName: activeAgent,
+        tail: [{ label: "Runs" }],
+      })}
+    >
       <AgentNav
         base={ctx}
         level={isTeam ? "member" : "single"}
         roster={roster}
         activeAgent={isTeam ? activeAgent : undefined}
+      />
+      <PageHeader
+        title={isTeam ? `Runs — ${activeAgent}` : "Runs"}
+        description="Per-run summary metrics, filterable by release to compare versions."
       />
 
       {/* Compare-by-version filter (the path carries the member context) */}
@@ -186,7 +200,9 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
                     </TableCell>
                     <TableCell>{r.version ?? "—"}</TableCell>
                     <TableCell>
-                      <Badge variant={statusVariant(r.status)}>{r.status}</Badge>
+                      <Badge variant={statusVariant(r.status)}>
+                        {r.status}
+                      </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {(r.tokensInput ?? 0) + (r.tokensOutput ?? 0) || "—"}

@@ -9,7 +9,12 @@
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { useMemo, useState } from "react";
-import { redirect, useFetcher, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
+import {
+  redirect,
+  useFetcher,
+  type ActionFunctionArgs,
+  type LoaderFunctionArgs,
+} from "react-router";
 
 import { sendTurn } from "~/agent/talk.server";
 import {
@@ -90,7 +95,11 @@ export const loader = (args: LoaderFunctionArgs) =>
     async ({ auth }) => {
       const project = requireRepo(
         await requireProject(
-          { user: auth.user, organizationId: auth.organizationId, role: auth.role },
+          {
+            user: auth.user,
+            organizationId: auth.organizationId,
+            role: auth.role,
+          },
           args.params.projectId,
         ),
       );
@@ -147,7 +156,10 @@ export async function action(args: ActionFunctionArgs) {
   const targets = await liveTargets(project.id);
   const target = targets.find((t) => t.deploymentId === deploymentId);
   if (!target) {
-    return { error: "That deployment isn't live (or isn't part of this agent). Deploy first." };
+    return {
+      error:
+        "That deployment isn't live (or isn't part of this agent). Deploy first.",
+    };
   }
 
   const conversation = await loadConversation<PlaygroundState>(
@@ -191,8 +203,15 @@ export function meta() {
 }
 
 export default function Playground({ loaderData }: Route.ComponentProps) {
-  const { project, targets, entries, expired, lastDeploymentId, roster, isTeam } =
-    loaderData;
+  const {
+    project,
+    targets,
+    entries,
+    expired,
+    lastDeploymentId,
+    roster,
+    isTeam,
+  } = loaderData;
   const base = `/repos/${project.id}`;
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
@@ -203,7 +222,9 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
 
   const defaultTarget =
     targets.find((t) => t.deploymentId === lastDeploymentId) ?? targets[0];
-  const [deploymentId, setDeploymentId] = useState(defaultTarget?.deploymentId ?? "");
+  const [deploymentId, setDeploymentId] = useState(
+    defaultTarget?.deploymentId ?? "",
+  );
 
   // Stable element between renders so the composer (and any memoized child) doesn't redraw.
   const targetPicker = useMemo(
@@ -228,7 +249,18 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   );
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, tail: [{ label: "Playground" }] })}>
+    <AppShell
+      breadcrumbs={repoCrumbs({
+        projectId: project.id,
+        repoName: project.name,
+        tail: [{ label: "Playground" }],
+      })}
+    >
+      <AgentNav
+        base={base}
+        level={isTeam ? "repo" : "single"}
+        roster={roster}
+      />
       <PageHeader
         title="Playground"
         description="Talk to a live deployment of this agent. Each reply is tagged with the version that produced it."
@@ -243,13 +275,13 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           ) : undefined
         }
       />
-      <AgentNav base={base} level={isTeam ? "repo" : "single"} roster={roster} />
 
       {targets.length === 0 ? (
         <Alert>
           <AlertTitle>No live deployment to talk to</AlertTitle>
           <AlertDescription>
-            Deploy a release first (Deployment tab), then come back here to try it.
+            Deploy a release first (Deployment tab), then come back here to try
+            it.
           </AlertDescription>
         </Alert>
       ) : (
@@ -257,7 +289,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           {expired && entries.length === 0 && (
             <Alert>
               <AlertDescription>
-                Your previous conversation expired after a day of inactivity — starting fresh.
+                Your previous conversation expired after a day of inactivity —
+                starting fresh.
               </AlertDescription>
             </Alert>
           )}
@@ -270,7 +303,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           <ChatTranscript dep={`${entries.length}:${pendingMessage ?? ""}`}>
             {entries.length === 0 && !pendingMessage && (
               <p className="py-8 text-center text-sm text-muted-foreground">
-                Say something to the agent — the conversation keeps its context across turns.
+                Say something to the agent — the conversation keeps its context
+                across turns.
               </p>
             )}
             {(entries as ChatEntry[]).map((e) =>
@@ -317,7 +351,9 @@ function AgentEntry({ entry }: { entry: ChatEntry }) {
             {entry.version}
           </Badge>
           {entry.modelId && (
-            <span className="font-mono text-xs text-muted-foreground">{entry.modelId}</span>
+            <span className="font-mono text-xs text-muted-foreground">
+              {entry.modelId}
+            </span>
           )}
         </span>
       )}
@@ -340,7 +376,9 @@ function AgentEntry({ entry }: { entry: ChatEntry }) {
               <li key={`${entry.id}-step-${s.type}-${i}`} className="font-mono">
                 {s.type}
                 {s.name ? ` · ${s.name}` : ""}
-                {s.durationMs != null ? ` · ${(s.durationMs / 1000).toFixed(1)}s` : ""}
+                {s.durationMs != null
+                  ? ` · ${(s.durationMs / 1000).toFixed(1)}s`
+                  : ""}
                 {s.tokensIn != null || s.tokensOut != null
                   ? ` · ${s.tokensIn ?? 0} in / ${s.tokensOut ?? 0} out tok`
                   : ""}

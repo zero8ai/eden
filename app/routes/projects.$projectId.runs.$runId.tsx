@@ -26,7 +26,11 @@ export const loader = (args: LoaderFunctionArgs) =>
     args,
     async ({ auth }) => {
       const project = await requireProject(
-        { user: auth.user, organizationId: auth.organizationId, role: auth.role },
+        {
+          user: auth.user,
+          organizationId: auth.organizationId,
+          role: auth.role,
+        },
         args.params.projectId,
       );
       const agentName = agentFromParams(args.params);
@@ -66,11 +70,26 @@ function statusVariant(
 }
 
 export default function RunTranscript({ loaderData }: Route.ComponentProps) {
-  const { project, run, steps, release, roster, activeAgent, isTeam } = loaderData;
+  const { project, run, steps, release, roster, activeAgent, isTeam } =
+    loaderData;
   const ctx = contextPath(project.id, isTeam ? activeAgent : null);
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam, agentName: activeAgent, tail: [{ label: "Run" }] })}>
+    <AppShell
+      breadcrumbs={repoCrumbs({
+        projectId: project.id,
+        repoName: project.name,
+        isTeam,
+        agentName: activeAgent,
+        tail: [{ label: "Run" }],
+      })}
+    >
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
       <PageHeader
         title={run.externalRunId ?? run.id}
         description="Progressive-disclosure timeline of each model and tool step."
@@ -79,12 +98,6 @@ export default function RunTranscript({ loaderData }: Route.ComponentProps) {
             <Link to={`${ctx}/runs`}>← Runs</Link>
           </Button>
         }
-      />
-      <AgentNav
-        base={ctx}
-        level={isTeam ? "member" : "single"}
-        roster={roster}
-        activeAgent={isTeam ? activeAgent : undefined}
       />
 
       {/* Summary */}
@@ -160,13 +173,7 @@ export default function RunTranscript({ loaderData }: Route.ComponentProps) {
   );
 }
 
-function Metric({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
+function Metric({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="rounded-lg border px-3 py-2">
       <dt className="text-xs uppercase text-muted-foreground">{label}</dt>

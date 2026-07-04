@@ -7,7 +7,13 @@
  * project — no session management.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { Link, redirect, useFetcher, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
+import {
+  Link,
+  redirect,
+  useFetcher,
+  type ActionFunctionArgs,
+  type LoaderFunctionArgs,
+} from "react-router";
 
 import { runAuthoringAgent, type ChatMessage } from "~/assistant/agent.server";
 import {
@@ -61,9 +67,14 @@ export const loader = (args: LoaderFunctionArgs) =>
         if (legacy) throw legacy;
       }
       const [conversation, { roster, active, isTeam }] = await Promise.all([
-        loadConversation<AssistantState>(project.id, "assistant", auth.user!.id, {
-          history: [],
-        }),
+        loadConversation<AssistantState>(
+          project.id,
+          "assistant",
+          auth.user!.id,
+          {
+            history: [],
+          },
+        ),
         resolveAgentContext(project.id, agentName),
       ]);
       // Teams have no repo-level Assistant — the tab exists only at the member level.
@@ -126,7 +137,9 @@ export async function action(args: ActionFunctionArgs) {
       text: result.summary,
       files: result.files,
       secrets: result.secretsNeeded,
-      checks: result.checks.ran ? { ran: true, ok: result.checks.ok } : undefined,
+      checks: result.checks.ran
+        ? { ran: true, ok: result.checks.ok }
+        : undefined,
     });
     await saveConversation(project.id, "assistant", auth.user.id, entries, {
       history: result.history,
@@ -162,7 +175,21 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
       : null;
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam, agentName: activeAgent, tail: [{ label: "Assistant" }] })}>
+    <AppShell
+      breadcrumbs={repoCrumbs({
+        projectId: project.id,
+        repoName: project.name,
+        isTeam,
+        agentName: activeAgent,
+        tail: [{ label: "Assistant" }],
+      })}
+    >
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
       <PageHeader
         title="Assistant"
         description="Tell it what the agent should be able to do. It writes the code, verifies the build, and stages everything for your review on the Deployment tab."
@@ -177,17 +204,12 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           ) : undefined
         }
       />
-      <AgentNav
-        base={ctx}
-        level={isTeam ? "member" : "single"}
-        roster={roster}
-        activeAgent={isTeam ? activeAgent : undefined}
-      />
 
       {expired && entries.length === 0 && (
         <Alert className="mb-4">
           <AlertDescription>
-            Your previous conversation expired after a day of inactivity — starting fresh.
+            Your previous conversation expired after a day of inactivity —
+            starting fresh.
           </AlertDescription>
         </Alert>
       )}
@@ -196,7 +218,8 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         <ChatTranscript dep={`${entries.length}:${pendingMessage ?? ""}`}>
           {entries.length === 0 && !pendingMessage && (
             <p className="py-8 text-center text-sm text-muted-foreground">
-              e.g. &ldquo;Add a tool that sends a message to our Discord channel.&rdquo;
+              e.g. &ldquo;Add a tool that sends a message to our Discord
+              channel.&rdquo;
             </p>
           )}
           {(entries as ChatEntry[]).map((e) =>
@@ -241,7 +264,10 @@ function AssistantEntry({ entry, base }: { entry: ChatEntry; base: string }) {
 
       {entry.checks && (
         <p className="mt-2">
-          <Badge variant={entry.checks.ok ? "secondary" : "destructive"} className="text-xs">
+          <Badge
+            variant={entry.checks.ok ? "secondary" : "destructive"}
+            className="text-xs"
+          >
             {entry.checks.ok ? "checks passed" : "checks failed"}
           </Badge>
         </p>
@@ -281,7 +307,10 @@ function AssistantEntry({ entry, base }: { entry: ChatEntry; base: string }) {
               {s}
             </Badge>
           ))}
-          <Link to={`${base}/settings`} className="underline underline-offset-4">
+          <Link
+            to={`${base}/settings`}
+            className="underline underline-offset-4"
+          >
             open Settings →
           </Link>
         </p>

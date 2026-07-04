@@ -24,7 +24,11 @@ import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { resolveFileView, stageDraft, type FileView } from "~/drafts/drafts.server";
+import {
+  resolveFileView,
+  stageDraft,
+  type FileView,
+} from "~/drafts/drafts.server";
 import { RESOURCE_KINDS } from "~/eve/templates";
 import { formatSource, isFormattable } from "~/lib/format";
 import { contextPath } from "~/lib/paths";
@@ -61,7 +65,9 @@ interface FileEditView {
 /** Starter content for a brand-new file, by its category directory (null if none applies). */
 function templateFor(path: string): string | null {
   // Root agent (agent/<cat>/<name>) or a team member (agents/<m>/agent/<cat>/<name>) — §7.9.
-  const m = path.match(/^(?:agent|agents\/[^/]+\/agent)\/([^/]+)\/([^/]+)\.[a-z]+$/);
+  const m = path.match(
+    /^(?:agent|agents\/[^/]+\/agent)\/([^/]+)\/([^/]+)\.[a-z]+$/,
+  );
   if (!m) return null;
   const kind = Object.values(RESOURCE_KINDS).find((k) => k.key === m[1]);
   return kind ? kind.template(m[2]) : null;
@@ -165,9 +171,18 @@ export function meta() {
   return [{ title: "Edit file · Eden" }];
 }
 
-export default function EditFile({ loaderData, actionData }: Route.ComponentProps) {
+export default function EditFile({
+  loaderData,
+  actionData,
+}: Route.ComponentProps) {
   // Keyed by path so switching files remounts the editor with fresh state.
-  return <Editor key={loaderData.path} loaderData={loaderData} actionData={actionData} />;
+  return (
+    <Editor
+      key={loaderData.path}
+      loaderData={loaderData}
+      actionData={actionData}
+    />
+  );
 }
 
 function Editor({
@@ -213,7 +228,21 @@ function Editor({
   const ctx = contextPath(project.id, isTeam ? activeAgent : null);
 
   return (
-    <AppShell breadcrumbs={repoCrumbs({ projectId: project.id, repoName: project.name, isTeam, agentName: activeAgent, tail: [{ label: path.split("/").pop() }] })}>
+    <AppShell
+      breadcrumbs={repoCrumbs({
+        projectId: project.id,
+        repoName: project.name,
+        isTeam,
+        agentName: activeAgent,
+        tail: [{ label: path.split("/").pop() }],
+      })}
+    >
+      <AgentNav
+        base={ctx}
+        level={isTeam ? "member" : "single"}
+        roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
+      />
       <PageHeader
         title={
           <span className="flex items-center gap-3">
@@ -226,12 +255,6 @@ function Editor({
             ? "Starting from a template — edit it, then Save to stage the new file."
             : "Saving stages the change — publish staged changes as one pull request from the Changes tab."
         }
-      />
-      <AgentNav
-        base={ctx}
-        level={isTeam ? "member" : "single"}
-        roster={roster}
-        activeAgent={isTeam ? activeAgent : undefined}
       />
 
       {actionData?.error && (
@@ -250,7 +273,9 @@ function Editor({
 
       <CodeEditor path={path} value={value} onChange={setValue} />
       {formatError && (
-        <p className="mt-2 text-xs text-destructive">Can&rsquo;t format: {formatError}</p>
+        <p className="mt-2 text-xs text-destructive">
+          Can&rsquo;t format: {formatError}
+        </p>
       )}
       <div className="mt-4 flex items-center gap-3">
         <Button onClick={save} disabled={saving}>

@@ -7,7 +7,7 @@
  * change-sets (branch → PR) like every other edit; the roster row itself syncs on merge.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Form,
   Link,
@@ -236,28 +236,32 @@ export const loader = (args: LoaderFunctionArgs) =>
           const shippedSha = url.searchParams.get("shipped");
           const shipEnv = url.searchParams.get("env") ?? "production";
           if (shippedSha) {
-            const rows: ShipStatusRow[] = [];
-            for (const member of roster) {
-              const memberEnvs =
-                member.id === active.id ? envs : await listAgentEnvironments(member.id);
-              const env = memberEnvs.find((e) => e.name === shipEnv);
-              if (!env) continue;
-              // Newest-first list; the first row at the shipped commit is the ship's deploy
-              // (or its retry). Members untouched by the ship simply have no such row.
-              const match = (await listDeployments(env.id)).find(
-                (d) => d.gitSha === shippedSha,
-              );
-              if (!match) continue;
-              rows.push({
-                agentName: member.name,
-                version: match.version,
-                status: match.status,
-                url: match.url,
-                errorDetail: match.errorDetail,
-                environmentId: env.id,
-                releaseId: match.releaseId,
-              });
-            }
+            // Members are independent — resolve their env + deployment rows concurrently.
+            const rows = (
+              await Promise.all(
+                roster.map(async (member): Promise<ShipStatusRow | null> => {
+                  const memberEnvs =
+                    member.id === active.id ? envs : await listAgentEnvironments(member.id);
+                  const env = memberEnvs.find((e) => e.name === shipEnv);
+                  if (!env) return null;
+                  // Newest-first list; the first row at the shipped commit is the ship's
+                  // deploy (or its retry). Members untouched by the ship have no such row.
+                  const match = (await listDeployments(env.id)).find(
+                    (d) => d.gitSha === shippedSha,
+                  );
+                  if (!match) return null;
+                  return {
+                    agentName: member.name,
+                    version: match.version,
+                    status: match.status,
+                    url: match.url,
+                    errorDetail: match.errorDetail,
+                    environmentId: env.id,
+                    releaseId: match.releaseId,
+                  };
+                }),
+              )
+            ).filter((r): r is ShipStatusRow => r !== null);
             if (rows.length > 0) ship = { env: shipEnv, rows };
           }
         }
@@ -401,9 +405,9 @@ export async function action(args: ActionFunctionArgs) {
       }
       const source = await fetchAgentSource(project.repoInstallationId, repo);
       const memberDir = `agents/${name}/`;
-      const files: FileChange[] = source.paths
-        .filter((p) => p.startsWith(memberDir))
-        .map((p) => ({ path: p, content: null }));
+      const files: FileChange[] = source.paths.flatMap((p) =>
+        p.startsWith(memberDir) ? [{ path: p, content: null }] : [],
+      );
       if (files.length === 0) return { error: `No files found under ${memberDir}.` };
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
@@ -992,27 +996,41 @@ function AgentSurface({
   const modelFetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const savingModel = modelFetcher.state !== "idle";
 
+  // Stable elements between renders (JSX props otherwise defeat memoized children).
+  const agentTsStaged = drafted.has(`${root}/agent.ts`);
+  const instructionsStaged = drafted.has(`${root}/instructions.md`);
+  const modelBadges = useMemo(
+    () => (
+      <>
+        {agentTsStaged && (
+          <Badge variant="outline" className="text-xs">
+            staged
+          </Badge>
+        )}
+        {!config.hasAgentModule && (
+          <Badge variant="outline" className="text-xs">
+            no agent.ts — picking one scaffolds it
+          </Badge>
+        )}
+      </>
+    ),
+    [agentTsStaged, config.hasAgentModule],
+  );
+  const instructionsBadges = useMemo(
+    () =>
+      instructionsStaged ? (
+        <Badge variant="outline" className="text-xs">
+          staged
+        </Badge>
+      ) : null,
+    [instructionsStaged],
+  );
+
   return (
     <div className="space-y-8">
       {/* Model — the one runtime setting, edited in place (saving stages agent.ts). */}
       <section>
-        <SectionHeader
-          title="Model"
-          badges={
-            <>
-              {drafted.has(`${root}/agent.ts`) && (
-                <Badge variant="outline" className="text-xs">
-                  staged
-                </Badge>
-              )}
-              {!config.hasAgentModule && (
-                <Badge variant="outline" className="text-xs">
-                  no agent.ts — picking one scaffolds it
-                </Badge>
-              )}
-            </>
-          }
-        />
+        <SectionHeader title="Model" badges={modelBadges} />
         <ModelSelect
           value={config.model}
           busy={savingModel}
@@ -1032,13 +1050,7 @@ function AgentSurface({
       <section>
         <SectionHeader
           title="Instructions"
-          badges={
-            drafted.has(`${root}/instructions.md`) && (
-              <Badge variant="outline" className="text-xs">
-                staged
-              </Badge>
-            )
-          }
+          badges={instructionsBadges}
           actions={
             <Button variant="outline" size="sm" asChild>
               <Link to={`${base}/edit/instructions${agentSuffix}`}>
@@ -1098,37 +1110,34 @@ function AgentSurface({
                   {items.length === 0 ? (
                     <p className="text-sm text-muted-foreground">None</p>
                   ) : (
-                    <>
-                      <ul className="space-y-1 text-sm">
-                        {items.slice(0, CARD_PREVIEW_COUNT).map((item) => (
-                          <li key={item.path} className="flex items-center gap-2">
-                            {item.isDirectory ? (
-                              <span className="font-mono text-muted-foreground">
-                                {item.name}/
-                              </span>
-                            ) : (
-                              <Link
-                                to={`${base}/edit?path=${encodeURIComponent(item.path)}`}
-                                className="font-mono underline-offset-4 hover:underline"
-                              >
-                                {item.name}
-                              </Link>
-                            )}
-                            {drafted.has(item.path) && (
-                              <Badge variant="outline" className="text-xs">
-                                staged
-                              </Badge>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                      <Link
-                        to={listTo}
-                        className="mt-2 inline-block text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-                      >
-                        View all {items.length} →
-                      </Link>
-                    </>
+                    <ul className="space-y-1 text-sm">
+                      {items.slice(0, CARD_PREVIEW_COUNT).map((item) => (
+                        <li key={item.path} className="flex items-center gap-2">
+                          {item.isDirectory ? (
+                            <span className="font-mono text-muted-foreground">
+                              {item.name}/
+                            </span>
+                          ) : (
+                            <Link
+                              to={`${base}/edit?path=${encodeURIComponent(item.path)}`}
+                              className="font-mono underline-offset-4 hover:underline"
+                            >
+                              {item.name}
+                            </Link>
+                          )}
+                          {drafted.has(item.path) && (
+                            <Badge variant="outline" className="text-xs">
+                              staged
+                            </Badge>
+                          )}
+                        </li>
+                      ))}
+                      {items.length > CARD_PREVIEW_COUNT && (
+                        <li className="text-xs text-muted-foreground">
+                          +{items.length - CARD_PREVIEW_COUNT} more
+                        </li>
+                      )}
+                    </ul>
                   )}
                 </CardContent>
               </Card>

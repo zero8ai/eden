@@ -17,10 +17,15 @@ export const SUGGESTED_MODELS = [
 ] as const;
 
 const MODEL_LITERAL = /(\bmodel\s*:\s*)(['"`])([^'"`]*)\2/;
+// Provider-wrapped form, e.g. `model: openrouter("anthropic/claude-sonnet-4.5")` — common in
+// real repos; the editable model id is the call's string argument.
+const MODEL_CALL = /(\bmodel\s*:\s*[A-Za-z_$][\w$]*\(\s*)(['"`])([^'"`]*)\2/;
 const DEFINE_AGENT_OPEN = /defineAgent\s*\(\s*\{/;
 
 /** Read the model string from an agent module, or null if not found. */
 export function readModel(source: string): string | null {
+  const call = source.match(MODEL_CALL);
+  if (call) return call[3];
   const m = source.match(MODEL_LITERAL);
   return m ? m[3] : null;
 }
@@ -33,6 +38,11 @@ export function readModel(source: string): string | null {
  */
 export function setModel(source: string, model: string): string {
   const safe = model.replace(/['"`\\]/g, "");
+  // Replace INSIDE a provider call first — injecting a second `model:` prop would silently
+  // lose (object literals: last prop wins) and fail typecheck (duplicate property).
+  if (MODEL_CALL.test(source)) {
+    return source.replace(MODEL_CALL, `$1'${safe}'`);
+  }
   if (MODEL_LITERAL.test(source)) {
     return source.replace(MODEL_LITERAL, `$1'${safe}'`);
   }

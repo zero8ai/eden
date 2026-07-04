@@ -7,6 +7,7 @@
  * change-sets (branch → PR) like every other edit; the roster row itself syncs on merge.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Form,
@@ -113,6 +114,8 @@ interface ProjectView {
   view: "team" | "member";
   /** Team landing: one summary per roster member. */
   members: MemberSummary[] | null;
+  /** Team landing: whether the "this is a team" intro card was dismissed (cookie). */
+  teamIntroDismissed: boolean;
   /** Member view: the active member's parsed config. */
   config: AgentConfig | null;
   error: string | null;
@@ -125,6 +128,12 @@ interface ProjectView {
   /** Deploy progress for a just-shipped commit (?shipped=<sha>&env=<name>). */
   ship: { env: string; rows: ShipStatusRow[] } | null;
 }
+
+/**
+ * Persists dismissal of the team-landing intro card (1yr, SameSite=Lax). Read server-side
+ * in the loader — same pattern as the theme cookie — so dismissed users never see a flash.
+ */
+const TEAM_INTRO_COOKIE = "eden-team-intro-dismissed";
 
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
@@ -144,6 +153,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           teamLayout: false,
           view: "member" as const,
           members: null,
+          teamIntroDismissed: false,
           config: null,
           error: "This project has no connected repo.",
           draftPaths: [],
@@ -201,6 +211,9 @@ export const loader = (args: LoaderFunctionArgs) =>
                 };
               })
             : null;
+        const teamIntroDismissed = new RegExp(
+          `(?:^|; )${TEAM_INTRO_COOKIE}=1`,
+        ).test(args.request.headers.get("cookie") ?? "");
 
         // The model shown inline must reflect the newest intent: a staged agent.ts draft
         // wins over the repo value (same rule the editors follow).
@@ -274,6 +287,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           teamLayout,
           view,
           members,
+          teamIntroDismissed,
           config,
           error: null,
           draftPaths: drafts.map((d) => d.path),
@@ -290,6 +304,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           teamLayout: false,
           view: "member" as const,
           members: null,
+          teamIntroDismissed: false,
           config: null,
           error: (error as Error).message,
           draftPaths: [],
@@ -441,6 +456,7 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
     teamLayout,
     view,
     members,
+    teamIntroDismissed,
     config,
     error,
     draftPaths,
@@ -611,7 +627,11 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
       )}
 
       {view === "team" && members && (
-        <TeamSurface base={base} members={members} />
+        <TeamSurface
+          base={base}
+          members={members}
+          introDismissed={teamIntroDismissed}
+        />
       )}
 
       {view === "member" && config && active && (
@@ -633,24 +653,49 @@ export default function ProjectDetail({ loaderData, actionData }: Route.Componen
  * complete agent — own runtime, channels, schedules, credentials, releases — and this page
  * makes that hierarchy explicit before you drill into one member's config.
  */
-function TeamSurface({ base, members }: { base: string; members: MemberSummary[] }) {
+function TeamSurface({
+  base,
+  members,
+  introDismissed,
+}: {
+  base: string;
+  members: MemberSummary[];
+  introDismissed: boolean;
+}) {
+  const [showIntro, setShowIntro] = useState(!introDismissed);
+  const dismissIntro = () => {
+    document.cookie = `${TEAM_INTRO_COOKIE}=1; path=/; max-age=31536000; SameSite=Lax`;
+    setShowIntro(false);
+  };
+
   return (
     <div className="space-y-6">
-      <Card className="border-primary/20 bg-muted/30">
-        <CardContent className="pt-6 text-sm text-muted-foreground">
-          <p>
-            This is a <span className="font-medium text-foreground">team</span>: each member
-            below is a complete agent with its own runtime, channels, schedules, secrets, and
-            deployments. Members are versioned and deployed independently, and changes to
-            several members ship atomically in one change request.
-          </p>
-          <p className="mt-2">
-            Coming next: teammates get auto-wired <em>delegation channels</em> — each member
-            receives tools to hand work to the others, so the team behaves like an
-            organisation, not a folder of agents.
-          </p>
-        </CardContent>
-      </Card>
+      {showIntro && (
+        <Card className="relative border-primary/20 bg-muted/30">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Dismiss"
+            className="absolute right-2 top-2 h-7 w-7 text-muted-foreground"
+            onClick={dismissIntro}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+          <CardContent className="pt-6 pr-10 text-sm text-muted-foreground">
+            <p>
+              This is a <span className="font-medium text-foreground">team</span>: each member
+              below is a complete agent with its own runtime, channels, schedules, secrets, and
+              deployments. Members are versioned and deployed independently, and changes to
+              several members ship atomically in one change request.
+            </p>
+            <p className="mt-2">
+              Coming next: teammates get auto-wired <em>delegation channels</em> — each member
+              receives tools to hand work to the others, so the team behaves like an
+              organisation, not a folder of agents.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         {members.map((m) => (

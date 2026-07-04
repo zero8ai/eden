@@ -78,6 +78,13 @@
       "when": 1783155178635,
       "tag": "0010_draft_agent_nullable",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783156679292,
+      "tag": "0011_github_installations",
+      "breakpoints": true
     }
   ]
 }

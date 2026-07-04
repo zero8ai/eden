@@ -69,6 +69,27 @@ export const memberships = pgTable(
   (t) => [primaryKey({ columns: [t.orgId, t.userId] })],
 );
 
+/**
+ * GitHub App installations known to a tenant (Connect pillar). Persisted the first time the
+ * install redirect lands so revisiting /connect never asks to "install" again — the picker
+ * renders straight from the stored installation. An org can hold several (multiple GitHub
+ * orgs); rows are dropped when GitHub reports the installation gone.
+ */
+export const githubInstallations = pgTable(
+  "github_installations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    installationId: text("installation_id").notNull(),
+    /** GitHub account (org/user login) the app is installed on, for display. */
+    accountLogin: text("account_login"),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("github_installations_org_install_uq").on(t.orgId, t.installationId)],
+);
+
 /** A project == one connected eve repo. */
 export const projects = pgTable(
   "projects",

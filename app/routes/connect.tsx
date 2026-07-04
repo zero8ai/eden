@@ -41,6 +41,11 @@ import { ensureWorkspace } from "~/auth/workspace.server";
 import { getInstallUrl } from "~/github/client.server";
 import { createEveRepo } from "~/github/create.server";
 import {
+  forgetInstallation,
+  listKnownInstallations,
+  rememberInstallation,
+} from "~/github/installations.server";
+import {
   fetchAgentSource,
   listInstallationRepos,
   type InstallationRepo,
@@ -51,7 +56,13 @@ import type { Route } from "./+types/connect";
 type GithubConnectState =
   | { state: "no-org" }
   | { state: "install"; installUrl: string }
-  | { state: "pick"; installationId: string; repos: InstallationRepo[] }
+  | {
+      state: "pick";
+      installationId: string;
+      repos: InstallationRepo[];
+      /** Always offered so another GitHub org/account can be added. */
+      installUrl: string;
+    }
   | { state: "unconfigured"; message: string };
 
 interface ConnectView {
@@ -73,20 +84,35 @@ export const loader = (args: LoaderFunctionArgs) =>
       if (!org) return { org: null, github: { state: "no-org" as const } };
 
       const url = new URL(args.request.url);
-      const installationId = url.searchParams.get("installation_id");
 
       try {
-        if (installationId) {
-          const repos = await listInstallationRepos(installationId);
-          return {
-            org,
-            github: { state: "pick" as const, installationId, repos },
-          };
+        const installUrl = getInstallUrl(org.id);
+        // Fresh install redirect: GitHub sends us back with the id — remember it so every
+        // later visit renders the picker without asking to "install" again.
+        const fromRedirect = url.searchParams.get("installation_id");
+        if (fromRedirect) {
+          await rememberInstallation(org.id, fromRedirect);
         }
-        return {
-          org,
-          github: { state: "install" as const, installUrl: getInstallUrl(org.id) },
-        };
+
+        // Try the redirect's installation first, then the org's remembered ones. A stored
+        // installation that GitHub no longer honors (uninstalled) is forgotten and skipped.
+        const known = await listKnownInstallations(org.id);
+        const candidates = [
+          ...(fromRedirect ? [fromRedirect] : []),
+          ...known.map((k) => k.installationId).filter((id) => id !== fromRedirect),
+        ];
+        for (const installationId of candidates) {
+          try {
+            const repos = await listInstallationRepos(installationId);
+            return {
+              org,
+              github: { state: "pick" as const, installationId, repos, installUrl },
+            };
+          } catch {
+            await forgetInstallation(org.id, installationId);
+          }
+        }
+        return { org, github: { state: "install" as const, installUrl } };
       } catch (error) {
         return {
           org,
@@ -184,7 +210,12 @@ export function meta() {
 export default function Connect({ loaderData, actionData }: Route.ComponentProps) {
   const { org, github } = loaderData;
   const navigation = useNavigation();
-  const submitting = navigation.state === "submitting";
+  // Busy is per-FORM, not global: only the clicked button changes label, and it stays busy
+  // through the whole navigation (action + redirect + next page's loader) — the redirect
+  // target reads the repo from GitHub, which takes a beat; going idle early reads as broken.
+  const busyData = navigation.state !== "idle" ? navigation.formData : null;
+  const busyIntent = busyData ? String(busyData.get("intent") ?? "connect") : null;
+  const busyRepo = busyData ? `${busyData.get("owner")}/${busyData.get("repo")}` : null;
 
   return (
     <AppShell workspaceName={org?.name}>
@@ -267,8 +298,15 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                         <input type="hidden" name="owner" value={r.owner} />
                         <input type="hidden" name="repo" value={r.repo} />
                         <input type="hidden" name="defaultBranch" value={r.defaultBranch} />
-                        <Button size="sm" variant="secondary" type="submit" disabled={submitting}>
-                          {submitting ? "Connecting…" : "Connect"}
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          type="submit"
+                          disabled={busyData != null}
+                        >
+                          {busyIntent === "connect" && busyRepo === r.fullName
+                            ? "Connecting…"
+                            : "Connect"}
                         </Button>
                       </Form>
                     </li>
@@ -346,13 +384,26 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                       className="w-56 font-mono"
                     />
                   </div>
-                  <Button type="submit" disabled={submitting}>
-                    {submitting ? "Creating…" : "Create & scaffold"}
+                  <Button type="submit" disabled={busyData != null}>
+                    {busyIntent === "create"
+                      ? "Creating & opening…"
+                      : "Create & scaffold"}
                   </Button>
                 </div>
               </Form>
             </CardContent>
           </Card>
+
+          <p className="text-sm text-muted-foreground">
+            Missing a repository?{" "}
+            <a
+              href={github.installUrl}
+              className="font-medium underline underline-offset-4"
+            >
+              Install the GitHub App on another organization
+            </a>{" "}
+            or grant it access to more repos.
+          </p>
         </div>
       )}
     </AppShell>

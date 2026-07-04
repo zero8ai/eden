@@ -199,6 +199,18 @@ export async function createEveRepo(
           `repo on GitHub first, then connect it.`,
       );
     }
+    // 403 "Resource not accessible by integration" == the app lacks the Administration
+    // repository permission (the one that gates repo creation), or the org hasn't approved
+    // a recent permission change on the installation.
+    if (status === 403) {
+      throw new Error(
+        `The GitHub App isn't allowed to create repositories in "${input.owner}". Grant it ` +
+          `the "Administration: Read and write" repository permission (App settings → ` +
+          `Permissions & events), then approve the permission request on the organization's ` +
+          `installation (org Settings → GitHub Apps). Alternatively, create the repo on ` +
+          `GitHub yourself and connect it as an existing repo.`,
+      );
+    }
     if (status === 422) {
       throw new Error(
         `Couldn't create "${input.owner}/${input.name}" — a repository with that name ` +

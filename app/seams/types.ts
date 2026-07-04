@@ -53,8 +53,9 @@ export interface BuildCheckRequest {
   /** Ref to base the check on — the default branch the change request targets. */
   ref: string;
   installationId?: string | null;
-  /** Draft files being published, overlaid on the source before building. */
-  overlay: { path: string; content: string }[];
+  /** Draft files being published, overlaid on the source before building. Null content
+   * removes the file — the gate checks the tree as it will exist after the change merges. */
+  overlay: { path: string; content: string | null }[];
   /** Agent directory to check when all drafts belong to one member (team repos, §7.9). */
   agentRoot?: string;
 }

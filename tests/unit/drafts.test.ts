@@ -12,6 +12,7 @@ import {
   listDrafts,
   publishDrafts,
   resolveFileView,
+  stageDeletions,
   type FileViewDeps,
 } from "~/drafts/drafts.server";
 import { stageDraft } from "~/drafts/drafts.server";
@@ -113,6 +114,68 @@ describe("publishDrafts", () => {
     ).rejects.toThrow("github down");
     // Nothing was deleted — the human can retry.
     expect(await listDrafts(PROJECT.id, store)).toHaveLength(1);
+  });
+});
+
+describe("deletion drafts", () => {
+  it("stageDeletions stacks null-content drafts alongside edits (one change-set)", async () => {
+    await stageDraft({ projectId: PROJECT.id, path: "agent/agent.ts", content: "model" }, store);
+    await stageDeletions(
+      { projectId: PROJECT.id, paths: ["agent/schedules/daily.md"] },
+      store,
+    );
+
+    const drafts = await listDrafts(PROJECT.id, store);
+    expect(drafts).toHaveLength(2);
+    expect(drafts.find((d) => d.path === "agent/schedules/daily.md")?.content).toBeNull();
+  });
+
+  it("a deletion supersedes a staged edit on the same path", async () => {
+    await stageDraft({ projectId: PROJECT.id, path: "agent/tools/x.ts", content: "edit" }, store);
+    await stageDeletions({ projectId: PROJECT.id, paths: ["agent/tools/x.ts"] }, store);
+    expect((await getDraft(PROJECT.id, "agent/tools/x.ts", store))?.content).toBeNull();
+  });
+
+  it("publishes edits and deletions as ONE change request (null content = delete)", async () => {
+    await stageDraft({ projectId: PROJECT.id, path: "agent/agent.ts", content: "model" }, store);
+    await stageDeletions(
+      { projectId: PROJECT.id, paths: ["agent/schedules/daily.md"] },
+      store,
+    );
+    const propose = vi.fn().mockResolvedValue(proposed);
+
+    await publishDrafts(
+      { project: PROJECT, paths: ["agent/agent.ts", "agent/schedules/daily.md"] },
+      store,
+      propose,
+    );
+
+    expect(propose).toHaveBeenCalledTimes(1);
+    const { files } = propose.mock.calls[0][2];
+    expect(files).toContainEqual({ path: "agent/agent.ts", content: "model" });
+    expect(files).toContainEqual({ path: "agent/schedules/daily.md", content: null });
+    expect(await listDrafts(PROJECT.id, store)).toHaveLength(0);
+  });
+
+  it("titles a one-file deletion publish as a removal", async () => {
+    await stageDeletions({ projectId: PROJECT.id, paths: ["agent/tools/x.ts"] }, store);
+    const propose = vi.fn().mockResolvedValue(proposed);
+    await publishDrafts({ project: PROJECT, paths: ["agent/tools/x.ts"] }, store, propose);
+    expect(propose.mock.calls[0][2].title).toBe("Remove agent/tools/x.ts");
+  });
+
+  it("the build gate sees the deletion (null overlay entry checks the post-merge tree)", async () => {
+    await stageDeletions({ projectId: PROJECT.id, paths: ["agent/tools/x.ts"] }, store);
+    const checkBuild = vi.fn().mockResolvedValue({ ok: true });
+    await publishDrafts(
+      { project: PROJECT, paths: ["agent/tools/x.ts"] },
+      store,
+      vi.fn().mockResolvedValue(proposed),
+      checkBuild,
+    );
+    expect(checkBuild.mock.calls[0][0].overlay).toEqual([
+      { path: "agent/tools/x.ts", content: null },
+    ]);
   });
 });
 
@@ -234,6 +297,17 @@ describe("resolveFileView", () => {
     await stageDraft({ projectId: PROJECT.id, path: PATH, content: "draft" }, store);
     const view = await resolveFileView(PROJECT, PATH, store, deps());
     expect(view).toMatchObject({ content: "draft", source: "draft", existsInRepo: true });
+  });
+
+  it("a staged DELETION shows the repo content flagged as stagedDeletion", async () => {
+    await stageDeletions({ projectId: PROJECT.id, paths: [PATH] }, store);
+    const view = await resolveFileView(PROJECT, PATH, store, deps());
+    expect(view).toMatchObject({
+      content: "repo",
+      source: "draft",
+      existsInRepo: true,
+      stagedDeletion: true,
+    });
   });
 
   it("with no draft, shows the pending value from the open change request", async () => {

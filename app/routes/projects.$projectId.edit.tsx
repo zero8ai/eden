@@ -55,6 +55,7 @@ interface FileEditView {
   isNew: boolean;
   source: FileView["source"];
   change: FileView["change"];
+  stagedDeletion: boolean;
 }
 
 /** Starter content for a brand-new file, by its category directory (null if none applies). */
@@ -121,6 +122,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         isNew: template !== null,
         source: view.source,
         change: view.change,
+        stagedDeletion: view.stagedDeletion,
       };
     },
     { ensureSignedIn: true },
@@ -243,6 +245,7 @@ function Editor({
         source={loaderData.source}
         change={loaderData.change}
         base={base}
+        stagedDeletion={loaderData.stagedDeletion}
       />
 
       <CodeEditor path={path} value={value} onChange={setValue} />

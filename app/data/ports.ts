@@ -164,7 +164,8 @@ export interface DraftRepo {
     /** Owning roster member; null for project-shared files (root package.json). */
     agentId: string | null;
     path: string;
-    content: string;
+    /** Full file contents; null stages a DELETION of the path. */
+    content: string | null;
     baseSha?: string | null;
     createdBy?: string | null;
   }): Promise<DraftChange>;

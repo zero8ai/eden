@@ -1,8 +1,9 @@
 /**
  * Resource category list — the management surface behind each overview card. Every file in
  * the category (repo + staged-new drafts) with last-commit metadata, open-in-editor, and a
- * git-native delete: removing a resource opens a change request (a staged-only draft is
- * just discarded). Member-scoped (M5.8): team members' lists live at
+ * git-native delete: removing a resource STAGES a deletion draft that stacks with every
+ * other staged change (one publish/ship = one change request; a staged-only draft is just
+ * discarded). Member-scoped (M5.8): team members' lists live at
  * /repos/:id/agents/:name/resources/:category; single-agent repos at the repo level.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
@@ -37,7 +38,7 @@ import {
   TableHeader,
   TableRow,
 } from "~/components/ui/table";
-import { discardDrafts, listDrafts } from "~/drafts/drafts.server";
+import { discardDrafts, listDrafts, stageDeletions } from "~/drafts/drafts.server";
 import { buildAgentConfig } from "~/eve/parse";
 import { RESOURCE_KINDS } from "~/eve/templates";
 import { AGENT_CATEGORIES } from "~/eve/types";
@@ -46,7 +47,6 @@ import {
   fetchLastCommitForPaths,
   type LastCommitInfo,
 } from "~/github/repo.server";
-import { proposeChange } from "~/github/write.server";
 import { contextPath } from "~/lib/paths";
 import {
   agentFromParams,
@@ -67,6 +67,8 @@ interface ResourceRow {
   path: string;
   isDirectory: boolean;
   staged: boolean;
+  /** A deletion is staged (removed when the change-set publishes/ships). */
+  stagedDelete: boolean;
   /** Exists in the repo (false == staged-new, not merged anywhere yet). */
   inRepo: boolean;
   lastCommit: LastCommitInfo | null;
@@ -103,7 +105,12 @@ export const loader = (args: LoaderFunctionArgs) =>
       const config = buildAgentConfig(source, active.root);
       const repoItems = config[cat.key];
       const draftPaths = new Set(drafts.map((d) => d.path));
+      // Paths with a staged DELETION (content null) — directory resources stage one per file.
+      const deletionPaths = new Set(
+        drafts.filter((d) => d.content === null).map((d) => d.path),
+      );
       const stagedNew = drafts.flatMap((d) =>
+        d.content !== null &&
         d.path.startsWith(`${active.root}/${cat.dir}/`) &&
         !repoItems.some((i) => i.path === d.path)
           ? [{ name: d.path.split("/").pop()!, path: d.path, isDirectory: false }]
@@ -117,14 +124,27 @@ export const loader = (args: LoaderFunctionArgs) =>
         repoItems.map((i) => i.path),
       );
 
+      // A directory resource is "staged for deletion" when any file under it is.
+      const deletionStaged = (item: { path: string; isDirectory: boolean }) =>
+        item.isDirectory
+          ? [...deletionPaths].some((p) => p.startsWith(`${item.path}/`))
+          : deletionPaths.has(item.path);
+
       const rows: ResourceRow[] = [
         ...repoItems.map((i) => ({
           ...i,
-          staged: draftPaths.has(i.path),
+          staged: draftPaths.has(i.path) || deletionStaged(i),
+          stagedDelete: deletionStaged(i),
           inRepo: true,
           lastCommit: commitMeta[i.path] ?? null,
         })),
-        ...stagedNew.map((i) => ({ ...i, staged: true, inRepo: false, lastCommit: null })),
+        ...stagedNew.map((i) => ({
+          ...i,
+          staged: true,
+          stagedDelete: false,
+          inRepo: false,
+          lastCommit: null,
+        })),
       ];
 
       return {
@@ -156,7 +176,10 @@ export async function action(args: ActionFunctionArgs) {
   );
 
   const form = await args.request.formData();
-  if (String(form.get("intent")) !== "delete-resource") return { error: "Unknown action." };
+  const intent = String(form.get("intent"));
+  if (intent !== "delete-resource" && intent !== "undo-delete") {
+    return { error: "Unknown action." };
+  }
   const target = String(form.get("path") ?? "");
   const { active } = await resolveAgentContext(
     project.id,
@@ -177,26 +200,30 @@ export async function action(args: ActionFunctionArgs) {
     ]);
     // Directory resources delete every file under them; files delete themselves.
     const repoFiles = source.paths.filter((p) => p === target || p.startsWith(`${target}/`));
-    const stagedHere = drafts
-      .map((d) => d.path)
-      .filter((p) => p === target || p.startsWith(`${target}/`));
+    const stagedHere = drafts.flatMap((d) =>
+      d.path === target || d.path.startsWith(`${target}/`) ? [d.path] : [],
+    );
 
-    // Anything staged goes away regardless (a deletion supersedes pending edits).
-    if (stagedHere.length > 0) await discardDrafts(project.id, stagedHere);
+    if (intent === "undo-delete") {
+      // Unstage the deletion drafts — the resource is back to its repo state.
+      if (stagedHere.length > 0) await discardDrafts(project.id, stagedHere);
+      return { ok: true as const, restored: name };
+    }
 
     if (repoFiles.length === 0) {
-      // Staged-new only — never merged; discarding the draft was the whole delete.
+      // Staged-new only — never merged; discarding the draft is the whole delete.
+      if (stagedHere.length > 0) await discardDrafts(project.id, stagedHere);
       return { ok: true as const, discarded: name };
     }
 
-    const change = await proposeChange(project.repoInstallationId, repo, {
-      base: project.defaultBranch,
-      branch: `eden/delete-${cat.key}-${name.replace(/[^A-Za-z0-9._-]+/g, "-")}`,
-      files: repoFiles.map((p) => ({ path: p, content: null })),
-      title: `Remove ${cat.label.toLowerCase().replace(/s$/, "")}: ${name}`,
-      body: `Deletes \`${target}\` (${repoFiles.length} file${repoFiles.length === 1 ? "" : "s"}). Nothing is removed until this merges, and git can restore it after.`,
-    });
-    return { ok: true as const, changeUrl: change.pullRequestUrl, deleted: name };
+    // Stage the deletion (null-content drafts, one per file). It stacks with every other
+    // staged change and goes out in ONE change request — publish or Ship from the
+    // Deployment tab decides when. Staged edits on these paths are superseded; staged-new
+    // files that never reached the repo are simply discarded.
+    const stagedNewHere = stagedHere.filter((p) => !repoFiles.includes(p));
+    if (stagedNewHere.length > 0) await discardDrafts(project.id, stagedNewHere);
+    await stageDeletions({ projectId: project.id, paths: repoFiles, createdBy: auth.user.id });
+    return { ok: true as const, staged: name };
   } catch (error) {
     return { error: (error as Error).message };
   }
@@ -265,18 +292,28 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
           <AlertDescription>{actionData.error}</AlertDescription>
         </Alert>
       )}
-      {actionData?.ok && "changeUrl" in actionData && (
+      {actionData?.ok && "staged" in actionData && (
         <Alert className="mb-6">
-          <AlertTitle>Change request opened</AlertTitle>
+          <AlertTitle>Deletion staged</AlertTitle>
           <AlertDescription>
-            <span className="font-mono">{actionData.deleted}</span> is removed when it
-            merges.{" "}
+            <span className="font-mono">{actionData.staged}</span> is marked for deletion —
+            it stacks with your other staged changes and nothing touches the repository
+            until you publish or ship.{" "}
             <Link
               to={`${ctx}/deployment`}
               className="font-medium underline underline-offset-4"
             >
-              Review it on the Deployment tab →
+              Review staged changes on the Deployment tab →
             </Link>
+          </AlertDescription>
+        </Alert>
+      )}
+      {actionData?.ok && "restored" in actionData && (
+        <Alert className="mb-6">
+          <AlertTitle>Deletion undone</AlertTitle>
+          <AlertDescription>
+            <span className="font-mono">{actionData.restored}</span> is no longer staged for
+            deletion.
           </AlertDescription>
         </Alert>
       )}
@@ -329,11 +366,18 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
                       )}
                     </TableCell>
                     <TableCell>
-                      {row.staged && (
+                      {row.stagedDelete ? (
+                        <Badge
+                          variant="outline"
+                          className="text-xs text-destructive border-destructive/40"
+                        >
+                          staged — delete
+                        </Badge>
+                      ) : row.staged ? (
                         <Badge variant="outline" className="text-xs">
                           {row.inRepo ? "staged edit" : "staged — new"}
                         </Badge>
-                      )}
+                      ) : null}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {relativeTime(row.lastCommit?.date ?? null)}
@@ -363,34 +407,54 @@ export default function ResourceCategory({ loaderData, actionData }: Route.Compo
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <ConfirmDialog
-                              trigger={
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="w-full justify-start text-destructive hover:text-destructive"
-                                >
-                                  Delete
-                                </Button>
-                              }
-                              title={`Delete ${row.name}?`}
-                              description={
-                                row.inRepo
-                                  ? `Opens a change request removing ${row.path}. Nothing is deleted until it merges, and git can restore it after.`
-                                  : `${row.name} is only a staged draft — deleting discards it immediately.`
-                              }
-                              confirmLabel={row.inRepo ? "Open change request" : "Discard draft"}
-                              onConfirm={() =>
-                                submit(
-                                  {
-                                    intent: "delete-resource",
-                                    path: row.path,
-                                    agent: activeAgent,
-                                  },
-                                  { method: "post" },
-                                )
-                              }
-                            />
+                            {row.stagedDelete ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="w-full justify-start"
+                                onClick={() =>
+                                  submit(
+                                    {
+                                      intent: "undo-delete",
+                                      path: row.path,
+                                      agent: activeAgent,
+                                    },
+                                    { method: "post" },
+                                  )
+                                }
+                              >
+                                Undo delete
+                              </Button>
+                            ) : (
+                              <ConfirmDialog
+                                trigger={
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="w-full justify-start text-destructive hover:text-destructive"
+                                  >
+                                    Delete
+                                  </Button>
+                                }
+                                title={`Delete ${row.name}?`}
+                                description={
+                                  row.inRepo
+                                    ? `Stages the deletion of ${row.path}. It stacks with your other staged changes — nothing is removed until you publish or ship, and you can undo it any time before then.`
+                                    : `${row.name} is only a staged draft — deleting discards it immediately.`
+                                }
+                                confirmLabel={row.inRepo ? "Stage deletion" : "Discard draft"}
+                                onConfirm={() =>
+                                  submit(
+                                    {
+                                      intent: "delete-resource",
+                                      path: row.path,
+                                      agent: activeAgent,
+                                    },
+                                    { method: "post" },
+                                  )
+                                }
+                              />
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>

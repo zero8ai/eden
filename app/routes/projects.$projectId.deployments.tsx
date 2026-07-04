@@ -181,9 +181,11 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
 
       // Member pipeline: this member's drafts + shared ones, its envs + versions.
-      const drafts = allDrafts
-        .filter((d) => d.agentId === active.id || d.agentId === null)
-        .map((d) => ({ ...d, shared: d.agentId === null }));
+      const drafts = allDrafts.flatMap((d) =>
+        d.agentId === active.id || d.agentId === null
+          ? [{ ...d, shared: d.agentId === null }]
+          : [],
+      );
       const envRows = await listAgentEnvironments(active.id);
       const envs = await Promise.all(
         envRows.map(async (env) => ({
@@ -466,9 +468,21 @@ function StagedChangesCard({ drafts, isTeam }: { drafts: DraftRow[]; isTeam: boo
                     className="size-4 accent-primary"
                     aria-label={`Include ${d.path}`}
                   />
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                  <span
+                    className={`min-w-0 flex-1 truncate font-mono text-xs ${
+                      d.content === null ? "line-through decoration-destructive/60" : ""
+                    }`}
+                  >
                     {d.path}
                   </span>
+                  {d.content === null && (
+                    <Badge
+                      variant="outline"
+                      className="text-destructive border-destructive/40"
+                    >
+                      delete
+                    </Badge>
+                  )}
                   {d.shared && isTeam && (
                     <Badge variant="outline">shared · affects all members</Badge>
                   )}
@@ -482,7 +496,11 @@ function StagedChangesCard({ drafts, isTeam }: { drafts: DraftRow[]; isTeam: boo
                       </Button>
                     }
                     title={`Discard staged change to ${d.path}?`}
-                    description="The unpublished edit is deleted. The file itself is untouched — only the staged draft is lost."
+                    description={
+                      d.content === null
+                        ? "Undoes the staged deletion — the file stays in the repository."
+                        : "The unpublished edit is deleted. The file itself is untouched — only the staged draft is lost."
+                    }
                     confirmLabel="Discard"
                     onConfirm={() =>
                       submit({ intent: "discard", path: d.path }, { method: "post" })
@@ -702,9 +720,23 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                   <ul className="divide-y rounded-lg border text-sm">
                     {g.drafts.map((d) => (
                       <li key={d.id} className="flex items-center gap-3 px-3 py-1.5">
-                        <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                        <span
+                          className={`min-w-0 flex-1 truncate font-mono text-xs ${
+                            d.content === null
+                              ? "line-through decoration-destructive/60"
+                              : ""
+                          }`}
+                        >
                           {d.path}
                         </span>
+                        {d.content === null && (
+                          <Badge
+                            variant="outline"
+                            className="text-destructive border-destructive/40"
+                          >
+                            delete
+                          </Badge>
+                        )}
                         <span className="shrink-0 text-xs text-muted-foreground">
                           {timeAgo(d.updatedAt)}
                         </span>
@@ -1115,19 +1147,18 @@ function EnvNameDialog({
   const busy = fetcher.state !== "idle";
   const error = fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
   // Stay open until OUR submission settles — success closes, an error (e.g. duplicate
-  // name) shows inline so the human can fix the name and retry.
-  const submitted = useRef(false);
-  useEffect(() => {
-    if (busy || !submitted.current) return;
-    submitted.current = false;
-    if (fetcher.data && "ok" in fetcher.data && fetcher.data.ok) {
+  // name) shows inline so the human can fix the name and retry. The close happens inline
+  // on the render where fetcher.data changes (no effect, no stale-frame flash).
+  const [prevData, setPrevData] = useState(fetcher.data);
+  if (fetcher.data !== prevData) {
+    setPrevData(fetcher.data);
+    if (open && fetcher.data && "ok" in fetcher.data && fetcher.data.ok) {
       setOpen(false);
       if (intent === "env-create") setName("");
     }
-  }, [busy, fetcher.data, intent]);
+  }
   const submit = () => {
     if (!name.trim()) return;
-    submitted.current = true;
     fetcher.submit(
       {
         intent,

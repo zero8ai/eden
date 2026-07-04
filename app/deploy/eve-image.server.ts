@@ -154,7 +154,7 @@ export async function buildEveImage(input: EveImageBuildInput): Promise<BuiltArt
  * failures return the compiler's own lines, not the docker wall of text.
  */
 export async function checkEveBuild(
-  input: EveImageBuildInput & { overlay: { path: string; content: string }[] },
+  input: EveImageBuildInput & { overlay: { path: string; content: string | null }[] },
 ): Promise<{ ok: true; skipped?: boolean } | { ok: false; output: string }> {
   const workDir = await mkdtemp(path.join(tmpdir(), "eden-check-"));
   try {
@@ -165,6 +165,11 @@ export async function checkEveBuild(
       // Overlay paths come from Eden's own staging (already normalized under agent/), but
       // never write outside the checkout regardless.
       if (!target.startsWith(srcDir + path.sep)) continue;
+      if (file.content === null) {
+        // Staged deletion — check the tree as it will exist after the change merges.
+        await rm(target, { force: true });
+        continue;
+      }
       await exec("mkdir", ["-p", path.dirname(target)]);
       await writeFile(target, file.content);
     }

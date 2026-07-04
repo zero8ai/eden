@@ -81,6 +81,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         instructions: view.content ?? "",
         source: view.source,
         change: view.change,
+        stagedDeletion: view.stagedDeletion,
       };
     },
     { ensureSignedIn: true },
@@ -166,6 +167,7 @@ export default function EditInstructions({
         source={source}
         change={change}
         base={base}
+        stagedDeletion={loaderData.stagedDeletion}
       />
 
       <CodeEditor path={path} value={value} onChange={setValue} />

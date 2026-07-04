@@ -222,8 +222,10 @@ export const loader = (args: LoaderFunctionArgs) =>
         // The model shown inline must reflect the newest intent: a staged agent.ts draft
         // wins over the repo value (same rule the editors follow).
         const config = view === "member" ? buildAgentConfig(source, active.root) : null;
-        const agentTsDraft = drafts.find((d) => d.path === `${active.root}/agent.ts`);
-        if (config && agentTsDraft) {
+        const agentTsDraft = drafts.find(
+          (d) => d.path === `${active.root}/agent.ts` && d.content !== null,
+        );
+        if (config && agentTsDraft?.content) {
           config.model = readModel(agentTsDraft.content) ?? config.model;
           config.hasAgentModule = true;
         }

@@ -94,6 +94,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         isNew: view.content === null,
         source: view.source,
         change: view.change,
+        stagedDeletion: view.stagedDeletion,
       };
     },
     { ensureSignedIn: true },
@@ -162,6 +163,14 @@ function ScheduleForm({
 
   const [cron, setCron] = useState(loaderData.cron);
   const [message, setMessage] = useState(loaderData.message);
+  // Same route, different ?path (or a fresh save) — re-seed the form from the loader
+  // inline instead of holding the previous file's values in state.
+  const [prevSeed, setPrevSeed] = useState({ path, cron: loaderData.cron, message: loaderData.message });
+  if (prevSeed.path !== path || prevSeed.cron !== loaderData.cron || prevSeed.message !== loaderData.message) {
+    setPrevSeed({ path, cron: loaderData.cron, message: loaderData.message });
+    setCron(loaderData.cron);
+    setMessage(loaderData.message);
+  }
 
   const base = `/repos/${project.id}`;
   const ctx = contextPath(project.id, isTeam ? activeAgent : null);
@@ -196,6 +205,7 @@ function ScheduleForm({
         source={loaderData.source}
         change={loaderData.change}
         base={base}
+        stagedDeletion={loaderData.stagedDeletion}
       />
 
       <div className="max-w-2xl space-y-6">

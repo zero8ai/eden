@@ -231,8 +231,12 @@ export const draftChanges = pgTable(
     agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, { onDelete: "cascade" }),
     /** Repo-relative path under the agent's root (e.g. "agent/instructions.md"). */
     path: text("path").notNull(),
-    /** Full new file contents (drafts are whole-file, like the editors). */
-    content: text("content").notNull(),
+    /**
+     * Full new file contents (drafts are whole-file, like the editors). NULL stages a
+     * DELETION of the path — deletes ride the same stage → publish/ship rails as edits
+     * instead of opening their own change request on the spot.
+     */
+    content: text("content"),
     /** Blob sha of the file when the edit was made (null = new file); future conflict hints. */
     baseSha: text("base_sha"),
     createdBy: text("created_by").references(() => users.id),

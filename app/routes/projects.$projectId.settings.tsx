@@ -12,7 +12,7 @@
  *    row cascaded). The GitHub repository itself is never touched.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Form,
   redirect,
@@ -167,8 +167,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         ]);
         const config = buildAgentConfig(source, active.root);
         // The model shown must reflect the newest intent: a staged agent.ts draft wins.
-        const agentTsDraft = drafts.find((d) => d.path === `${active.root}/agent.ts`);
-        base.model = agentTsDraft
+        // A deletion draft (content null) carries no model — fall back to the repo value.
+        const agentTsDraft = drafts.find(
+          (d) => d.path === `${active.root}/agent.ts` && d.content !== null,
+        );
+        base.model = agentTsDraft?.content
           ? (readModel(agentTsDraft.content) ?? config.model)
           : config.model;
         base.hasAgentModule = config.hasAgentModule || !!agentTsDraft;
@@ -280,9 +283,9 @@ export async function action(args: ActionFunctionArgs) {
       }
       const source = await fetchAgentSource(project.repoInstallationId, repo);
       const memberDir = `agents/${name}/`;
-      const files: FileChange[] = source.paths
-        .filter((p) => p.startsWith(memberDir))
-        .map((p) => ({ path: p, content: null }));
+      const files: FileChange[] = source.paths.flatMap((p) =>
+        p.startsWith(memberDir) ? [{ path: p, content: null }] : [],
+      );
       if (files.length === 0) return { error: `No files found under ${memberDir}.` };
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
@@ -410,25 +413,26 @@ export default function Settings({ loaderData, actionData }: Route.ComponentProp
 function ModelSection({ loaderData }: { loaderData: Route.ComponentProps["loaderData"] }) {
   const { model, hasAgentModule, modelStaged, activeAgent } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
+  const modelBadges = useMemo(
+    () => (
+      <>
+        {modelStaged && (
+          <Badge variant="outline" className="text-xs">
+            staged
+          </Badge>
+        )}
+        {!hasAgentModule && (
+          <Badge variant="outline" className="text-xs">
+            no agent.ts — picking one scaffolds it
+          </Badge>
+        )}
+      </>
+    ),
+    [modelStaged, hasAgentModule],
+  );
   return (
     <section>
-      <SectionHeader
-        title="Model"
-        badges={
-          <>
-            {modelStaged && (
-              <Badge variant="outline" className="text-xs">
-                staged
-              </Badge>
-            )}
-            {!hasAgentModule && (
-              <Badge variant="outline" className="text-xs">
-                no agent.ts — picking one scaffolds it
-              </Badge>
-            )}
-          </>
-        }
-      />
+      <SectionHeader title="Model" badges={modelBadges} />
       <ModelSelect
         value={model}
         busy={fetcher.state !== "idle"}
@@ -462,16 +466,20 @@ function SecretsSection({
   const navigation = useNavigation();
   const busy = navigation.state === "submitting";
   const envValue = scope.environmentId ?? ALL;
+  const secretsBadge = useMemo(
+    () => (
+      <Badge variant="secondary">
+        {scope.label} · {secretNames.length}
+      </Badge>
+    ),
+    [scope.label, secretNames.length],
+  );
 
   return (
     <section>
       <SectionHeader
         title="Secrets"
-        badges={
-          <Badge variant="secondary">
-            {scope.label} · {secretNames.length}
-          </Badge>
-        }
+        badges={secretsBadge}
         actions={
           <Form method="get" className="flex items-center gap-2">
             <Select name="env" defaultValue={envValue}>

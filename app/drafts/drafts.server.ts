@@ -21,7 +21,8 @@ import type { BuildCheckRequest, BuildCheckResult } from "~/seams/types";
 export interface StageInput {
   projectId: string;
   path: string;
-  content: string;
+  /** Full file contents; null stages a DELETION of the path. */
+  content: string | null;
   /** Blob sha of the file when the edit was made (conflict hints later). */
   baseSha?: string | null;
   createdBy?: string | null;
@@ -39,6 +40,23 @@ export async function stageDraft(
   const agents = await store.agents.listByProject(input.projectId);
   const agent = agentForPath(agents, input.path);
   return store.drafts.upsert({ ...input, agentId: agent?.id ?? null });
+}
+
+/**
+ * Stage DELETIONS: one null-content draft per path. Deletes stack in the same change-set as
+ * edits — nothing touches git until the user publishes or ships from the Deployment tab.
+ * Any staged edit on the same path is superseded (the upsert overwrites it).
+ */
+export async function stageDeletions(
+  input: { projectId: string; paths: string[]; createdBy?: string | null },
+  store: DataStore = getRuntime().data,
+): Promise<void> {
+  for (const path of input.paths) {
+    await stageDraft(
+      { projectId: input.projectId, path, content: null, createdBy: input.createdBy },
+      store,
+    );
+  }
 }
 
 /** All staged drafts for a project, oldest first. */
@@ -83,6 +101,9 @@ export interface FileView {
   existsInRepo: boolean;
   /** Set when source is "change-request": the open change holding the pending value. */
   change: { number: number; title: string } | null;
+  /** A deletion is staged for this path (editors show the repo content plus a banner;
+   * saving stages new content, which un-deletes). */
+  stagedDeletion: boolean;
 }
 
 /** GitHub reads injected so unit tests run without a repo. */
@@ -110,8 +131,14 @@ export async function resolveFileView(
   ]);
   const existsInRepo = repoContent !== null;
 
-  // A staged draft is the newest edit — it wins even over an open change request.
-  if (draft) return { content: draft.content, source: "draft", existsInRepo, change: null };
+  // A staged draft is the newest edit — it wins even over an open change request. A
+  // deletion draft (null content) still shows the repo content so there's something to
+  // look at; the flag drives a "staged for deletion" banner.
+  if (draft) {
+    return draft.content === null
+      ? { content: repoContent, source: "draft", existsInRepo, change: null, stagedDeletion: true }
+      : { content: draft.content, source: "draft", existsInRepo, change: null, stagedDeletion: false };
+  }
 
   if (pending) {
     const pendingContent = await deps.readFile(
@@ -124,10 +151,11 @@ export async function resolveFileView(
       source: "change-request",
       existsInRepo,
       change: { number: pending.number, title: pending.title },
+      stagedDeletion: false,
     };
   }
 
-  return { content: repoContent, source: "repo", existsInRepo, change: null };
+  return { content: repoContent, source: "repo", existsInRepo, change: null, stagedDeletion: false };
 }
 
 /** Injected so unit tests exercise selection/cleanup without GitHub. */
@@ -193,14 +221,15 @@ export async function publishDrafts(
     );
   }
 
+  const deletions = selected.filter((d) => d.content === null).length;
   const title =
     input.title?.trim() ||
     (selected.length === 1
-      ? `Update ${selected[0].path}`
+      ? `${deletions === 1 ? "Remove" : "Update"} ${selected[0].path}`
       : `Update ${selected.length} agent files`);
   const body = [
     "Published from Eden's staged changes:",
-    ...selected.map((d) => `- \`${d.path}\``),
+    ...selected.map((d) => `- ${d.content === null ? "delete " : ""}\`${d.path}\``),
   ].join("\n");
 
   const change = await propose(

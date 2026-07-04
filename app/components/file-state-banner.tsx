@@ -15,6 +15,7 @@ export function FileStateBanner({
   source,
   change,
   base,
+  stagedDeletion = false,
 }: {
   /** The just-submitted save succeeded (actionData.ok) — show the staged state. */
   saved: boolean;
@@ -22,7 +23,29 @@ export function FileStateBanner({
   change: FileView["change"];
   /** Repository base path, e.g. /repos/:id */
   base: string;
+  /** A deletion is staged for this file (the form shows the repo content). */
+  stagedDeletion?: boolean;
 }) {
+  if (stagedDeletion && !saved) {
+    return (
+      <Alert className="mb-6">
+        <AlertTitle>Staged for deletion</AlertTitle>
+        <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span>
+            This file is marked for deletion in your staged changes; the form shows the
+            repository content. Saving here replaces the deletion with an edit.
+          </span>
+          <Link
+            to={`${base}/deployment`}
+            className="font-medium underline underline-offset-4"
+          >
+            Review staged changes on the Deployment tab →
+          </Link>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
   if (saved || source === "draft") {
     return (
       <Alert className="mb-6">
@@ -30,10 +53,10 @@ export function FileStateBanner({
         <AlertDescription className="flex items-center gap-3">
           <span>This file has an unpublished draft; the form shows it.</span>
           <Link
-            to={`${base}/changes`}
+            to={`${base}/deployment`}
             className="font-medium underline underline-offset-4"
           >
-            Review &amp; publish in Changes →
+            Review &amp; publish on the Deployment tab →
           </Link>
         </AlertDescription>
       </Alert>
@@ -50,10 +73,10 @@ export function FileStateBanner({
             a new draft on top of it.
           </span>
           <Link
-            to={`${base}/changes`}
+            to={`${base}/deployment`}
             className="font-medium underline underline-offset-4"
           >
-            Merge or delete it in Changes →
+            Merge or delete it on the Deployment tab →
           </Link>
         </AlertDescription>
       </Alert>

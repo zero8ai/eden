@@ -51,7 +51,7 @@ import {
   queueDeploy,
   setTrafficSplit,
 } from "~/deploy/controller.server";
-import { listEnvironments, listReleases } from "~/db/queries.server";
+import { listAgents, listEnvironments, listReleases } from "~/db/queries.server";
 import { getBranchHead } from "~/github/repo.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
@@ -109,12 +109,19 @@ export async function action(args: ActionFunctionArgs) {
         owner: project.repoOwner,
         repo: project.repoName,
       });
-      await createRelease({
-        projectId: project.id,
-        gitSha: head.sha,
-        changelog: `Cut from ${head.branch} @ ${head.sha.slice(0, 7)}`,
-        createdBy: auth.user.id,
-      });
+      // One Release per roster member (a single-agent repo is a team of one — §7.9).
+      const roster = await listAgents(project.id);
+      await Promise.all(
+        roster.map((agent) =>
+          createRelease({
+            projectId: project.id,
+            agentId: agent.id,
+            gitSha: head.sha,
+            changelog: `Cut from ${head.branch} @ ${head.sha.slice(0, 7)}`,
+            createdBy: auth.user.id,
+          }),
+        ),
+      );
     } else if (intent === "deploy" || intent === "rollback") {
       // Builds take minutes. queueDeploy creates the row in `queued` status BEFORE enqueueing,
       // so the click has an immediately visible result; the worker takes it to building → live.

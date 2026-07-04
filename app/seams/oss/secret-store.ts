@@ -1,17 +1,18 @@
 /**
  * Storage port for the local SecretsProvider: sealed values + the name index, scoped by
- * (project, environment, key). Splitting this out lets the provider's scoping/override logic
- * (secrets.local.server.ts) be unit-tested against an in-memory KV with real crypto, while the
- * Drizzle impl here owns the two-table persistence (values + metadata).
+ * (agent, environment, key) — per-agent by decision (PRD §7.9). Splitting this out lets the
+ * provider's scoping/override logic (secrets.local.server.ts) be unit-tested against an
+ * in-memory KV with real crypto, while the Drizzle impl here owns the two-table persistence
+ * (values + metadata).
  */
 import { and, eq, isNull } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import { secretsMetadata, secretValues } from "~/db/schema";
-import type { SecretRef } from "../types";
+import type { SecretRef, SecretScope } from "../types";
 import type { SealedSecret } from "./secretbox";
 
-/** A sealed value with the scope needed to merge project-wide + env-scoped at resolve time. */
+/** A sealed value with the scope needed to merge agent-wide + env-scoped at resolve time. */
 export interface ScopedSealed extends SealedSecret {
   key: string;
   environmentId: string | null;
@@ -22,14 +23,14 @@ export interface SecretKVStore {
   getSealed(ref: SecretRef): Promise<SealedSecret | null>;
   delete(ref: SecretRef): Promise<void>;
   /** Keys in an exact scope, sorted (names only, values never listed). */
-  listKeys(projectId: string, environmentId: string | null): Promise<string[]>;
-  /** Sealed rows for resolve, project-wide first then env-scoped (so env overrides). */
-  listForResolve(projectId: string, environmentId: string | null): Promise<ScopedSealed[]>;
+  listKeys(scope: SecretScope): Promise<string[]>;
+  /** Sealed rows for resolve, agent-wide first then env-scoped (so env overrides). */
+  listForResolve(scope: SecretScope): Promise<ScopedSealed[]>;
 }
 
 function valueScope(ref: SecretRef) {
   return and(
-    eq(secretValues.projectId, ref.projectId),
+    eq(secretValues.agentId, ref.agentId),
     ref.environmentId === null
       ? isNull(secretValues.environmentId)
       : eq(secretValues.environmentId, ref.environmentId),
@@ -41,17 +42,28 @@ export const drizzleSecretKV: SecretKVStore = {
   async upsert(ref, sealed) {
     await db
       .insert(secretValues)
-      .values({ projectId: ref.projectId, environmentId: ref.environmentId, key: ref.key, ...sealed })
+      .values({
+        projectId: ref.projectId,
+        agentId: ref.agentId,
+        environmentId: ref.environmentId,
+        key: ref.key,
+        ...sealed,
+      })
       .onConflictDoUpdate({
-        target: [secretValues.projectId, secretValues.environmentId, secretValues.key],
+        target: [secretValues.agentId, secretValues.environmentId, secretValues.key],
         set: { ...sealed, updatedAt: new Date() },
       });
     // Keep the name/audit index in sync (never stores the value).
     await db
       .insert(secretsMetadata)
-      .values({ projectId: ref.projectId, environmentId: ref.environmentId, key: ref.key })
+      .values({
+        projectId: ref.projectId,
+        agentId: ref.agentId,
+        environmentId: ref.environmentId,
+        key: ref.key,
+      })
       .onConflictDoUpdate({
-        target: [secretsMetadata.projectId, secretsMetadata.environmentId, secretsMetadata.key],
+        target: [secretsMetadata.agentId, secretsMetadata.environmentId, secretsMetadata.key],
         set: { updatedAt: new Date() },
       });
   },
@@ -67,7 +79,7 @@ export const drizzleSecretKV: SecretKVStore = {
       .delete(secretsMetadata)
       .where(
         and(
-          eq(secretsMetadata.projectId, ref.projectId),
+          eq(secretsMetadata.agentId, ref.agentId),
           ref.environmentId === null
             ? isNull(secretsMetadata.environmentId)
             : eq(secretsMetadata.environmentId, ref.environmentId),
@@ -76,38 +88,38 @@ export const drizzleSecretKV: SecretKVStore = {
       );
   },
 
-  async listKeys(projectId, environmentId) {
+  async listKeys(scope) {
     const rows = await db
       .select({ key: secretValues.key })
       .from(secretValues)
       .where(
         and(
-          eq(secretValues.projectId, projectId),
-          environmentId === null
+          eq(secretValues.agentId, scope.agentId),
+          scope.environmentId === null
             ? isNull(secretValues.environmentId)
-            : eq(secretValues.environmentId, environmentId),
+            : eq(secretValues.environmentId, scope.environmentId),
         ),
       );
     return rows.map((r) => r.key).sort();
   },
 
-  async listForResolve(projectId, environmentId) {
-    const projectWide = await db
+  async listForResolve(scope) {
+    const agentWide = await db
       .select()
       .from(secretValues)
-      .where(and(eq(secretValues.projectId, projectId), isNull(secretValues.environmentId)));
-    const envScoped = environmentId
+      .where(and(eq(secretValues.agentId, scope.agentId), isNull(secretValues.environmentId)));
+    const envScoped = scope.environmentId
       ? await db
           .select()
           .from(secretValues)
           .where(
             and(
-              eq(secretValues.projectId, projectId),
-              eq(secretValues.environmentId, environmentId),
+              eq(secretValues.agentId, scope.agentId),
+              eq(secretValues.environmentId, scope.environmentId),
             ),
           )
       : [];
-    return [...projectWide, ...envScoped].map((r) => ({
+    return [...agentWide, ...envScoped].map((r) => ({
       key: r.key,
       environmentId: r.environmentId,
       ciphertext: r.ciphertext,

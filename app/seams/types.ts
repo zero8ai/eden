@@ -23,6 +23,12 @@ export interface BuildRequest {
   ref: string;
   /** GitHub App installation that can read the repo (targets that fetch source need it). */
   installationId?: string | null;
+  /**
+   * Repo-relative directory of the eve project to build. "agent" (repo root project) for
+   * single-agent repos; "agents/<member>/agent" for a team member (PRD §7.9) — the build
+   * runs in the member's package directory (the root's parent for team members).
+   */
+  agentRoot?: string;
 }
 
 export interface BuiltArtifact {
@@ -49,6 +55,8 @@ export interface BuildCheckRequest {
   installationId?: string | null;
   /** Draft files being published, overlaid on the source before building. */
   overlay: { path: string; content: string }[];
+  /** Agent directory to check when all drafts belong to one member (team repos, §7.9). */
+  agentRoot?: string;
 }
 
 export type BuildCheckResult =
@@ -92,10 +100,15 @@ export interface DeployTarget {
 // Encrypted per-environment secrets; never written to the repo. OSS: local encrypted
 // store. Managed: KMS/Vault. (PRD §7.2, ARCH §3.5.)
 
-export interface SecretRef {
+/** A secret scope: per-agent by decision (PRD §7.9) — teammates never share credentials. */
+export interface SecretScope {
   projectId: string;
-  /** null == project-wide (all environments). */
+  agentId: string;
+  /** null == agent-wide (all of that agent's environments). */
   environmentId: string | null;
+}
+
+export interface SecretRef extends SecretScope {
   key: string;
 }
 
@@ -105,12 +118,9 @@ export interface SecretsProvider {
   get(ref: SecretRef): Promise<string | null>;
   delete(ref: SecretRef): Promise<void>;
   /** Secret names in scope (values never listed). */
-  listNames(projectId: string, environmentId: string | null): Promise<string[]>;
-  /** name → value map for deploy-time env injection. */
-  resolve(
-    projectId: string,
-    environmentId: string | null,
-  ): Promise<Record<string, string>>;
+  listNames(scope: SecretScope): Promise<string[]>;
+  /** name → value map for deploy-time env injection (agent-wide, overridden by env-scoped). */
+  resolve(scope: SecretScope): Promise<Record<string, string>>;
 }
 
 // ── ModelGateway ────────────────────────────────────────────────────────────

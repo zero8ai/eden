@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
-import { ingestTokens, releases, runSteps, runs, sessions } from "~/db/schema";
+import { agents, ingestTokens, releases, runSteps, runs, sessions } from "~/db/schema";
 
 function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -84,14 +84,41 @@ export interface IngestPayload {
   steps?: IngestStep[];
 }
 
+/**
+ * The roster member a run belongs to: the release's agent when the payload carries one,
+ * else the sole member (single-agent repos). Multi-member runs without a release stay
+ * unattributed (null) rather than guessing.
+ */
+async function resolveRunAgent(
+  projectId: string,
+  releaseId: string | undefined,
+): Promise<string | null> {
+  if (releaseId) {
+    const [rel] = await db
+      .select({ agentId: releases.agentId })
+      .from(releases)
+      .where(eq(releases.id, releaseId))
+      .limit(1);
+    if (rel) return rel.agentId;
+  }
+  const roster = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(eq(agents.projectId, projectId))
+    .limit(2);
+  return roster.length === 1 ? roster[0].id : null;
+}
+
 /** Ingest one run (+ optional session + steps) for a project. Idempotent per externalRunId. */
 export async function ingestRun(projectId: string, p: IngestPayload): Promise<void> {
+  const agentId = await resolveRunAgent(projectId, p.releaseId);
   let sessionId: string | null = null;
   if (p.session?.externalSessionId) {
     const [s] = await db
       .insert(sessions)
       .values({
         projectId,
+        agentId,
         externalSessionId: p.session.externalSessionId,
         trigger: p.session.trigger ?? null,
         channel: p.session.channel ?? null,
@@ -108,6 +135,7 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
     .insert(runs)
     .values({
       projectId,
+      agentId,
       deploymentId: p.deploymentId ?? null,
       releaseId: p.releaseId ?? null,
       sessionId,
@@ -126,6 +154,7 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
       target: [runs.projectId, runs.externalRunId],
       set: {
         sessionId,
+        agentId,
         deploymentId: p.deploymentId ?? null,
         releaseId: p.releaseId ?? null,
         status: p.status ?? "running",

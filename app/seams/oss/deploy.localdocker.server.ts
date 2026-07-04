@@ -154,6 +154,7 @@ export const localDockerTarget: DeployTarget = {
       repo: req.repo,
       ref: req.ref,
       installationId: req.installationId,
+      agentRoot: req.agentRoot,
     });
   },
 
@@ -167,6 +168,7 @@ export const localDockerTarget: DeployTarget = {
       ref: req.ref,
       installationId: req.installationId,
       overlay: req.overlay,
+      agentRoot: req.agentRoot,
     });
   },
 

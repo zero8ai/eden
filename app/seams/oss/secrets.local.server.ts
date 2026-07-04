@@ -31,13 +31,13 @@ export function makeLocalSecretsProvider(
       await kv.delete(ref);
     },
 
-    async listNames(projectId, environmentId) {
-      return kv.listKeys(projectId, environmentId);
+    async listNames(scope) {
+      return kv.listKeys(scope);
     },
 
-    async resolve(projectId, environmentId) {
-      // Rows come back project-wide first, then env-scoped, so env values override by key.
-      const rows = await kv.listForResolve(projectId, environmentId);
+    async resolve(scope) {
+      // Rows come back agent-wide first, then env-scoped, so env values override by key.
+      const rows = await kv.listForResolve(scope);
       const out: Record<string, string> = {};
       for (const row of rows) out[row.key] = open(getKey(), row);
       return out;

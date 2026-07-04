@@ -45,7 +45,7 @@ import {
   listInstallationRepos,
   type InstallationRepo,
 } from "~/github/repo.server";
-import { isEveRepo } from "~/eve/parse";
+import { detectAgentRoots, isEveRepo } from "~/eve/parse";
 import type { Route } from "./+types/connect";
 
 type GithubConnectState =
@@ -131,6 +131,11 @@ export async function action(args: ActionFunctionArgs) {
         repoName: repo.repo,
         repoInstallationId: installationId,
         defaultBranch: repo.defaultBranch,
+        // The scaffold's roster is known without re-reading the repo (§7.9).
+        roster:
+          layout === "team"
+            ? [{ name: "assistant", root: "agents/assistant/agent" }]
+            : undefined,
       });
       throw redirect(`/projects/${project.id}`);
     } catch (error) {
@@ -165,6 +170,8 @@ export async function action(args: ActionFunctionArgs) {
     repoName: repo,
     repoInstallationId: installationId,
     defaultBranch: source.ref || defaultBranch,
+    // Detected roster: one member per agent root (single repos are a team of one).
+    roster: detectAgentRoots(source.paths).map((r) => ({ name: r.name, root: r.root })),
   });
 
   throw redirect(`/projects/${project.id}`);

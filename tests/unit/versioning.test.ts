@@ -14,7 +14,7 @@ describe("isVersionLabelCollision", () => {
   it("is true for a 23505 on the release version constraint, even when wrapped", () => {
     const driver = Object.assign(new Error("duplicate key"), {
       code: "23505",
-      constraint_name: "releases_project_version_uq",
+      constraint_name: "releases_agent_version_uq",
     });
     const wrapped = new Error("insert failed", { cause: driver });
     expect(isVersionLabelCollision(wrapped)).toBe(true);

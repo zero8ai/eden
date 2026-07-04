@@ -21,25 +21,27 @@ import { makeFakeStore, type FakeStore } from "../fakes/store";
 let store: FakeStore;
 const PROJECT = "proj_1";
 const ORG = "org_1";
+const AGENT = "agent_1";
 const ENV = "env_1";
 
 beforeEach(() => {
   store = makeFakeStore();
   store.seedProject({ id: PROJECT, orgId: ORG, repoOwner: "acme", repoName: "agent" });
-  store.seedEnvironment({ id: ENV, projectId: PROJECT, name: "production" });
+  store.seedAgent({ id: AGENT, projectId: PROJECT });
+  store.seedEnvironment({ id: ENV, projectId: PROJECT, agentId: AGENT, name: "production" });
 });
 
 describe("createRelease", () => {
-  it("labels releases v1, v2, … per project", async () => {
-    const r1 = await createRelease({ projectId: PROJECT, gitSha: "a".repeat(40) }, store);
-    const r2 = await createRelease({ projectId: PROJECT, gitSha: "b".repeat(40) }, store);
+  it("labels releases v1, v2, … per agent", async () => {
+    const r1 = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a".repeat(40) }, store);
+    const r2 = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b".repeat(40) }, store);
     expect(r1.version).toBe("v1");
     expect(r2.version).toBe("v2");
   });
 
   it("retries past a version-label collision and still lands", async () => {
     store.forceReleaseCollisions(2); // first two inserts raise 23505, third succeeds
-    const r = await createRelease({ projectId: PROJECT, gitSha: "c".repeat(40) }, store);
+    const r = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "c".repeat(40) }, store);
     expect(r.version).toBe("v1");
   });
 });
@@ -47,8 +49,8 @@ describe("createRelease", () => {
 describe("ensureReleaseForCommit", () => {
   it("is idempotent per merge commit (in-app merge + webhook converge)", async () => {
     const sha = "d".repeat(40);
-    const first = await ensureReleaseForCommit({ projectId: PROJECT, gitSha: sha }, store);
-    const second = await ensureReleaseForCommit({ projectId: PROJECT, gitSha: sha }, store);
+    const first = await ensureReleaseForCommit({ projectId: PROJECT, agentId: AGENT, gitSha: sha }, store);
+    const second = await ensureReleaseForCommit({ projectId: PROJECT, agentId: AGENT, gitSha: sha }, store);
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
     expect(second.release.id).toBe(first.release.id);
@@ -57,7 +59,7 @@ describe("ensureReleaseForCommit", () => {
 
 describe("deployRelease", () => {
   it("builds, deploys live, records the image + an audit entry", async () => {
-    const release = await createRelease({ projectId: PROJECT, gitSha: "e".repeat(40) }, store);
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "e".repeat(40) }, store);
     const dep = await deployRelease(
       { environmentId: ENV, releaseId: release.id },
       { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://x" } }), secrets: fakeSecrets() },
@@ -69,7 +71,7 @@ describe("deployRelease", () => {
   });
 
   it("inherits the workspace OpenRouter key unless a secret overrides it (PRD §12)", async () => {
-    const release = await createRelease({ projectId: PROJECT, gitSha: "a1".repeat(20) }, store);
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a1".repeat(20) }, store);
     const deployedEnvs: Record<string, string>[] = [];
     const base = {
       store,
@@ -93,7 +95,7 @@ describe("deployRelease", () => {
   });
 
   it("records failed status WITH the reason when the target throws", async () => {
-    const release = await createRelease({ projectId: PROJECT, gitSha: "f".repeat(40) }, store);
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "f".repeat(40) }, store);
     const dep = await deployRelease(
       { environmentId: ENV, releaseId: release.id },
       { store, deployTarget: fakeDeployTarget({ deployError: "docker unavailable" }), secrets: fakeSecrets() },
@@ -105,7 +107,7 @@ describe("deployRelease", () => {
 
 describe("queueDeploy", () => {
   it("creates the queued row FIRST, and the job takes over that same row (no duplicate)", async () => {
-    const release = await createRelease({ projectId: PROJECT, gitSha: "9".repeat(40) }, store);
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "9".repeat(40) }, store);
 
     // Click: row exists immediately in `queued` — this is the UI's instant feedback.
     const queued = await queueDeploy(
@@ -133,7 +135,7 @@ describe("queueDeploy", () => {
 
 describe("redeploying the same release", () => {
   it("supersedes the previous live instance (stopped, weight 0) — never two live copies", async () => {
-    const release = await createRelease({ projectId: PROJECT, gitSha: "8".repeat(40) }, store);
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "8".repeat(40) }, store);
     const deps = {
       store,
       deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }),
@@ -156,7 +158,7 @@ describe("redeploying the same release", () => {
 
 describe("rollbackTo", () => {
   it("drains live deployments and redeploys the prior release at 100", async () => {
-    const rA = await createRelease({ projectId: PROJECT, gitSha: "1".repeat(40) }, store);
+    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "1".repeat(40) }, store);
     const deps = { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }), secrets: fakeSecrets() };
     const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
     expect(depA.status).toBe("live");
@@ -173,7 +175,7 @@ describe("rollbackTo", () => {
 
 describe("setTrafficSplit", () => {
   it("applies weights within the environment and clamps negatives to 0", async () => {
-    const release = await createRelease({ projectId: PROJECT, gitSha: "2".repeat(40) }, store);
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "2".repeat(40) }, store);
     const deps = { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://y" } }), secrets: fakeSecrets() };
     const d1 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
     const d2 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);

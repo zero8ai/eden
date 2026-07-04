@@ -11,7 +11,10 @@
  */
 import { data, type ActionFunctionArgs } from "react-router";
 
-import { ensureReleaseForCommit, findProjectByRepo } from "~/deploy/controller.server";
+import { syncProjectAgents } from "~/db/queries.server";
+import { ensureReleasesForCommit, findProjectByRepo } from "~/deploy/controller.server";
+import { detectAgentRoots } from "~/eve/parse";
+import { fetchAgentSource } from "~/github/repo.server";
 import { verifyGitHubSignature } from "~/github/webhook.server";
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -53,7 +56,23 @@ export async function action({ request }: ActionFunctionArgs) {
   );
   if (!project) return data({ ok: true, skipped: "no project" });
 
-  const { release, created } = await ensureReleaseForCommit({
+  // Reconcile the roster before cutting releases — the merge may have added or removed a
+  // team member (PRD §7.9). Best-effort: a failed read must not drop the release record.
+  if (project.repoInstallationId) {
+    try {
+      const source = await fetchAgentSource(project.repoInstallationId, {
+        owner: payload.repository.owner.login,
+        repo: payload.repository.name,
+        ref: payload.pull_request.merge_commit_sha,
+      });
+      await syncProjectAgents(project.id, detectAgentRoots(source.paths));
+    } catch {
+      // roster stays as-is; releases below still cut for the known members
+    }
+  }
+
+  // One Release per roster member at this merge commit (team merges are atomic, §7.9).
+  const results = await ensureReleasesForCommit({
     projectId: project.id,
     gitSha: payload.pull_request.merge_commit_sha,
     changelog: payload.pull_request.title
@@ -61,5 +80,9 @@ export async function action({ request }: ActionFunctionArgs) {
       : null,
   });
 
-  return data({ ok: true, release: release.version, created });
+  return data({
+    ok: true,
+    releases: results.map((r) => r.release.version),
+    created: results.some((r) => r.created),
+  });
 }

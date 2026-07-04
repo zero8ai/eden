@@ -43,14 +43,15 @@ function deployDeps(): DeployDeps {
 }
 
 /**
- * Record an immutable Release for a project at a git commit. Image is built lazily at deploy
+ * Record an immutable Release for an agent at a git commit. Image is built lazily at deploy
  * time (imageRef stays null until then). Concurrent creates (e.g. two webhook deliveries) race
- * on the version label; the (project, version) unique constraint catches it and we retry with a
+ * on the version label; the (agent, version) unique constraint catches it and we retry with a
  * fresh count.
  */
 export async function createRelease(
   input: {
     projectId: string;
+    agentId: string;
     gitSha: string;
     changelog?: string | null;
     createdBy?: string | null;
@@ -61,7 +62,7 @@ export async function createRelease(
   // retries recurse rather than loop. N concurrent creates resolve one winner per round —
   // allow N-ish rounds.
   const attempt = async (round: number): Promise<Release> => {
-    const count = await store.releases.countByProject(input.projectId);
+    const count = await store.releases.countByAgent(input.agentId);
     try {
       return await store.releases.insert({ ...input, version: versionLabel(count) });
     } catch (err) {
@@ -74,11 +75,31 @@ export async function createRelease(
 
 /**
  * Find-or-create the Release for a merge commit (D9: the merge SHA is the version identity).
- * Idempotent per (project, gitSha) so the two merge triggers — the in-app Merge button and the
+ * Idempotent per (agent, gitSha) so the two merge triggers — the in-app Merge button and the
  * GitHub webhook — converge on one Release no matter which fires first (or if both do). Returns
  * whether this call created it, so a caller can act (e.g. audit) only on first creation.
  */
 export async function ensureReleaseForCommit(
+  input: {
+    projectId: string;
+    agentId: string;
+    gitSha: string;
+    changelog?: string | null;
+    createdBy?: string | null;
+  },
+  store: DataStore = getRuntime().data,
+): Promise<{ release: Release; created: boolean }> {
+  const existing = await store.releases.findByCommit(input.agentId, input.gitSha);
+  if (existing) return { release: existing, created: false };
+  const release = await createRelease(input, store);
+  return { release, created: true };
+}
+
+/**
+ * Cut Releases for EVERY roster member at a merge commit (a team merge is atomic across
+ * members — PRD §7.9; per-member change detection is a later optimization, PRD §12).
+ */
+export async function ensureReleasesForCommit(
   input: {
     projectId: string;
     gitSha: string;
@@ -86,11 +107,13 @@ export async function ensureReleaseForCommit(
     createdBy?: string | null;
   },
   store: DataStore = getRuntime().data,
-): Promise<{ release: Release; created: boolean }> {
-  const existing = await store.releases.findByCommit(input.projectId, input.gitSha);
-  if (existing) return { release: existing, created: false };
-  const release = await createRelease(input, store);
-  return { release, created: true };
+): Promise<{ release: Release; created: boolean }[]> {
+  const roster = await store.agents.listByProject(input.projectId);
+  return Promise.all(
+    roster.map((agent) =>
+      ensureReleaseForCommit({ ...input, agentId: agent.id }, store),
+    ),
+  );
 }
 
 /** Deployments for an environment, newest first, joined to their release version. */
@@ -122,9 +145,10 @@ export async function deployRelease(
   ]);
   if (!release) throw new Error("Release not found.");
   if (!env) throw new Error("Environment not found.");
-  // The project lookup and the building-row upsert don't depend on each other.
-  const [project, dep] = await Promise.all([
+  // The project/agent lookups and the building-row upsert don't depend on each other.
+  const [project, agent, dep] = await Promise.all([
     store.projects.findById(release.projectId),
+    store.agents.findById(release.agentId),
     input.deploymentId
       ? store.deployments.update(input.deploymentId, {
           status: "building",
@@ -147,12 +171,17 @@ export async function deployRelease(
         repo: { owner: project.repoOwner, repo: project.repoName },
         ref: release.gitSha,
         installationId: project.repoInstallationId,
+        agentRoot: agent?.root,
       });
       imageRef = built.imageRef;
       await store.releases.setImageRef(release.id, built.imageRef);
     }
 
-    const envVars = await secrets.resolve(release.projectId, input.environmentId);
+    const envVars = await secrets.resolve({
+      projectId: release.projectId,
+      agentId: release.agentId,
+      environmentId: input.environmentId,
+    });
     // A model key is a prerequisite for every agent (PRD §12): inherit the workspace-level
     // OpenRouter key unless a project/environment secret explicitly overrides it.
     if (!envVars.OPENROUTER_API_KEY && project && deps.workspaceModelKey) {

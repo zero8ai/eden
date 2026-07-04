@@ -51,10 +51,25 @@ const EDEN_DOCKERIGNORE = `node_modules
 .git
 `;
 
-/** Runtime + build-stage tags for a project@commit. Local (unregistried) for dev. */
-function imageTags(projectId: string, ref: string) {
-  const tag = `eden/proj-${projectId.slice(0, 8)}:${ref.slice(0, 12)}`;
+/**
+ * Runtime + build-stage tags for a project@commit. Local (unregistried) for dev. Team
+ * members build distinct images from the same commit, so the member name joins the tag.
+ */
+function imageTags(projectId: string, ref: string, member: string | null) {
+  const suffix = member ? `-${member.toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : "";
+  const tag = `eden/proj-${projectId.slice(0, 8)}${suffix}:${ref.slice(0, 12)}`;
   return { runtime: tag, buildStage: `${tag}-build` };
+}
+
+/**
+ * Where the eve project lives inside the checkout, and the member name (team repos, PRD
+ * §7.9). Root layout ("agent") builds the repo root; a team member ("agents/pm/agent")
+ * builds its package directory ("agents/pm").
+ */
+function projectDirOf(agentRoot: string | undefined): { dir: string; member: string | null } {
+  if (!agentRoot || agentRoot === "agent") return { dir: ".", member: null };
+  const dir = path.dirname(agentRoot); // agents/<member>
+  return { dir, member: path.basename(dir) };
 }
 
 /** The build-stage tag for a runtime imageRef (where the world migration CLI lives). */
@@ -69,6 +84,8 @@ export interface EveImageBuildInput {
   ref: string;
   /** GitHub App installation that can read the repo. */
   installationId: string | number;
+  /** Agent directory ("agent" or "agents/<member>/agent") — selects the build directory. */
+  agentRoot?: string;
 }
 
 /** Fetch repo@ref into `workDir/src`, ensuring Dockerfile/.dockerignore. Returns srcDir. */
@@ -87,12 +104,15 @@ async function fetchSource(input: EveImageBuildInput, workDir: string): Promise<
   // GitHub tarballs wrap everything in a single "<owner>-<repo>-<sha>/" directory.
   await exec("tar", ["-xzf", tarPath, "-C", srcDir, "--strip-components=1"]);
 
-  // Eden's reference Dockerfile, unless the repo brings its own.
-  if (!existsSync(path.join(srcDir, "Dockerfile"))) {
-    await writeFile(path.join(srcDir, "Dockerfile"), EDEN_EVE_DOCKERFILE);
+  // Eden's reference Dockerfile in the directory we build (repo root, or the team
+  // member's package dir), unless the repo brings its own there.
+  const { dir } = projectDirOf(input.agentRoot);
+  const buildDir = path.join(srcDir, dir);
+  if (!existsSync(path.join(buildDir, "Dockerfile"))) {
+    await writeFile(path.join(buildDir, "Dockerfile"), EDEN_EVE_DOCKERFILE);
   }
-  if (!existsSync(path.join(srcDir, ".dockerignore"))) {
-    await writeFile(path.join(srcDir, ".dockerignore"), EDEN_DOCKERIGNORE);
+  if (!existsSync(path.join(buildDir, ".dockerignore"))) {
+    await writeFile(path.join(buildDir, ".dockerignore"), EDEN_DOCKERIGNORE);
   }
   return srcDir;
 }
@@ -102,14 +122,16 @@ export async function buildEveImage(input: EveImageBuildInput): Promise<BuiltArt
   const workDir = await mkdtemp(path.join(tmpdir(), "eden-build-"));
   try {
     const srcDir = await fetchSource(input, workDir);
+    const { dir, member } = projectDirOf(input.agentRoot);
+    const buildDir = path.join(srcDir, dir);
 
     // Build both images (the runtime build reuses the build stage from cache).
-    const tags = imageTags(input.projectId, input.ref);
+    const tags = imageTags(input.projectId, input.ref, member);
     const opts = { maxBuffer: 64 * 1024 * 1024 };
-    await exec("docker", ["build", "--target", "build", "-t", tags.buildStage, srcDir], opts);
+    await exec("docker", ["build", "--target", "build", "-t", tags.buildStage, buildDir], opts);
     const { stderr: buildLog } = await exec(
       "docker",
-      ["build", "-t", tags.runtime, srcDir],
+      ["build", "-t", tags.runtime, buildDir],
       opts,
     );
 
@@ -147,9 +169,11 @@ export async function checkEveBuild(
       await writeFile(target, file.content);
     }
 
+    const { dir } = projectDirOf(input.agentRoot);
+    const buildDir = path.join(srcDir, dir);
     const tag = `eden/publish-check:proj-${input.projectId.slice(0, 8)}`;
     try {
-      await exec("docker", ["build", "--target", "build", "-t", tag, srcDir], {
+      await exec("docker", ["build", "--target", "build", "-t", tag, buildDir], {
         maxBuffer: 64 * 1024 * 1024,
       });
       // Beyond compiling: run the repo's own typecheck/lint scripts (when defined) inside

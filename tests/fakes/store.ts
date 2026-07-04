@@ -6,6 +6,7 @@
  * level, per the test strategy.
  */
 import type {
+  Agent,
   Conversation,
   DataStore,
   Deployment,
@@ -20,14 +21,20 @@ import type {
 function versionCollision(): Error {
   return Object.assign(new Error("duplicate key value violates unique constraint"), {
     code: "23505",
-    constraint_name: "releases_project_version_uq",
+    constraint_name: "releases_agent_version_uq",
   });
 }
 
 export interface FakeStore extends DataStore {
   /** Test seams: pre-populate rows the logic reads but doesn't create. */
   seedProject(p: Partial<Project> & { id: string; orgId: string }): Project;
-  seedEnvironment(e: { id: string; projectId: string; name?: string }): Environment;
+  seedAgent(a: { id: string; projectId: string; name?: string; root?: string }): Agent;
+  seedEnvironment(e: {
+    id: string;
+    projectId: string;
+    agentId?: string;
+    name?: string;
+  }): Environment;
   /** Force the next N release inserts to raise a version-collision (exercises retry). */
   forceReleaseCollisions(n: number): void;
   /** Inspect recorded audit entries. */
@@ -39,6 +46,7 @@ export function makeFakeStore(): FakeStore {
   const id = (p: string) => `${p}_${++seq}`;
 
   const projects = new Map<string, Project>();
+  const agents = new Map<string, Agent>();
   const environments = new Map<string, Environment>();
   const releases = new Map<string, Release>();
   const deployments = new Map<string, Deployment>();
@@ -67,10 +75,23 @@ export function makeFakeStore(): FakeStore {
       projects.set(row.id, row);
       return row;
     },
+    seedAgent(a) {
+      const row: Agent = {
+        id: a.id,
+        projectId: a.projectId,
+        name: a.name ?? "agent",
+        root: a.root ?? "agent",
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      };
+      agents.set(row.id, row);
+      return row;
+    },
     seedEnvironment(e) {
       const row: Environment = {
         id: e.id,
         projectId: e.projectId,
+        agentId: e.agentId ?? `agent-for-${e.projectId}`,
         name: e.name ?? "production",
         createdAt: new Date(0),
       };
@@ -81,9 +102,49 @@ export function makeFakeStore(): FakeStore {
       forcedCollisions = n;
     },
 
+    agents: {
+      async findById(aid) {
+        return agents.get(aid) ?? null;
+      },
+      async listByProject(projectId) {
+        return [...agents.values()]
+          .filter((a) => a.projectId === projectId)
+          .sort((a, b) => a.name.localeCompare(b.name));
+      },
+      async syncRoster(projectId, roster) {
+        if (roster.length > 0) {
+          const keep = new Set(roster.map((m) => m.name));
+          for (const [aid, a] of agents) {
+            if (a.projectId === projectId && !keep.has(a.name)) agents.delete(aid);
+          }
+          for (const m of roster) {
+            const existing = [...agents.values()].find(
+              (a) => a.projectId === projectId && a.name === m.name,
+            );
+            if (existing) {
+              agents.set(existing.id, { ...existing, root: m.root, updatedAt: new Date(++seq) });
+            } else {
+              const aid = id("agent");
+              agents.set(aid, {
+                id: aid,
+                projectId,
+                name: m.name,
+                root: m.root,
+                createdAt: new Date(++seq),
+                updatedAt: new Date(seq),
+              });
+            }
+          }
+        }
+        return [...agents.values()]
+          .filter((a) => a.projectId === projectId)
+          .sort((a, b) => a.name.localeCompare(b.name));
+      },
+    },
+
     releases: {
-      async countByProject(projectId) {
-        return [...releases.values()].filter((r) => r.projectId === projectId).length;
+      async countByAgent(agentId) {
+        return [...releases.values()].filter((r) => r.agentId === agentId).length;
       },
       async insert(input) {
         if (forcedCollisions > 0) {
@@ -91,12 +152,13 @@ export function makeFakeStore(): FakeStore {
           throw versionCollision();
         }
         const dup = [...releases.values()].some(
-          (r) => r.projectId === input.projectId && r.version === input.version,
+          (r) => r.agentId === input.agentId && r.version === input.version,
         );
         if (dup) throw versionCollision();
         const row: Release = {
           id: id("rel"),
           projectId: input.projectId,
+          agentId: input.agentId,
           version: input.version,
           gitSha: input.gitSha,
           imageRef: null,
@@ -110,10 +172,10 @@ export function makeFakeStore(): FakeStore {
       async findById(rid) {
         return releases.get(rid) ?? null;
       },
-      async findByCommit(projectId, gitSha) {
+      async findByCommit(agentId, gitSha) {
         return (
           [...releases.values()].find(
-            (r) => r.projectId === projectId && r.gitSha === gitSha,
+            (r) => r.agentId === agentId && r.gitSha === gitSha,
           ) ?? null
         );
       },
@@ -204,10 +266,21 @@ export function makeFakeStore(): FakeStore {
           .filter((e) => e.projectId === projectId)
           .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
       },
-      async seedDefaults(projectId, names) {
+      async listByAgent(agentId) {
+        return [...environments.values()]
+          .filter((e) => e.agentId === agentId)
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      },
+      async seedDefaults(projectId, agentId, names) {
         for (const name of names) {
           const eid = id("env");
-          environments.set(eid, { id: eid, projectId, name, createdAt: new Date(++seq) });
+          environments.set(eid, {
+            id: eid,
+            projectId,
+            agentId,
+            name,
+            createdAt: new Date(++seq),
+          });
         }
       },
     },
@@ -308,6 +381,7 @@ export function makeFakeStore(): FakeStore {
         const row: DraftChange = {
           id: existing?.id ?? id("draft"),
           projectId: input.projectId,
+          agentId: input.agentId,
           path: input.path,
           content: input.content,
           baseSha: input.baseSha ?? null,

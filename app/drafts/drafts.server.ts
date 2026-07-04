@@ -7,6 +7,7 @@
  * Drafts are in-flight edits only; the repo remains the source of truth for published config.
  */
 import type { DataStore, DraftChange } from "~/data/ports";
+import { agentForPath } from "~/db/queries.server";
 import { readAgentFile } from "~/github/repo.server";
 import {
   findOpenChangeForFile,
@@ -26,12 +27,22 @@ export interface StageInput {
   createdBy?: string | null;
 }
 
-/** Stage (or restage) a draft for a file. Latest save per path wins. */
-export function stageDraft(
+/**
+ * Stage (or restage) a draft for a file. Latest save per path wins. The owning roster
+ * member is derived from the path's agent root (Milestone 5.5: drafts key by agent).
+ */
+export async function stageDraft(
   input: StageInput,
   store: DataStore = getRuntime().data,
 ): Promise<DraftChange> {
-  return store.drafts.upsert(input);
+  const agents = await store.agents.listByProject(input.projectId);
+  const agent = agentForPath(agents, input.path);
+  if (!agent) {
+    throw new Error(
+      `"${input.path}" doesn't belong to any agent in this project — stage files under an agent's directory.`,
+    );
+  }
+  return store.drafts.upsert({ ...input, agentId: agent.id });
 }
 
 /** All staged drafts for a project, oldest first. */
@@ -166,13 +177,20 @@ export async function publishDrafts(
 
   // Publish gate: the change-set must compile against the branch it targets. A failed check
   // creates NOTHING (no branch, no PR) and keeps the drafts staged so they can be fixed and
-  // republished — broken code never becomes a change request.
+  // republished — broken code never becomes a change request. When every selected draft
+  // belongs to one roster member, the gate builds that member's directory (team repos, §7.9).
+  const memberIds = new Set(selected.map((d) => d.agentId));
+  const soleMember =
+    memberIds.size === 1
+      ? await store.agents.findById(selected[0].agentId)
+      : null;
   const check = await checkBuild({
     projectId: input.project.id,
     repo: { owner: input.project.repoOwner, repo: input.project.repoName },
     ref: input.project.defaultBranch,
     installationId: input.project.repoInstallationId,
     overlay: selected.map((d) => ({ path: d.path, content: d.content })),
+    agentRoot: soleMember?.root,
   });
   if (!check.ok) {
     throw new Error(

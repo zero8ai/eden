@@ -90,7 +90,29 @@ export const projects = pgTable(
   (t) => [uniqueIndex("projects_org_slug_uq").on(t.orgId, t.slug)],
 );
 
-/** A deploy environment for a project (e.g. production, staging). */
+/**
+ * An agent — a member of a project's roster (PRD §7.9 / Milestone 5.5). A single-agent repo
+ * is a team of one (`name: "agent"`, `root: "agent"`); a team repo has one row per
+ * `agents/<member>/agent/` directory. Everything downstream (environments, releases, runs,
+ * drafts, secrets) keys by agent, never by project — the hard-committed schema split.
+ * `root` is the repo-relative agent directory the member's config lives under.
+ */
+export const agents = pgTable(
+  "agents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    root: text("root").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("agents_project_name_uq").on(t.projectId, t.name)],
+);
+
+/** A deploy environment for an agent (e.g. production, staging). Per-agent by decision (§7.9). */
 export const environments = pgTable(
   "environments",
   {
@@ -98,10 +120,13 @@ export const environments = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex("environments_project_name_uq").on(t.projectId, t.name)],
+  (t) => [uniqueIndex("environments_agent_name_uq").on(t.agentId, t.name)],
 );
 
 /**
@@ -115,6 +140,9 @@ export const releases = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
     version: text("version").notNull(),
     gitSha: text("git_sha").notNull(),
     imageRef: text("image_ref"),
@@ -123,8 +151,9 @@ export const releases = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    uniqueIndex("releases_project_version_uq").on(t.projectId, t.version),
+    uniqueIndex("releases_agent_version_uq").on(t.agentId, t.version),
     index("releases_project_idx").on(t.projectId),
+    index("releases_agent_idx").on(t.agentId),
   ],
 );
 
@@ -171,7 +200,11 @@ export const draftChanges = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    /** Repo-relative path under agent/ (e.g. "agent/instructions.md"). */
+    /** The roster member the path belongs to (derived from the path's agent root). */
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    /** Repo-relative path under the agent's root (e.g. "agent/instructions.md"). */
     path: text("path").notNull(),
     /** Full new file contents (drafts are whole-file, like the editors). */
     content: text("content").notNull(),
@@ -195,7 +228,11 @@ export const secretsMetadata = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    // null environmentId == project-wide secret
+    /** Per-agent scope (PRD §7.9 decision): a teammate never sees another's credentials. */
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    // null environmentId == agent-wide secret (all of that agent's environments)
     environmentId: uuid("environment_id").references(() => environments.id, {
       onDelete: "cascade",
     }),
@@ -204,8 +241,8 @@ export const secretsMetadata = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [
-    unique("secrets_scope_key_uq")
-      .on(t.projectId, t.environmentId, t.key)
+    unique("secrets_agent_scope_key_uq")
+      .on(t.agentId, t.environmentId, t.key)
       .nullsNotDistinct(),
   ],
 );
@@ -222,6 +259,8 @@ export const runs = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    /** Roster member the run belongs to; nullable — telemetry may arrive unattributed. */
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     deploymentId: uuid("deployment_id").references(() => deployments.id, {
       onDelete: "set null",
     }),
@@ -246,6 +285,7 @@ export const runs = pgTable(
   },
   (t) => [
     index("runs_project_started_idx").on(t.projectId, t.startedAt),
+    index("runs_agent_started_idx").on(t.agentId, t.startedAt),
     index("runs_release_idx").on(t.releaseId),
     uniqueIndex("runs_external_uq").on(t.projectId, t.externalRunId),
   ],
@@ -262,6 +302,7 @@ export const sessions = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     externalSessionId: text("external_session_id"),
     trigger: text("trigger"),
     channel: text("channel"),
@@ -337,6 +378,9 @@ export const secretValues = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
     environmentId: uuid("environment_id").references(() => environments.id, {
       onDelete: "cascade",
     }),
@@ -347,8 +391,8 @@ export const secretValues = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [
-    unique("secret_values_scope_key_uq")
-      .on(t.projectId, t.environmentId, t.key)
+    unique("secret_values_agent_scope_key_uq")
+      .on(t.agentId, t.environmentId, t.key)
       .nullsNotDistinct(),
   ],
 );

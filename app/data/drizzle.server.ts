@@ -4,10 +4,11 @@
  * unique constraint, transactional weight updates) is realized here and trusted at the schema
  * level; the logic that orchestrates these calls is what gets unit-tested against the fake.
  */
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, notInArray, sql } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import {
+  agents,
   auditLog,
   conversations,
   deployments,
@@ -21,12 +22,55 @@ import { recordAudit } from "~/managed/audit.server";
 import type { DataStore } from "./ports";
 
 export const drizzleDataStore: DataStore = {
+  agents: {
+    async findById(id) {
+      const [row] = await db.select().from(agents).where(eq(agents.id, id)).limit(1);
+      return row ?? null;
+    },
+    async listByProject(projectId) {
+      return db
+        .select()
+        .from(agents)
+        .where(eq(agents.projectId, projectId))
+        .orderBy(asc(agents.name));
+    },
+    async syncRoster(projectId, roster) {
+      return db.transaction(async (tx) => {
+        if (roster.length > 0) {
+          await tx
+            .insert(agents)
+            .values(roster.map((m) => ({ projectId, name: m.name, root: m.root })))
+            .onConflictDoUpdate({
+              target: [agents.projectId, agents.name],
+              set: { root: sql`excluded.root`, updatedAt: new Date() },
+            });
+          await tx.delete(agents).where(
+            and(
+              eq(agents.projectId, projectId),
+              notInArray(
+                agents.name,
+                roster.map((m) => m.name),
+              ),
+            ),
+          );
+        }
+        // Never delete the whole roster: an empty detection (e.g. a truncated tree read)
+        // must not cascade away releases/runs. An empty roster is a no-op.
+        return tx
+          .select()
+          .from(agents)
+          .where(eq(agents.projectId, projectId))
+          .orderBy(asc(agents.name));
+      });
+    },
+  },
+
   releases: {
-    async countByProject(projectId) {
+    async countByAgent(agentId) {
       const [{ c }] = await db
         .select({ c: sql<number>`count(*)::int` })
         .from(releases)
-        .where(eq(releases.projectId, projectId));
+        .where(eq(releases.agentId, agentId));
       return c ?? 0;
     },
     async insert(input) {
@@ -34,6 +78,7 @@ export const drizzleDataStore: DataStore = {
         .insert(releases)
         .values({
           projectId: input.projectId,
+          agentId: input.agentId,
           version: input.version,
           gitSha: input.gitSha,
           changelog: input.changelog ?? null,
@@ -46,11 +91,11 @@ export const drizzleDataStore: DataStore = {
       const [row] = await db.select().from(releases).where(eq(releases.id, id)).limit(1);
       return row ?? null;
     },
-    async findByCommit(projectId, gitSha) {
+    async findByCommit(agentId, gitSha) {
       const [row] = await db
         .select()
         .from(releases)
-        .where(and(eq(releases.projectId, projectId), eq(releases.gitSha, gitSha)))
+        .where(and(eq(releases.agentId, agentId), eq(releases.gitSha, gitSha)))
         .limit(1);
       return row ?? null;
     },
@@ -165,10 +210,17 @@ export const drizzleDataStore: DataStore = {
         .where(eq(environments.projectId, projectId))
         .orderBy(asc(environments.createdAt));
     },
-    async seedDefaults(projectId, names) {
+    async listByAgent(agentId) {
+      return db
+        .select()
+        .from(environments)
+        .where(eq(environments.agentId, agentId))
+        .orderBy(asc(environments.createdAt));
+    },
+    async seedDefaults(projectId, agentId, names) {
       await db
         .insert(environments)
-        .values(names.map((name) => ({ projectId, name })))
+        .values(names.map((name) => ({ projectId, agentId, name })))
         .onConflictDoNothing();
     },
   },
@@ -274,6 +326,7 @@ export const drizzleDataStore: DataStore = {
         .insert(draftChanges)
         .values({
           projectId: input.projectId,
+          agentId: input.agentId,
           path: input.path,
           content: input.content,
           baseSha: input.baseSha ?? null,
@@ -282,6 +335,7 @@ export const drizzleDataStore: DataStore = {
         .onConflictDoUpdate({
           target: [draftChanges.projectId, draftChanges.path],
           set: {
+            agentId: input.agentId,
             content: input.content,
             baseSha: input.baseSha ?? null,
             createdBy: input.createdBy ?? null,

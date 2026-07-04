@@ -31,7 +31,9 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import {
-  listEnvironments,
+  listAgentEnvironments,
+  listAgents,
+  type Agent,
   type Environment,
   type Project,
 } from "~/db/queries.server";
@@ -50,7 +52,7 @@ interface SecretsView {
   error: string | null;
 }
 
-/** Resolve the `?env=` param to an environmentId (null == project-wide), validated. */
+/** Resolve the `?env=` param to an environmentId (null == agent-wide), validated. */
 function resolveScope(
   raw: string | null,
   envs: Environment[],
@@ -62,6 +64,17 @@ function resolveScope(
     : { environmentId: null, label: "All environments" };
 }
 
+/**
+ * The roster member whose secrets we're managing — `?agent=` for teams, else the first
+ * member (single-agent repos are a team of one, so this is invisible today). Secrets scope
+ * per agent by decision (PRD §7.9): a teammate never sees another's credentials.
+ */
+async function resolveAgent(projectId: string, raw: string | null): Promise<Agent | null> {
+  const roster = await listAgents(projectId);
+  return roster.find((a) => a.id === raw || a.name === raw) ?? roster[0] ?? null;
+}
+
+
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
     args,
@@ -70,17 +83,18 @@ export const loader = (args: LoaderFunctionArgs) =>
         { user: auth.user, organizationId: auth.organizationId, role: auth.role },
         args.params.projectId,
       );
-      const envs = await listEnvironments(project.id);
-      const scope = resolveScope(
-        new URL(args.request.url).searchParams.get("env"),
-        envs,
-      );
+      const url = new URL(args.request.url);
+      const agent = await resolveAgent(project.id, url.searchParams.get("agent"));
+      if (!agent) throw new Error("Project has no agents.");
+      const envs = await listAgentEnvironments(agent.id);
+      const scope = resolveScope(url.searchParams.get("env"), envs);
 
       try {
-        const names = await getRuntime().secrets.listNames(
-          project.id,
-          scope.environmentId,
-        );
+        const names = await getRuntime().secrets.listNames({
+          projectId: project.id,
+          agentId: agent.id,
+          environmentId: scope.environmentId,
+        });
         return { project, envs, scope, names, configured: true, error: null };
       } catch (error) {
         return {
@@ -111,12 +125,15 @@ export async function action(args: ActionFunctionArgs) {
   const form = await args.request.formData();
   const intent = String(form.get("intent") ?? "");
   const envRaw = String(form.get("env") ?? ALL);
-  const envs = await listEnvironments(project.id);
+  const agent = await resolveAgent(project.id, String(form.get("agent") ?? "") || null);
+  if (!agent) return { error: "Project has no agents." };
+  const envs = await listAgentEnvironments(agent.id);
   const { environmentId } = resolveScope(envRaw, envs);
   const key = String(form.get("key") ?? "").trim();
   const back = `/projects/${project.id}/secrets?env=${encodeURIComponent(envRaw)}`;
 
   const secrets = getRuntime().secrets;
+  const ref = { projectId: project.id, agentId: agent.id, environmentId, key };
   try {
     if (intent === "set") {
       const value = String(form.get("value") ?? "");
@@ -124,9 +141,9 @@ export async function action(args: ActionFunctionArgs) {
         return { error: "Key must be a valid env var name (A–Z, 0–9, _)." };
       }
       if (!value) return { error: "Value is required." };
-      await secrets.set({ projectId: project.id, environmentId, key }, value);
+      await secrets.set(ref, value);
     } else if (intent === "delete") {
-      await secrets.delete({ projectId: project.id, environmentId, key });
+      await secrets.delete(ref);
     }
   } catch (error) {
     return { error: (error as Error).message };

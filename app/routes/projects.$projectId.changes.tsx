@@ -27,7 +27,7 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
-import { ensureReleaseForCommit } from "~/deploy/controller.server";
+import { ensureReleasesForCommit } from "~/deploy/controller.server";
 import { discardDrafts, listDrafts, publishDrafts } from "~/drafts/drafts.server";
 import { closePullRequest, listOpenChanges, mergePullRequest } from "~/github/write.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
@@ -122,16 +122,18 @@ export async function action(args: ActionFunctionArgs) {
         pullNumber,
         branch,
       );
-      // 2. Record the Release at that merge commit (idempotent with the webhook path).
-      const { release } = await ensureReleaseForCommit({
+      // 2. Record a Release per roster member at that merge commit (idempotent with the
+      //    webhook path; team merges are atomic across members — PRD §7.9).
+      const results = await ensureReleasesForCommit({
         projectId: project.id,
         gitSha: mergeSha,
         changelog: `#${pullNumber} ${title}`.trim(),
         createdBy: auth.user.id,
       });
       // 3. Hand off to Deployments, where the human deploys the version at a chosen weight.
+      const version = results[0]?.release.version ?? "";
       throw redirect(
-        `/projects/${project.id}/deployments?released=${encodeURIComponent(release.version)}`,
+        `/projects/${project.id}/deployments?released=${encodeURIComponent(version)}`,
       );
     }
 

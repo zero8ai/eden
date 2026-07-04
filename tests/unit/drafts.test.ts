@@ -38,6 +38,8 @@ const proposed: ProposedChange = {
 beforeEach(() => {
   store = makeFakeStore();
   store.seedProject({ id: PROJECT.id, orgId: "org_1" });
+  // Drafts key by roster member (Milestone 5.5) — a single-agent repo is a team of one.
+  store.seedAgent({ id: "agent_1", projectId: PROJECT.id });
 });
 
 describe("staging", () => {
@@ -146,6 +148,8 @@ describe("publish gate (build check)", () => {
       ref: "main",
       installationId: "inst_1",
       overlay: [{ path: "agent/a.md", content: "A" }],
+      // All selected drafts belong to the sole roster member, so the gate targets its root.
+      agentRoot: "agent",
     });
   });
 

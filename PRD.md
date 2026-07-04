@@ -386,10 +386,33 @@ composition model:
 | **Subagent** | an existing agent's `subagents/` | a code-review specialist invoked by a developer agent |
 | **Agent** | a **new top-level agent** (new single-agent repo, or a new member of a team monorepo — §7.9) *or* a subagent of an existing agent | "Cloudflare Deployment Engineer" — instructions + tools + skills, pre-wired |
 
-**A template = files + a manifest.** The manifest declares: name, type, version, description,
-**required secrets** (by name), **required connections**, suggested model, and the eve version range
-it targets. No new runtime concept exists — a template is a shortcut for creating the same files a
-customer could author by hand.
+**A template = files + a manifest.** The manifest (`template.json`) declares: name, type, version,
+description, the **file list**, **npm dependencies**, **required secrets** (by name), **required
+connections**, suggested model, and the eve version range it targets. No new runtime concept
+exists — a template is a shortcut for creating the same files a customer could author by hand.
+
+**Dependencies are npm-resolvable, full stop.** Every agent is already a complete npm project
+(scaffold ships a per-agent `package.json`; teams are npm workspaces) and every release build runs
+`npm install` in the image build — so anything in the target's `package.json` at merge time is
+present at runtime. Template dependencies ride that machinery in two tiers:
+
+- **Light (in-repo files):** multi-file templates land under a directory the template *owns*
+  (namespaced by template id, e.g. `tools/cloudflare-ci/…`) — collisions are impossible and the
+  lock file knows exactly which files are whose. The manifest's `dependencies` map is applied as a
+  deterministic JSON-merge into the target agent's `package.json` — one more reviewable file in
+  the install change-set. Conflict policy: if the target already has a package and the ranges
+  intersect, keep the existing (no diff churn); if disjoint, the wizard surfaces it pre-change-set
+  and a human decides.
+- **Heavy (npm package):** substantial logic ships as a published npm package
+  (e.g. `@eve/marketplace-cloudflare-ci`); the template's tool file is a thin `defineTool` wrapper
+  importing it. Versioning, transitive deps, and updates ride npm; "update available" becomes a
+  one-line semver bump. Catalog authoring convention: anything past ~200 lines goes here.
+
+System-level dependencies (apt packages, non-npm binaries) are **out of scope** — templates run in
+the standard eve runtime image and may not mutate it. Most infra CLIs (wrangler included) are npm
+packages, so the realistic cases fit tier one. Uninstall removes the template's files but *leaves*
+npm packages (they may be shared with hand-written code); the uninstall PR lists them so the
+reviewer can prune.
 
 **Install = a change-set.** Installing an item:
 1. Eden materializes the template's files into the right location on a **working branch** (the
@@ -413,9 +436,27 @@ accepting opens a **PR with the diff**. If the customer has locally modified the
 the PR surfaces the conflict and a human resolves it in review — git review *is* the merge
 machinery; Eden does not build three-way merge tooling.
 
-**Distribution.** v1 is a **first-party curated catalog** — itself a git repo of templates, which
-dogfoods the format. The manifest is designed so third-party registries can exist later; publishing,
-trust/review policy, and revenue share are explicitly out of scope for v1 (§12).
+**Distribution — the catalog lives in the eve repo.** v1 is a **first-party curated catalog**: a
+`marketplace/` directory inside the eve OSS repo (owner decision — no separate repo), laid out as
+`marketplace/templates/{tools,skills,subagents,agents}/<id>/` with each template's `template.json`
++ files. Templates are **not built artifacts** — the only compilation ever happens in the
+customer's repo at install time — so the catalog's CI *validates and indexes* instead of building:
+schema-check every manifest, typecheck each template against its declared eve range, verify the
+manifest file list matches the directory, enforce a version bump when contents change, and
+regenerate a root **`marketplace/index.json`** (id, type, version, description, content hash).
+Eden consumes *only* that index for browse (one cached fetch, no tree walk) and reads a template's
+subtree at install time. The catalog location is a **config pointer** (repo + path + ref) behind a
+`CatalogSource` seam, which also defines what a registry *is* — a repo with this layout and an
+index — so third-party registries later are the same shape with a different pointer. Publishing
+policy, trust/review, and revenue share stay out of scope for v1 (§12).
+
+**Authoring is back-of-house, gated by CI — no Eden feature required.** Creating a template is a
+coding-agent session (or human PR) in the eve repo: a scaffold script stamps the directory
+convention, the JSON schema makes the manifest checkable, and catalog CI is the gatekeeper —
+curation is literally code review. The contribution ladder has two rungs: rung 1 (now), outsiders
+PR the catalog and CI + review gate it; rung 2 (later), an in-product **"publish to marketplace"**
+flow extracts a customer's live-tested tool/agent from their Eden workspace, generates the manifest
+from what Eden already knows (secrets referenced, deps, eve version), and opens the catalog PR.
 
 **Team templates are deliberately *not* in the marketplace v1.** A team is an Eden-level construct
 (§7.9); once agent templates and the monorepo convention exist, a team template is trivially a
@@ -752,14 +793,18 @@ two-source-of-truth reconciliation problem.
   `prefetch="intent"` on the tab rows, breadcrumbs, and team-member cards.
 
 **Milestone 6 — Recruit (marketplace, §7.8)**
-- Template format (files + manifest: required secrets/connections, version, eve range) and the
-  first-party curated catalog (a git repo of templates).
-- Install flow: browse → pick install target (new agent / subagent / into-agent for tools & skills)
-  → onboarding wizard (secret placeholders, connections) → change-set → PR.
+- Template format (files + manifest: file list, npm dependencies, required secrets/connections,
+  version, eve range) with a JSON schema; the first-party catalog as `marketplace/` in the eve
+  repo, validated + indexed by catalog CI (no build step — templates are source).
+- `CatalogSource` seam in Eden (config pointer: repo + path + ref; fixture-backed for dev/tests),
+  browse from `index.json` only.
+- Install flow: browse → pick install target (new agent / new team member / subagent / into-agent
+  for tools & skills) → onboarding wizard (secret placeholders, connections, dependency merge with
+  intersect-keep/disjoint-ask conflict policy) → change-set → PR.
 - Provenance via `eden-lock.json`; "update available" → diff PR (no three-way merge tooling).
-- Mostly additive — no schema surgery; team v0 (orchestrator + installed subagents) works here.
-  **Guardrail:** don't ship team-v0 UX that assumes one runtime (e.g. a "team dashboard" that is
-  really the orchestrator's run list) — Milestone 7 must not become a UX migration.
+  Uninstall removes owned files, leaves npm deps (listed in the PR for the reviewer).
+- Mostly additive — no schema surgery. (The team-v0 guardrail below is largely moot: real peer
+  teams shipped in M5.5–5.8, so "new team member" is a first-class install target.)
 
 **Milestone 7 — Teams (peer teams, §7.9)**
 - The `agents/*` monorepo convention: detection, per-member parse, per-member build → image →

@@ -257,10 +257,14 @@ export const secretsMetadata = pgTable(
     projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    /** Per-agent scope (PRD §7.9 decision): a teammate never sees another's credentials. */
-    agentId: varchar("agent_id", { length: 12 })
-      .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+    /**
+     * Owning roster member, OR null for a PROJECT-LEVEL shared secret (defined once, attached to
+     * members via `secret_attachments`). A concrete agentId scopes the secret to one member (PRD
+     * §7.9 — teammates never share credentials by default); null is the opt-in shared surface.
+     */
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
+      onDelete: "cascade",
+    }),
     // null environmentId == agent-wide secret (all of that agent's environments)
     environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
       onDelete: "cascade",
@@ -271,14 +275,22 @@ export const secretsMetadata = pgTable(
      * exposed names into EDEN_SANDBOX_ENV — the allowlist the scaffolded sandbox.ts forwards
      * into the sandbox env (~/eve/templates). Metadata, not a value: it lives here (never in
      * the SecretsProvider) so exposure survives provider swaps and value rotations.
+     * For SHARED secrets this is only the DEFAULT seeded into new attachments — the authoritative
+     * per-member flag lives on `secret_attachments.sandboxExposed` (never retro-applied).
      */
     sandboxExposed: boolean("sandbox_exposed").notNull().default(false),
+    /**
+     * Full SHA-256 hex of the plaintext, computed server-side at write time (never the value).
+     * Lets the UI show "fp a3f9c2" so a human can compare against a value they hold without ever
+     * revealing the stored one. Null for rows written before fingerprints existed (backfill-free).
+     */
+    fingerprint: text("fingerprint"),
     updatedBy: text("updated_by").references(() => users.id),
     updatedAt: updatedAt(),
   },
   (t) => [
     unique("secrets_agent_scope_key_uq")
-      .on(t.agentId, t.environmentId, t.key)
+      .on(t.projectId, t.agentId, t.environmentId, t.key)
       .nullsNotDistinct(),
   ],
 );
@@ -414,9 +426,10 @@ export const secretValues = pgTable(
     projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    agentId: varchar("agent_id", { length: 12 })
-      .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+    /** Owning member, OR null for a project-level shared secret (mirrors secrets_metadata). */
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
+      onDelete: "cascade",
+    }),
     environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
       onDelete: "cascade",
     }),
@@ -428,8 +441,91 @@ export const secretValues = pgTable(
   },
   (t) => [
     unique("secret_values_agent_scope_key_uq")
-      .on(t.agentId, t.environmentId, t.key)
+      .on(t.projectId, t.agentId, t.environmentId, t.key)
       .nullsNotDistinct(),
+  ],
+);
+
+/**
+ * Per-agent opt-in to a project-level SHARED secret (§4.3). Attachment is BY NAME — it covers
+ * every env row of the shared secret with that key. `sandboxExposed` is the AUTHORITATIVE
+ * sandbox flag for the shared secret on this member (seeded from the shared default at attach
+ * time, never retro-applied). A concrete agent-level secret with the same name shadows the
+ * attachment at resolve (precedence, §5); the attachment row simply lies dormant.
+ */
+export const secretAttachments = pgTable(
+  "secret_attachments",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 12 })
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    sandboxExposed: boolean("sandbox_exposed").notNull().default(false),
+    createdBy: text("created_by").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("secret_attachments_agent_key_uq").on(t.agentId, t.key)],
+);
+
+/**
+ * A dismissed template requirement (§7): the human marked a required-but-unset secret as "not
+ * needed" for this member, so it stops surfacing as a missing-required row and stops gating the
+ * deploy guard. Recoverable (never a hard delete of anything) — removing the row restores the
+ * requirement. Implementer's choice per §7 (a small table over a JSON column: isolated, cascades
+ * cleanly, and doesn't widen the widely-typed `agents` row).
+ */
+export const secretRequirementDismissals = pgTable(
+  "secret_requirement_dismissals",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 12 })
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    createdBy: text("created_by").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("secret_req_dismissals_agent_key_uq").on(t.agentId, t.key)],
+);
+
+/**
+ * Sealed secret values HELD for a new-member install (§4.4). An agent template installs as a new
+ * roster member whose `agents` row doesn't exist until the change ships, so the wizard can't key
+ * the secret to an agent yet. It stashes the sealed value here (same secretbox as `secret_values`),
+ * keyed by the roster NAME the install will create; the value migrates into
+ * `secret_values`/`secrets_metadata` the moment that member's agent row appears (syncRoster), and
+ * is discarded if the install/draft is abandoned. Never surfaced to a client.
+ */
+export const pendingSecrets = pgTable(
+  "pending_secrets",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** The roster member name the install will create (agents/<name>/…). */
+    memberName: text("member_name").notNull(),
+    key: text("key").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    iv: text("iv").notNull(),
+    authTag: text("auth_tag").notNull(),
+    /** SHA-256 hex of the held plaintext — carried into secrets_metadata at ship (§4.1). */
+    fingerprint: text("fingerprint"),
+    sandboxExposed: boolean("sandbox_exposed").notNull().default(false),
+    /** Set when the wizard recorded "use the project-level shared secret" instead of a value. */
+    attachShared: boolean("attach_shared").notNull().default(false),
+    createdBy: text("created_by").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("pending_secrets_scope_key_uq").on(t.projectId, t.memberName, t.key),
   ],
 );
 

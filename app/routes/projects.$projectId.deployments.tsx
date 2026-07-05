@@ -93,6 +93,17 @@ import { fetchAgentSource } from "~/github/repo.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
+import { overlayLock } from "~/marketplace/lock";
+import {
+  agentRequiredSecretState,
+  cleanupOrphanedPendingSecrets,
+} from "~/project/secrets.server";
+import { listAgents } from "~/db/queries.server";
+import { listSharedSecrets } from "~/seams/oss/secret-store";
+import {
+  DeploySecretsGuardDialog,
+  type GuardMissingSecret,
+} from "~/components/deploy-secrets-guard";
 import { timeAgo } from "~/lib/time";
 import {
   agentFromParams,
@@ -130,6 +141,8 @@ interface DeploymentData {
     name: string;
     latest: { version: string; gitSha: string; createdAt: Date } | null;
   }[];
+  /** Member view: unmet template-required secrets — powers the deploy guard (§9). */
+  missingSecrets: GuardMissingSecret[];
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -211,6 +224,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           drafts: [],
           releases: [],
           envs: [],
+          missingSecrets: [],
         };
       }
 
@@ -227,6 +241,31 @@ export const loader = (args: LoaderFunctionArgs) =>
           deployments: await listDeployments(env.id),
         })),
       );
+      // Deploy guard (§9): required-but-unset names for this member; dismissed never trigger.
+      let missingSecrets: GuardMissingSecret[] = [];
+      try {
+        const lock = overlayLock(
+          source.files["eden-lock.json"] ?? null,
+          allDrafts.map((d) => ({ path: d.path, content: d.content })),
+        );
+        const [state, shared] = await Promise.all([
+          agentRequiredSecretState({
+            projectId: project.id,
+            agentId: active.id,
+            memberName: active.name,
+            isTeam,
+            lock,
+          }),
+          listSharedSecrets(project.id),
+        ]);
+        const sharedNames = new Set(shared.map((s) => s.key));
+        missingSecrets = state.missing.map((m) => ({
+          ...m,
+          sharedExists: sharedNames.has(m.name),
+        }));
+      } catch {
+        missingSecrets = []; // secrets store unavailable — never block the pipeline view
+      }
       return {
         project,
         roster: roster.map((a) => ({ name: a.name })),
@@ -240,10 +279,28 @@ export const loader = (args: LoaderFunctionArgs) =>
         envs,
         draftGroups: [],
         members: [],
+        missingSecrets,
       };
     },
     { ensureSignedIn: true },
   );
+
+/** §4.4 abandonment sweep: drop held pending secrets whose install can no longer ship. */
+async function sweepPendingSecrets(projectId: string): Promise<void> {
+  try {
+    const [roster, drafts] = await Promise.all([
+      listAgents(projectId),
+      listDrafts(projectId),
+    ]);
+    await cleanupOrphanedPendingSecrets({
+      projectId,
+      rosterNames: roster.map((a) => a.name),
+      draftPaths: drafts.map((d) => d.path),
+    });
+  } catch (error) {
+    console.warn("[secrets] pending-secret sweep failed:", error);
+  }
+}
 
 export async function action(args: ActionFunctionArgs) {
   const auth = await withAuth(args);
@@ -273,6 +330,9 @@ export async function action(args: ActionFunctionArgs) {
     }
     if (intent === "discard") {
       await discardDrafts(project.id, [String(form.get("path"))]);
+      // Install abandonment (§4.4): a discarded new-member install can leave held pending
+      // secrets orphaned — sweep names with no roster row and no remaining member drafts.
+      await sweepPendingSecrets(project.id);
       throw redirect(back);
     }
     if (intent === "delete-change") {
@@ -285,6 +345,8 @@ export async function action(args: ActionFunctionArgs) {
         pullNumber,
         branch,
       );
+      // Closing an unmerged change is the other abandonment path — same sweep (§4.4).
+      await sweepPendingSecrets(project.id);
       throw redirect(back);
     }
     if (intent === "merge") {
@@ -513,14 +575,27 @@ export default function Deployment({
 /* ────────────────────────────── member pipeline ────────────────────────────── */
 
 function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
-  const { drafts, changes, releases, envs, activeAgent, isTeam } = loaderData;
+  const { drafts, changes, releases, envs, activeAgent, isTeam, level, project } =
+    loaderData;
+  const settingsAction = `${contextPath(
+    project.id,
+    level === "member" ? activeAgent : null,
+  )}/settings`;
 
   return (
     <>
       <StagedChangesCard drafts={drafts} isTeam={isTeam} />
       <ChangeRequests changes={changes} isTeam={isTeam} />
       <EnvironmentsCard envs={envs} activeAgent={activeAgent} />
-      <VersionHistory releases={releases} envs={envs} />
+      <VersionHistory
+        releases={releases}
+        envs={envs}
+        guard={{
+          missing: loaderData.missingSecrets,
+          activeAgent,
+          settingsAction,
+        }}
+      />
     </>
   );
 }
@@ -1157,12 +1232,21 @@ function EnvironmentsCard({
  * deliberately direction-neutral — deploying an older version IS the rollback (cutover on
  * health; a built image starts in seconds).
  */
+/** Deploy-guard context threaded to each version's deploy control (§9). */
+interface DeployGuard {
+  missing: GuardMissingSecret[];
+  activeAgent: string;
+  settingsAction: string;
+}
+
 function VersionHistory({
   releases,
   envs,
+  guard,
 }: {
   releases: ReleaseRow[];
   envs: EnvState[];
+  guard: DeployGuard;
 }) {
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
@@ -1223,6 +1307,7 @@ function VersionHistory({
                   release={r}
                   envs={envs}
                   busy={busy}
+                  guard={guard}
                   onDeploy={deploy}
                   onRedeploy={redeploy}
                 />
@@ -1245,12 +1330,14 @@ function DeployControl({
   release,
   envs,
   busy,
+  guard,
   onDeploy,
   onRedeploy,
 }: {
   release: ReleaseRow;
   envs: EnvState[];
   busy: boolean;
+  guard: DeployGuard;
   onDeploy: (environmentId: string, releaseId: string) => void;
   onRedeploy: (environmentId: string, releaseId: string) => void;
 }) {
@@ -1259,8 +1346,17 @@ function DeployControl({
     envState: EnvState;
     mode: DeployMode;
   } | null>(null);
+  // §9 deploy guard: required secrets still missing → the guard dialog replaces the plain
+  // confirm (fix inline, deploy anyway, or cancel). Dismissed requirements never reach here.
+  const [guardTarget, setGuardTarget] = useState<{
+    envState: EnvState;
+    mode: DeployMode;
+  } | null>(null);
+  const guarded = guard.missing.length > 0;
   const runningHere = (s: EnvState) =>
     runningOf(s.deployments)?.releaseId === release.id;
+  const run = (s: EnvState, mode: DeployMode) =>
+    mode === "redeploy" ? onRedeploy(s.env.id, release.id) : onDeploy(s.env.id, release.id);
 
   const confirmFor = (s: EnvState, mode: DeployMode) => {
     const current = runningOf(s.deployments);
@@ -1282,6 +1378,36 @@ function DeployControl({
     const only = envs[0];
     const mode = runningHere(only) ? "redeploy" : "deploy";
     const copy = confirmFor(only, mode);
+    if (guarded) {
+      return (
+        <>
+          <Button
+            size="sm"
+            variant={mode === "redeploy" ? "outline" : "secondary"}
+            disabled={busy}
+            onClick={() => setGuardTarget({ envState: only, mode })}
+          >
+            {mode === "redeploy" ? "Redeploy" : "Deploy"}
+          </Button>
+          {guardTarget && (
+            <DeploySecretsGuardDialog
+              open
+              onOpenChange={(open) => {
+                if (!open) setGuardTarget(null);
+              }}
+              missing={guard.missing}
+              activeAgent={guard.activeAgent}
+              settingsAction={guard.settingsAction}
+              deployLabel={guardTarget.mode === "redeploy" ? "Redeploy" : "Deploy"}
+              onDeploy={() => {
+                run(guardTarget.envState, guardTarget.mode);
+                setGuardTarget(null);
+              }}
+            />
+          )}
+        </>
+      );
+    }
     return (
       <ConfirmDialog
         trigger={
@@ -1297,11 +1423,7 @@ function DeployControl({
         description={copy.description}
         confirmLabel={mode === "redeploy" ? "Redeploy" : "Deploy"}
         variant="default"
-        onConfirm={() =>
-          mode === "redeploy"
-            ? onRedeploy(only.env.id, release.id)
-            : onDeploy(only.env.id, release.id)
-        }
+        onConfirm={() => run(only, mode)}
       />
     );
   }
@@ -1316,23 +1438,23 @@ function DeployControl({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {envs.map((s) =>
-            runningHere(s) ? (
+          {envs.map((s) => {
+            const mode = runningHere(s) ? ("redeploy" as const) : ("deploy" as const);
+            return (
               <DropdownMenuItem
                 key={s.env.id}
-                onSelect={() => setTarget({ envState: s, mode: "redeploy" })}
+                onSelect={() =>
+                  guarded
+                    ? setGuardTarget({ envState: s, mode })
+                    : setTarget({ envState: s, mode })
+                }
               >
-                Redeploy in {s.env.name}
+                {mode === "redeploy"
+                  ? `Redeploy in ${s.env.name}`
+                  : `Deploy to ${s.env.name}`}
               </DropdownMenuItem>
-            ) : (
-              <DropdownMenuItem
-                key={s.env.id}
-                onSelect={() => setTarget({ envState: s, mode: "deploy" })}
-              >
-                Deploy to {s.env.name}
-              </DropdownMenuItem>
-            ),
-          )}
+            );
+          })}
         </DropdownMenuContent>
       </DropdownMenu>
       {target && (
@@ -1346,12 +1468,24 @@ function DeployControl({
           confirmLabel={target.mode === "redeploy" ? "Redeploy" : "Deploy"}
           variant="default"
           onConfirm={() => {
-            if (target.mode === "redeploy") {
-              onRedeploy(target.envState.env.id, release.id);
-            } else {
-              onDeploy(target.envState.env.id, release.id);
-            }
+            run(target.envState, target.mode);
             setTarget(null);
+          }}
+        />
+      )}
+      {guardTarget && (
+        <DeploySecretsGuardDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setGuardTarget(null);
+          }}
+          missing={guard.missing}
+          activeAgent={guard.activeAgent}
+          settingsAction={guard.settingsAction}
+          deployLabel={guardTarget.mode === "redeploy" ? "Redeploy" : "Deploy"}
+          onDeploy={() => {
+            run(guardTarget.envState, guardTarget.mode);
+            setGuardTarget(null);
           }}
         />
       )}

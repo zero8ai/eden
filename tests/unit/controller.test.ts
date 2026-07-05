@@ -223,6 +223,44 @@ describe("deployRelease", () => {
     expect(deployedEnvs[2]).not.toHaveProperty("EDEN_SANDBOX_ENV");
   });
 
+  it("strips a SHARED secret squatting EDEN_SANDBOX_ENV after the merged resolve (§11.9)", async () => {
+    const crypto = await import("node:crypto");
+    const { makeLocalSecretsProvider } = await import("~/seams/oss/secrets.local.server");
+    const { makeFakeSecretKV } = await import("../fakes/secret-kv");
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "e5".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+
+    // A project-level shared secret named EDEN_SANDBOX_ENV, attached to the agent, resolves
+    // through the real provider merge — and must still be deleted before Eden sets its own.
+    const kv = makeFakeSecretKV();
+    const boxKey = crypto.randomBytes(32);
+    const secrets = makeLocalSecretsProvider(kv, () => boxKey);
+    await secrets.set(
+      { projectId: PROJECT, agentId: null, environmentId: null, key: "EDEN_SANDBOX_ENV" },
+      "SMUGGLED",
+    );
+    await secrets.set(
+      { projectId: PROJECT, agentId: AGENT, environmentId: null, key: "GH_TOKEN" },
+      "gho_x",
+    );
+    kv.attach(AGENT, "EDEN_SANDBOX_ENV");
+
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedEnvs }),
+        secrets,
+        sandboxExposedNames: async () => ["GH_TOKEN"],
+      },
+    );
+    expect(deployedEnvs[0].EDEN_SANDBOX_ENV).toBe("GH_TOKEN"); // Eden-owned, never "SMUGGLED"
+    expect(deployedEnvs[0].GH_TOKEN).toBe("gho_x");
+  });
+
   it("keys the Workflow world by ENVIRONMENT — two deploys of one env share a worldKey", async () => {
     // The durability invariant this feature exists for: a redeploy reuses the environment's
     // world (so sessions + their sandboxes survive), which means the worldKey must be stable

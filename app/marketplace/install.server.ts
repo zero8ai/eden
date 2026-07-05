@@ -324,6 +324,16 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     member,
     files: [...newPaths].filter((p) => !MERGED_FILES.has(p)).sort(),
     ...(manifest.dependencies ? { dependencies: manifest.dependencies } : {}),
+    // Snapshot required secrets so Settings can render "required by template" forever (§4.5).
+    ...(manifest.secrets && manifest.secrets.length > 0
+      ? {
+          secrets: manifest.secrets.map((s) => ({
+            name: s.name,
+            ...(s.description ? { description: s.description } : {}),
+            ...(s.sandbox ? { sandbox: s.sandbox } : {}),
+          })),
+        }
+      : {}),
   };
   writes.push({
     path: "eden-lock.json",

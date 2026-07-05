@@ -40,6 +40,15 @@ export function seal(key: Buffer, plaintext: string): SealedSecret {
   };
 }
 
+/**
+ * Full SHA-256 hex of a plaintext value — a one-way fingerprint stored alongside the sealed
+ * value's metadata (§4.1). Reveals nothing (the value is never recoverable from it) but lets a
+ * human compare against a value they hold. Not keyed: comparison must work across key rotations.
+ */
+export function fingerprint(plaintext: string): string {
+  return crypto.createHash("sha256").update(plaintext, "utf8").digest("hex");
+}
+
 export function open(key: Buffer, sealed: SealedSecret): string {
   const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(sealed.iv, "base64"));
   decipher.setAuthTag(Buffer.from(sealed.authTag, "base64"));

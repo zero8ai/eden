@@ -179,6 +179,63 @@ describe("planInstall — path mapping", () => {
   });
 });
 
+describe("planInstall — lock secrets snapshot (§4.5)", () => {
+  it("records manifest secrets in the lock entry so requirements survive forever", () => {
+    const plan = planInstall(memberCtx());
+    const lockWrite = plan.writes.find((w) => w.path === "eden-lock.json")!;
+    const entry = findInstall(
+      parseLock(JSON.parse(lockWrite.content)),
+      "cloudflare-deploy",
+      "pm",
+    )!;
+    expect(entry.secrets).toEqual([
+      { name: "CLOUDFLARE_API_TOKEN", description: "token", sandbox: true },
+    ]);
+    // Values NEVER touch the plan or the lock.
+    expect(lockWrite.content).not.toMatch(/value|ciphertext/i);
+  });
+
+  it("omits the secrets field entirely for templates that declare none", () => {
+    const plan = planInstall({
+      template: agentTpl,
+      registry: REGISTRY,
+      repoPaths: [],
+      drafts: [],
+      packageJson: null,
+      lock: emptyLock(),
+      rosterNames: ["pm"],
+      target: { kind: "new-member", name: "deployer" },
+    });
+    const lockWrite = plan.writes.find((w) => w.path === "eden-lock.json")!;
+    const entry = findInstall(
+      parseLock(JSON.parse(lockWrite.content)),
+      "cloudflare-deployment-engineer",
+      "deployer",
+    )!;
+    expect(entry.secrets).toBeUndefined();
+  });
+
+  it("old locks without the field parse fine and produce no required rows", () => {
+    const legacy = {
+      version: 1,
+      installs: [
+        {
+          id: "x",
+          type: "tool",
+          name: "X",
+          version: "0.1.0",
+          hash: "abc",
+          registry: "fixture",
+          member: null,
+          files: ["agent/tools/x.ts"],
+        },
+      ],
+    };
+    const lock = parseLock(legacy);
+    expect(lock.installs[0].secrets).toBeUndefined();
+  });
+});
+
 describe("planInstall — dependency merge policy", () => {
   it("adds a dependency the package doesn't have", () => {
     const plan = planInstall(

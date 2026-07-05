@@ -77,6 +77,8 @@ import {
   agentParamRedirect,
   resolveAgentContext,
 } from "~/project/agent-context.server";
+import { agentRequiredSecretState } from "~/project/secrets.server";
+import { overlayLock } from "~/marketplace/lock";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Project } from "~/db/queries.server";
 import type { Route } from "./+types/projects.$projectId";
@@ -89,6 +91,8 @@ interface MemberSummary {
   skills: number;
   schedules: number;
   channels: number;
+  /** Template-required secrets still unset for this member (amber header badge, §7). */
+  secretsMissing: number;
 }
 
 /** One affected member's deploy progress after a Ship (drives the progress banner). */
@@ -225,27 +229,42 @@ export const loader = (args: LoaderFunctionArgs) =>
           teamLayout && !requestedAgent
             ? ("team" as const)
             : ("member" as const);
+        const lock = overlayLock(
+          source.files["eden-lock.json"] ?? null,
+          drafts.map((d) => ({ path: d.path, content: d.content })),
+        );
         const members =
           view === "team"
-            ? roster.map((a) => {
-                const c = buildAgentConfig(source, a.root);
-                // A staged agent.ts draft wins over the repo value — same rule the
-                // member view follows, so the roster badge never lags a model change.
-                const draft = drafts.find(
-                  (d) => d.path === `${a.root}/agent.ts` && d.content !== null,
-                );
-                const model = draft?.content
-                  ? (readModel(draft.content) ?? c.model)
-                  : c.model;
-                return {
-                  name: a.name,
-                  model: model ?? orgDefaultModel,
-                  tools: c.tools.length,
-                  skills: c.skills.length,
-                  schedules: c.schedules.length,
-                  channels: c.channels.length,
-                };
-              })
+            ? await Promise.all(
+                roster.map(async (a) => {
+                  const c = buildAgentConfig(source, a.root);
+                  // A staged agent.ts draft wins over the repo value — same rule the
+                  // member view follows, so the roster badge never lags a model change.
+                  const draft = drafts.find(
+                    (d) => d.path === `${a.root}/agent.ts` && d.content !== null,
+                  );
+                  const model = draft?.content
+                    ? (readModel(draft.content) ?? c.model)
+                    : c.model;
+                  // "N secrets missing" (§7): template-required names still unset/unattached.
+                  const requiredState = await agentRequiredSecretState({
+                    projectId: project.id,
+                    agentId: a.id,
+                    memberName: a.name,
+                    isTeam: true,
+                    lock,
+                  }).catch(() => ({ missing: [] }));
+                  return {
+                    name: a.name,
+                    model: model ?? orgDefaultModel,
+                    tools: c.tools.length,
+                    skills: c.skills.length,
+                    schedules: c.schedules.length,
+                    channels: c.channels.length,
+                    secretsMissing: requiredState.missing.length,
+                  };
+                }),
+              )
             : null;
         const teamIntroDismissed = new RegExp(
           `(?:^|; )${TEAM_INTRO_COOKIE}=1`,
@@ -760,12 +779,20 @@ function TeamSurface({
                   <CardTitle className="truncate font-mono text-base">
                     {m.name}
                   </CardTitle>
-                  <Badge
-                    variant="secondary"
-                    className="shrink-0 font-mono text-xs"
-                  >
-                    {m.model ?? "no model"}
-                  </Badge>
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {m.secretsMissing > 0 && (
+                      <Badge
+                        variant="outline"
+                        className="border-amber-500/60 text-xs text-amber-700 dark:text-amber-400"
+                      >
+                        {m.secretsMissing} secret
+                        {m.secretsMissing === 1 ? "" : "s"} missing
+                      </Badge>
+                    )}
+                    <Badge variant="secondary" className="font-mono text-xs">
+                      {m.model ?? "no model"}
+                    </Badge>
+                  </span>
                 </div>
               </CardHeader>
               <CardContent className="pt-0">

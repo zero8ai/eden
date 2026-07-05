@@ -41,6 +41,20 @@ const installEntrySchema = z.object({
   files: z.array(z.string().min(1)),
   /** The npm dependencies the install ASKED for (name → range) — uninstall lists these. */
   dependencies: z.record(z.string(), z.string()).optional(),
+  /**
+   * Snapshot of the template's declared secrets at install time (§4.5). This is what makes
+   * "required by this template" renderable forever — surviving template upgrades per-version.
+   * Old locks without the field simply produce no required-rows.
+   */
+  secrets: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        description: z.string().optional(),
+        sandbox: z.boolean().optional(),
+      }),
+    )
+    .optional(),
 });
 
 export type InstallEntry = z.infer<typeof installEntrySchema>;

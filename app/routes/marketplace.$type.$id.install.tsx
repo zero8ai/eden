@@ -13,6 +13,7 @@
  * standalone repo, and agent → subagent of an existing agent.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { useState } from "react";
 import {
   Form,
   Link,
@@ -22,6 +23,8 @@ import {
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
+
+import { COPY } from "~/components/secrets-card";
 
 import { AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
@@ -59,7 +62,12 @@ import {
   type InstallTarget,
 } from "~/marketplace/install.server";
 import { overlayLock } from "~/marketplace/lock";
-import { setSecretSandboxExposed } from "~/seams/oss/secret-store";
+import {
+  planInstallSecretOps,
+  writePendingSecret,
+} from "~/project/secrets.server";
+import { listSharedSecrets, setAttachment } from "~/seams/oss/secret-store";
+import { decodeKey, fingerprint, seal } from "~/seams/oss/secretbox";
 import {
   TEMPLATE_TYPES,
   isTemplateSlug,
@@ -164,6 +172,8 @@ export const loader = (args: LoaderFunctionArgs) =>
         selectedMember,
         newMemberName,
         preview: null as PreviewData | null,
+        /** Project-level shared secret names — powers the three-way choice (§9). */
+        sharedNames: [] as string[],
       };
 
       if (!projectId) return base;
@@ -184,6 +194,15 @@ export const loader = (args: LoaderFunctionArgs) =>
       base.projectName = project.name;
       base.isTeam = ctx.isTeam;
       base.roster = ctx.roster.map((a) => ({ name: a.name }));
+      if ((template.manifest.secrets?.length ?? 0) > 0) {
+        try {
+          base.sharedNames = [
+            ...new Set((await listSharedSecrets(project.id)).map((s) => s.key)),
+          ];
+        } catch {
+          base.sharedNames = []; // secrets store unavailable — the step degrades to value/skip
+        }
+      }
 
       const registry = catalogLocator();
       const draftPaths = drafts.map((d) => ({ path: d.path, content: d.content }));
@@ -370,24 +389,81 @@ export async function action(args: ActionFunctionArgs) {
       );
     }
 
-    // Member target: write the manifest's secrets that were filled in (agent-wide, null env).
-    // New-member installs skip — the agent row doesn't exist until the member ships.
-    if (secretAgent) {
-      const secrets = getRuntime().secrets;
-      for (const s of template.manifest.secrets ?? []) {
-        const value = String(form.get(`secret:${s.name}`) ?? "").trim();
-        if (!value) continue;
-        const ref = {
-          projectId: project.id,
-          agentId: secretAgent.id,
-          environmentId: null,
-          key: s.name,
-        };
-        await secrets.set(ref, value);
-        // Manifest opted this secret into the sandbox shell (EDEN_SANDBOX_ENV) — flip the
-        // exposure flag now so the agent's terminal has its credentials on first deploy.
-        // Secrets left blank get the flag when the user sets them, from Settings.
-        if (s.sandbox) await setSecretSandboxExposed(ref, true, auth.user.id);
+    // Secrets step (§9): one enabled step for every template kind. The pure planner decides
+    // each secret's fate from the form (shared-attach / value / skip); values never persist
+    // anywhere but the sealed stores.
+    if ((template.manifest.secrets?.length ?? 0) > 0) {
+      let sharedNames: string[] = [];
+      try {
+        sharedNames = (await listSharedSecrets(project.id)).map((s) => s.key);
+      } catch {
+        sharedNames = [];
+      }
+      const ops = planInstallSecretOps({
+        secrets: template.manifest.secrets ?? [],
+        form,
+        sharedNames,
+      });
+      if (secretAgent) {
+        // Member install: the agent row exists — write agent-wide values (sandbox set
+        // atomically) and attachment rows directly.
+        const secrets = getRuntime().secrets;
+        for (const op of ops) {
+          if (op.kind === "set") {
+            await secrets.set(
+              {
+                projectId: project.id,
+                agentId: secretAgent.id,
+                environmentId: null,
+                key: op.name,
+              },
+              op.value,
+              { sandboxExposed: op.sandbox, updatedBy: auth.user.id },
+            );
+          } else if (op.kind === "attach") {
+            await setAttachment({
+              projectId: project.id,
+              agentId: secretAgent.id,
+              key: op.name,
+              attached: true,
+              sandboxExposed: op.sandbox,
+              createdBy: auth.user.id,
+            });
+          }
+        }
+      } else if (target.kind === "new-member") {
+        // New-member install (§4.4): no agent row until the member ships — hold values
+        // SEALED in pending_secrets and record shared-attach choices; the ship-time roster
+        // sync migrates them, and abandonment cleanup discards them.
+        const hasWork = ops.some((op) => op.kind !== "skip");
+        if (hasWork) {
+          const key = decodeKey(process.env.EDEN_SECRETS_KEY);
+          for (const op of ops) {
+            if (op.kind === "set") {
+              await writePendingSecret({
+                projectId: project.id,
+                memberName: target.name,
+                key: op.name,
+                sealed: seal(key, op.value),
+                fingerprint: fingerprint(op.value),
+                sandboxExposed: op.sandbox,
+                attachShared: false,
+                createdBy: auth.user.id,
+              });
+            } else if (op.kind === "attach") {
+              await writePendingSecret({
+                projectId: project.id,
+                memberName: target.name,
+                key: op.name,
+                sealed: { ciphertext: "", iv: "", authTag: "" },
+                fingerprint: null,
+                sandboxExposed: op.sandbox,
+                attachShared: true,
+                createdBy: auth.user.id,
+              });
+            }
+          }
+        }
       }
     }
 
@@ -424,6 +500,7 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
     selectedMember,
     newMemberName,
     preview,
+    sharedNames,
   } = loaderData;
   const navigate = useNavigate();
 
@@ -684,40 +761,23 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                   <CardTitle className="text-base">Secrets</CardTitle>
                   <CardDescription>
                     {newMemberTemplate
-                      ? "This agent needs these — set them after the member ships, from its Settings."
-                      : "Stored per-agent, agent-wide. Leave blank to set later in Settings."}
+                      ? `This agent needs ${preview.secrets.length} secret${preview.secrets.length === 1 ? "" : "s"}. Enter them now — they'll be attached when the member ships. Values are encrypted write-only.`
+                      : "Stored per-agent, agent-wide. Values are encrypted write-only. Leave blank to set later in Settings."}
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="space-y-5">
                   {preview.secrets.map((s) => (
-                    <div key={s.name} className="grid max-w-md gap-1.5">
-                      <Label htmlFor={`secret:${s.name}`} className="font-mono text-xs">
-                        {s.name}
-                      </Label>
-                      {s.description && (
-                        <p className="text-xs text-muted-foreground">
-                          {s.description}
-                        </p>
-                      )}
-                      {s.sandbox && (
-                        <p className="text-xs text-muted-foreground">
-                          Made available in the agent's sandbox shell on install — its
-                          terminal reads this from the environment.
-                        </p>
-                      )}
-                      <Input
-                        id={`secret:${s.name}`}
-                        name={`secret:${s.name}`}
-                        type="password"
-                        autoComplete="off"
-                        disabled={newMemberTemplate}
-                        placeholder={
-                          newMemberTemplate ? "set after the member ships" : "value (write-only)"
-                        }
-                        className="font-mono"
-                      />
-                    </div>
+                    <InstallSecretField
+                      key={s.name}
+                      secret={s}
+                      sharedExists={sharedNames.includes(s.name)}
+                    />
                   ))}
+                  {newMemberTemplate && (
+                    <p className="text-xs text-muted-foreground">
+                      {COPY.installDeferral}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -735,6 +795,117 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
         )}
       </div>
     </AppShell>
+  );
+}
+
+/**
+ * One manifest secret in the install step (§9): a three-way choice when a project-level shared
+ * secret with the same name exists (use shared — the default, prevents token sprawl / enter a
+ * value / skip), or a value input with a Skip affordance otherwise. Emits hidden fields the
+ * action's planInstallSecretOps reads: `secretmode:<name>`, `secret:<name>`,
+ * `secretsandbox:<name>`. Sandbox is pre-checked from the manifest and always editable.
+ */
+function InstallSecretField({
+  secret,
+  sharedExists,
+}: {
+  secret: { name: string; description?: string; sandbox?: boolean };
+  sharedExists: boolean;
+}) {
+  const [mode, setMode] = useState<"shared" | "value" | "skip">(
+    sharedExists ? "shared" : "value",
+  );
+  const [value, setValue] = useState("");
+  const [sandbox, setSandbox] = useState(secret.sandbox ?? false);
+
+  return (
+    <div className="grid max-w-md gap-1.5">
+      <Label className="font-mono text-xs">{secret.name}</Label>
+      {secret.description && (
+        <p className="text-xs text-muted-foreground">{secret.description}</p>
+      )}
+      <input type="hidden" name={`secretmode:${secret.name}`} value={mode} />
+      <input
+        type="hidden"
+        name={`secretsandbox:${secret.name}`}
+        value={sandbox ? "1" : "0"}
+      />
+
+      {sharedExists ? (
+        <div className="space-y-1.5">
+          <Label className="flex items-center gap-2 text-sm font-normal">
+            <input
+              type="radio"
+              name={`secretchoice:${secret.name}`}
+              checked={mode === "shared"}
+              onChange={() => setMode("shared")}
+            />
+            Use project-level {secret.name} (recommended)
+          </Label>
+          <Label className="flex items-center gap-2 text-sm font-normal">
+            <input
+              type="radio"
+              name={`secretchoice:${secret.name}`}
+              checked={mode === "value"}
+              onChange={() => setMode("value")}
+            />
+            Enter a value for this agent
+          </Label>
+          {mode === "value" && (
+            <Input
+              name={`secret:${secret.name}`}
+              type="password"
+              autoComplete="off"
+              placeholder="value (write-only)"
+              className="ml-6 w-72 font-mono"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          )}
+          <Label className="flex items-center gap-2 text-sm font-normal">
+            <input
+              type="radio"
+              name={`secretchoice:${secret.name}`}
+              checked={mode === "skip"}
+              onChange={() => setMode("skip")}
+            />
+            Skip — I&rsquo;ll add it later
+          </Label>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Input
+            name={`secret:${secret.name}`}
+            type="password"
+            autoComplete="off"
+            placeholder="value (write-only)"
+            className="w-72 font-mono"
+            value={mode === "skip" ? "" : value}
+            disabled={mode === "skip"}
+            onChange={(e) => setValue(e.target.value)}
+          />
+          <button
+            type="button"
+            className="text-xs text-muted-foreground underline-offset-4 hover:underline"
+            onClick={() => setMode(mode === "skip" ? "value" : "skip")}
+          >
+            {mode === "skip" ? "Enter a value" : "Skip"}
+          </button>
+        </div>
+      )}
+
+      {mode !== "skip" && (
+        <Label className="flex items-center gap-1.5 text-xs font-normal text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={sandbox}
+            onChange={(e) => setSandbox(e.target.checked)}
+          />
+          Expose to sandbox shell
+          {secret.sandbox && <span>· Requested by template</span>}
+        </Label>
+      )}
+    </div>
   );
 }
 

@@ -130,7 +130,12 @@ export interface DeployTarget {
 /** A secret scope: per-agent by decision (PRD §7.9) — teammates never share credentials. */
 export interface SecretScope {
   projectId: string;
-  agentId: string;
+  /**
+   * The owning member, OR null for a PROJECT-LEVEL shared secret (§4.2). A concrete agentId
+   * scopes reads/writes to one member; null addresses the shared surface. `resolve(scope)` is
+   * always called with a concrete agentId — it folds in the member's attached shared secrets.
+   */
+  agentId: string | null;
   /** null == agent-wide (all of that agent's environments). */
   environmentId: string | null;
 }
@@ -139,9 +144,17 @@ export interface SecretRef extends SecretScope {
   key: string;
 }
 
+/** Control-plane metadata written alongside a value (§4.1, §6) — never the value itself. */
+export interface SecretWriteMeta {
+  /** Set the sandbox-exposure flag atomically at creation (§6, kills the second round-trip). */
+  sandboxExposed?: boolean;
+  /** The user making the change (audit — surfaced as "Set … by <user>"). */
+  updatedBy?: string | null;
+}
+
 export interface SecretsProvider {
   readonly name: string;
-  set(ref: SecretRef, value: string): Promise<void>;
+  set(ref: SecretRef, value: string, meta?: SecretWriteMeta): Promise<void>;
   get(ref: SecretRef): Promise<string | null>;
   delete(ref: SecretRef): Promise<void>;
   /** Secret names in scope (values never listed). */

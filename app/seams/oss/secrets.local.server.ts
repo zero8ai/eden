@@ -7,8 +7,8 @@
  * with an in-memory KV and a fixed key. `localSecretsProvider` binds the Drizzle KV + the
  * env-supplied key for production.
  */
-import type { SecretsProvider } from "../types";
-import { decodeKey, open, seal } from "./secretbox";
+import type { SecretsProvider, SecretWriteMeta } from "../types";
+import { decodeKey, fingerprint, open, seal } from "./secretbox";
 import { drizzleSecretKV, type SecretKVStore } from "./secret-store";
 
 export function makeLocalSecretsProvider(
@@ -18,8 +18,14 @@ export function makeLocalSecretsProvider(
   return {
     name: "local-encrypted",
 
-    async set(ref, value) {
-      await kv.upsert(ref, seal(getKey(), value));
+    async set(ref, value, meta?: SecretWriteMeta) {
+      // Fingerprint is computed in the SAME code path as seal (§4.1) — full SHA-256 hex of the
+      // plaintext, so the metadata index can show "fp a3f9c2" without ever revealing the value.
+      await kv.upsert(ref, seal(getKey(), value), {
+        fingerprint: fingerprint(value),
+        sandboxExposed: meta?.sandboxExposed,
+        updatedBy: meta?.updatedBy ?? null,
+      });
     },
 
     async get(ref) {

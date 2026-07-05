@@ -102,6 +102,11 @@ export function withPreservedNames(
  * whatever the user renamed or created — are left strictly alone, so the self-heal that
  * runs on every Overview load can never re-seed. Removed members cascade away; the root
  * member's human-given name survives detection.
+ *
+ * This is also the SHIP POINT for pending install secrets (PLAN-SECRETS-REWORK §4.4): a
+ * new-member install holds its secrets sealed until the member's agents row exists — which
+ * happens exactly here, when the merged `agents/<name>/` directory is first detected. Held
+ * values migrate into the member's real secret rows and the pending rows are deleted.
  */
 export async function syncProjectAgents(
   projectId: string,
@@ -109,6 +114,7 @@ export async function syncProjectAgents(
   store: DataStore = getRuntime().data,
 ): Promise<Agent[]> {
   const existing = await store.agents.listByProject(projectId);
+  const existingNames = new Set(existing.map((a) => a.name));
   const agents = await store.agents.syncRoster(
     projectId,
     withPreservedNames(existing, roster),
@@ -116,6 +122,22 @@ export async function syncProjectAgents(
   await Promise.all(
     agents.map((a) => store.environments.ensureDefault(projectId, a.id)),
   );
+  const created = agents.filter((a) => !existingNames.has(a.name));
+  if (created.length > 0) {
+    const { migratePendingSecrets } = await import("~/project/secrets.server");
+    for (const agent of created) {
+      try {
+        await migratePendingSecrets({
+          projectId,
+          memberName: agent.name,
+          agentId: agent.id,
+        });
+      } catch (error) {
+        // Never let a secrets hiccup break roster sync; held rows remain for the next sync.
+        console.warn(`[secrets] pending migration failed for ${agent.name}:`, error);
+      }
+    }
+  }
   return agents;
 }
 

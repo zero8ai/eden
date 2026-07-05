@@ -102,10 +102,37 @@ import { requireProject, requireRepo } from "~/project/guard.server";
 import type { ConnectedProject } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
 import {
-  listSandboxExposure,
-  setSecretSandboxExposed,
+  listAgentSecretRows,
+  listAttachments,
+  listDismissedRequirements,
+  listSharedAttachments,
+  listSharedSecrets,
+  type SecretRow,
 } from "~/seams/oss/secret-store";
+import {
+  computeRequiredSecrets,
+  handleSecretIntent,
+  lockSecretsForMember,
+  type RequiredSecretComputed,
+  type SecretIntentInput,
+} from "~/project/secrets.server";
+import { SecretsCard } from "~/components/secrets-card";
+import { SharedSecretsSection } from "~/components/shared-secrets-section";
 import type { Route } from "./+types/projects.$projectId.settings";
+
+/** The fetcher-JSON secret intents delegated to ~/project/secrets.server (§6). */
+const SECRET_INTENTS = new Set<string>([
+  "secret-set",
+  "secret-replace",
+  "secret-delete",
+  "secret-expose",
+  "secret-attach",
+  "secret-detach",
+  "secret-dismiss",
+  "shared-secret-set",
+  "shared-secret-delete",
+  "shared-secret-expose-default",
+]);
 
 const ALL = "all";
 
@@ -127,9 +154,27 @@ interface SettingsView {
   /** Member: secrets scope state. */
   envs: Environment[];
   scope: { environmentId: string | null; label: string };
-  secrets: { name: string; sandboxExposed: boolean }[];
+  /** All of this member's secret rows, across every env (env switching is client-side, §6). */
+  secrets: SecretRow[];
   secretsConfigured: boolean;
   secretsError: string | null;
+  /** Member: unmet template requirements (lock secrets − set ∪ attached ∪ dismissed, §9). */
+  requiredSecrets: RequiredSecretComputed[];
+  /** Member: requirements the human dismissed (recoverable). */
+  dismissedSecrets: RequiredSecretComputed[];
+  /** Member: every name any lock entry requires (powers the detach warning). */
+  requiredSecretNames: string[];
+  /** Project-level shared secrets + this member's attachments (§7 shared group). */
+  sharedSecrets: {
+    key: string;
+    environmentId: string | null;
+    fingerprint: string | null;
+    updatedAt: string;
+    sandboxExposed: boolean;
+  }[];
+  attachments: { key: string; sandboxExposed: boolean }[];
+  /** Repo: the Shared Secrets section (§8) — rows + per-agent usage for blast radius. */
+  repoShared: RepoSharedSecret[];
   /** Marketplace installs in the current settings scope. */
   installs: InstallDisplay[];
   /** Repo: ingest tokens. */
@@ -138,6 +183,23 @@ interface SettingsView {
     name: string;
     createdAt: string;
     lastUsedAt: string | null;
+  }[];
+}
+
+/** One shared secret as the repo-level section shows it (§8). */
+export interface RepoSharedSecret {
+  key: string;
+  environmentId: string | null;
+  fingerprint: string | null;
+  updatedAt: string;
+  /** The shared default — seeds new attachments only, never retro-applied. */
+  sandboxExposed: boolean;
+  /** Attached members + their per-attachment sandbox flag ("Used by N agents ▾"). */
+  usedBy: {
+    agentName: string;
+    sandboxExposed: boolean;
+    /** This member's templates require the name — deleting marks it missing (§11.4). */
+    requiredByTemplate: boolean;
   }[];
 }
 
@@ -269,6 +331,12 @@ export const loader = (args: LoaderFunctionArgs) =>
         secrets: [],
         secretsConfigured: true,
         secretsError: null,
+        requiredSecrets: [],
+        dismissedSecrets: [],
+        requiredSecretNames: [],
+        sharedSecrets: [],
+        attachments: [],
+        repoShared: [],
         installs: buildInstalls(
           lock,
           index,
@@ -304,25 +372,77 @@ export const loader = (args: LoaderFunctionArgs) =>
           envs,
         );
         try {
-          const secretScope = {
-            projectId: project.id,
-            agentId: active.id,
-            environmentId: base.scope.environmentId,
-          };
-          const [names, exposure] = await Promise.all([
-            getRuntime().secrets.listNames(secretScope),
-            listSandboxExposure(secretScope),
+          // Every row across all envs — the card filters client-side by env pill (§6/§7) —
+          // plus the shared/attachment/dismissal state the four card groups render from.
+          const [secrets, shared, attachments, dismissedNames] = await Promise.all([
+            listAgentSecretRows(project.id, active.id),
+            listSharedSecrets(project.id),
+            listAttachments(active.id),
+            listDismissedRequirements(active.id),
           ]);
-          base.secrets = names.map((name) => ({
-            name,
-            sandboxExposed: exposure[name] ?? false,
+          base.secrets = secrets;
+          base.sharedSecrets = shared.map((s) => ({
+            key: s.key,
+            environmentId: s.environmentId,
+            fingerprint: s.fingerprint,
+            updatedAt: s.updatedAt,
+            sandboxExposed: s.sandboxExposed,
           }));
+          base.attachments = attachments;
+
+          // Required rows (§9): lock entries owned by this member, minus set/attached/dismissed.
+          const lockSecrets = lockSecretsForMember(lock, active.name, isTeam);
+          const computed = computeRequiredSecrets({
+            lockSecrets,
+            setNames: secrets.map((s) => s.key),
+            attachedNames: attachments.map((a) => a.key),
+            dismissedNames,
+          });
+          base.requiredSecrets = computed.missing;
+          base.dismissedSecrets = computed.dismissed;
+          base.requiredSecretNames = computed.all.map((r) => r.name);
         } catch (error) {
           base.secretsConfigured = false;
           base.secretsError = (error as Error).message;
         }
       }
       if (showRepo) {
+        // Shared Secrets section (§8) — visible for team AND single-agent repos (a team of
+        // one still benefits when it grows). Usage rows carry each member's per-attachment
+        // sandbox flag and whether its templates require the name (delete blast radius).
+        try {
+          const [shared, attachmentRows] = await Promise.all([
+            listSharedSecrets(project.id),
+            listSharedAttachments(project.id),
+          ]);
+          const requiredByMember = new Map(
+            roster.map((a) => [
+              a.name,
+              new Set(
+                lockSecretsForMember(lock, a.name, isTeam).flatMap((e) =>
+                  e.secrets.map((s) => s.name),
+                ),
+              ),
+            ]),
+          );
+          base.repoShared = shared.map((s) => ({
+            key: s.key,
+            environmentId: s.environmentId,
+            fingerprint: s.fingerprint,
+            updatedAt: s.updatedAt,
+            sandboxExposed: s.sandboxExposed,
+            usedBy: attachmentRows
+              .filter((a) => a.key === s.key)
+              .map((a) => ({
+                agentName: a.agentName,
+                sandboxExposed: a.sandboxExposed,
+                requiredByTemplate:
+                  requiredByMember.get(a.agentName)?.has(s.key) ?? false,
+              })),
+          }));
+        } catch (error) {
+          console.warn("[settings] shared secrets unavailable:", error);
+        }
         const tokens = await listIngestTokens(project.id);
         base.tokens = tokens.map((t) => ({
           id: t.id,
@@ -513,54 +633,37 @@ export async function action(args: ActionFunctionArgs) {
     }
 
     // ── Secrets (per-member + per-environment; values write-only) ──
-    if (intent === "secret-set" || intent === "secret-delete") {
-      const { active } = await resolveAgentContext(
-        project.id,
-        String(form.get("agent") ?? "") || null,
-      );
-      const envs = await listAgentEnvironments(active.id);
-      const envRaw = String(form.get("env") ?? ALL);
-      const { environmentId } = resolveScope(envRaw, envs);
-      const key = String(form.get("key") ?? "").trim();
-      const ref = {
-        projectId: project.id,
-        agentId: active.id,
-        environmentId,
-        key,
-      };
-      const secrets = getRuntime().secrets;
-      if (intent === "secret-set") {
-        const value = String(form.get("value") ?? "");
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-          return { error: "Key must be a valid env var name (A–Z, 0–9, _)." };
-        }
-        if (!value) return { error: "Value is required." };
-        await secrets.set(ref, value);
-      } else {
-        await secrets.delete(ref);
+    // All secret mutations are fetcher-JSON: NO redirect (kills the full-page-reload jank,
+    // gripes #1–#3). The decisions live in ~/project/secrets.server (unit-tested); this branch
+    // only parses the form and resolves the member + environment scope.
+    if (SECRET_INTENTS.has(intent)) {
+      // shared-* intents address the project-level scope; member intents resolve the agent.
+      let agentId: string | null = null;
+      let environmentId: string | null = null;
+      if (!intent.startsWith("shared-")) {
+        const { active } = await resolveAgentContext(
+          project.id,
+          String(form.get("agent") ?? "") || null,
+        );
+        const envs = await listAgentEnvironments(active.id);
+        agentId = active.id;
+        environmentId = resolveScope(String(form.get("env") ?? ALL), envs).environmentId;
       }
-      throw redirect(`${back}?env=${encodeURIComponent(envRaw)}`);
-    }
-
-    // ── Secret sandbox exposure: flip the per-secret allowlist flag (fetcher, no redirect) ──
-    if (intent === "secret-expose") {
-      const { active } = await resolveAgentContext(
-        project.id,
-        String(form.get("agent") ?? "") || null,
-      );
-      const envs = await listAgentEnvironments(active.id);
-      const { environmentId } = resolveScope(String(form.get("env") ?? ALL), envs);
-      await setSecretSandboxExposed(
+      return handleSecretIntent(
         {
+          intent: intent as SecretIntentInput["intent"],
           projectId: project.id,
-          agentId: active.id,
+          agentId,
           environmentId,
-          key: String(form.get("key") ?? "").trim(),
+          key: String(form.get("key") ?? ""),
+          value: form.has("value") ? String(form.get("value")) : undefined,
+          // `exposed` present → set atomically at creation (gripe #3); absent → untouched.
+          exposed: form.has("exposed") ? form.get("exposed") === "1" : undefined,
+          dismissed: form.has("dismissed") ? form.get("dismissed") === "1" : undefined,
+          userId: auth.user.id,
         },
-        form.get("exposed") === "1",
-        auth.user.id,
+        { secrets: getRuntime().secrets },
       );
-      return { ok: true as const };
     }
 
     // ── Member danger zone: remove agent (change-set PR deleting its directory) ──
@@ -690,7 +793,7 @@ export default function Settings({
         }
       />
 
-      {actionData?.error && (
+      {actionData && "error" in actionData && actionData.error && (
         <Alert variant="destructive" className="mb-6">
           <AlertTitle>Something went wrong</AlertTitle>
           <AlertDescription className="whitespace-pre-wrap">
@@ -731,7 +834,35 @@ export default function Settings({
 
       <div className="space-y-10">
         {showMember && <ModelSection loaderData={loaderData} />}
-        {showMember && <SecretsSection loaderData={loaderData} />}
+        {showMember && (
+          <SecretsCard
+            activeAgent={activeAgent}
+            isTeam={isTeam}
+            envs={loaderData.envs.map((e) => ({ id: e.id, name: e.name }))}
+            secrets={loaderData.secrets}
+            initialEnvId={loaderData.scope.environmentId}
+            secretsConfigured={loaderData.secretsConfigured}
+            secretsError={loaderData.secretsError}
+            required={loaderData.requiredSecrets.map((r) => ({
+              ...r,
+              sharedExists: loaderData.sharedSecrets.some((s) => s.key === r.name),
+            }))}
+            dismissed={loaderData.dismissedSecrets.map((d) => ({
+              name: d.name,
+              sources: d.sources,
+            }))}
+            shared={loaderData.sharedSecrets}
+            attachments={loaderData.attachments}
+            requiredNames={loaderData.requiredSecretNames}
+          />
+        )}
+        {showRepo && (
+          <SharedSecretsSection
+            projectId={project.id}
+            isTeam={isTeam}
+            shared={loaderData.repoShared}
+          />
+        )}
         <MarketplaceInstallsSection loaderData={loaderData} />
         {showRepo && <GeneralSection project={project} />}
         {showRepo && (
@@ -803,147 +934,6 @@ function ModelSection({
           Staged — ship or publish it from the Deployment tab.
         </p>
       )}
-    </section>
-  );
-}
-
-/** Secrets — per-member, per-environment; values are write-only from the UI. */
-function SecretsSection({
-  loaderData,
-}: {
-  loaderData: Route.ComponentProps["loaderData"];
-}) {
-  const {
-    envs,
-    scope,
-    secrets,
-    secretsConfigured,
-    secretsError,
-    activeAgent,
-    isTeam,
-  } = loaderData;
-  const navigation = useNavigation();
-  const busy = navigation.state === "submitting";
-  const envValue = scope.environmentId ?? ALL;
-  const secretsBadge = useMemo(
-    () => (
-      <Badge variant="secondary">
-        {scope.label} · {secrets.length}
-      </Badge>
-    ),
-    [scope.label, secrets.length],
-  );
-
-  return (
-    <section>
-      <SectionHeader
-        title="Secrets"
-        badges={secretsBadge}
-        actions={
-          <Form method="get" className="flex items-center gap-2">
-            <Select name="env" defaultValue={envValue}>
-              <SelectTrigger className="h-8 min-w-44" aria-label="Secret scope">
-                <SelectValue placeholder="Scope" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All environments</SelectItem>
-                {envs.map((e) => (
-                  <SelectItem key={e.id} value={e.id}>
-                    {e.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button type="submit" size="sm" variant="secondary">
-              Switch
-            </Button>
-          </Form>
-        }
-      />
-      <p className="mb-3 text-sm text-muted-foreground">
-        {isTeam
-          ? "Scoped to this member only — teammates cannot read each other's credentials. Values are injected at deploy time and never shown again."
-          : "Stored encrypted, never in the repo. Reference them by name in tools and connections; values are injected at deploy time and never shown again."}{" "}
-        Secrets stay out of the agent&rsquo;s sandbox shell unless marked
-        below — anything its bash runs can read an exposed value, so prefer
-        narrowly-scoped tokens there.
-      </p>
-
-      {!secretsConfigured && (
-        <Alert className="mb-4">
-          <AlertTitle>Secrets store not configured.</AlertTitle>
-          <AlertDescription>{secretsError}</AlertDescription>
-        </Alert>
-      )}
-
-      {secrets.length > 0 && (
-        <ul className="mb-4 divide-y rounded-lg border text-sm">
-          {secrets.map((secret) => (
-            <li
-              key={secret.name}
-              className="flex items-center justify-between gap-2 px-4 py-2"
-            >
-              <div className="flex items-center gap-2">
-                <span className="font-mono">{secret.name}</span>
-                <Badge variant={scope.environmentId ? "secondary" : "outline"}>
-                  {scope.environmentId ? scope.label : "all environments"}
-                </Badge>
-              </div>
-              <div className="flex items-center gap-3">
-                <SandboxExposeToggle
-                  secret={secret}
-                  envValue={envValue}
-                  activeAgent={activeAgent}
-                />
-                <Form method="post">
-                  <input type="hidden" name="intent" value="secret-delete" />
-                  <input type="hidden" name="env" value={envValue} />
-                  <input type="hidden" name="agent" value={activeAgent} />
-                  <input type="hidden" name="key" value={secret.name} />
-                  <Button
-                    type="submit"
-                    variant="ghost"
-                    size="sm"
-                    disabled={busy}
-                    className="text-destructive hover:text-destructive"
-                  >
-                    Delete
-                  </Button>
-                </Form>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <Form method="post" className="flex flex-wrap items-end gap-2">
-        <input type="hidden" name="intent" value="secret-set" />
-        <input type="hidden" name="env" value={envValue} />
-        <input type="hidden" name="agent" value={activeAgent} />
-        <div className="grid gap-1.5">
-          <Label htmlFor="secret-key">Key</Label>
-          <Input
-            id="secret-key"
-            name="key"
-            placeholder="API_KEY"
-            className="w-56 font-mono"
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="secret-value">Value</Label>
-          <Input
-            id="secret-value"
-            name="value"
-            type="password"
-            placeholder="value (write-only)"
-            autoComplete="off"
-            className="w-64 font-mono"
-          />
-        </div>
-        <Button type="submit" disabled={busy || !secretsConfigured}>
-          {busy ? "Saving…" : "Save secret"}
-        </Button>
-      </Form>
     </section>
   );
 }
@@ -1066,50 +1056,6 @@ function MarketplaceInstallsSection({
         </CardContent>
       </Card>
     </section>
-  );
-}
-
-/**
- * Per-secret "available in the agent's sandbox shell" toggle. Flipping it updates metadata
- * only (never the value) and takes effect on the NEXT deploy, when the exposed names are
- * joined into EDEN_SANDBOX_ENV and the agent's sandbox.ts forwards them into its shell.
- */
-function SandboxExposeToggle({
-  secret,
-  envValue,
-  activeAgent,
-}: {
-  secret: { name: string; sandboxExposed: boolean };
-  envValue: string;
-  activeAgent: string;
-}) {
-  const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
-  // Optimistic while the flip is in flight, so the checkbox doesn't snap back.
-  const exposed = fetcher.formData
-    ? fetcher.formData.get("exposed") === "1"
-    : secret.sandboxExposed;
-  return (
-    <Label className="flex items-center gap-1.5 text-xs font-normal text-muted-foreground">
-      <input
-        type="checkbox"
-        checked={exposed}
-        disabled={fetcher.state !== "idle"}
-        aria-label={`Make ${secret.name} available in the agent's sandbox shell (its bash can read it)`}
-        onChange={(e) =>
-          fetcher.submit(
-            {
-              intent: "secret-expose",
-              key: secret.name,
-              env: envValue,
-              agent: activeAgent,
-              exposed: e.target.checked ? "1" : "0",
-            },
-            { method: "post" },
-          )
-        }
-      />
-      Sandbox shell
-    </Label>
   );
 }
 

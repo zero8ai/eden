@@ -77,17 +77,21 @@ export function AppShell({
   workspaceName,
   userEmail,
   breadcrumbs,
+  fullHeight,
   children,
 }: {
   workspaceName?: string | null;
   userEmail?: string | null;
   /** Hierarchy trail: workspace → repo → member → …; the "up" navigation. */
   breadcrumbs?: Crumb[];
+  /** Chat-style pages: lock the shell to the viewport so children own their scrolling
+   * (e.g. a transcript scrolls while the composer stays pinned below it). */
+  fullHeight?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <TooltipProvider>
-    <div className="min-h-screen">
+    <div className={fullHeight ? "flex h-dvh flex-col overflow-hidden" : "min-h-screen"}>
       <NavProgress />
       <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-5xl items-center gap-4 px-6">
@@ -114,7 +118,17 @@ export function AppShell({
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-5xl px-6 py-8">{children}</main>
+      <main
+        className={
+          // Full-height (chat) pages go full-bleed: children center their own columns so
+          // the scroll region can span the whole viewport width.
+          fullHeight
+            ? "flex min-h-0 flex-1 flex-col"
+            : "mx-auto w-full max-w-5xl px-6 py-8"
+        }
+      >
+        {children}
+      </main>
     </div>
     </TooltipProvider>
   );
@@ -313,6 +327,7 @@ export function AgentNav({
   level,
   roster,
   activeAgent,
+  className,
 }: {
   base: string;
   level: NavLevel;
@@ -320,9 +335,11 @@ export function AgentNav({
   roster?: RosterMember[];
   /** Member level: the current member (switcher value). */
   activeAgent?: string;
+  /** Override spacing (chat pages sit the scroll region flush under the separator). */
+  className?: string;
 }) {
   return (
-    <div className="mb-8">
+    <div className={cn("mb-8", className)}>
       <div className="flex items-center justify-between gap-3">
         <nav className="flex items-center gap-1 text-sm">
           {TABS[level].map((item) => (

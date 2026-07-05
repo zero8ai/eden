@@ -203,6 +203,9 @@ export async function action(args: ActionFunctionArgs) {
               case "step":
                 send({ type: "step", step: toChatStep(event.step) });
                 break;
+              case "input":
+                send({ type: "input", requests: event.requests });
+                break;
               case "done":
                 result = event.result;
                 send({
@@ -211,6 +214,7 @@ export async function action(args: ActionFunctionArgs) {
                   playgroundSessionId: activeSession.id,
                   reply: event.result.reply,
                   structured: event.result.replyIsStructured,
+                  inputRequests: event.result.inputRequests,
                   error: event.result.error,
                   modelId: event.result.modelId,
                   version: target.version,
@@ -224,6 +228,7 @@ export async function action(args: ActionFunctionArgs) {
             ok: false,
             reply: null,
             structured: false,
+            inputRequests: [],
             error: `The turn stream failed: ${(error as Error).message}`,
             modelId: null,
             version: target.version,

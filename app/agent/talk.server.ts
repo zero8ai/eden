@@ -23,6 +23,8 @@
  * final transcript keep the same shape and semantics they always had.
  */
 
+import type { ChatInputOption, ChatInputRequest } from "~/chat/types";
+
 /** One action (tool call) inside a step, correlated request → result. */
 export interface TurnAction {
   toolName: string;
@@ -56,10 +58,13 @@ export interface TurnResult {
   continuationToken: string | null;
   /** Count of durable Eve stream events consumed for this session. */
   streamIndex: number;
-  /** Assistant reply text (or prettified structured output). */
+  /** Assistant reply text (or prettified structured output). A turn can carry several
+   * assistant messages interleaved with tool steps — this is all of them, joined. */
   reply: string | null;
   /** True when the reply parsed as JSON — the UI renders it as code. */
   replyIsStructured: boolean;
+  /** Pending input requests — questions or tool approvals (input.requested events). */
+  inputRequests: ChatInputRequest[];
   /** Model that served the turn (from session.started runtime metadata). */
   modelId: string | null;
   /** eve's per-session turn id (turn_0, turn_1, …); the run's external id component. */
@@ -80,6 +85,7 @@ export type TalkEvent =
   | { kind: "action"; toolName: string; summary?: string }
   | { kind: "text"; text: string }
   | { kind: "step"; step: TurnStep }
+  | { kind: "input"; requests: ChatInputRequest[] }
   | { kind: "done"; result: TurnResult };
 
 /** Pull a human-readable text out of an unknown event payload, if one exists. */
@@ -170,6 +176,76 @@ function firstStringValue(obj: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+/**
+ * The pending requests of an `input.requested` event — ask_question calls (free text or
+ * multiple choice via `options`) and tool approvals (`display: "confirmation"`). Each
+ * request carries `prompt` and `requestId`; `options`/`allowFreeform` shape the answer UI.
+ */
+export function inputRequestsOf(
+  data: Record<string, unknown>,
+): ChatInputRequest[] {
+  const requests = Array.isArray(data.requests) ? data.requests : [];
+  const out: ChatInputRequest[] = [];
+  for (const raw of requests) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const r = raw as Record<string, unknown>;
+    const action = r.action as Record<string, unknown> | undefined;
+    const input = action?.input as Record<string, unknown> | undefined;
+    const prompt =
+      stringField(r, "prompt") ?? (input ? stringField(input, "prompt") : null);
+    const requestId =
+      stringField(r, "requestId") ??
+      (action ? stringField(action, "callId") : null);
+    if (!prompt || !requestId) continue;
+    const display = stringField(r, "display");
+    const rawOptions = Array.isArray(r.options)
+      ? r.options
+      : input && Array.isArray(input.options)
+        ? input.options
+        : [];
+    const options: ChatInputOption[] = [];
+    for (const rawOption of rawOptions) {
+      if (typeof rawOption === "string") {
+        if (rawOption.trim())
+          options.push({ id: rawOption, label: rawOption });
+        continue;
+      }
+      if (typeof rawOption !== "object" || rawOption === null) continue;
+      const o = rawOption as Record<string, unknown>;
+      const label = stringField(o, "label") ?? stringField(o, "id");
+      if (!label) continue;
+      options.push({
+        id: stringField(o, "id") ?? label,
+        label,
+        description: stringField(o, "description"),
+        style: styleOf(stringField(o, "style")),
+      });
+    }
+    out.push({
+      requestId,
+      prompt,
+      display:
+        display === "confirmation" || display === "select" || display === "text"
+          ? display
+          : null,
+      allowFreeform:
+        typeof r.allowFreeform === "boolean"
+          ? r.allowFreeform
+          : input && typeof input.allowFreeform === "boolean"
+            ? input.allowFreeform
+            : null,
+      options: options.length > 0 ? options : undefined,
+    });
+  }
+  return out;
+}
+
+function styleOf(value: string | null): ChatInputOption["style"] {
+  return value === "danger" || value === "primary" || value === "default"
+    ? value
+    : null;
+}
+
 /** Detect + prettify a JSON reply (structured output) so the UI can render it as code. */
 function normalizeReply(reply: string | null): {
   reply: string | null;
@@ -222,6 +298,7 @@ export async function* streamTurn(input: {
       streamIndex,
       reply: null,
       replyIsStructured: false,
+      inputRequests: [],
       modelId: null,
       turnId: null,
       steps: [],
@@ -279,6 +356,10 @@ export async function* streamTurn(input: {
 
   // 2. Read the event stream until the turn settles.
   const steps: TurnStep[] = [];
+  // A turn can interleave several assistant messages with tool steps — keep them all.
+  const completedMessages: string[] = [];
+  const inputRequests: ChatInputRequest[] = [];
+  let lastTextSent: string | null = null;
   let reply: string | null = null;
   let error: string | null = null;
   let lastStepFailure: string | null = null;
@@ -408,10 +489,14 @@ export async function* streamTurn(input: {
             break;
           }
           case "message.appended":
-            // Cumulative reply text so far — stream it live (the settled reply still comes
-            // from message.completed below).
+            // messageSoFar is cumulative for the CURRENT message only — prefix the turn's
+            // earlier completed messages so the live text never loses them.
             if (ours && typeof data.messageSoFar === "string") {
-              yield { kind: "text", text: data.messageSoFar };
+              const text = [...completedMessages, data.messageSoFar].join("\n\n");
+              if (text !== lastTextSent) {
+                lastTextSent = text;
+                yield { kind: "text", text };
+              }
             }
             break;
           case "step.completed":
@@ -451,13 +536,31 @@ export async function* streamTurn(input: {
             yield { kind: "step", step };
             break;
           }
-          case "message.completed":
-            // The full reply text: data.message (streamed earlier via message.appended).
+          case "message.completed": {
+            // One settled assistant message (there can be several per turn, interleaved
+            // with tool steps) — the turn's reply is all of them joined.
+            if (!ours) break;
+            const message =
+              typeof data.message === "string" ? data.message : textOf(data);
+            if (message) {
+              completedMessages.push(message);
+              reply = completedMessages.join("\n\n");
+              if (reply !== lastTextSent) {
+                lastTextSent = reply;
+                yield { kind: "text", text: reply };
+              }
+            }
+            break;
+          }
+          case "input.requested":
+            // The agent asked the user something (ask_question / tool approval). Surface
+            // it — the turn then parks and the session waits for the user's answer.
             if (ours) {
-              reply =
-                typeof data.message === "string"
-                  ? data.message
-                  : (textOf(data) ?? reply);
+              const requests = inputRequestsOf(data);
+              if (requests.length > 0) {
+                inputRequests.push(...requests);
+                yield { kind: "input", requests };
+              }
             }
             break;
           case "turn.failed":
@@ -480,13 +583,17 @@ export async function* streamTurn(input: {
             if (ours) settled = true;
             break;
           case "session.waiting":
-            // Only trust a waiting marker once our turn produced a reply — earlier ones are
-            // history replay from previous turns.
-            if (ourTurnId !== null && (reply !== null || error !== null))
+            // Only trust a waiting marker once our turn produced a reply (or asked a
+            // question) — earlier ones are history replay from previous turns.
+            if (
+              ourTurnId !== null &&
+              (reply !== null || error !== null || inputRequests.length > 0)
+            )
               settled = true;
             if (
               ourTurnId !== null &&
               reply === null &&
+              inputRequests.length === 0 &&
               lastStepFailure !== null
             ) {
               error = lastStepFailure;
@@ -497,10 +604,11 @@ export async function* streamTurn(input: {
       }
     }
     reader.cancel().catch(() => {});
-    if (reply === null && error === null && lastStepFailure !== null) {
+    const asked = inputRequests.length > 0;
+    if (reply === null && !asked && error === null && lastStepFailure !== null) {
       error = lastStepFailure;
     }
-    if (!settled && reply === null && error === null) {
+    if (!settled && reply === null && !asked && error === null) {
       error = `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for the turn to complete.`;
     }
   } catch (streamError) {
@@ -519,6 +627,7 @@ export async function* streamTurn(input: {
       streamIndex,
       reply: normalized.reply,
       replyIsStructured: normalized.replyIsStructured,
+      inputRequests,
       modelId,
       turnId: ourTurnId,
       steps,

@@ -1,6 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 
-import type { ChatEntry, ChatStep } from "~/chat/types";
+import { inputRequestsOf } from "~/agent/talk.server";
+import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import { db } from "~/db/client.server";
 import { playgroundSessions } from "~/db/schema";
 import type { Target } from "~/chat/playground.server";
@@ -236,7 +237,11 @@ interface TurnProjection {
   turnId: string;
   index: number;
   userText: string | null;
-  reply: string | null;
+  /** Every settled assistant message of the turn (they interleave with tool steps). */
+  messages: string[];
+  /** Partial text of a message that never completed (turn cut off mid-stream). */
+  partial: string | null;
+  inputRequests: ChatInputRequest[];
   modelId: string | null;
   steps: ChatStep[];
   error: string | null;
@@ -268,7 +273,9 @@ function projectEventsToEntries(
         turnId,
         index: ordered.length,
         userText: null,
-        reply: null,
+        messages: [],
+        partial: null,
+        inputRequests: [],
         modelId,
         steps: [],
         error: null,
@@ -346,12 +353,22 @@ function projectEventsToEntries(
         break;
       }
       case "message.appended":
+        // Cumulative for the CURRENT message only — kept as a fallback in case the
+        // message never completes (turn cut off mid-stream).
         if (turn && typeof data.messageSoFar === "string") {
-          turn.reply = data.messageSoFar;
+          turn.partial = data.messageSoFar;
         }
         break;
-      case "message.completed":
-        if (turn) turn.reply = textOf(data.message) ?? textOf(data) ?? turn.reply;
+      case "message.completed": {
+        if (!turn) break;
+        const message = textOf(data.message) ?? textOf(data);
+        if (message) turn.messages.push(message);
+        turn.partial = null;
+        break;
+      }
+      case "input.requested":
+        // The agent asked the user something (ask_question / tool approval).
+        if (turn) turn.inputRequests.push(...inputRequestsOf(data));
         break;
       case "step.completed":
       case "step.failed": {
@@ -400,8 +417,17 @@ function projectEventsToEntries(
         text: turn.userText,
       });
     }
-    if (turn.reply !== null || turn.error !== null || turn.steps.length > 0) {
-      const normalized = normalizeReply(turn.reply);
+    const reply =
+      turn.messages.length > 0
+        ? [...turn.messages, ...(turn.partial ? [turn.partial] : [])].join("\n\n")
+        : turn.partial;
+    if (
+      reply !== null ||
+      turn.inputRequests.length > 0 ||
+      turn.error !== null ||
+      turn.steps.length > 0
+    ) {
+      const normalized = normalizeReply(reply);
       entries.push({
         id: `${turn.turnId}:assistant`,
         role: "assistant",
@@ -410,6 +436,8 @@ function projectEventsToEntries(
         version: session.lastVersion ?? undefined,
         modelId: turn.modelId,
         steps: turn.steps,
+        inputRequests:
+          turn.inputRequests.length > 0 ? turn.inputRequests : undefined,
         error: turn.error,
       });
     }

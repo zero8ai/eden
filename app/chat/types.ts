@@ -20,6 +20,26 @@ export interface ChatStep {
   summary?: string | null;
 }
 
+/**
+ * A pending human-in-the-loop request from the agent (eve `input.requested`): a question
+ * (`display: "text"`/`"select"`), or a tool-approval (`"confirmation"`). Options, when
+ * present, are rendered as buttons — answering with an option's id/label resolves it.
+ */
+export interface ChatInputRequest {
+  requestId: string;
+  prompt: string;
+  display?: "confirmation" | "select" | "text" | null;
+  allowFreeform?: boolean | null;
+  options?: ChatInputOption[];
+}
+
+export interface ChatInputOption {
+  id: string;
+  label: string;
+  description?: string | null;
+  style?: "danger" | "default" | "primary" | null;
+}
+
 export interface ChatEntry {
   id: string;
   role: "user" | "assistant";
@@ -30,6 +50,8 @@ export interface ChatEntry {
   version?: string;
   modelId?: string | null;
   steps?: ChatStep[];
+  /** Playground: pending input requests — questions or tool approvals — for this turn. */
+  inputRequests?: ChatInputRequest[];
   /** Assistant: files staged, secrets to set, check outcome for this turn. */
   files?: string[];
   secrets?: string[];

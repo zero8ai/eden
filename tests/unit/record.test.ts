@@ -11,6 +11,7 @@ function result(over: Partial<TurnResult> = {}): TurnResult {
     streamIndex: 0,
     reply: "all done",
     replyIsStructured: false,
+    inputRequests: [],
     modelId: "m/x",
     turnId: "turn_1",
     steps: [],

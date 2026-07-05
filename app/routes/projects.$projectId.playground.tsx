@@ -11,7 +11,6 @@
  * progress instead of one spinner. On completion it revalidates and replays Eve history.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { Loader2 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import {
   Form,
@@ -24,11 +23,13 @@ import {
 } from "react-router";
 
 import { liveTargets, type Target } from "~/chat/playground.server";
-import type { ChatEntry, ChatStep } from "~/chat/types";
+import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import {
   AssistantBubble,
   ChatComposer,
   ChatTranscript,
+  InputRequestsBlock,
+  StepsCard,
   UserBubble,
 } from "~/components/chat";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
@@ -180,6 +181,7 @@ interface LiveTurn {
   steps: ChatStep[];
   activity: string | null;
   modelId: string | null;
+  inputRequests: ChatInputRequest[];
   error: string | null;
   done: boolean;
 }
@@ -256,6 +258,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         steps: [],
         activity: "Thinking…",
         modelId: null,
+        inputRequests: [],
         error: null,
         done: false,
       });
@@ -368,6 +371,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
 
   return (
     <AppShell
+      fullHeight
       breadcrumbs={repoCrumbs({
         projectId: project.id,
         repoName: project.name,
@@ -376,51 +380,64 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         tail: [{ label: "Playground" }],
       })}
     >
-      <AgentNav
-        base={base}
-        level={isTeam ? "member" : "single"}
-        roster={roster}
-        activeAgent={isTeam ? activeAgent : undefined}
-      />
-      <PageHeader
-        title={isTeam ? `Playground — ${activeAgent}` : "Playground"}
-        description="Talk to a live deployment of this agent. Conversation history reloads from Eve's durable session stream."
-        actions={
-          <div className="flex items-center gap-2">
-            {sessionPicker}
-            <Form method="post">
-              <input type="hidden" name="intent" value="new-session" />
-              <Button type="submit" variant="outline" size="sm" disabled={busy}>
-                New conversation
-              </Button>
-            </Form>
-          </div>
-        }
-      />
+      <div className="mx-auto w-full max-w-5xl px-6 pt-8">
+        <AgentNav
+          base={base}
+          level={isTeam ? "member" : "single"}
+          roster={roster}
+          activeAgent={isTeam ? activeAgent : undefined}
+          className="mb-0"
+        />
+      </div>
 
       {targets.length === 0 ? (
-        <Alert>
-          <AlertTitle>No live deployment to talk to</AlertTitle>
-          <AlertDescription>
-            Deploy this agent first (Deployment tab), then come back here to try
-            it.
-          </AlertDescription>
-        </Alert>
+        <div className="mx-auto w-full max-w-5xl px-6 pt-8">
+          <Alert>
+            <AlertTitle>No live deployment to talk to</AlertTitle>
+            <AlertDescription>
+              Deploy this agent first (Deployment tab), then come back here to
+              try it.
+            </AlertDescription>
+          </Alert>
+        </div>
       ) : (
-        <div className="space-y-4 pb-4">
-          {historyError && (
-            <Alert variant="destructive">
-              <AlertDescription>{historyError}</AlertDescription>
-            </Alert>
-          )}
-          {sendError && (
-            <Alert variant="destructive">
-              <AlertDescription>{sendError}</AlertDescription>
-            </Alert>
-          )}
-
+        <>
           <ChatTranscript
-            dep={`${entries.length}:${live ? live.text.length + live.steps.length : 0}`}
+            dep={`${entries.length}:${live ? live.text.length + live.steps.length + live.inputRequests.length : 0}`}
+            lead={
+              <>
+                <PageHeader
+                  title={isTeam ? `Playground — ${activeAgent}` : "Playground"}
+                  description="Talk to a live deployment of this agent. Conversation history reloads from Eve's durable session stream."
+                  actions={
+                    <div className="flex items-center gap-2">
+                      {sessionPicker}
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="new-session" />
+                        <Button
+                          type="submit"
+                          variant="outline"
+                          size="sm"
+                          disabled={busy}
+                        >
+                          New conversation
+                        </Button>
+                      </Form>
+                    </div>
+                  }
+                />
+                {historyError && (
+                  <Alert variant="destructive" className="mb-4">
+                    <AlertDescription>{historyError}</AlertDescription>
+                  </Alert>
+                )}
+                {sendError && (
+                  <Alert variant="destructive" className="mb-4">
+                    <AlertDescription>{sendError}</AlertDescription>
+                  </Alert>
+                )}
+              </>
+            }
           >
             {entries.length === 0 && !live && (
               <p className="py-8 text-center text-sm text-muted-foreground">
@@ -428,11 +445,19 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
                 across turns.
               </p>
             )}
-            {(entries as ChatEntry[]).map((e) =>
+            {(entries as ChatEntry[]).map((e, i) =>
               e.role === "user" ? (
                 <UserBubble key={e.id} text={e.text} />
               ) : (
-                <AgentEntry key={e.id} entry={e} />
+                <AgentEntry
+                  key={e.id}
+                  entry={e}
+                  // Only the newest turn's pending requests are answerable.
+                  onAnswer={
+                    i === entries.length - 1 && !live ? send : undefined
+                  }
+                  busy={busy}
+                />
               ),
             )}
             {live && (
@@ -443,17 +468,19 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             )}
           </ChatTranscript>
 
-          <ChatComposer
-            placeholder={
-              isTeam
-                ? `Say something to ${activeAgent}...`
-                : "Say something to the agent..."
-            }
-            busy={busy}
-            onSend={send}
-            controls={targetPicker}
-          />
-        </div>
+          <div className="mx-auto w-full max-w-5xl px-6 pb-4 pt-3">
+            <ChatComposer
+              placeholder={
+                isTeam
+                  ? `Say something to ${activeAgent}...`
+                  : "Say something to the agent..."
+              }
+              busy={busy}
+              onSend={send}
+              controls={targetPicker}
+            />
+          </div>
+        </>
       )}
     </AppShell>
   );
@@ -465,12 +492,14 @@ type StreamEvent =
   | { type: "action"; toolName: string; summary: string | null }
   | { type: "text"; text: string }
   | { type: "step"; step: ChatStep }
+  | { type: "input"; requests: ChatInputRequest[] }
   | {
       type: "done";
       ok: boolean;
       playgroundSessionId?: string;
       reply: string | null;
       structured: boolean;
+      inputRequests?: ChatInputRequest[];
       error: string | null;
       modelId: string | null;
       version: string;
@@ -498,10 +527,20 @@ function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
         steps: [...prev.steps, evt.step],
         activity: "Thinking…",
       };
+    case "input":
+      return {
+        ...prev,
+        inputRequests: [...prev.inputRequests, ...evt.requests],
+        activity: null,
+      };
     case "done":
       return {
         ...prev,
         text: evt.reply ?? prev.text,
+        inputRequests:
+          evt.inputRequests && evt.inputRequests.length > 0
+            ? evt.inputRequests
+            : prev.inputRequests,
         error: evt.error,
         modelId: evt.modelId ?? prev.modelId,
         activity: null,
@@ -520,107 +559,85 @@ function formatSessionLabel(title: string, updatedAt: string): string {
   return dateLabel ? `${title} · ${dateLabel}` : title;
 }
 
-/** The live, in-flight assistant bubble: streaming reply, an activity line, and a step list. */
+/**
+ * The live, in-flight assistant turn: the agent's activity streams into a collapsed steps
+ * card (spinner + what it's doing right now), and the reply bubble appears alongside once
+ * text starts streaming — the work and the answer are separate surfaces.
+ */
 function LiveBubble({ live }: { live: LiveTurn }) {
   return (
-    <AssistantBubble>
-      {live.modelId && (
-        <span className="mb-1.5 flex items-center gap-1.5">
-          <span className="font-mono text-xs text-muted-foreground">
-            {live.modelId}
-          </span>
-        </span>
-      )}
-      {live.error ? (
-        <p className="whitespace-pre-wrap text-destructive">{live.error}</p>
-      ) : live.text ? (
-        <p className="whitespace-pre-wrap">{live.text}</p>
-      ) : null}
-      {!live.done && live.activity && (
-        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Loader2 className="size-3 shrink-0 animate-spin" />
-          <span className="truncate font-mono">{live.activity}</span>
-        </div>
-      )}
-      <StepList steps={live.steps} idPrefix="live" open />
-    </AssistantBubble>
-  );
-}
-
-function AgentEntry({ entry }: { entry: ChatEntry }) {
-  return (
-    <AssistantBubble>
-      {entry.version && (
-        <span className="mb-1.5 flex items-center gap-1.5">
-          <Badge variant="secondary" className="text-xs">
-            {entry.version}
-          </Badge>
-          {entry.modelId && (
-            <span className="font-mono text-xs text-muted-foreground">
-              {entry.modelId}
+    <div className="space-y-2">
+      <StepsCard
+        steps={live.steps}
+        idPrefix="live"
+        activity={live.done ? null : live.activity}
+      />
+      {(live.text || live.error || live.inputRequests.length > 0) && (
+        <AssistantBubble>
+          {live.modelId && (
+            <span className="mb-1.5 flex items-center gap-1.5">
+              <span className="font-mono text-xs text-muted-foreground">
+                {live.modelId}
+              </span>
             </span>
           )}
-        </span>
+          {live.error ? (
+            <p className="whitespace-pre-wrap text-destructive">{live.error}</p>
+          ) : live.text ? (
+            <p className="whitespace-pre-wrap">{live.text}</p>
+          ) : null}
+          {/* Static while the stream is open — the buttons go live on the persisted
+              entry once the turn settles and history revalidates. */}
+          <InputRequestsBlock requests={live.inputRequests} busy />
+        </AssistantBubble>
       )}
-      {entry.error ? (
-        <p className="whitespace-pre-wrap text-destructive">{entry.error}</p>
-      ) : entry.structured ? (
-        <pre className="overflow-x-auto rounded-lg bg-muted/50 p-3 font-mono text-xs">
-          {entry.text}
-        </pre>
-      ) : (
-        <p className="whitespace-pre-wrap">{entry.text || "(empty reply)"}</p>
-      )}
-      <StepList steps={entry.steps ?? []} idPrefix={entry.id} />
-    </AssistantBubble>
+    </div>
   );
 }
 
-/**
- * The per-turn step list, shared by persisted entries and the live bubble. Each step shows its
- * tool + summary (the useful part) with duration/tokens, and failed steps surface their detail.
- */
-function StepList({
-  steps,
-  idPrefix,
-  open,
+function AgentEntry({
+  entry,
+  onAnswer,
+  busy,
 }: {
-  steps: ChatStep[];
-  idPrefix: string;
-  open?: boolean;
+  entry: ChatEntry;
+  /** Set on the newest entry only — answers a pending input request via the send path. */
+  onAnswer?: (text: string) => void;
+  busy?: boolean;
 }) {
-  if (steps.length === 0) return null;
   return (
-    <details className="mt-2 text-xs text-muted-foreground" open={open}>
-      <summary className="cursor-pointer">
-        {steps.length} step{steps.length === 1 ? "" : "s"}
-      </summary>
-      <ul className="mt-1 space-y-0.5">
-        {steps.map((s, i) => (
-          <li key={`${idPrefix}-step-${s.type}-${i}`} className="font-mono">
-            <div>
-              {s.toolName ?? s.type}
-              {s.summary ? ` · ${s.summary}` : s.name ? ` · ${s.name}` : ""}
-              {s.durationMs != null
-                ? ` · ${(s.durationMs / 1000).toFixed(1)}s`
-                : ""}
-              {s.tokensIn != null || s.tokensOut != null
-                ? ` · ${s.tokensIn ?? 0} in / ${s.tokensOut ?? 0} out tok`
-                : ""}
-              {s.isError ? " · failed" : ""}
-            </div>
-            {(s.message || s.code || s.details) && (
-              <div className="mt-0.5 whitespace-pre-wrap pl-3 text-destructive">
-                {s.message}
-                {s.code ? `${s.message ? "\n" : ""}Code: ${s.code}` : ""}
-                {s.details
-                  ? `${s.message || s.code ? "\n" : ""}Details: ${s.details}`
-                  : ""}
-              </div>
+    <div className="space-y-2">
+      <StepsCard steps={entry.steps ?? []} idPrefix={entry.id} />
+      <AssistantBubble>
+        {entry.version && (
+          <span className="mb-1.5 flex items-center gap-1.5">
+            <Badge variant="secondary" className="text-xs">
+              {entry.version}
+            </Badge>
+            {entry.modelId && (
+              <span className="font-mono text-xs text-muted-foreground">
+                {entry.modelId}
+              </span>
             )}
-          </li>
-        ))}
-      </ul>
-    </details>
+          </span>
+        )}
+        {entry.error ? (
+          <p className="whitespace-pre-wrap text-destructive">{entry.error}</p>
+        ) : entry.structured ? (
+          <pre className="overflow-x-auto rounded-lg bg-muted/50 p-3 font-mono text-xs">
+            {entry.text}
+          </pre>
+        ) : entry.text || !entry.inputRequests?.length ? (
+          <p className="whitespace-pre-wrap">{entry.text || "(empty reply)"}</p>
+        ) : null}
+        {entry.inputRequests && (
+          <InputRequestsBlock
+            requests={entry.inputRequests}
+            onAnswer={onAnswer}
+            busy={busy}
+          />
+        )}
+      </AssistantBubble>
+    </div>
   );
 }

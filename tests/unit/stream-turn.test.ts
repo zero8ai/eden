@@ -150,6 +150,72 @@ describe("streamTurn", () => {
     expect(actions).toEqual(["bash:npm test", "read_file:/etc/x"]);
   });
 
+  it("keeps every assistant message of the turn and surfaces ask_question prompts", async () => {
+    const at = new Date().toISOString();
+    const out = await drain([
+      { type: "message.received", data: { message: "hi", turnId: "turn_1" }, meta: { at } },
+      { type: "message.completed", data: { turnId: "turn_1", message: "Checking access." }, meta: { at } },
+      { type: "step.started", data: { turnId: "turn_1", sequence: 1 }, meta: { at } },
+      { type: "step.completed", data: { turnId: "turn_1", sequence: 1 }, meta: { at } },
+      { type: "message.appended", data: { turnId: "turn_1", messageSoFar: "One decision for you:" }, meta: { at } },
+      { type: "message.completed", data: { turnId: "turn_1", message: "One decision for you:" }, meta: { at } },
+      {
+        type: "input.requested",
+        data: {
+          turnId: "turn_1",
+          requests: [
+            {
+              requestId: "r1",
+              display: "select",
+              prompt: "Merge now or wait for review?",
+              options: [
+                { id: "merge", label: "Merge now", style: "primary" },
+                { id: "wait", label: "Wait for review" },
+              ],
+              allowFreeform: true,
+              action: {
+                callId: "r1",
+                kind: "tool-call",
+                toolName: "ask_question",
+                input: { prompt: "Merge now or wait for review?" },
+              },
+            },
+          ],
+        },
+        meta: { at },
+      },
+      { type: "turn.completed", data: { turnId: "turn_1" }, meta: { at } },
+    ]);
+
+    // Later messages never clobber earlier ones — the live text is cumulative across
+    // the turn's messages.
+    const texts = out.flatMap((e) => (e.kind === "text" ? [e.text] : []));
+    expect(texts.at(-1)).toBe("Checking access.\n\nOne decision for you:");
+
+    const inputEvent = out.find((e) => e.kind === "input");
+    expect(inputEvent?.kind === "input" && inputEvent.requests).toMatchObject([
+      {
+        requestId: "r1",
+        prompt: "Merge now or wait for review?",
+        display: "select",
+        allowFreeform: true,
+        options: [
+          { id: "merge", label: "Merge now", style: "primary" },
+          { id: "wait", label: "Wait for review" },
+        ],
+      },
+    ]);
+
+    const done = out.at(-1);
+    expect(done?.kind === "done" && done.result.reply).toBe(
+      "Checking access.\n\nOne decision for you:",
+    );
+    expect(
+      done?.kind === "done" && done.result.inputRequests,
+    ).toMatchObject([{ requestId: "r1", display: "select" }]);
+    expect(done?.kind === "done" && done.result.ok).toBe(true);
+  });
+
   it("surfaces the eve turnId on the turn event and the result", async () => {
     const at = new Date().toISOString();
     const out = await drain([

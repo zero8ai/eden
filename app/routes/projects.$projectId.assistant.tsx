@@ -176,6 +176,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
 
   return (
     <AppShell
+      fullHeight
       breadcrumbs={repoCrumbs({
         projectId: project.id,
         repoName: project.name,
@@ -184,53 +185,66 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         tail: [{ label: "Assistant" }],
       })}
     >
-      <AgentNav
-        base={ctx}
-        level={isTeam ? "member" : "single"}
-        roster={roster}
-        activeAgent={isTeam ? activeAgent : undefined}
-      />
-      <PageHeader
-        title="Assistant"
-        description="Tell it what the agent should be able to do. It writes the code, verifies the build, and stages everything for your review on the Deployment tab."
-        actions={
-          entries.length > 0 ? (
-            <fetcher.Form method="post">
-              <input type="hidden" name="intent" value="reset" />
-              <Button type="submit" variant="outline" size="sm" disabled={busy}>
-                New conversation
-              </Button>
-            </fetcher.Form>
-          ) : undefined
+      <div className="mx-auto w-full max-w-5xl px-6 pt-8">
+        <AgentNav
+          base={ctx}
+          level={isTeam ? "member" : "single"}
+          roster={roster}
+          activeAgent={isTeam ? activeAgent : undefined}
+          className="mb-0"
+        />
+      </div>
+
+      <ChatTranscript
+        dep={`${entries.length}:${pendingMessage ?? ""}`}
+        lead={
+          <>
+            <PageHeader
+              title="Assistant"
+              description="Tell it what the agent should be able to do. It writes the code, verifies the build, and stages everything for your review on the Deployment tab."
+              actions={
+                entries.length > 0 ? (
+                  <fetcher.Form method="post">
+                    <input type="hidden" name="intent" value="reset" />
+                    <Button
+                      type="submit"
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                    >
+                      New conversation
+                    </Button>
+                  </fetcher.Form>
+                ) : undefined
+              }
+            />
+            {expired && entries.length === 0 && (
+              <Alert className="mb-4">
+                <AlertDescription>
+                  Your previous conversation expired after a day of inactivity —
+                  starting fresh.
+                </AlertDescription>
+              </Alert>
+            )}
+          </>
         }
-      />
+      >
+        {(entries as ChatEntry[]).map((e) =>
+          e.role === "user" ? (
+            <UserBubble key={e.id} text={e.text} />
+          ) : (
+            <AssistantEntry key={e.id} entry={e} base={ctx} />
+          ),
+        )}
+        {pendingMessage && (
+          <>
+            <UserBubble text={pendingMessage} />
+            <PendingBubble />
+          </>
+        )}
+      </ChatTranscript>
 
-      {expired && entries.length === 0 && (
-        <Alert className="mb-4">
-          <AlertDescription>
-            Your previous conversation expired after a day of inactivity —
-            starting fresh.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      <div className="space-y-4 pb-4">
-        <ChatTranscript dep={`${entries.length}:${pendingMessage ?? ""}`}>
-          {(entries as ChatEntry[]).map((e) =>
-            e.role === "user" ? (
-              <UserBubble key={e.id} text={e.text} />
-            ) : (
-              <AssistantEntry key={e.id} entry={e} base={ctx} />
-            ),
-          )}
-          {pendingMessage && (
-            <>
-              <UserBubble text={pendingMessage} />
-              <PendingBubble />
-            </>
-          )}
-        </ChatTranscript>
-
+      <div className="mx-auto w-full max-w-5xl px-6 pb-4 pt-3">
         <ChatComposer
           placeholder={
             roster.length > 1

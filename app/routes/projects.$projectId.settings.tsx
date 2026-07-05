@@ -73,6 +73,7 @@ import { getAgentSource } from "~/github/cached.server";
 import { fetchAgentSource } from "~/github/repo.server";
 import { proposeChange, type FileChange } from "~/github/write.server";
 import { contextPath } from "~/lib/paths";
+import { isKnownModel } from "~/models/catalog.server";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -249,6 +250,15 @@ export async function action(args: ActionFunctionArgs) {
     if (intent === "set-model") {
       const model = String(form.get("model") ?? "").trim();
       if (!model) return { error: "Pick or enter a model." };
+      // Reject off-catalog ids before staging — eve resolves context-window metadata against
+      // the AI Gateway, so an id it doesn't know publishes to a hard failure. `null` means the
+      // catalog was unreachable (fail open — don't block a legitimate edit on a gateway hiccup).
+      const known = await isKnownModel(model);
+      if (known === false) {
+        return {
+          error: `"${model}" is not an AI Gateway model id — pick one from the list.`,
+        };
+      }
       const { active } = await resolveAgentContext(
         project.id,
         String(form.get("agent") ?? "") || null,

@@ -115,6 +115,7 @@ export default [
   route("repos/:projectId/staged-count", "routes/api.staged-count.tsx"),
   route("api/github/webhook", "routes/api.github.webhook.tsx"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
+  route("api/models", "routes/api.models.tsx"),
   // Legacy URLs from before the repositories rename — 301 into /repos/.
   route("projects/:projectId/*", "routes/legacy.projects.tsx", {
     id: "legacy-projects-splat",

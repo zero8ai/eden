@@ -54,6 +54,8 @@ export interface TurnResult {
   ok: boolean;
   sessionId: string | null;
   continuationToken: string | null;
+  /** Count of durable Eve stream events consumed for this session. */
+  streamIndex: number;
   /** Assistant reply text (or prettified structured output). */
   reply: string | null;
   /** True when the reply parsed as JSON — the UI renders it as code. */
@@ -196,6 +198,8 @@ export async function* streamTurn(input: {
   /** Both present → follow-up turn on the existing session (context retained). */
   sessionId?: string | null;
   continuationToken?: string | null;
+  /** Remote event cursor from the last consumed session stream event. */
+  streamIndex?: number | null;
   timeoutMs?: number;
 }): AsyncGenerator<TalkEvent> {
   const base = input.baseUrl.replace(/\/+$/, "");
@@ -204,6 +208,7 @@ export async function* streamTurn(input: {
   // Events older than this are history replay, not our turn (same-box clocks; generous skew).
   const postedAt = Date.now() - 30_000;
   const isFollowUp = !!(input.sessionId && input.continuationToken);
+  let streamIndex = Math.max(0, input.streamIndex ?? 0);
 
   const fail = (error: string, ids?: {
     sessionId?: string | null;
@@ -214,6 +219,7 @@ export async function* streamTurn(input: {
       ok: false,
       sessionId: ids?.sessionId ?? null,
       continuationToken: ids?.continuationToken ?? null,
+      streamIndex,
       reply: null,
       replyIsStructured: false,
       modelId: null,
@@ -280,7 +286,9 @@ export async function* streamTurn(input: {
   let ourTurnId: string | null = null;
   let turnAnnounced = false;
   try {
-    const res = await fetch(`${base}/eve/v1/session/${sessionId}/stream`, {
+    const streamUrl = new URL(`${base}/eve/v1/session/${sessionId}/stream`);
+    if (streamIndex > 0) streamUrl.searchParams.set("startIndex", String(streamIndex));
+    const res = await fetch(streamUrl, {
       signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
     });
     if (!res.ok || !res.body) {
@@ -319,6 +327,7 @@ export async function* streamTurn(input: {
         } catch {
           continue; // not a JSON line — skip
         }
+        streamIndex += 1;
         const type = String(evt.type ?? "");
         const data = evt.data ?? {};
         const at = evt.meta?.at ? Date.parse(evt.meta.at) : Date.now();
@@ -507,6 +516,7 @@ export async function* streamTurn(input: {
       ok: error === null,
       sessionId,
       continuationToken,
+      streamIndex,
       reply: normalized.reply,
       replyIsStructured: normalized.replyIsStructured,
       modelId,
@@ -524,6 +534,7 @@ export async function sendTurn(input: {
   /** Both present → follow-up turn on the existing session (context retained). */
   sessionId?: string | null;
   continuationToken?: string | null;
+  streamIndex?: number | null;
   timeoutMs?: number;
 }): Promise<TurnResult> {
   let result: TurnResult | null = null;

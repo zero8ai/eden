@@ -579,3 +579,58 @@ export const conversations = pgTable(
   },
   (t) => [uniqueIndex("conversations_scope_uq").on(t.projectId, t.kind, t.createdBy)],
 );
+
+/**
+ * Eden's index of Eve playground sessions. The transcript itself lives in Eve's durable
+ * event stream; this table stores the app-owned thread/cursor needed to list and resume
+ * sessions for a project/agent/user.
+ */
+export const playgroundSessions = pgTable(
+  "playground_sessions",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 12 })
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
+      onDelete: "cascade",
+    }),
+    /** Same value passed to DeployRequest.worldKey; currently the environment id. */
+    worldKey: text("world_key"),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** Eve runtime-owned stream/inspect handle. */
+    externalSessionId: text("external_session_id"),
+    /** Eve channel-owned resume handle. */
+    continuationToken: text("continuation_token"),
+    /** Number of Eve stream events consumed from the durable event stream. */
+    streamIndex: integer("stream_index").notNull().default(0),
+    title: text("title"),
+    /** new | running | waiting | completed | failed */
+    status: text("status").notNull().default("new"),
+    lastDeploymentId: varchar("last_deployment_id", { length: 12 }).references(
+      () => deployments.id,
+      { onDelete: "set null" },
+    ),
+    lastReleaseId: varchar("last_release_id", { length: 12 }).references(() => releases.id, {
+      onDelete: "set null",
+    }),
+    lastVersion: text("last_version"),
+    lastEventAt: timestamp("last_event_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("playground_sessions_scope_updated_idx").on(
+      t.projectId,
+      t.agentId,
+      t.createdBy,
+      t.updatedAt,
+    ),
+    uniqueIndex("playground_sessions_external_uq").on(t.projectId, t.externalSessionId),
+  ],
+);

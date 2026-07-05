@@ -8,6 +8,7 @@ function result(over: Partial<TurnResult> = {}): TurnResult {
     ok: true,
     sessionId: "sess_1",
     continuationToken: "tok_1",
+    streamIndex: 0,
     reply: "all done",
     replyIsStructured: false,
     modelId: "m/x",

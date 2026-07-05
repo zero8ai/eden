@@ -1,40 +1,29 @@
 /**
- * Playground — a persistent per-agent conversation with a live deployment of this agent.
+ * Playground — persistent Eve sessions with a live deployment of this agent.
  *
- * The transcript and the eve session (id + continuation token) persist server-side
- * (chat/conversation.server.ts): navigate away and back, the conversation is still here and
- * follow-up turns keep the agent's context. Idle 24h → fresh start. Switching to a different
- * deployment keeps the visible transcript but starts a new eve session (versions don't share
- * memory).
+ * Eden stores only the app-owned Eve session cursor/listing. The transcript is rebuilt from
+ * Eve's durable event stream on load, so Eve/Workflow World remains the source of truth for
+ * conversation history.
  *
  * Turns STREAM: the composer POSTs to the streaming resource route
  * (api.projects.$projectId.playground.stream) and this component reads back an NDJSON feed of
  * the turn — live reply text, current activity, and completed steps — so long agent turns show
- * progress instead of one spinner. On completion it revalidates; the persisted transcript
- * (saved server-side, disconnect-safe) takes over seamlessly.
+ * progress instead of one spinner. On completion it revalidates and replays Eve history.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { Loader2 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
+  Form,
   redirect,
-  useFetcher,
+  useNavigate,
   useRevalidator,
+  useSearchParams,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
 
-import {
-  loadConversation,
-  resetConversation,
-} from "~/chat/conversation.server";
-import {
-  EMPTY_STATE,
-  liveTargets,
-  playgroundKind,
-  type PlaygroundState,
-  type Target,
-} from "~/chat/playground.server";
+import { liveTargets, type Target } from "~/chat/playground.server";
 import type { ChatEntry, ChatStep } from "~/chat/types";
 import {
   AssistantBubble,
@@ -54,6 +43,12 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { contextPath } from "~/lib/paths";
+import {
+  createPlaygroundSession,
+  loadPlaygroundEntriesFromEve,
+  listPlaygroundSessions,
+  summarizePlaygroundSession,
+} from "~/playground/sessions.server";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -88,21 +83,52 @@ export const loader = (args: LoaderFunctionArgs) =>
       // Teams have no repo-level Playground — the tab exists only at the member level.
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
 
-      const [targets, conversation] = await Promise.all([
+      const [targets, sessions] = await Promise.all([
         liveTargets(active.id),
-        loadConversation<PlaygroundState>(
-          project.id,
-          playgroundKind(active.id),
-          auth.user!.id,
-          EMPTY_STATE,
-        ),
+        listPlaygroundSessions({
+          projectId: project.id,
+          agentId: active.id,
+          userId: auth.user!.id,
+        }),
       ]);
+      const selectedSessionId = new URL(args.request.url).searchParams.get("session");
+      const currentSession =
+        (selectedSessionId
+          ? sessions.find((session) => session.id === selectedSessionId)
+          : null) ??
+        sessions[0] ??
+        null;
+      const historyTarget = currentSession
+        ? (targets.find((target) => target.environmentId === currentSession.environmentId) ??
+          targets.find((target) => target.deploymentId === currentSession.lastDeploymentId) ??
+          null)
+        : null;
+      let entries: ChatEntry[] = [];
+      let historyError: string | null = null;
+      if (currentSession?.externalSessionId) {
+        if (historyTarget) {
+          try {
+            entries = await loadPlaygroundEntriesFromEve({
+              session: currentSession,
+              target: historyTarget,
+            });
+          } catch (error) {
+            historyError = `Couldn't reload Eve session history: ${(error as Error).message}`;
+          }
+        } else {
+          historyError =
+            "This session's environment does not have a live deployment to replay Eve history from.";
+        }
+      }
       return {
         project,
         targets,
-        entries: conversation.entries,
-        expired: conversation.expired,
-        lastDeploymentId: conversation.state.deploymentId,
+        sessions: sessions.map(summarizePlaygroundSession),
+        currentSessionId: currentSession?.id ?? null,
+        currentSessionEnvironmentId: currentSession?.environmentId ?? null,
+        entries,
+        historyError,
+        lastDeploymentId: currentSession?.lastDeploymentId ?? null,
         roster: roster.map((a) => ({ name: a.name })),
         activeAgent: active.name,
         isTeam,
@@ -111,7 +137,7 @@ export const loader = (args: LoaderFunctionArgs) =>
     { ensureSignedIn: true },
   );
 
-/** The action now only handles "New conversation" — turns go through the stream route. */
+/** The action creates a new Eden session row; turns go through the stream route. */
 export async function action(args: ActionFunctionArgs) {
   const auth = await withAuth(args);
   if (!auth.user) throw redirect("/login");
@@ -128,12 +154,17 @@ export async function action(args: ActionFunctionArgs) {
   const agentName = agentFromParams(args.params);
   const { active, isTeam } = await resolveAgentContext(project.id, agentName);
   if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
-  const kind = playgroundKind(active.id);
 
   const form = await args.request.formData();
-  if (String(form.get("intent")) === "reset") {
-    await resetConversation(project.id, kind, auth.user.id);
-    return { ok: true as const };
+  if (String(form.get("intent")) === "new-session") {
+    const session = await createPlaygroundSession({
+      projectId: project.id,
+      agentId: active.id,
+      userId: auth.user.id,
+    });
+    const url = new URL(args.request.url);
+    url.searchParams.set("session", session.id);
+    throw redirect(`${url.pathname}?${url.searchParams.toString()}`);
   }
   return { ok: true as const };
 }
@@ -157,28 +188,64 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const {
     project,
     targets,
+    sessions,
+    currentSessionId,
+    currentSessionEnvironmentId,
     entries,
-    expired,
+    historyError,
     lastDeploymentId,
     roster,
     activeAgent,
     isTeam,
   } = loaderData;
   const base = contextPath(project.id, isTeam ? activeAgent : null);
-  const resetFetcher = useFetcher<typeof action>();
+  const navigate = useNavigate();
   const revalidator = useRevalidator();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [live, setLive] = useState<LiveTurn | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const busy = live !== null && !live.done;
 
   const defaultTarget =
-    targets.find((t) => t.deploymentId === lastDeploymentId) ?? targets[0];
-  const [deploymentId, setDeploymentId] = useState(
-    defaultTarget?.deploymentId ?? "",
-  );
-  const deploymentRef = useRef(deploymentId);
-  deploymentRef.current = deploymentId;
+    targets.find((t) => t.environmentId === currentSessionEnvironmentId) ??
+    targets.find((t) => t.deploymentId === lastDeploymentId) ??
+    targets[0];
+  const requestedDeploymentId = searchParams.get("deployment");
+  const selectedTarget =
+    targets.find(
+      (target) =>
+        target.deploymentId === requestedDeploymentId &&
+        (!currentSessionEnvironmentId ||
+          target.environmentId === currentSessionEnvironmentId),
+    ) ?? defaultTarget;
+  const deploymentId = selectedTarget?.deploymentId ?? "";
+
+  const sessionPicker = useMemo(() => {
+    if (!currentSessionId || sessions.length === 0) return null;
+    return (
+      <Select
+        value={currentSessionId}
+        onValueChange={(id) =>
+          navigate(`${base}/playground?session=${encodeURIComponent(id)}`)
+        }
+      >
+        <SelectTrigger
+          className="h-9 w-52 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
+          aria-label="Playground session"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {sessions.map((session) => (
+            <SelectItem key={session.id} value={session.id}>
+              {formatSessionLabel(session.title, session.updatedAt)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }, [base, currentSessionId, navigate, sessions]);
 
   const send = useCallback(
     async (message: string) => {
@@ -197,8 +264,9 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
 
       const form = new FormData();
       form.set("message", message);
-      form.set("deploymentId", deploymentRef.current);
+      form.set("deploymentId", deploymentId);
       form.set("agentName", activeAgent);
+      if (currentSessionId) form.set("playgroundSessionId", currentSessionId);
 
       try {
         const res = await fetch(
@@ -217,6 +285,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
+        let nextSessionId = currentSessionId;
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -231,12 +300,20 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             } catch {
               continue;
             }
+            if (evt.type === "done" && evt.playgroundSessionId) {
+              nextSessionId = evt.playgroundSessionId;
+            }
             apply(evt);
           }
         }
-        // Stream ended — the server has persisted the turn. Revalidate, then hand the
-        // transcript back to the loader's persisted entries.
+        // Stream ended — the server has persisted the cursor. Revalidate, then replay Eve
+        // history through the loader.
         await revalidator.revalidate();
+        if (!currentSessionId && nextSessionId) {
+          navigate(`${base}/playground?session=${encodeURIComponent(nextSessionId)}`, {
+            replace: true,
+          });
+        }
         setLive(null);
       } catch (error) {
         // The server still persists in the background — revalidate so the reply isn't lost.
@@ -257,13 +334,20 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         setLive(null);
       }
     },
-    [activeAgent, project.id, revalidator],
+    [activeAgent, base, currentSessionId, deploymentId, navigate, project.id, revalidator],
   );
 
   // Stable element between renders so the composer (and any memoized child) doesn't redraw.
   const targetPicker = useMemo(
     () => (
-      <Select value={deploymentId} onValueChange={setDeploymentId}>
+      <Select
+        value={deploymentId}
+        onValueChange={(nextDeploymentId) => {
+          const next = new URLSearchParams(searchParams);
+          next.set("deployment", nextDeploymentId);
+          setSearchParams(next, { replace: true });
+        }}
+      >
         <SelectTrigger
           className="h-9 min-w-44 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
           aria-label="Deployment to talk to"
@@ -279,7 +363,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         </SelectContent>
       </Select>
     ),
-    [deploymentId, targets],
+    [deploymentId, searchParams, setSearchParams, targets],
   );
 
   return (
@@ -300,16 +384,17 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       />
       <PageHeader
         title={isTeam ? `Playground — ${activeAgent}` : "Playground"}
-        description="Talk to a live deployment of this agent. Each reply is tagged with the version that produced it."
+        description="Talk to a live deployment of this agent. Conversation history reloads from Eve's durable session stream."
         actions={
-          entries.length > 0 ? (
-            <resetFetcher.Form method="post">
-              <input type="hidden" name="intent" value="reset" />
+          <div className="flex items-center gap-2">
+            {sessionPicker}
+            <Form method="post">
+              <input type="hidden" name="intent" value="new-session" />
               <Button type="submit" variant="outline" size="sm" disabled={busy}>
                 New conversation
               </Button>
-            </resetFetcher.Form>
-          ) : undefined
+            </Form>
+          </div>
         }
       />
 
@@ -323,12 +408,9 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         </Alert>
       ) : (
         <div className="space-y-4 pb-4">
-          {expired && entries.length === 0 && (
-            <Alert>
-              <AlertDescription>
-                Your previous conversation expired after a day of inactivity —
-                starting fresh.
-              </AlertDescription>
+          {historyError && (
+            <Alert variant="destructive">
+              <AlertDescription>{historyError}</AlertDescription>
             </Alert>
           )}
           {sendError && (
@@ -386,6 +468,7 @@ type StreamEvent =
   | {
       type: "done";
       ok: boolean;
+      playgroundSessionId?: string;
       reply: string | null;
       structured: boolean;
       error: string | null;
@@ -427,6 +510,14 @@ function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
     default:
       return prev;
   }
+}
+
+function formatSessionLabel(title: string, updatedAt: string): string {
+  const date = new Date(updatedAt);
+  const dateLabel = Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return dateLabel ? `${title} · ${dateLabel}` : title;
 }
 
 /** The live, in-flight assistant bubble: streaming reply, an activity line, and a step list. */

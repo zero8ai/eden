@@ -5,31 +5,29 @@
  * (15+ min) usable: the browser sees progress instead of one spinner and a 90s timeout.
  *
  * Disconnect-safe by design: the turn-consuming loop runs to completion independent of the
- * response stream. If the client navigates away, we keep draining eve, then persist the
- * assistant reply + steps to the conversation and record the run — so the transcript and the
- * Runs tab are correct whether or not anyone was watching.
+ * response stream. If the client navigates away, we keep draining Eve, then persist the
+ * session cursor and record the run — the transcript is reloaded from Eve's durable event
+ * stream rather than copied into Eden.
  */
 import { withAuth } from "@workos-inc/authkit-react-router";
 import { data, redirect, type ActionFunctionArgs } from "react-router";
 
 import { streamTurn, type TurnResult, type TurnStep } from "~/agent/talk.server";
-import {
-  loadConversation,
-  saveConversation,
-} from "~/chat/conversation.server";
-import {
-  EMPTY_STATE,
-  liveTargets,
-  playgroundKind,
-  type PlaygroundState,
-} from "~/chat/playground.server";
-import type { ChatEntry, ChatStep } from "~/chat/types";
-import { newId } from "~/lib/id";
+import { liveTargets } from "~/chat/playground.server";
+import type { ChatStep } from "~/chat/types";
 import {
   externalRunId,
   recordTurnFinish,
   recordTurnStart,
 } from "~/observability/record.server";
+import {
+  createPlaygroundSession,
+  getPlaygroundSession,
+  markPlaygroundSessionRunning,
+  savePlaygroundSessionCursor,
+  titleFromMessage,
+  type PlaygroundSession,
+} from "~/playground/sessions.server";
 import { resolveAgentContext, agentFromParams } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 
@@ -68,9 +66,9 @@ export async function action(args: ActionFunctionArgs) {
   const form = await args.request.formData();
   const agentName = agentFromParams(args.params) ?? asString(form.get("agentName"));
   const { active } = await resolveAgentContext(project.id, agentName);
-  const kind = playgroundKind(active.id);
 
   const deploymentId = asString(form.get("deploymentId"));
+  const playgroundSessionId = asString(form.get("playgroundSessionId")) || null;
   const message = asString(form.get("message")).trim();
   if (!message) throw data({ error: "Type a message first." }, { status: 400 });
 
@@ -88,24 +86,50 @@ export async function action(args: ActionFunctionArgs) {
     );
   }
 
-  const conversation = await loadConversation<PlaygroundState>(
-    project.id,
-    kind,
-    auth.user.id,
-    EMPTY_STATE,
-  );
-  // Persist the user's message immediately so it survives a disconnect mid-turn.
-  const userEntry: ChatEntry = { id: newId(), role: "user", text: message };
-  const baseEntries: ChatEntry[] = [...conversation.entries, userEntry];
-  // A different deployment doesn't share the eve session — keep the transcript, drop tokens.
-  const sameTarget = conversation.state.deploymentId === deploymentId;
-  await saveConversation(project.id, kind, auth.user.id, baseEntries, {
-    deploymentId,
-    sessionId: sameTarget ? conversation.state.sessionId : null,
-    continuationToken: sameTarget ? conversation.state.continuationToken : null,
-  } satisfies PlaygroundState);
+  let playgroundSession: PlaygroundSession | null = playgroundSessionId
+    ? await getPlaygroundSession({
+        id: playgroundSessionId,
+        projectId: project.id,
+        agentId: active.id,
+        userId: auth.user.id,
+      })
+    : null;
+  if (playgroundSessionId && !playgroundSession) {
+    throw data({ error: "That playground session was not found." }, { status: 404 });
+  }
+  if (
+    playgroundSession?.externalSessionId &&
+    playgroundSession.environmentId &&
+    playgroundSession.environmentId !== target.environmentId
+  ) {
+    throw data(
+      {
+        error:
+          "That Eve session belongs to a different environment. Start a new conversation for this deployment.",
+      },
+      { status: 400 },
+    );
+  }
+  const title = playgroundSession?.title ? null : titleFromMessage(message);
+  if (!playgroundSession) {
+    playgroundSession = await createPlaygroundSession({
+      projectId: project.id,
+      agentId: active.id,
+      userId: auth.user.id,
+      environmentId: target.environmentId,
+      deploymentId: target.deploymentId,
+      releaseId: target.releaseId,
+      version: target.version,
+      title,
+    });
+  }
+  await markPlaygroundSessionRunning({
+    id: playgroundSession.id,
+    target,
+    title,
+  });
+  const activeSession = playgroundSession;
 
-  const userId = auth.user.id;
   const startedAt = new Date();
   const encoder = new TextEncoder();
 
@@ -125,9 +149,7 @@ export async function action(args: ActionFunctionArgs) {
       // The consume loop is deliberately detached from the request lifecycle: it runs to the
       // terminal `done` regardless of whether anyone is still reading.
       void (async () => {
-        let sessionId: string | null = sameTarget
-          ? conversation.state.sessionId
-          : null;
+        let sessionId: string | null = activeSession.externalSessionId;
         let recorded = false;
         // Kept so the finish upsert can await it — a start that resolves late would
         // otherwise overwrite the settled run back to `running`.
@@ -138,9 +160,8 @@ export async function action(args: ActionFunctionArgs) {
             baseUrl: target.url,
             message,
             sessionId,
-            continuationToken: sameTarget
-              ? conversation.state.continuationToken
-              : null,
+            continuationToken: activeSession.continuationToken,
+            streamIndex: activeSession.streamIndex,
             timeoutMs: TURN_TIMEOUT_MS,
           })) {
             switch (event.kind) {
@@ -187,6 +208,7 @@ export async function action(args: ActionFunctionArgs) {
                 send({
                   type: "done",
                   ok: event.result.ok,
+                  playgroundSessionId: activeSession.id,
                   reply: event.result.reply,
                   structured: event.result.replyIsStructured,
                   error: event.result.error,
@@ -207,35 +229,23 @@ export async function action(args: ActionFunctionArgs) {
             version: target.version,
           });
         } finally {
-          // Persist whatever the turn produced BEFORE closing the stream, so a client that
-          // waits for stream-end can revalidate into a transcript that's already saved. This
-          // runs even when the client is gone.
+          // Persist the cursor BEFORE closing the stream, so a client that waits for
+          // stream-end can revalidate into Eve history that's ready to replay.
           if (result) {
             const settled: TurnResult = result;
             try {
-              const assistant: ChatEntry = {
-                id: newId(),
-                role: "assistant",
-                text: settled.reply ?? "",
-                structured: settled.replyIsStructured,
-                version: target.version,
-                modelId: settled.modelId,
-                steps: settled.steps.map(toChatStep),
-                error: settled.error,
-              };
-              await saveConversation(
-                project.id,
-                kind,
-                userId,
-                [...baseEntries, assistant],
-                {
-                  deploymentId,
-                  sessionId: settled.sessionId,
-                  continuationToken: settled.continuationToken,
-                } satisfies PlaygroundState,
-              );
+              await savePlaygroundSessionCursor({
+                id: activeSession.id,
+                target,
+                externalSessionId: settled.sessionId ?? activeSession.externalSessionId,
+                continuationToken:
+                  settled.continuationToken ?? activeSession.continuationToken,
+                streamIndex: Math.max(settled.streamIndex, activeSession.streamIndex),
+                title,
+                status: settled.ok ? "waiting" : "failed",
+              });
             } catch (e) {
-              console.error("[playground] persist transcript failed", e);
+              console.error("[playground] persist session cursor failed", e);
             }
             if (settled.sessionId && settled.turnId) {
               try {

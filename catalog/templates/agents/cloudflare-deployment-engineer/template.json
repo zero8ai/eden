@@ -1,9 +1,9 @@
 {
   "id": "cloudflare-deployment-engineer",
   "type": "agent",
-  "name": "Cloudflare Deployment Engineer",
-  "description": "An agent that deploys any Cloudflare Workers app straight from its GitHub repo, using the terminal — gh + wrangler with sandbox-exposed credentials, no bespoke tools.",
-  "version": "0.2.1",
+  "name": "Cloudflare CI Engineer",
+  "description": "An agent that sets up and operates CI/CD for Cloudflare apps from GitHub — gh + wrangler/API with sandbox-exposed credentials, no bespoke tools.",
+  "version": "0.2.2",
   "eve": ">=0.1.0",
   "model": "z-ai/glm-5.2",
   "dependencies": {
@@ -18,7 +18,7 @@
   "secrets": [
     {
       "name": "GITHUB_TOKEN",
-      "description": "Personal access token with read access to the organisation's repos — the agent's gh CLI reads it from its shell environment.",
+      "description": "GitHub token with repo write, workflow, pull request, and Actions secrets access for the organisation's repos — the agent's gh CLI reads it from its shell environment.",
       "sandbox": true
     },
     {
@@ -28,7 +28,7 @@
     },
     {
       "name": "CLOUDFLARE_API_TOKEN",
-      "description": "API token with the 'Edit Cloudflare Workers' permission for the target account — wrangler reads it from the shell environment.",
+      "description": "API token for the target account with Workers edit permissions plus any product permissions the app needs, such as KV, D1, R2, Queues, Pages, Routes, or DNS.",
       "sandbox": true
     },
     {

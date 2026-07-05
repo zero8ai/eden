@@ -1,9 +1,10 @@
 /**
  * Repository lifecycle (M5.8). Deleting a repository is a FULL Eden-side teardown (owner
- * decision): every member environment's instances are destroyed (containers + per-instance
- * databases via DeployTarget.destroy, stop fallback), then the project row is deleted and
- * the FK cascade takes agents, environments, releases, deployments, drafts, secrets, and
- * run history with it. The GitHub repository itself is NEVER touched.
+ * decision): every member environment's instances are destroyed (containers via
+ * DeployTarget.destroy, stop fallback) and each environment's shared Workflow world DB is
+ * dropped (destroyWorld), then the project row is deleted and the FK cascade takes agents,
+ * environments, releases, deployments, drafts, secrets, and run history with it. The GitHub
+ * repository itself is NEVER touched.
  */
 import type { DataStore } from "~/data/ports";
 import { getRuntime } from "~/seams/index.server";
@@ -40,6 +41,13 @@ export async function deleteRepository(
       } catch {
         // container already gone / target unreachable — the row delete is authoritative
       }
+    }
+    // Per-deployment destroy leaves the environment's shared Workflow world (sessions +
+    // sandboxes) — drop it once all of the env's deployments are gone.
+    try {
+      await deployTarget.destroyWorld?.(env.id);
+    } catch {
+      // best-effort — a leftover world DB never blocks the repository delete
     }
   }
 

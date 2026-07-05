@@ -235,6 +235,9 @@ export async function deployRelease(
       deploymentId: dep.id,
       imageRef: imageRef ?? "",
       env: envVars,
+      // World database is keyed by ENVIRONMENT, not deployment: every deploy of this env
+      // reuses one world, so sessions and their sandboxes survive redeploys.
+      worldKey: env.id,
     });
 
     if (health.status !== "live") {

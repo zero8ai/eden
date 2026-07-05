@@ -24,6 +24,10 @@ export function fakeDeployTarget(opts: {
   stoppedIds?: string[];
   /** Captures destroyed deployment ids for cleanup/cutover assertions. */
   destroyedIds?: string[];
+  /** Captures each deploy()'s worldKey, for the durability (env-keyed world) invariant. */
+  deployedWorldKeys?: string[];
+  /** Captures worldKeys passed to destroyWorld() on env/repo teardown. */
+  destroyedWorlds?: string[];
 } = {}): DeployTarget {
   const stopped = new Set<string>();
   return {
@@ -33,6 +37,7 @@ export function fakeDeployTarget(opts: {
     },
     async deploy(req): Promise<InstanceHealth> {
       opts.deployedEnvs?.push(req.env);
+      opts.deployedWorldKeys?.push(req.worldKey);
       if (opts.deployError) throw new Error(opts.deployError);
       return opts.health ?? { status: "live", url: "http://fake.local" };
     },
@@ -44,6 +49,9 @@ export function fakeDeployTarget(opts: {
     async destroy(id) {
       opts.destroyedIds?.push(id);
       stopped.add(id);
+    },
+    async destroyWorld(worldKey) {
+      opts.destroyedWorlds?.push(worldKey);
     },
     async start() {
       return { status: "live" };

@@ -123,6 +123,7 @@ describe("deleteEnvironment", () => {
     });
 
     const destroyed: string[] = [];
+    const destroyedWorlds: string[] = [];
     const target = fakeDeployTarget({ health: { status: "live", url: "http://x" } });
     const release = await createRelease(
       { projectId: project.id, agentId, gitSha: "a".repeat(40) },
@@ -143,11 +144,16 @@ describe("deleteEnvironment", () => {
           destroy: async (id) => {
             destroyed.push(id);
           },
+          destroyWorld: async (key) => {
+            destroyedWorlds.push(key);
+          },
         },
       },
     );
 
     expect(destroyed).toEqual([dep.id]); // live instance was torn down, not orphaned
+    // The env's shared world (sessions + sandboxes) is dropped once, keyed by the env id.
+    expect(destroyedWorlds).toEqual([staging.id]);
     expect(await store.environments.findById(staging.id)).toBeNull();
     expect(await store.deployments.listByEnvironment(staging.id)).toHaveLength(0);
     expect(await store.environments.findById(defaultEnv.id)).not.toBeNull();

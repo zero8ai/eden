@@ -10,16 +10,29 @@
  *   build   fetch repo tarball @ commit (GitHub App) → docker multi-stage build (npm ci +
  *           `eve build` run inside linux) → runtime image of the Nitro .output/ + a
  *           build-stage image that keeps node_modules (for the world migration CLI)
- *   deploy  create a per-instance Postgres DB → run `workflow-postgres-setup` from the
- *           build-stage image → docker run -d with WORKFLOW_POSTGRES_URL + secret env on a
- *           mapped 127.0.0.1 port → health-check → return the URL
+ *   deploy  provision the environment's Workflow world DB → run `workflow-postgres-setup`
+ *           from the build-stage image → docker run -d with WORKFLOW_POSTGRES_URL + secret
+ *           env, the host Docker socket mounted, on a mapped 127.0.0.1 port → health-check
  *   stop/start  docker stop/start (scale-to-zero)
+ *
+ * Two runtime facts this target now honors (both eve semantics — see docs/SPIKE-EVE.md):
+ *   - Real sandboxes. eve's `defaultBackend()` gives an agent a real Docker sandbox only when
+ *     a docker CLI + reachable daemon are present, else it silently degrades to `just-bash`
+ *     (a pure-JS bash that can't run git/node/npm). We ship the client binary in the image
+ *     (eve-image.server.ts) and mount `/var/run/docker.sock`, so the eve runtime spawns sibling
+ *     sandbox containers on the host daemon (docker-outside-of-docker). The MODEL's bash runs
+ *     INSIDE those sandbox containers, which have NO socket — only the runtime process (eve +
+ *     repo-authored tool code) can reach the host daemon.
+ *   - Durable worlds. The Workflow world DB is keyed by ENVIRONMENT, not deployment, so every
+ *     redeploy of an environment reuses one world — eve reattaches each durable session's
+ *     long-lived sandbox container, and sessions + their /workspace filesystems survive.
  *
  * The repo must be deployable off-Vercel: `@workflow/world-postgres` (at the beta line
  * matching its eve version) as a dependency, and agent.ts declaring
  * `experimental.workflow.world` + `build.externalDependencies` for it. See SPIKE-EVE.
  */
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 
 import postgres from "postgres";
@@ -42,8 +55,18 @@ const DB_HOST_FROM_CONTAINER =
   process.env.EDEN_DB_HOST_FROM_CONTAINER ?? "host.docker.internal";
 
 const containerName = (deploymentId: string) => `eden-inst-${deploymentId}`;
-const instanceDbName = (deploymentId: string) =>
-  `eden_inst_${deploymentId.replace(/-/g, "").slice(0, 24)}`;
+
+/**
+ * Postgres database name for an environment's Workflow world. Keyed by the (stable) worldKey,
+ * NOT a deployment id — that's the whole durability fix. Sanitize to a legal identifier
+ * (lowercase, [a-z0-9_] only), then append a short sha1 slice of the RAW key so distinct keys
+ * that sanitize to the same string can't collide onto one database.
+ */
+export const worldDbName = (worldKey: string): string => {
+  const sanitized = worldKey.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 24);
+  const slug = createHash("sha1").update(worldKey).digest("hex").slice(0, 8);
+  return `eden_env_${sanitized}_${slug}`;
+};
 
 async function docker(args: string[]): Promise<string> {
   const { stdout } = await exec("docker", args, { maxBuffer: 16 * 1024 * 1024 });
@@ -69,10 +92,10 @@ function controlPlaneUrl(): URL {
   return new URL(raw);
 }
 
-/** Create the instance's database if absent; return the URL the container should use. */
-async function provisionInstanceDb(deploymentId: string): Promise<string> {
+/** Create the environment's world database if absent; return the URL the container uses. */
+async function provisionWorldDb(worldKey: string): Promise<string> {
   const cp = controlPlaneUrl();
-  const dbName = instanceDbName(deploymentId);
+  const dbName = worldDbName(worldKey);
   const admin = postgres(cp.toString(), { max: 1 });
   try {
     const existing = await admin`select 1 from pg_database where datname = ${dbName}`;
@@ -82,7 +105,7 @@ async function provisionInstanceDb(deploymentId: string): Promise<string> {
   } finally {
     await admin.end();
   }
-  // URL the *container* uses: same creds, host reachable from inside Docker, instance DB.
+  // URL the *container* uses: same creds, host reachable from inside Docker, world DB.
   const url = new URL(cp.toString());
   url.hostname = DB_HOST_FROM_CONTAINER;
   url.port = cp.port || "5432";
@@ -90,11 +113,11 @@ async function provisionInstanceDb(deploymentId: string): Promise<string> {
   return url.toString();
 }
 
-async function dropInstanceDb(deploymentId: string): Promise<void> {
+async function dropWorldDb(worldKey: string): Promise<void> {
   const cp = controlPlaneUrl();
   const admin = postgres(cp.toString(), { max: 1 });
   try {
-    await admin.unsafe(`drop database if exists "${instanceDbName(deploymentId)}" (force)`);
+    await admin.unsafe(`drop database if exists "${worldDbName(worldKey)}" (force)`);
   } catch {
     // best-effort cleanup
   } finally {
@@ -207,7 +230,11 @@ export const localDockerTarget: DeployTarget = {
     const name = containerName(req.deploymentId);
     await removeIfExists(name);
 
-    const dbUrl = await provisionInstanceDb(req.deploymentId);
+    // Keyed by environment (req.worldKey), so a redeploy reuses the same world — sessions and
+    // their sandbox containers survive. During a cutover the old-live and new deployments
+    // briefly share this world DB; that is eve's normal multi-instance mode (Vercel runs many
+    // function instances against one world), so concurrent access here is expected, not a race.
+    const dbUrl = await provisionWorldDb(req.worldKey);
     await runWorldMigrations(req.imageRef, dbUrl);
     // The Postgres World reads WORKFLOW_POSTGRES_URL; DATABASE_URL kept for authored tools.
     const envArgs = Object.entries({
@@ -224,6 +251,11 @@ export const localDockerTarget: DeployTarget = {
       name,
       "--add-host",
       "host.docker.internal:host-gateway",
+      // Docker-outside-of-docker: the eve runtime reaches the host daemon over this socket to
+      // spawn sibling sandbox containers, which is what lets defaultBackend() pick the real
+      // Docker sandbox instead of just-bash. Standard socket path on Docker Desktop/OrbStack/Colima.
+      "-v",
+      "/var/run/docker.sock:/var/run/docker.sock",
       "-p",
       `127.0.0.1:0:${INSTANCE_PORT}`,
       ...envArgs,
@@ -281,9 +313,15 @@ export const localDockerTarget: DeployTarget = {
   },
 
   async destroy(deploymentId: string): Promise<void> {
-    // Environment delete: the deployment row is about to cascade away, so remove
-    // everything only that row could find — the container AND its instance database.
+    // Per-deployment teardown removes ONLY this deployment's container. The world DB is shared
+    // across the environment's deployments now, so dropping it here would orphan siblings'
+    // sessions — that is `destroyWorld`'s job, run once after the whole environment is gone.
     await removeIfExists(containerName(deploymentId));
-    await dropInstanceDb(deploymentId);
+  },
+
+  async destroyWorld(worldKey: string): Promise<void> {
+    // Environment/repository teardown, after every deployment's `destroy`: no instance of this
+    // environment survives to need its sessions, so drop the shared world database.
+    await dropWorldDb(worldKey);
   },
 };

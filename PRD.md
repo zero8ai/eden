@@ -825,6 +825,54 @@ two-source-of-truth reconciliation problem.
   the **rung-2 "publish to marketplace" flow** (extracting a live-tested tool/agent from a
   workspace into a catalog PR) — rung 1 (PR the catalog, CI-gated) stands.
 
+**Milestone 6.1 — Runtime: real sandboxes & durable worlds (shipped)**
+- **The discovery.** A secrets audit of a live Eden instance found the model's `bash` tool
+  couldn't run a single binary — no git, no node, no npm. eve's `defaultBackend()` picks a
+  sandbox in priority order (Vercel Sandbox when `process.env.VERCEL` → Docker when a daemon is
+  reachable via a `docker` CLI → microsandbox on a KVM/Apple-Silicon host → **just-bash**, a
+  pure-JS bash interpreter with no real binaries). Our instance containers had neither a docker
+  CLI nor a daemon, so every agent silently degraded to just-bash. Agents looked alive and could
+  do nothing.
+- **Real sandboxes.** The reference image now ships the static Docker CLI *client* (v27.5.1, no
+  daemon) at `/usr/local/bin/docker` (`eve-image.server.ts`), and the deploy target mounts the
+  host's Docker socket into each instance (`deploy.localdocker.server.ts`,
+  `-v /var/run/docker.sock:/var/run/docker.sock`). eve's availability probe then passes and
+  `defaultBackend()` selects the real Docker backend — the runtime spawns **sibling** sandbox
+  containers on the host daemon (docker-outside-of-docker). **No customer-repo change is needed:**
+  availability resolves at first sandbox use. Verified: `docker version` run *inside* an instance
+  built from the new image, with the socket mounted, prints the host daemon version.
+- **Durable worlds.** eve's durability model keeps sessions in the Workflow "world" (Postgres) and
+  each durable session's sandbox as a long-lived sibling container (labelled `eve.sandbox`) that
+  eve reattaches via `docker start`. Eden used to provision a **fresh instance DB per deployment**
+  (`eden_inst_<deploymentId>`), so every redeploy orphaned all sessions and their sandboxes. The
+  world DB is now keyed by **environment** (`eden_env_<sanitized>_<sha1slug>`, from
+  `DeployRequest.worldKey = environment.id`): every deploy of an environment shares one world, so
+  sessions AND their `/workspace` filesystems (where an agent might keep e.g. SSH keys) survive
+  redeploys — eve's intended "sessions survive cold starts, redeploys, and long pauses". During a
+  cutover the old-live and new deployments briefly share the world DB; that is eve's normal
+  multi-instance mode (Vercel runs many function instances against one world). Per-deployment
+  `destroy` now removes only the container; a new `destroyWorld(worldKey)` drops the shared world
+  DB once, on environment/repository teardown, after every per-deployment destroy.
+- **Migration:** old `eden_inst_<deploymentId>` databases are orphaned by design (sessions were
+  never durable before this) — no data migration; they can be dropped manually.
+- **Security surface.** The Docker socket grants the *runtime* process host-level Docker control;
+  the trusted surface is the eve framework + repo-authored tool code (reviewed via change-sets).
+  The model's `bash` runs INSIDE sandbox containers, which have **no** socket. Two hardening notes
+  for the host's docker-compose/container (left to the operator): the control-plane Postgres
+  publishes `0.0.0.0:5442` — bind it to `127.0.0.1`; and the Docker sandbox backend's egress
+  defaults to allow-all (a repo can opt into deny-all via `defineSandbox`).
+- **Deliberately punted:** (1) **sandbox-container GC on environment delete** — stopped sibling
+  sandbox containers are currently orphaned; the `eve.sandbox` label makes them findable, so a
+  future `gc` sweep can reap them. (2) **sandbox egress-policy defaults** — the docker backend
+  honors only allow-all / deny-all today; per-destination policy is upstream work. (3) **agent-level
+  persistent home directory** (design below).
+- **Follow-up design — agent home across sessions.** eve's sandbox persists `/workspace` per
+  *durable session*; there is no per-*agent* filesystem. Planned: an upstream eve PR adding a
+  `mounts` option to the `docker()` sandbox backend (`docker-options.ts` + `docker run -v` args +
+  inclusion in the options hash), then Eden scaffolds `agent/sandbox/sandbox.ts` mounting an
+  Eden-managed named volume (`EDEN_HOME_VOLUME` env, per agent+environment) at `/workspace/home`,
+  with the volume's lifecycle tied to environment delete.
+
 **Milestone 7 — Teams (peer teams, §7.9)**
 - The `agents/*` monorepo convention: detection, per-member parse, per-member build → image →
   Release → instance.
@@ -849,8 +897,11 @@ two-source-of-truth reconciliation problem.
   validate and offer a "make deployable" PR.
 - **Assistant workspace model.** Exactly how the Pi session mounts the working branch (ephemeral
   container checkout vs. persistent) and how its edits map cleanly to PR commits.
-- **Sandbox backend for the default target.** Which sandbox implementation Eden ships for authored-
-  tool execution off-Vercel (local Docker/bash vs. a hosted microVM equivalent).
+- **RESOLVED (Milestone 6.1): sandbox backend for the default target.** The local-docker target
+  ships the Docker CLI client in the instance image and mounts the host Docker socket, so eve's
+  `defaultBackend()` selects its real Docker sandbox (sibling containers) instead of degrading to
+  just-bash. A hosted microVM equivalent (gVisor/Firecracker) remains the managed-substrate story
+  (ARCH §2.2); egress policy beyond allow-all/deny-all and sandbox-container GC are the open edges.
 - **Observability parity.** How much of Agent Runs' fidelity Eden can reproduce off-Vercel from the
   Workflow event log + OTel.
 - **Two-source-of-truth avoidance.** Keep repo authoritative; validate the projection/cache stays

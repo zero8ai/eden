@@ -95,6 +95,23 @@ describe("deployRelease", () => {
     expect(deployedEnvs[1].OPENROUTER_API_KEY).toBe("sk-or-project");
   });
 
+  it("keys the Workflow world by ENVIRONMENT — two deploys of one env share a worldKey", async () => {
+    // The durability invariant this feature exists for: a redeploy reuses the environment's
+    // world (so sessions + their sandboxes survive), which means the worldKey must be stable
+    // across deploys and equal to the environment id — never the (per-deploy) deployment id.
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b2".repeat(20) }, store);
+    const deployedWorldKeys: string[] = [];
+    const deps = {
+      store,
+      deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedWorldKeys }),
+      secrets: fakeSecrets(),
+    };
+    const d1 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+    const d2 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+    expect(d1.id).not.toBe(d2.id); // two distinct deployments…
+    expect(deployedWorldKeys).toEqual([ENV, ENV]); // …one shared, env-keyed world
+  });
+
   it("records failed status WITH the reason when the target throws", async () => {
     const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "f".repeat(40) }, store);
     const dep = await deployRelease(

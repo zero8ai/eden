@@ -49,6 +49,13 @@ export interface DeployRequest {
   imageRef: string;
   /** Secrets + config injected as container env at start. */
   env: Record<string, string>;
+  /**
+   * Stable per-environment key for the instance's Workflow world database. Every deployment
+   * of an environment shares one world, so eve sessions AND their durable sandbox containers
+   * (the filesystems behind /workspace) survive a redeploy — eve's intended "sessions survive
+   * cold starts, redeploys, and long pauses" semantics.
+   */
+  worldKey: string;
 }
 
 /** Compile-check request: repo@ref with the staged drafts overlaid (publish gate). */
@@ -101,11 +108,19 @@ export interface DeployTarget {
   start(deploymentId: string): Promise<InstanceHealth>;
   health(deploymentId: string): Promise<InstanceHealth>;
   /**
-   * Permanently tear an instance down (environment delete): stop AND remove the container
-   * plus its instance state (e.g. the per-deployment Postgres DB). Optional — targets
-   * without it fall back to `stop`, leaving state for manual cleanup.
+   * Permanently tear an instance down (environment delete): stop AND remove the container.
+   * Optional — targets without it fall back to `stop`, leaving state for manual cleanup.
+   * Per-deployment `destroy` no longer drops the shared world state (see `destroyWorld`):
+   * many deployments of one environment share a world, so a single deployment's teardown
+   * must not orphan its siblings' sessions.
    */
   destroy?(deploymentId: string): Promise<void>;
+  /**
+   * Drop an environment's shared Workflow world database. Called on environment/repository
+   * teardown AFTER the per-deployment `destroy` loop — the last step, once no deployment of
+   * the environment survives to need its sessions. Optional. (`worldKey` is `DeployRequest.worldKey`.)
+   */
+  destroyWorld?(worldKey: string): Promise<void>;
 }
 
 // ── SecretsProvider ─────────────────────────────────────────────────────────

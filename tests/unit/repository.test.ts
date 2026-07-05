@@ -46,10 +46,14 @@ describe("deleteRepository", () => {
   it("destroys every instance, audits, then deletes the project (cascade)", async () => {
     const { project, env, dep } = await seedRunningProject();
     const destroyed: string[] = [];
+    const destroyedWorlds: string[] = [];
     const target = {
       ...fakeDeployTarget(),
       destroy: async (id: string) => {
         destroyed.push(id);
+      },
+      destroyWorld: async (key: string) => {
+        destroyedWorlds.push(key);
       },
     };
 
@@ -59,6 +63,8 @@ describe("deleteRepository", () => {
     );
 
     expect(destroyed).toContain(dep.id);
+    // Each environment's shared world is dropped once, keyed by the env id.
+    expect(destroyedWorlds).toEqual([env.id]);
     expect(await store.projects.findById(project.id)).toBeNull();
     expect(await store.agents.listByProject(project.id)).toHaveLength(0);
     expect(await store.environments.listByProject(project.id)).toHaveLength(0);

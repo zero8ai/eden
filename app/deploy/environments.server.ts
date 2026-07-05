@@ -4,9 +4,10 @@
  * always has at least one (the FIRST by creation is its primary — ship target, hero card).
  *
  * Delete is the loaded one: the row cascade removes the env's deployments (and their
- * schedules) plus env-scoped secrets, but rows can't stop docker containers or drop
- * per-instance databases — so delete tears infra down FIRST via the DeployTarget
- * (`destroy` when the target has it, `stop` otherwise), best-effort per deployment.
+ * schedules) plus env-scoped secrets, but rows can't stop docker containers or drop the
+ * environment's Workflow world DB — so delete tears infra down FIRST via the DeployTarget
+ * (`destroy` when the target has it, `stop` otherwise) per deployment, then `destroyWorld`
+ * once for the environment, all best-effort.
  */
 import type { DataStore } from "~/data/ports";
 import { getRuntime } from "~/seams/index.server";
@@ -125,6 +126,13 @@ export async function deleteEnvironment(
     } catch {
       // container already gone / target unreachable — the row delete is authoritative
     }
+  }
+  // Now that no deployment survives, drop the environment's shared Workflow world (its
+  // sessions + sandboxes). Per-deployment destroy no longer does this — the world is shared.
+  try {
+    await deployTarget.destroyWorld?.(env.id);
+  } catch {
+    // best-effort — a leftover world DB never blocks the environment delete
   }
 
   const deleted = await store.environments.deleteById(env.id);

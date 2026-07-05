@@ -8,8 +8,9 @@
  *
  * Pipeline (contract validated in docs/SPIKE-EVE.md):
  *   build   fetch repo tarball @ commit (GitHub App) → docker multi-stage build (npm ci +
- *           `eve build` run inside linux) → runtime image of the Nitro .output/ + a
- *           build-stage image that keeps node_modules (for the world migration CLI)
+ *           `eve build` run inside linux) → runtime image booting `eve start` (which prewarms
+ *           sandbox templates — see eve-image.server.ts) + a build-stage image that keeps
+ *           node_modules (for the world migration CLI)
  *   deploy  provision the environment's Workflow world DB → run `workflow-postgres-setup`
  *           from the build-stage image → docker run -d with WORKFLOW_POSTGRES_URL + secret
  *           env, the host Docker socket mounted, on a mapped 127.0.0.1 port → health-check
@@ -53,6 +54,17 @@ const INSTANCE_PORT = Number(process.env.EDEN_INSTANCE_PORT ?? 3000);
 /** How the container reaches the host's Postgres (Docker Desktop). */
 const DB_HOST_FROM_CONTAINER =
   process.env.EDEN_DB_HOST_FROM_CONTAINER ?? "host.docker.internal";
+/**
+ * Health-wait budgets. The image boots via `eve start` (eve-image.server.ts), which prewarms
+ * sandbox templates BEFORE the server binds its port — a deploy's first boot may pull
+ * ghcr.io/vercel/eve, run a template-build container, execute the agent's bootstrap(), and
+ * seed workspace files: legitimately minutes, not seconds. A wake (`docker start`) re-runs
+ * prewarm but hits the cached-template fast path — an image inspect — so it only needs time
+ * for the Nitro server itself (plus a template rebuild in the rare exposed-env-changed case,
+ * which the next deploy would absorb anyway).
+ */
+const DEPLOY_HEALTH_TIMEOUT_MS = 10 * 60 * 1000;
+const WAKE_HEALTH_TIMEOUT_MS = 120 * 1000;
 
 const containerName = (deploymentId: string) => `eden-inst-${deploymentId}`;
 
@@ -191,7 +203,7 @@ async function runWorldMigrations(imageRef: string, dbUrl: string): Promise<void
 }
 
 /** Poll the instance's HTTP endpoint until it responds or the timeout elapses. */
-async function waitForHealth(url: string, timeoutMs = 30_000): Promise<boolean> {
+async function waitForHealth(url: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -203,6 +215,25 @@ async function waitForHealth(url: string, timeoutMs = 30_000): Promise<boolean> 
     await new Promise((r) => setTimeout(r, 750));
   }
   return false;
+}
+
+/**
+ * Tail of a container's logs, for health-failure errors: when `eve start`'s prewarm (or the
+ * server) dies, the REAL cause — a failed bootstrap, a bad image, a missing env — is in the
+ * logs, and "container did not become healthy" alone is undebuggable from Eden's UI.
+ */
+async function containerLogsTail(name: string, lines = 40): Promise<string> {
+  try {
+    // Container stderr comes back on stderr — capture both streams, in that order.
+    const { stdout, stderr } = await exec(
+      "docker",
+      ["logs", "--tail", String(lines), name],
+      { maxBuffer: 16 * 1024 * 1024 },
+    );
+    return [stderr.trim(), stdout.trim()].filter(Boolean).join("\n") || "(no container logs)";
+  } catch (error) {
+    return `(could not read container logs: ${commandErrorText(error)})`;
+  }
 }
 
 export const localDockerTarget: DeployTarget = {
@@ -266,6 +297,9 @@ export const localDockerTarget: DeployTarget = {
     await docker([
       "run",
       "-d",
+      // A real init as PID 1: the CMD is the eve bin directly (it handles SIGTERM, but an
+      // init both guarantees signal delivery and reaps the zombies its child tree can leave).
+      "--init",
       "--name",
       name,
       "--add-host",
@@ -289,10 +323,15 @@ export const localDockerTarget: DeployTarget = {
     ]);
     const url = `http://127.0.0.1:${hostPort}`;
 
-    const healthy = await waitForHealth(url);
-    return healthy
-      ? { status: "live", url }
-      : { status: "failed", url, detail: "container did not become healthy" };
+    const healthy = await waitForHealth(url, DEPLOY_HEALTH_TIMEOUT_MS);
+    if (healthy) return { status: "live", url };
+    return {
+      status: "failed",
+      url,
+      detail:
+        `container did not become healthy within ${DEPLOY_HEALTH_TIMEOUT_MS / 1000}s. ` +
+        `Last container logs:\n${await containerLogsTail(name)}`,
+    };
   },
 
   async stop(deploymentId: string): Promise<void> {
@@ -316,8 +355,15 @@ export const localDockerTarget: DeployTarget = {
       name,
     ]);
     const url = `http://127.0.0.1:${hostPort}`;
-    const healthy = await waitForHealth(url);
-    return { status: healthy ? "live" : "failed", url };
+    const healthy = await waitForHealth(url, WAKE_HEALTH_TIMEOUT_MS);
+    if (healthy) return { status: "live", url };
+    return {
+      status: "failed",
+      url,
+      detail:
+        `container did not become healthy within ${WAKE_HEALTH_TIMEOUT_MS / 1000}s. ` +
+        `Last container logs:\n${await containerLogsTail(name)}`,
+    };
   },
 
   async health(deploymentId: string): Promise<InstanceHealth> {

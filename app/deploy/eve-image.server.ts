@@ -5,13 +5,27 @@
  * reference multi-stage Dockerfile (respecting one the repo already has) → `docker build`.
  *
  * Two images are produced per build:
- *   <tag>        runtime — Nitro .output only (small, what actually runs)
+ *   <tag>        runtime — the build stage plus the eve-docker shim and the `eve start` CMD
  *   <tag>-build  the full build stage (node_modules incl. @workflow/world-postgres) — kept
  *                because the world's migration CLI (`workflow-postgres-setup`) is NOT traced
  *                into .output; per-instance DB setup runs from this image at deploy time.
  *
  * The build runs entirely inside linux containers, so the host needs Docker but not Node 24
  * or the eve toolchain, and native modules are traced for the right platform.
+ *
+ * WHY the image boots `eve start`, not `node .output/server/index.mjs`: `eve start` runs eve's
+ * sandbox-template prewarm BEFORE the Nitro server binds its port. An agent whose sandbox has a
+ * non-null template key — a bootstrap() hook, or workspace resources (a skills/ directory
+ * counts) — needs its `eve-sbx-tpl-*` template image built on the daemon; eve's docker backend
+ * refuses to create session sandboxes until it exists (SandboxTemplateNotProvisionedError), the
+ * runtime's self-heal retry is disabled for built/bundled servers, and `eve build` only prewarms
+ * on Vercel. Off-Vercel, `eve start` is the only supported prewarm path — booting the raw Nitro
+ * entry left every skills-carrying agent permanently unable to use its bash/file tools.
+ *
+ * That is also why the final stage inherits the FULL build stage instead of copying .output into
+ * a fresh node image: `eve start` needs node_modules, package.json, and the `.eve/compile`
+ * artifacts `eve build` wrote in-stage. The deploy pipeline already retains the build stage as
+ * the `-build` tag, so the layers are shared and the extra disk cost is ~zero.
  *
  * The runtime image also ships the static Docker CLI *client* (no daemon) at
  * /usr/local/bin/docker. eve's `defaultBackend()` gives an agent a real sandbox only when a
@@ -35,7 +49,7 @@ const exec = promisify(execFile);
 
 /**
  * Reference multi-stage Dockerfile for an eve agent. The build stage must keep full
- * node_modules (see module docs); the runtime stage ships only the Nitro output.
+ * node_modules (see module docs); the runtime stage inherits it so `eve start` can prewarm.
  */
 const DOCKER_CLI_VERSION = "27.5.1";
 
@@ -102,8 +116,8 @@ FROM node:24-slim AS build
 WORKDIR /app
 # Static Docker CLI *client* (no daemon): eve's defaultBackend() needs a docker CLI + a
 # reachable daemon (the mounted host socket) to give the agent a real sandbox instead of
-# just-bash. Downloaded here, copied into the lean runtime stage below. Debian arch →
-# download.docker.com arch: amd64→x86_64, arm64→aarch64; fail loudly on anything else.
+# just-bash. Downloaded here; the runtime stage inherits this stage, CLI included. Debian
+# arch → download.docker.com arch: amd64→x86_64, arm64→aarch64; fail loudly otherwise.
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \\
   && rm -rf /var/lib/apt/lists/* \\
   && case "$(dpkg --print-architecture)" in \\
@@ -120,16 +134,21 @@ RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm inst
 COPY . .
 RUN npm exec -- eve build
 
-FROM node:24-slim
+# Runtime = the build stage itself (docker CLI, node_modules, .eve/compile, .output all in
+# place): \`eve start\` needs the full toolchain to prewarm sandbox templates before the Nitro
+# server binds its port (see module docs). The -build tag Eden also keeps IS this stage, so
+# inheriting it shares every heavy layer instead of duplicating them into a fresh image.
+FROM build
 WORKDIR /app
-COPY --from=build /usr/local/bin/docker /usr/local/bin/docker
 # eve-docker shim (EVE_DOCKER_PATH): mounts the agent's home volume onto session sandboxes.
 # See EVE_DOCKER_SHIM / eve-image.server.ts for why and how it degrades. base64 in, decode out.
 RUN echo '${EVE_DOCKER_SHIM_B64}' | base64 -d > /usr/local/bin/eve-docker && chmod 0755 /usr/local/bin/eve-docker
-COPY --from=build /app/.output ./.output
 ENV PORT=3000
 EXPOSE 3000
-CMD ["node", ".output/server/index.mjs"]
+# The eve bin directly — npm exec/npm run don't reliably forward SIGTERM as PID 1, and Eden's
+# scale-to-zero is a docker stop. eve's start command handles SIGTERM/SIGINT itself (it
+# SIGTERMs the Nitro child, SIGKILL fallback); the deploy target adds --init for reaping.
+CMD ["node_modules/.bin/eve", "start"]
 `;
 
 const EDEN_DOCKERIGNORE = `node_modules

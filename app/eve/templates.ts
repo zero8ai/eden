@@ -1,8 +1,8 @@
 /**
  * Starter templates for new agent resources ("New tool/skill/…" on the Overview).
  *
- * Shapes mirror what eve itself scaffolds (eve@0.18 `setup/scaffold` + public definitions):
- * tools are `defineTool` modules, skills are markdown with a `description` frontmatter,
+ * Shapes mirror what eve itself scaffolds (eve@0.19 `setup/scaffold` + public definitions):
+ * tools are `defineTool` modules from `eve/tools`, skills are markdown frontmatter,
  * schedules are markdown with a `cron` frontmatter, channels/connections are the module
  * shapes from eve's own catalog. Pure module (client+server safe).
  */
@@ -124,7 +124,9 @@ Each time this fires, the agent should: describe the ${titleCase(name)} task her
     label: "connection",
     ext: ".ts",
     hint: "An external service the agent can use (MCP server or API).",
-    template: (name) => `import { defineMcpClientConnection } from "eve/connections";
+    template: (
+      name,
+    ) => `import { defineMcpClientConnection } from "eve/connections";
 
 export default defineMcpClientConnection({
   url: "https://example.com/mcp",
@@ -136,7 +138,11 @@ export default defineMcpClientConnection({
 };
 
 /** Path a new resource of `kind` named `slug` lives at, under an agent root (§7.9). */
-export function resourcePath(kind: ResourceKind, slug: string, root = "agent"): string {
+export function resourcePath(
+  kind: ResourceKind,
+  slug: string,
+  root = "agent",
+): string {
   return `${root}/${kind.key}/${slug}${kind.ext}`;
 }
 

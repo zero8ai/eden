@@ -141,10 +141,10 @@ export function detectSandbox(paths: string[], base: string): AgentSandbox | nul
  */
 function extractModel(agentModuleSource: string | undefined): string | null {
   if (!agentModuleSource) return null;
-  // Provider-wrapped form first (`model: openrouter("...")`), then the bare literal —
+  // Provider-wrapped form first (`model: openrouter.chatModel("...")`), then the bare literal —
   // the same order `readModel` in ~/eve/agentModule uses, so repo and draft views agree.
   const call = agentModuleSource.match(
-    /\bmodel\s*:\s*[A-Za-z_$][\w$]*\(\s*(['"`])([^'"`]+)\1/,
+    /\bmodel\s*:\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\(\s*(['"`])([^'"`]+)\1/,
   );
   if (call) return call[2];
   const match = agentModuleSource.match(

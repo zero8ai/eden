@@ -658,6 +658,10 @@ export default function Settings({
     actionData && "changeUrl" in actionData
       ? (actionData.changeUrl as string)
       : null;
+  const navigation = useNavigation();
+  const deletingRepository =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "delete-repository";
 
   return (
     <AppShell
@@ -691,6 +695,15 @@ export default function Settings({
           <AlertTitle>Something went wrong</AlertTitle>
           <AlertDescription className="whitespace-pre-wrap">
             {actionData.error}
+          </AlertDescription>
+        </Alert>
+      )}
+      {deletingRepository && (
+        <Alert className="mb-6">
+          <AlertTitle>Deleting repository</AlertTitle>
+          <AlertDescription>
+            Cleaning up deployments and Eden data. This can take a few minutes;
+            you&apos;ll be sent back to the Dashboard when it finishes.
           </AlertDescription>
         </Alert>
       )}
@@ -1208,6 +1221,8 @@ function DangerSection({
   const submit = useSubmit();
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
+  const deletingRepository =
+    busy && navigation.formData?.get("intent") === "delete-repository";
 
   return (
     <section>
@@ -1258,7 +1273,11 @@ function DangerSection({
                   Eden. The GitHub repository itself is not touched.
                 </p>
               </div>
-              <DeleteRepositoryDialog projectName={project.name} busy={busy} />
+              <DeleteRepositoryDialog
+                projectName={project.name}
+                busy={busy}
+                deleting={deletingRepository}
+              />
             </div>
           )}
         </CardContent>
@@ -1271,9 +1290,11 @@ function DangerSection({
 function DeleteRepositoryDialog({
   projectName,
   busy,
+  deleting,
 }: {
   projectName: string;
   busy: boolean;
+  deleting: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState("");
@@ -1293,7 +1314,7 @@ function DeleteRepositoryDialog({
     >
       <DialogTrigger asChild>
         <Button variant="destructive" disabled={busy}>
-          Delete repository
+          {deleting ? "Deleting…" : "Delete repository"}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">

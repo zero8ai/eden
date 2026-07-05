@@ -95,6 +95,27 @@ describe("deployRelease", () => {
     expect(deployedEnvs[1].OPENROUTER_API_KEY).toBe("sk-or-project");
   });
 
+  it("fails before deploy with a clear setup message when no model key is configured", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b2".repeat(20) }, store);
+    const builtRefs: string[] = [];
+    const deployedEnvs: Record<string, string>[] = [];
+
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ builtRefs, deployedEnvs }),
+        secrets: fakeSecrets(),
+        workspaceModelKey: async () => null,
+      },
+    );
+
+    expect(dep.status).toBe("failed");
+    expect(dep.errorDetail).toContain("No model provider key configured");
+    expect(builtRefs).toEqual([]);
+    expect(deployedEnvs).toEqual([]);
+  });
+
   it("inherits local AI Gateway credentials unless a scoped secret overrides them", async () => {
     const oldGateway = process.env.AI_GATEWAY_API_KEY;
     const oldOidc = process.env.VERCEL_OIDC_TOKEN;

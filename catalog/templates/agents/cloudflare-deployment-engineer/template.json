@@ -3,11 +3,11 @@
   "type": "agent",
   "name": "Cloudflare Deployment Engineer",
   "description": "An agent that deploys any Cloudflare Workers app straight from its GitHub repo, using the terminal — gh + wrangler with sandbox-exposed credentials, no bespoke tools.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "eve": ">=0.1.0",
-  "model": "anthropic/claude-sonnet-5",
+  "model": "z-ai/glm-5.2",
   "dependencies": {
-    "@openrouter/ai-sdk-provider": "^6.0.0-alpha.1",
+    "@ai-sdk/openai-compatible": "^3.0.5",
     "zod": "^4.4.3"
   },
   "files": [

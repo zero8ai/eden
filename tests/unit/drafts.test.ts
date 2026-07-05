@@ -247,7 +247,7 @@ describe("publish gate (build check)", () => {
       (file: { path: string }) => file.path === "package.json",
     );
     expect(JSON.parse(checkedPackage.content).dependencies).toEqual({
-      "@openrouter/ai-sdk-provider": "^6.0.0-alpha.1",
+      "@ai-sdk/openai-compatible": "^3.0.5",
       eve: "latest",
       zod: "^4.4.3",
     });

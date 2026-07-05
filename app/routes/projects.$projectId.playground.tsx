@@ -6,29 +6,40 @@
  * follow-up turns keep the agent's context. Idle 24h → fresh start. Switching to a different
  * deployment keeps the visible transcript but starts a new eve session (versions don't share
  * memory).
+ *
+ * Turns STREAM: the composer POSTs to the streaming resource route
+ * (api.projects.$projectId.playground.stream) and this component reads back an NDJSON feed of
+ * the turn — live reply text, current activity, and completed steps — so long agent turns show
+ * progress instead of one spinner. On completion it revalidates; the persisted transcript
+ * (saved server-side, disconnect-safe) takes over seamlessly.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { useMemo, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   redirect,
   useFetcher,
+  useRevalidator,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
 
-import { sendTurn } from "~/agent/talk.server";
 import {
-  type ConversationKind,
   loadConversation,
   resetConversation,
-  saveConversation,
 } from "~/chat/conversation.server";
-import type { ChatEntry } from "~/chat/types";
+import {
+  EMPTY_STATE,
+  liveTargets,
+  playgroundKind,
+  type PlaygroundState,
+  type Target,
+} from "~/chat/playground.server";
+import type { ChatEntry, ChatStep } from "~/chat/types";
 import {
   AssistantBubble,
   ChatComposer,
   ChatTranscript,
-  PendingBubble,
   UserBubble,
 } from "~/components/chat";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
@@ -42,9 +53,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
-import { listDeployments } from "~/deploy/controller.server";
-import { listAgentEnvironments } from "~/db/queries.server";
-import { newId } from "~/lib/id";
 import { contextPath } from "~/lib/paths";
 import {
   agentFromParams,
@@ -53,51 +61,6 @@ import {
 } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.playground";
-
-interface Target {
-  deploymentId: string;
-  url: string;
-  version: string;
-  environmentName: string;
-}
-
-interface PlaygroundState extends Record<string, unknown> {
-  deploymentId: string | null;
-  sessionId: string | null;
-  continuationToken: string | null;
-}
-
-const EMPTY_STATE: PlaygroundState = {
-  deploymentId: null,
-  sessionId: null,
-  continuationToken: null,
-};
-
-function playgroundKind(agentId: string): ConversationKind {
-  return `playground:${agentId}`;
-}
-
-async function liveTargets(agentId: string): Promise<Target[]> {
-  const envs = await listAgentEnvironments(agentId);
-  const perEnv = await Promise.all(
-    envs.map(async (env) => {
-      const deployments = await listDeployments(env.id);
-      return deployments.flatMap((d) =>
-        d.status === "live" && d.url
-          ? [
-              {
-                deploymentId: d.id,
-                url: d.url,
-                version: d.version,
-                environmentName: env.name,
-              },
-            ]
-          : [],
-      );
-    }),
-  );
-  return perEnv.flat();
-}
 
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
@@ -148,6 +111,7 @@ export const loader = (args: LoaderFunctionArgs) =>
     { ensureSignedIn: true },
   );
 
+/** The action now only handles "New conversation" — turns go through the stream route. */
 export async function action(args: ActionFunctionArgs) {
   const auth = await withAuth(args);
   if (!auth.user) throw redirect("/login");
@@ -171,59 +135,22 @@ export async function action(args: ActionFunctionArgs) {
     await resetConversation(project.id, kind, auth.user.id);
     return { ok: true as const };
   }
-
-  const deploymentId = String(form.get("deploymentId") ?? "");
-  const message = String(form.get("message") ?? "").trim();
-  if (!message) return { error: "Type a message first." };
-
-  // Only talk to live deployments that belong to THIS agent (tenancy guard).
-  const targets = await liveTargets(active.id);
-  const target = targets.find((t) => t.deploymentId === deploymentId);
-  if (!target) {
-    return {
-      error:
-        "That deployment isn't live (or isn't part of this agent). Deploy first.",
-    };
-  }
-
-  const conversation = await loadConversation<PlaygroundState>(
-    project.id,
-    kind,
-    auth.user.id,
-    EMPTY_STATE,
-  );
-  // A different deployment doesn't share the eve session — keep the transcript, drop tokens.
-  const sameTarget = conversation.state.deploymentId === deploymentId;
-  const entries = [...conversation.entries];
-  entries.push({ id: newId(), role: "user", text: message });
-
-  const result = await sendTurn({
-    baseUrl: target.url,
-    message,
-    sessionId: sameTarget ? conversation.state.sessionId : null,
-    continuationToken: sameTarget ? conversation.state.continuationToken : null,
-  });
-  entries.push({
-    id: newId(),
-    role: "assistant",
-    text: result.reply ?? "",
-    structured: result.replyIsStructured,
-    version: target.version,
-    modelId: result.modelId,
-    steps: result.steps,
-    error: result.error,
-  });
-
-  await saveConversation(project.id, kind, auth.user.id, entries, {
-    deploymentId,
-    sessionId: result.sessionId ?? null,
-    continuationToken: result.continuationToken ?? null,
-  } satisfies PlaygroundState);
   return { ok: true as const };
 }
 
 export function meta() {
   return [{ title: "Playground · Eden" }];
+}
+
+/** Local mirror of an in-flight turn, driven by the NDJSON stream. */
+interface LiveTurn {
+  userText: string;
+  text: string;
+  steps: ChatStep[];
+  activity: string | null;
+  modelId: string | null;
+  error: string | null;
+  done: boolean;
 }
 
 export default function Playground({ loaderData }: Route.ComponentProps) {
@@ -238,17 +165,99 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     isTeam,
   } = loaderData;
   const base = contextPath(project.id, isTeam ? activeAgent : null);
-  const fetcher = useFetcher<typeof action>();
-  const busy = fetcher.state !== "idle";
-  const pendingMessage =
-    busy && fetcher.formData?.get("intent") !== "reset"
-      ? String(fetcher.formData?.get("message") ?? "")
-      : null;
+  const resetFetcher = useFetcher<typeof action>();
+  const revalidator = useRevalidator();
+
+  const [live, setLive] = useState<LiveTurn | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const busy = live !== null && !live.done;
 
   const defaultTarget =
     targets.find((t) => t.deploymentId === lastDeploymentId) ?? targets[0];
   const [deploymentId, setDeploymentId] = useState(
     defaultTarget?.deploymentId ?? "",
+  );
+  const deploymentRef = useRef(deploymentId);
+  deploymentRef.current = deploymentId;
+
+  const send = useCallback(
+    async (message: string) => {
+      setSendError(null);
+      setLive({
+        userText: message,
+        text: "",
+        steps: [],
+        activity: "Thinking…",
+        modelId: null,
+        error: null,
+        done: false,
+      });
+      const apply = (evt: StreamEvent) =>
+        setLive((prev) => (prev ? reduceLive(prev, evt) : prev));
+
+      const form = new FormData();
+      form.set("message", message);
+      form.set("deploymentId", deploymentRef.current);
+      form.set("agentName", activeAgent);
+
+      try {
+        const res = await fetch(
+          `/api/repos/${project.id}/playground/stream`,
+          { method: "POST", body: form },
+        );
+        if (!res.ok || !res.body) {
+          const detail = await res.json().catch(() => null);
+          throw new Error(
+            (detail && typeof detail === "object" && "error" in detail
+              ? String((detail as { error: unknown }).error)
+              : null) ?? `Stream failed (${res.status}).`,
+          );
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            let evt: StreamEvent;
+            try {
+              evt = JSON.parse(line) as StreamEvent;
+            } catch {
+              continue;
+            }
+            apply(evt);
+          }
+        }
+        // Stream ended — the server has persisted the turn. Revalidate, then hand the
+        // transcript back to the loader's persisted entries.
+        await revalidator.revalidate();
+        setLive(null);
+      } catch (error) {
+        // The server still persists in the background — revalidate so the reply isn't lost.
+        setLive((prev) =>
+          prev
+            ? {
+                ...prev,
+                error: `Lost the live stream: ${(error as Error).message}`,
+                activity: null,
+                done: true,
+              }
+            : prev,
+        );
+        setSendError(
+          "The live view dropped — the reply may still have been recorded.",
+        );
+        await revalidator.revalidate();
+        setLive(null);
+      }
+    },
+    [activeAgent, project.id, revalidator],
   );
 
   // Stable element between renders so the composer (and any memoized child) doesn't redraw.
@@ -262,7 +271,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {targets.map((t) => (
+          {targets.map((t: Target) => (
             <SelectItem key={t.deploymentId} value={t.deploymentId}>
               {t.version} · {t.environmentName}
             </SelectItem>
@@ -294,12 +303,12 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         description="Talk to a live deployment of this agent. Each reply is tagged with the version that produced it."
         actions={
           entries.length > 0 ? (
-            <fetcher.Form method="post">
+            <resetFetcher.Form method="post">
               <input type="hidden" name="intent" value="reset" />
               <Button type="submit" variant="outline" size="sm" disabled={busy}>
                 New conversation
               </Button>
-            </fetcher.Form>
+            </resetFetcher.Form>
           ) : undefined
         }
       />
@@ -322,14 +331,16 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
               </AlertDescription>
             </Alert>
           )}
-          {actionError(fetcher.data) && (
+          {sendError && (
             <Alert variant="destructive">
-              <AlertDescription>{actionError(fetcher.data)}</AlertDescription>
+              <AlertDescription>{sendError}</AlertDescription>
             </Alert>
           )}
 
-          <ChatTranscript dep={`${entries.length}:${pendingMessage ?? ""}`}>
-            {entries.length === 0 && !pendingMessage && (
+          <ChatTranscript
+            dep={`${entries.length}:${live ? live.text.length + live.steps.length : 0}`}
+          >
+            {entries.length === 0 && !live && (
               <p className="py-8 text-center text-sm text-muted-foreground">
                 Say something to the agent — the conversation keeps its context
                 across turns.
@@ -342,10 +353,10 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
                 <AgentEntry key={e.id} entry={e} />
               ),
             )}
-            {pendingMessage && (
+            {live && (
               <>
-                <UserBubble text={pendingMessage} />
-                <PendingBubble />
+                <UserBubble text={live.userText} />
+                <LiveBubble live={live} />
               </>
             )}
           </ChatTranscript>
@@ -357,9 +368,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
                 : "Say something to the agent..."
             }
             busy={busy}
-            onSend={(message) =>
-              fetcher.submit({ message, deploymentId }, { method: "post" })
-            }
+            onSend={send}
             controls={targetPicker}
           />
         </div>
@@ -368,10 +377,83 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   );
 }
 
-function actionError(data: unknown): string | null {
-  return data && typeof data === "object" && "error" in data
-    ? String((data as { error: unknown }).error)
-    : null;
+type StreamEvent =
+  | { type: "model"; modelId: string }
+  | { type: "thinking" }
+  | { type: "action"; toolName: string; summary: string | null }
+  | { type: "text"; text: string }
+  | { type: "step"; step: ChatStep }
+  | {
+      type: "done";
+      ok: boolean;
+      reply: string | null;
+      structured: boolean;
+      error: string | null;
+      modelId: string | null;
+      version: string;
+    };
+
+/** Fold one stream event into the live turn state (pure — safe inside a functional setState). */
+function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
+  switch (evt.type) {
+    case "model":
+      return { ...prev, modelId: evt.modelId };
+    case "thinking":
+      return { ...prev, activity: "Thinking…" };
+    case "action":
+      return {
+        ...prev,
+        activity: evt.summary
+          ? `${evt.toolName}: ${evt.summary}`
+          : evt.toolName,
+      };
+    case "text":
+      return { ...prev, text: evt.text };
+    case "step":
+      return {
+        ...prev,
+        steps: [...prev.steps, evt.step],
+        activity: "Thinking…",
+      };
+    case "done":
+      return {
+        ...prev,
+        text: evt.reply ?? prev.text,
+        error: evt.error,
+        modelId: evt.modelId ?? prev.modelId,
+        activity: null,
+        done: true,
+      };
+    default:
+      return prev;
+  }
+}
+
+/** The live, in-flight assistant bubble: streaming reply, an activity line, and a step list. */
+function LiveBubble({ live }: { live: LiveTurn }) {
+  return (
+    <AssistantBubble>
+      {live.modelId && (
+        <span className="mb-1.5 flex items-center gap-1.5">
+          <span className="font-mono text-xs text-muted-foreground">
+            {live.modelId}
+          </span>
+        </span>
+      )}
+      {live.error ? (
+        <p className="whitespace-pre-wrap text-destructive">{live.error}</p>
+      ) : live.text ? (
+        <p className="whitespace-pre-wrap">{live.text}</p>
+      ) : null}
+      {!live.done && live.activity && (
+        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2 className="size-3 shrink-0 animate-spin" />
+          <span className="truncate font-mono">{live.activity}</span>
+        </div>
+      )}
+      <StepList steps={live.steps} idPrefix="live" open />
+    </AssistantBubble>
+  );
 }
 
 function AgentEntry({ entry }: { entry: ChatEntry }) {
@@ -390,7 +472,7 @@ function AgentEntry({ entry }: { entry: ChatEntry }) {
         </span>
       )}
       {entry.error ? (
-        <p className="text-destructive">{entry.error}</p>
+        <p className="whitespace-pre-wrap text-destructive">{entry.error}</p>
       ) : entry.structured ? (
         <pre className="overflow-x-auto rounded-lg bg-muted/50 p-3 font-mono text-xs">
           {entry.text}
@@ -398,28 +480,56 @@ function AgentEntry({ entry }: { entry: ChatEntry }) {
       ) : (
         <p className="whitespace-pre-wrap">{entry.text || "(empty reply)"}</p>
       )}
-      {entry.steps && entry.steps.length > 0 && (
-        <details className="mt-2 text-xs text-muted-foreground">
-          <summary className="cursor-pointer">
-            {entry.steps.length} step{entry.steps.length === 1 ? "" : "s"}
-          </summary>
-          <ul className="mt-1 space-y-0.5">
-            {entry.steps.map((s, i) => (
-              <li key={`${entry.id}-step-${s.type}-${i}`} className="font-mono">
-                {s.type}
-                {s.name ? ` · ${s.name}` : ""}
-                {s.durationMs != null
-                  ? ` · ${(s.durationMs / 1000).toFixed(1)}s`
-                  : ""}
-                {s.tokensIn != null || s.tokensOut != null
-                  ? ` · ${s.tokensIn ?? 0} in / ${s.tokensOut ?? 0} out tok`
-                  : ""}
-                {s.isError ? " · failed" : ""}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
+      <StepList steps={entry.steps ?? []} idPrefix={entry.id} />
     </AssistantBubble>
+  );
+}
+
+/**
+ * The per-turn step list, shared by persisted entries and the live bubble. Each step shows its
+ * tool + summary (the useful part) with duration/tokens, and failed steps surface their detail.
+ */
+function StepList({
+  steps,
+  idPrefix,
+  open,
+}: {
+  steps: ChatStep[];
+  idPrefix: string;
+  open?: boolean;
+}) {
+  if (steps.length === 0) return null;
+  return (
+    <details className="mt-2 text-xs text-muted-foreground" open={open}>
+      <summary className="cursor-pointer">
+        {steps.length} step{steps.length === 1 ? "" : "s"}
+      </summary>
+      <ul className="mt-1 space-y-0.5">
+        {steps.map((s, i) => (
+          <li key={`${idPrefix}-step-${s.type}-${i}`} className="font-mono">
+            <div>
+              {s.toolName ?? s.type}
+              {s.summary ? ` · ${s.summary}` : s.name ? ` · ${s.name}` : ""}
+              {s.durationMs != null
+                ? ` · ${(s.durationMs / 1000).toFixed(1)}s`
+                : ""}
+              {s.tokensIn != null || s.tokensOut != null
+                ? ` · ${s.tokensIn ?? 0} in / ${s.tokensOut ?? 0} out tok`
+                : ""}
+              {s.isError ? " · failed" : ""}
+            </div>
+            {(s.message || s.code || s.details) && (
+              <div className="mt-0.5 whitespace-pre-wrap pl-3 text-destructive">
+                {s.message}
+                {s.code ? `${s.message ? "\n" : ""}Code: ${s.code}` : ""}
+                {s.details
+                  ? `${s.message || s.code ? "\n" : ""}Details: ${s.details}`
+                  : ""}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

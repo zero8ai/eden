@@ -15,7 +15,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { defineTool } from "eve";
+import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 const run = promisify(execFile);
@@ -34,7 +34,9 @@ export default defineTool({
     cwd: z
       .string()
       .optional()
-      .describe("Directory containing wrangler.toml (defaults to the project root)."),
+      .describe(
+        "Directory containing wrangler.toml (defaults to the project root).",
+      ),
     env: z
       .string()
       .optional()
@@ -74,7 +76,11 @@ export default defineTool({
       return { ok: true, output: tail(`${stdout}\n${stderr}`) };
     } catch (error) {
       // wrangler exits non-zero on a failed deploy — surface its stderr, not a bare stack.
-      const err = error as { stdout?: string; stderr?: string; message: string };
+      const err = error as {
+        stdout?: string;
+        stderr?: string;
+        message: string;
+      };
       return {
         ok: false,
         error: tail(err.stderr || err.stdout || err.message),

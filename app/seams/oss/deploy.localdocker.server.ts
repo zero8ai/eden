@@ -38,7 +38,15 @@ import { promisify } from "node:util";
 
 import postgres from "postgres";
 
-import { buildEveImage, buildStageTagFor, checkEveBuild } from "~/deploy/eve-image.server";
+import {
+  commandErrorText,
+  normalizeDockerCliError,
+} from "~/deploy/docker.server";
+import {
+  buildEveImage,
+  buildStageTagFor,
+  checkEveBuild,
+} from "~/deploy/eve-image.server";
 import type {
   BuildRequest,
   BuiltArtifact,
@@ -79,7 +87,10 @@ const containerName = (deploymentId: string) => `eden-inst-${deploymentId}`;
  * that sanitize to the same string can't collide onto one database.
  */
 export const worldDbName = (worldKey: string): string => {
-  const sanitized = worldKey.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 24);
+  const sanitized = worldKey
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "")
+    .slice(0, 24);
   const slug = createHash("sha1").update(worldKey).digest("hex").slice(0, 8);
   return `eden_env_${sanitized}_${slug}`;
 };
@@ -94,25 +105,26 @@ export const worldDbName = (worldKey: string): string => {
  * first sandbox use — no provisioning step.
  */
 export const homeVolumeName = (worldKey: string): string => {
-  const sanitized = worldKey.toLowerCase().replace(/[^a-z0-9_.-]/g, "").slice(0, 24);
+  const sanitized = worldKey
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]/g, "")
+    .slice(0, 24);
   const slug = createHash("sha1").update(worldKey).digest("hex").slice(0, 8);
   return `eden-home-${sanitized}-${slug}`;
 };
 
 async function docker(args: string[]): Promise<string> {
-  const { stdout } = await exec("docker", args, { maxBuffer: 16 * 1024 * 1024 });
-  return stdout.trim();
+  try {
+    const { stdout } = await exec("docker", args, {
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout.trim();
+  } catch (error) {
+    throw normalizeDockerCliError(error, `run \`docker ${args[0] ?? ""}\``);
+  }
 }
 
 type DockerRunner = (args: string[]) => Promise<string>;
-
-function commandErrorText(error: unknown): string {
-  if (typeof error === "object" && error !== null) {
-    const e = error as { stderr?: unknown; stdout?: unknown; message?: unknown };
-    return String(e.stderr || e.stdout || e.message || error);
-  }
-  return String(error);
-}
 
 function isMissingDockerObject(error: unknown): boolean {
   return /No such (container|object)|not found/i.test(commandErrorText(error));
@@ -131,7 +143,8 @@ async function provisionWorldDb(worldKey: string): Promise<string> {
   const dbName = worldDbName(worldKey);
   const admin = postgres(cp.toString(), { max: 1 });
   try {
-    const existing = await admin`select 1 from pg_database where datname = ${dbName}`;
+    const existing =
+      await admin`select 1 from pg_database where datname = ${dbName}`;
     if (existing.length === 0) {
       await admin.unsafe(`create database "${dbName}"`);
     }
@@ -150,7 +163,9 @@ async function dropWorldDb(worldKey: string): Promise<void> {
   const cp = controlPlaneUrl();
   const admin = postgres(cp.toString(), { max: 1 });
   try {
-    await admin.unsafe(`drop database if exists "${worldDbName(worldKey)}" (force)`);
+    await admin.unsafe(
+      `drop database if exists "${worldDbName(worldKey)}" (force)`,
+    );
   } catch {
     // best-effort cleanup
   } finally {
@@ -204,7 +219,14 @@ export async function runWorldMigrations(
   }
 
   try {
-    await runDocker(["run", "--rm", buildTag, "test", "-f", WORLD_POSTGRES_SETUP_SCRIPT]);
+    await runDocker([
+      "run",
+      "--rm",
+      buildTag,
+      "test",
+      "-f",
+      WORLD_POSTGRES_SETUP_SCRIPT,
+    ]);
   } catch {
     console.warn(
       `[deploy] ${WORLD_POSTGRES_SETUP_SCRIPT} not found in ${buildTag}; skipping Workflow world migrations.`,
@@ -253,7 +275,10 @@ async function containerLogsTail(name: string, lines = 40): Promise<string> {
       ["logs", "--tail", String(lines), name],
       { maxBuffer: 16 * 1024 * 1024 },
     );
-    return [stderr.trim(), stdout.trim()].filter(Boolean).join("\n") || "(no container logs)";
+    return (
+      [stderr.trim(), stdout.trim()].filter(Boolean).join("\n") ||
+      "(no container logs)"
+    );
   } catch (error) {
     return `(could not read container logs: ${commandErrorText(error)})`;
   }
@@ -294,7 +319,10 @@ export const localDockerTarget: DeployTarget = {
 
   async deploy(req: DeployRequest): Promise<InstanceHealth> {
     if (!req.imageRef) {
-      return { status: "failed", detail: "no image to run (build did not produce one)" };
+      return {
+        status: "failed",
+        detail: "no image to run (build did not produce one)",
+      };
     }
     const name = containerName(req.deploymentId);
     await removeIfExists(name);
@@ -393,7 +421,8 @@ export const localDockerTarget: DeployTarget = {
     const name = containerName(deploymentId);
     try {
       const running = await inspectRunning(name);
-      if (running === null) return { status: "stopped", detail: "no container" };
+      if (running === null)
+        return { status: "stopped", detail: "no container" };
       return { status: running ? "live" : "stopped" };
     } catch (error) {
       return { status: "failed", detail: commandErrorText(error) };
@@ -420,7 +449,10 @@ export const localDockerTarget: DeployTarget = {
     const volume = homeVolumeName(worldKey);
     try {
       const ids = await docker(["ps", "-aq", "--filter", `volume=${volume}`]);
-      const containers = ids.split("\n").map((s) => s.trim()).filter(Boolean);
+      const containers = ids
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
       if (containers.length > 0) {
         try {
           await docker(["rm", "-f", ...containers]);

@@ -3,11 +3,12 @@
   "type": "tool",
   "name": "Cloudflare Deploy",
   "description": "Deploy a Cloudflare Worker with wrangler, using credentials from the environment.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "eve": ">=0.1.0",
   "files": ["tools/cloudflare-deploy.ts"],
   "dependencies": {
-    "wrangler": "^3.0.0"
+    "wrangler": "^3.0.0",
+    "zod": "^4.4.3"
   },
   "secrets": [
     {

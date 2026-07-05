@@ -11,6 +11,13 @@ export interface ChatStep {
   tokensIn?: number | null;
   tokensOut?: number | null;
   isError?: boolean;
+  code?: string | null;
+  message?: string | null;
+  details?: string | null;
+  /** Primary tool of the step's actions (e.g. "bash", "load_skill"). Additive. */
+  toolName?: string | null;
+  /** Compacted summary of the primary action — command, skill, or file path. Additive. */
+  summary?: string | null;
 }
 
 export interface ChatEntry {

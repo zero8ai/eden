@@ -47,6 +47,12 @@ function deployDeps(): DeployDeps {
   };
 }
 
+function hasModelCredential(env: Record<string, string>): boolean {
+  return Boolean(
+    env.OPENROUTER_API_KEY || env.AI_GATEWAY_API_KEY || env.VERCEL_OIDC_TOKEN,
+  );
+}
+
 function deploymentStillActive(status: string): boolean {
   return status === "live" || status === "starting" || status === "pending";
 }
@@ -213,23 +219,6 @@ export async function deployRelease(
   ]);
 
   try {
-    let imageRef = release.imageRef;
-    const shouldBuild = input.rebuild || !imageRef;
-    if (shouldBuild) {
-      if (!project?.repoOwner || !project.repoName) {
-        throw new Error("Cannot build release: project is not connected to a GitHub repo.");
-      }
-      const built = await deployTarget.build({
-        projectId: release.projectId,
-        repo: { owner: project.repoOwner, repo: project.repoName },
-        ref: release.gitSha,
-        installationId: project.repoInstallationId,
-        agentRoot: agent?.root,
-      });
-      imageRef = built.imageRef;
-      await store.releases.setImageRef(release.id, built.imageRef);
-    }
-
     const scope: SecretScope = {
       projectId: release.projectId,
       agentId: release.agentId,
@@ -249,6 +238,12 @@ export async function deployRelease(
       const wsKey = await deps.workspaceModelKey(project.orgId);
       if (wsKey) envVars.OPENROUTER_API_KEY = wsKey;
     }
+    if (project && deps.workspaceModelKey && !hasModelCredential(envVars)) {
+      throw new Error(
+        "No model provider key configured for this deployment. Add an OpenRouter key in Org settings -> Model provider, or set an agent/environment secret named OPENROUTER_API_KEY, then redeploy.",
+      );
+    }
+
     // EDEN_SANDBOX_ENV (sandbox exposure convention): the comma-joined NAMES of the secrets
     // the human marked "available in the agent's sandbox shell"; the scaffolded sandbox.ts
     // forwards exactly those vars into the sandbox env (~/eve/templates). Eden-owned and set
@@ -259,6 +254,24 @@ export async function deployRelease(
     const exposed = deps.sandboxExposedNames ? await deps.sandboxExposedNames(scope) : [];
     const allowlist = exposed.filter((name) => name in envVars);
     if (allowlist.length > 0) envVars.EDEN_SANDBOX_ENV = allowlist.join(",");
+
+    let imageRef = release.imageRef;
+    const shouldBuild = input.rebuild || !imageRef;
+    if (shouldBuild) {
+      if (!project?.repoOwner || !project.repoName) {
+        throw new Error("Cannot build release: project is not connected to a GitHub repo.");
+      }
+      const built = await deployTarget.build({
+        projectId: release.projectId,
+        repo: { owner: project.repoOwner, repo: project.repoName },
+        ref: release.gitSha,
+        installationId: project.repoInstallationId,
+        agentRoot: agent?.root,
+      });
+      imageRef = built.imageRef;
+      await store.releases.setImageRef(release.id, built.imageRef);
+    }
+
     const health = await deployTarget.deploy({
       deploymentId: dep.id,
       imageRef: imageRef ?? "",

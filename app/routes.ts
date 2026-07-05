@@ -113,6 +113,12 @@ export default [
   }),
   // Staged-draft count for the nav pill (AgentNav); `?agent=` scopes to one member.
   route("repos/:projectId/staged-count", "routes/api.staged-count.tsx"),
+  // Playground streaming turn: the page POSTs here and reads an NDJSON stream of the turn.
+  // Single registration — team-member selection travels as a form field, not a URL param.
+  route(
+    "api/repos/:projectId/playground/stream",
+    "routes/api.projects.$projectId.playground.stream.ts",
+  ),
   route("api/github/webhook", "routes/api.github.webhook.tsx"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
   route("api/models", "routes/api.models.tsx"),

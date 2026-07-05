@@ -2,40 +2,53 @@ import { mkdir } from "node:fs/promises";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const execFile = vi.fn(
-  (
-    cmd: string,
-    args: string[],
-    optionsOrCallback:
-      | { maxBuffer?: number }
-      | ((error: Error | null, stdout: string, stderr: string) => void),
-    maybeCallback?: (error: Error | null, stdout: string, stderr: string) => void,
-  ) => {
-    const callback =
-      typeof optionsOrCallback === "function"
-        ? optionsOrCallback
-        : maybeCallback!;
+type ExecCallback = (
+  error: Error | null,
+  stdout: string,
+  stderr: string,
+) => void;
 
-    if (cmd === "mkdir") {
-      mkdir(args[1], { recursive: true }).then(
-        () => callback(null, "", ""),
-        (error) => callback(error, "", ""),
-      );
-      return;
-    }
+type ExecOptionsOrCallback =
+  { maxBuffer?: number; timeout?: number } | ExecCallback;
 
-    if (cmd === "tar") {
-      const target = args[args.indexOf("-C") + 1];
-      mkdir(target, { recursive: true }).then(
-        () => callback(null, "", ""),
-        (error) => callback(error, "", ""),
-      );
-      return;
-    }
+function execCallback(
+  optionsOrCallback: ExecOptionsOrCallback,
+  maybeCallback?: ExecCallback,
+): ExecCallback {
+  return typeof optionsOrCallback === "function"
+    ? optionsOrCallback
+    : maybeCallback!;
+}
 
-    callback(null, "", "");
-  },
-);
+function defaultExecFile(
+  cmd: string,
+  args: string[],
+  optionsOrCallback: ExecOptionsOrCallback,
+  maybeCallback?: ExecCallback,
+) {
+  const callback = execCallback(optionsOrCallback, maybeCallback);
+
+  if (cmd === "mkdir") {
+    mkdir(args[1], { recursive: true }).then(
+      () => callback(null, "", ""),
+      (error) => callback(error, "", ""),
+    );
+    return;
+  }
+
+  if (cmd === "tar") {
+    const target = args[args.indexOf("-C") + 1];
+    mkdir(target, { recursive: true }).then(
+      () => callback(null, "", ""),
+      (error) => callback(error, "", ""),
+    );
+    return;
+  }
+
+  callback(null, "", "");
+}
+
+const execFile = vi.fn(defaultExecFile);
 
 vi.mock("node:child_process", () => ({ execFile }));
 
@@ -48,6 +61,153 @@ vi.mock("~/github/client.server", () => ({
 describe("checkEveBuild", () => {
   beforeEach(() => {
     execFile.mockClear();
+    execFile.mockImplementation(defaultExecFile);
+  });
+
+  it("fails deploy builds fast when the Docker daemon is unhealthy", async () => {
+    const { buildEveImage } = await import("~/deploy/eve-image.server");
+
+    execFile.mockImplementationOnce(
+      (
+        _cmd: string,
+        _args: string[],
+        optionsOrCallback:
+          | { maxBuffer?: number; timeout?: number }
+          | ((error: Error | null, stdout: string, stderr: string) => void),
+        maybeCallback?: (
+          error: Error | null,
+          stdout: string,
+          stderr: string,
+        ) => void,
+      ) => {
+        const callback =
+          typeof optionsOrCallback === "function"
+            ? optionsOrCallback
+            : maybeCallback!;
+        const stderr =
+          "ERROR: request returned 500 Internal Server Error for API route and version http://%2FUsers%2Faaron%2F.docker%2Frun%2Fdocker.sock/_ping";
+        const error = Object.assign(
+          new Error(`Command failed: docker version\n${stderr}`),
+          {
+            stderr,
+          },
+        );
+        callback(error, "", stderr);
+      },
+    );
+
+    await expect(
+      buildEveImage({
+        projectId: "proj_1",
+        repo: { owner: "acme", repo: "agents" },
+        ref: "abc123",
+        installationId: "inst_1",
+      }),
+    ).rejects.toMatchObject({
+      name: "DockerUnavailableError",
+      message: expect.stringContaining("Docker is not responding"),
+    });
+
+    expect(execFile).toHaveBeenCalledWith(
+      "docker",
+      ["version", "--format", "{{.Server.Version}}"],
+      expect.objectContaining({ timeout: 10_000 }),
+      expect.any(Function),
+    );
+  });
+
+  it("reports Eve build errors without the full docker transcript", async () => {
+    const { buildEveImage } = await import("~/deploy/eve-image.server");
+
+    execFile.mockImplementation(
+      (
+        cmd: string,
+        args: string[],
+        optionsOrCallback: ExecOptionsOrCallback,
+        maybeCallback?: ExecCallback,
+      ) => {
+        const callback = execCallback(optionsOrCallback, maybeCallback);
+        if (cmd === "docker" && args[0] === "build") {
+          const stderr = [
+            "#11 [build 7/7] RUN npm exec -- eve build",
+            "#11 0.670 The requested module 'eve' does not provide an export named 'defineTool'",
+            '#11 ERROR: process "/bin/sh -c npm exec -- eve build" did not complete successfully: exit code: 1',
+          ].join("\n");
+          const error = Object.assign(
+            new Error(`Command failed: docker build\n${stderr}`),
+            { stderr },
+          );
+          callback(error, "", stderr);
+          return;
+        }
+        defaultExecFile(cmd, args, optionsOrCallback, maybeCallback);
+      },
+    );
+
+    let message = "";
+    try {
+      await buildEveImage({
+        projectId: "proj_1",
+        repo: { owner: "acme", repo: "agents" },
+        ref: "abc123",
+        installationId: "inst_1",
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain("Agent image build failed");
+    expect(message).toContain(
+      "The requested module 'eve' does not provide an export named 'defineTool'",
+    );
+    expect(message).not.toContain("Command failed: docker build");
+  });
+
+  it("skips publish checks when the Docker daemon is unavailable", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { checkEveBuild } = await import("~/deploy/eve-image.server");
+
+      execFile.mockImplementationOnce(
+        (
+          _cmd: string,
+          _args: string[],
+          optionsOrCallback:
+            | { maxBuffer?: number; timeout?: number }
+            | ((error: Error | null, stdout: string, stderr: string) => void),
+          maybeCallback?: (
+            error: Error | null,
+            stdout: string,
+            stderr: string,
+          ) => void,
+        ) => {
+          const callback =
+            typeof optionsOrCallback === "function"
+              ? optionsOrCallback
+              : maybeCallback!;
+          const error = Object.assign(
+            new Error("Command failed: docker version"),
+            {
+              killed: true,
+              signal: "SIGTERM",
+            },
+          );
+          callback(error, "", "");
+        },
+      );
+
+      await expect(
+        checkEveBuild({
+          projectId: "proj_1",
+          repo: { owner: "acme", repo: "agents" },
+          ref: "abc123",
+          installationId: "inst_1",
+          overlay: [],
+        }),
+      ).resolves.toEqual({ ok: true, skipped: true });
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("creates a missing new-member package directory before adding the Dockerfile", async () => {
@@ -94,8 +254,12 @@ describe("checkEveBuild", () => {
 describe("EDEN_EVE_DOCKERFILE", () => {
   it("boots via the eve bin (`eve start`), not the raw Nitro entry", async () => {
     const { EDEN_EVE_DOCKERFILE } = await import("~/deploy/eve-image.server");
-    expect(EDEN_EVE_DOCKERFILE).toContain('CMD ["node_modules/.bin/eve", "start"]');
-    expect(EDEN_EVE_DOCKERFILE).not.toContain('CMD ["node", ".output/server/index.mjs"]');
+    expect(EDEN_EVE_DOCKERFILE).toContain(
+      'CMD ["node_modules/.bin/eve", "start"]',
+    );
+    expect(EDEN_EVE_DOCKERFILE).not.toContain(
+      'CMD ["node", ".output/server/index.mjs"]',
+    );
     // Not via npm exec/npm run either — unreliable SIGTERM forwarding as PID 1, and Eden's
     // scale-to-zero is a docker stop.
     expect(EDEN_EVE_DOCKERFILE).not.toMatch(/CMD.*npm (exec|run)/);

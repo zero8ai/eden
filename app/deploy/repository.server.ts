@@ -15,9 +15,46 @@ export interface RepositoryDeps {
   deployTarget: DeployTarget;
 }
 
+export const REPOSITORY_TEARDOWN_TIMEOUT_MS = Number(
+  process.env.EDEN_REPOSITORY_TEARDOWN_TIMEOUT_MS ?? 60 * 1000,
+);
+
 function repoDeps(): RepositoryDeps {
   const r = getRuntime();
   return { store: r.data, deployTarget: r.deployTarget };
+}
+
+async function bestEffortTeardown(
+  label: string,
+  operation: () => Promise<void>,
+): Promise<"ok" | "failed" | "timed_out"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timed_out">((resolve) => {
+    timer = setTimeout(resolve, REPOSITORY_TEARDOWN_TIMEOUT_MS, "timed_out");
+  });
+  try {
+    const result = await Promise.race([
+      operation().then(
+        () => "ok" as const,
+        (error) => {
+          console.warn(
+            `[repository.delete] ${label} failed; continuing`,
+            error,
+          );
+          return "failed" as const;
+        },
+      ),
+      timeout,
+    ]);
+    if (result === "timed_out") {
+      console.warn(
+        `[repository.delete] ${label} timed out after ${REPOSITORY_TEARDOWN_TIMEOUT_MS}ms; continuing`,
+      );
+    }
+    return result;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export async function deleteRepository(
@@ -32,24 +69,29 @@ export async function deleteRepository(
   // Best-effort per instance: a half-torn-down deployment must not leave the repository
   // undeletable.
   const envs = await store.environments.listByProject(project.id);
-  for (const env of envs) {
-    const deployments = await store.deployments.listByEnvironment(env.id);
-    for (const dep of deployments) {
-      try {
-        if (deployTarget.destroy) await deployTarget.destroy(dep.id);
-        else await deployTarget.stop(dep.id);
-      } catch {
-        // container already gone / target unreachable — the row delete is authoritative
-      }
-    }
-    // Per-deployment destroy leaves the environment's shared Workflow world (sessions +
-    // sandboxes) — drop it once all of the env's deployments are gone.
-    try {
-      await deployTarget.destroyWorld?.(env.id);
-    } catch {
-      // best-effort — a leftover world DB never blocks the repository delete
-    }
-  }
+  const teardownResults = await Promise.all(
+    envs.map(async (env) => {
+      const deployments = await store.deployments.listByEnvironment(env.id);
+      const deploymentResults = await Promise.all(
+        deployments.map((dep) =>
+          bestEffortTeardown(`deployment ${dep.id}`, async () => {
+            if (deployTarget.destroy) await deployTarget.destroy(dep.id);
+            else await deployTarget.stop(dep.id);
+          }),
+        ),
+      );
+      // Per-deployment destroy leaves the environment's shared Workflow world (sessions +
+      // sandboxes) — drop it once all of the env's deployments are gone.
+      const destroyWorld = deployTarget.destroyWorld;
+      const worldResult = destroyWorld
+        ? await bestEffortTeardown(`world ${env.id}`, () => destroyWorld(env.id))
+        : "ok";
+      return [...deploymentResults, worldResult];
+    }),
+  );
+  const teardownIssues = teardownResults
+    .flat()
+    .filter((r) => r !== "ok").length;
 
   // Audit before the delete (the audit table is org-scoped and survives the cascade).
   await store.audit.record({
@@ -57,7 +99,7 @@ export async function deleteRepository(
     actorUserId: input.createdBy ?? null,
     action: "repository.delete",
     target: project.name,
-    meta: { projectId: project.id, environments: envs.length },
+    meta: { projectId: project.id, environments: envs.length, teardownIssues },
   });
   await store.projects.deleteById(project.id);
 }

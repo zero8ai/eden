@@ -10,6 +10,7 @@ import type { DataStore, DraftChange } from "~/data/ports";
 import { agentForPath } from "~/db/queries.server";
 import {
   ensureOpenRouterDependency,
+  LEGACY_OPENROUTER_PROVIDER_PACKAGE,
   OPENROUTER_PROVIDER_PACKAGE,
 } from "~/eve/agentModule";
 import { readAgentFile } from "~/github/repo.server";
@@ -218,7 +219,7 @@ function usesOpenRouter(source: string | null | undefined): boolean {
   return Boolean(
     source &&
       (source.includes(OPENROUTER_PROVIDER_PACKAGE) ||
-        /\bopenrouter\s*\(/.test(source)),
+        /\bopenrouter(?:\.chatModel)?\s*\(/.test(source)),
   );
 }
 
@@ -236,7 +237,8 @@ async function normalizeOpenRouterPackageDrafts(input: {
   for (const file of byPath.values()) {
     if (
       file.path.endsWith("package.json") &&
-      file.content?.includes(OPENROUTER_PROVIDER_PACKAGE)
+      (file.content?.includes(OPENROUTER_PROVIDER_PACKAGE) ||
+        file.content?.includes(LEGACY_OPENROUTER_PROVIDER_PACKAGE))
     ) {
       file.content = ensureOpenRouterDependency(file.content);
     }

@@ -4,10 +4,13 @@
  * delete (afterwards nothing could find the containers), the audit entry lands, the cascade
  * removes dependent rows, and a missing destroy() falls back to stop().
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createRelease, deployRelease } from "~/deploy/controller.server";
-import { deleteRepository } from "~/deploy/repository.server";
+import {
+  deleteRepository,
+  REPOSITORY_TEARDOWN_TIMEOUT_MS,
+} from "~/deploy/repository.server";
 import { createProject } from "~/db/queries.server";
 import { fakeDeployTarget, fakeSecrets } from "../fakes/infra";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
@@ -30,7 +33,9 @@ async function seedRunningProject() {
     { environmentId: env.id, releaseId: release.id },
     {
       store,
-      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://x" } }),
+      deployTarget: fakeDeployTarget({
+        health: { status: "live", url: "http://x" },
+      }),
       secrets: fakeSecrets(),
     },
   );
@@ -87,7 +92,10 @@ describe("deleteRepository", () => {
         stopped.push(id);
       },
     };
-    await deleteRepository({ projectId: project.id }, { store, deployTarget: target });
+    await deleteRepository(
+      { projectId: project.id },
+      { store, deployTarget: target },
+    );
     expect(stopped).toContain(dep.id);
     expect(await store.projects.findById(project.id)).toBeNull();
   });
@@ -100,8 +108,36 @@ describe("deleteRepository", () => {
         throw new Error("docker unreachable");
       },
     };
-    await deleteRepository({ projectId: project.id }, { store, deployTarget: target });
+    await deleteRepository(
+      { projectId: project.id },
+      { store, deployTarget: target },
+    );
     expect(await store.projects.findById(project.id)).toBeNull();
+  });
+
+  it("a hung teardown times out and still deletes the repository", async () => {
+    const { project } = await seedRunningProject();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const target = {
+        ...fakeDeployTarget(),
+        destroy: async () => new Promise<void>(() => {}),
+      };
+      const promise = deleteRepository(
+        { projectId: project.id },
+        { store, deployTarget: target },
+      );
+
+      await vi.advanceTimersByTimeAsync(REPOSITORY_TEARDOWN_TIMEOUT_MS + 1);
+      await promise;
+
+      expect(await store.projects.findById(project.id)).toBeNull();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("timed out"));
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 
   it("throws for an unknown repository", async () => {

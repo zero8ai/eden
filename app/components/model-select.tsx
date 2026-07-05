@@ -2,7 +2,7 @@
  * Searchable model picker over the live OpenRouter catalog (replaces the old shortlist
  * dropdown + free-text field).
  *
- * Agent model ids are OpenRouter ids and are written into `openrouter("...")` provider wiring
+ * Agent model ids are OpenRouter ids and are written into `openrouter.chatModel("...")` wiring
  * by the settings route. The catalog is fetched lazily (`/api/models`, on first open) so the
  * settings page pays nothing until the picker opens, and the whole thing degrades gracefully:
  * if OpenRouter is unreachable the picker becomes a plain free-text field, so model editing

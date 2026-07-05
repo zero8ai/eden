@@ -129,6 +129,12 @@ describe("fixture catalog (the real in-repo seed)", () => {
       // The index row agrees with the manifest.
       expect(entry.name).toBe(template.manifest.name);
       expect(entry.version).toBe(template.manifest.version);
+
+      for (const content of Object.values(template.files)) {
+        if (content.includes("defineTool")) {
+          expect(content).not.toMatch(/from\s+["']eve["']/);
+        }
+      }
     }
   });
 });

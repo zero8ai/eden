@@ -11,7 +11,18 @@ import {
   setModel,
 } from "~/eve/agentModule";
 
-const WRAPPED = `import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+const WRAPPED = `import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { defineAgent } from "eve";
+
+const openrouter = createOpenAICompatible({ name: "openrouter", baseURL: "https://openrouter.ai/api/v1", apiKey: process.env.OPENROUTER_API_KEY ?? "" });
+
+export default defineAgent({
+  model: openrouter.chatModel("anthropic/claude-sonnet-4.5"),
+  modelContextWindowTokens: 200_000,
+});
+`;
+
+const LEGACY_WRAPPED = `import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { defineAgent } from "eve";
 
 const openrouter = createOpenRouter({ apiKey: process.env.OPENROUTER_API_KEY ?? "" });
@@ -43,9 +54,17 @@ describe("setModel", () => {
     const next = setModel(WRAPPED, "z-ai/glm-5.2", {
       contextWindowTokens: 131_072,
     });
-    expect(next).toContain(`model: openrouter('z-ai/glm-5.2')`);
+    expect(next).toContain(`model: openrouter.chatModel('z-ai/glm-5.2')`);
     expect(next).toContain("modelContextWindowTokens: 131072");
     expect(next.match(/\bmodel\s*:/g)).toHaveLength(1);
+    expect(readModel(next)).toBe("z-ai/glm-5.2");
+  });
+
+  it("migrates the legacy OpenRouter provider wiring when setting a model", () => {
+    const next = setModel(LEGACY_WRAPPED, "z-ai/glm-5.2");
+    expect(next).toContain("@ai-sdk/openai-compatible");
+    expect(next).not.toContain("@openrouter/ai-sdk-provider");
+    expect(next).toContain(`model: openrouter.chatModel('z-ai/glm-5.2')`);
     expect(readModel(next)).toBe("z-ai/glm-5.2");
   });
 
@@ -54,12 +73,12 @@ describe("setModel", () => {
       contextWindowTokens: 400_000,
     });
     expect(next).toContain(
-      `import { createOpenRouter } from '@openrouter/ai-sdk-provider';`,
+      `import { createOpenAICompatible } from '@ai-sdk/openai-compatible';`,
     );
     expect(next).toContain(
-      `const openrouter = createOpenRouter({ apiKey: process.env.OPENROUTER_API_KEY ?? '' });`,
+      `const openrouter = createOpenAICompatible({ name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY ?? '' });`,
     );
-    expect(next).toContain(`model: openrouter('openai/gpt-5.1')`);
+    expect(next).toContain(`model: openrouter.chatModel('openai/gpt-5.1')`);
     expect(next).toContain("modelContextWindowTokens: 400000");
     expect(readModel(next)).toBe("openai/gpt-5.1");
     expect(next.match(/\bmodel\s*:/g)).toHaveLength(1);
@@ -71,13 +90,13 @@ describe("setModel", () => {
       "anthropic/claude-haiku-4-5",
     );
     expect(readModel(next)).toBe("anthropic/claude-haiku-4-5");
-    expect(next).toContain("model: openrouter('anthropic/claude-haiku-4-5')");
+    expect(next).toContain("model: openrouter.chatModel('anthropic/claude-haiku-4-5')");
   });
 
   it("scaffolds OpenRouter wiring when no agent module exists", () => {
     const next = setModel("", "anthropic/claude-sonnet-5");
-    expect(next).toContain("@openrouter/ai-sdk-provider");
-    expect(next).toContain("model: openrouter('anthropic/claude-sonnet-5')");
+    expect(next).toContain("@ai-sdk/openai-compatible");
+    expect(next).toContain("model: openrouter.chatModel('anthropic/claude-sonnet-5')");
     expect(next).toContain("modelContextWindowTokens: 200000");
   });
 });
@@ -88,7 +107,7 @@ describe("ensureOpenRouterDependency", () => {
       JSON.stringify({ dependencies: { eve: "latest", zod: "^3.23.0" } }, null, 2) + "\n",
     );
     expect(JSON.parse(next).dependencies).toEqual({
-      "@openrouter/ai-sdk-provider": "^6.0.0-alpha.1",
+      "@ai-sdk/openai-compatible": "^3.0.5",
       eve: "latest",
       zod: "^4.4.3",
     });
@@ -99,7 +118,7 @@ describe("ensureOpenRouterDependency", () => {
       JSON.stringify(
         {
           dependencies: {
-            "@openrouter/ai-sdk-provider": "^6.0.0-alpha.1",
+            "@ai-sdk/openai-compatible": "^3.0.5",
             zod: "^4.4.3",
           },
         },
@@ -124,7 +143,7 @@ describe("ensureOpenRouterDependency", () => {
       ) + "\n",
     );
     expect(JSON.parse(next).dependencies).toEqual({
-      "@openrouter/ai-sdk-provider": "^6.0.0-alpha.1",
+      "@ai-sdk/openai-compatible": "^3.0.5",
       eve: "latest",
       zod: "^4.4.3",
     });

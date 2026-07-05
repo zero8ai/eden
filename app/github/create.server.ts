@@ -18,8 +18,6 @@
 import {
   OPENROUTER_PROVIDER_PACKAGE,
   OPENROUTER_PROVIDER_VERSION,
-  ZOD_PACKAGE,
-  ZOD_VERSION,
   scaffoldAgentModule,
 } from "~/eve/agentModule";
 import { DEFAULT_SANDBOX_MODULE, sandboxPath } from "~/eve/templates";
@@ -57,10 +55,15 @@ const DEFAULT_MODEL = "moonshotai/kimi-k2.7-code";
 /** The scaffolded first member of a team repo — a placeholder the customer renames/extends. */
 const STARTER_MEMBER = "assistant";
 
-const GITIGNORE = ".eve/\n.output/\n.workflow-data/\nnode_modules/\n.env\n.env.*\n";
+const GITIGNORE =
+  ".eve/\n.output/\n.workflow-data/\nnode_modules/\n.env\n.env.*\n";
 
 /** The files every eve agent directory starts with, under `root` (e.g. "agent"). */
-function agentDirFiles(root: string, displayName: string, model: string): FileChange[] {
+function agentDirFiles(
+  root: string,
+  displayName: string,
+  model: string,
+): FileChange[] {
   return [
     {
       path: `${root}/instructions.md`,
@@ -71,10 +74,6 @@ function agentDirFiles(root: string, displayName: string, model: string): FileCh
     // exposed (the EDEN_SANDBOX_ENV convention — see ~/eve/templates), but present from day
     // one so "make X available in my sandbox" is an edit, not a new concept.
     { path: sandboxPath(root), content: DEFAULT_SANDBOX_MODULE },
-    {
-      path: `${root}/tools/example.ts`,
-      content: `import { defineTool } from 'eve';\nimport { z } from 'zod';\n\nexport default defineTool({\n  description: 'An example tool. Replace with your own.',\n  inputSchema: z.object({\n    name: z.string().describe('Who to greet'),\n  }),\n  async execute({ name }) {\n    return \`Hello, \${name}!\`;\n  },\n});\n`,
-    },
   ];
 }
 
@@ -83,7 +82,11 @@ function packageJson(fields: Record<string, unknown>): string {
 }
 
 /** A fresh single-agent eve skeleton: `agent/` at the repo root. */
-function singleAgentFiles(name: string, model: string, agentName: string): FileChange[] {
+function singleAgentFiles(
+  name: string,
+  model: string,
+  agentName: string,
+): FileChange[] {
   return [
     ...agentDirFiles("agent", agentName, model),
     {
@@ -96,7 +99,6 @@ function singleAgentFiles(name: string, model: string, agentName: string): FileC
         dependencies: {
           [OPENROUTER_PROVIDER_PACKAGE]: OPENROUTER_PROVIDER_VERSION,
           eve: "latest",
-          [ZOD_PACKAGE]: ZOD_VERSION,
         },
       }),
     },
@@ -112,7 +114,10 @@ function singleAgentFiles(name: string, model: string, agentName: string): FileC
  * The files for ONE team member: a complete eve project under `agents/<member>/`. Used by
  * the team scaffold and by the add-member flow (which lands them as a change-set).
  */
-export function memberScaffold(member: string, model: string = DEFAULT_MODEL): FileChange[] {
+export function memberScaffold(
+  member: string,
+  model: string = DEFAULT_MODEL,
+): FileChange[] {
   const memberDir = `agents/${member}`;
   return [
     ...agentDirFiles(`${memberDir}/agent`, member, model),
@@ -126,7 +131,6 @@ export function memberScaffold(member: string, model: string = DEFAULT_MODEL): F
         dependencies: {
           [OPENROUTER_PROVIDER_PACKAGE]: OPENROUTER_PROVIDER_VERSION,
           eve: "latest",
-          [ZOD_PACKAGE]: ZOD_VERSION,
         },
       }),
     },
@@ -137,7 +141,11 @@ export function memberScaffold(member: string, model: string = DEFAULT_MODEL): F
  * A fresh team monorepo skeleton (PRD §7.9): npm workspaces, each member a complete eve
  * project under `agents/<member>/`, detected by convention. `eden.json` is metadata only.
  */
-function teamFiles(name: string, model: string, firstMember: string): FileChange[] {
+function teamFiles(
+  name: string,
+  model: string,
+  firstMember: string,
+): FileChange[] {
   return [
     ...memberScaffold(firstMember, model),
     {
@@ -251,7 +259,11 @@ export async function createEveRepo(
   const branch = repo.default_branch;
 
   // The auto-init commit lands asynchronously — wait for the branch before committing onto it.
-  await waitForBranch(octokit, { owner: input.owner, repo: input.name }, branch);
+  await waitForBranch(
+    octokit,
+    { owner: input.owner, repo: input.name },
+    branch,
+  );
 
   // Commit the skeleton directly to the default branch — a brand-new repo needs no PR.
   // One commit for the whole scaffold via the Git Data API (blobs upload in parallel).
@@ -265,7 +277,9 @@ export async function createEveRepo(
     { owner: input.owner, repo: input.name },
     branch,
     files,
-    layout === "team" ? "chore: scaffold eve agent team" : "chore: scaffold eve agent",
+    layout === "team"
+      ? "chore: scaffold eve agent team"
+      : "chore: scaffold eve agent",
   );
 
   return {

@@ -15,7 +15,7 @@ import {
 const SINGLE = [
   "agent/instructions.md",
   "agent/agent.ts",
-  "agent/tools/example.ts",
+  "agent/schedules/morning.md",
 ];
 
 const TEAM = [
@@ -29,7 +29,9 @@ const TEAM = [
 
 describe("detectAgentRoots", () => {
   it("detects a single-agent repo as the one 'agent' root", () => {
-    expect(detectAgentRoots(SINGLE)).toEqual([{ name: "agent", root: "agent" }]);
+    expect(detectAgentRoots(SINGLE)).toEqual([
+      { name: "agent", root: "agent" },
+    ]);
   });
 
   it("detects team members by the agents/<member>/agent convention, sorted", () => {
@@ -40,7 +42,9 @@ describe("detectAgentRoots", () => {
   });
 
   it("ignores agents/ entries without an inner agent/ directory", () => {
-    expect(detectAgentRoots(["agents/notes.md", "agents/x/README.md"])).toEqual([]);
+    expect(detectAgentRoots(["agents/notes.md", "agents/x/README.md"])).toEqual(
+      [],
+    );
   });
 
   it("prefers single-agent layout when both shapes exist", () => {
@@ -82,7 +86,8 @@ describe("buildAgentConfig with a member root", () => {
 
   it("defaults to the single-agent root", () => {
     const config = buildAgentConfig({ paths: SINGLE, files: {} });
-    expect(config.tools.map((t) => t.name)).toEqual(["example"]);
+    expect(config.tools).toEqual([]);
+    expect(config.schedules.map((t) => t.name)).toEqual(["morning"]);
   });
 });
 
@@ -119,7 +124,11 @@ describe("detectSandbox", () => {
     // Not a sandbox module: wrong extension, nested under a category, or another agent's.
     expect(
       detectSandbox(
-        ["agent/sandbox.md", "agent/tools/sandbox.ts", "agents/x/agent/sandbox.ts"],
+        [
+          "agent/sandbox.md",
+          "agent/tools/sandbox.ts",
+          "agents/x/agent/sandbox.ts",
+        ],
         "agent",
       ),
     ).toBeNull();
@@ -136,9 +145,15 @@ describe("buildAgentConfig sandbox detection", () => {
       "agent/subagents/writer/instructions.md",
     ];
     const config = buildAgentConfig({ paths, files: {} });
-    expect(config.sandbox).toEqual({ path: "agent/sandbox.ts", hasWorkspace: false });
+    expect(config.sandbox).toEqual({
+      path: "agent/sandbox.ts",
+      hasWorkspace: false,
+    });
     expect(config.subagentSandboxes).toEqual({
-      researcher: { path: "agent/subagents/researcher/sandbox.ts", hasWorkspace: false },
+      researcher: {
+        path: "agent/subagents/researcher/sandbox.ts",
+        hasWorkspace: false,
+      },
     });
   });
 
@@ -169,11 +184,18 @@ describe("withPreservedNames", () => {
   it("keeps the human-given name for the root-layout member", async () => {
     const { withPreservedNames } = await import("~/db/queries.server");
     const existing = [
-      { id: "a1", projectId: "p", name: "pm", root: "agent", createdAt: new Date(), updatedAt: new Date() },
+      {
+        id: "a1",
+        projectId: "p",
+        name: "pm",
+        root: "agent",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
     ];
-    expect(withPreservedNames(existing, [{ name: "agent", root: "agent" }])).toEqual([
-      { name: "pm", root: "agent" },
-    ]);
+    expect(
+      withPreservedNames(existing, [{ name: "agent", root: "agent" }]),
+    ).toEqual([{ name: "pm", root: "agent" }]);
     // Team members are named by directory — untouched.
     expect(
       withPreservedNames(existing, [{ name: "qa", root: "agents/qa/agent" }]),

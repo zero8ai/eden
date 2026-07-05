@@ -38,7 +38,9 @@ const toolTpl: CatalogTemplate = {
     eve: ">=0.1.0",
     files: ["tools/cloudflare-deploy.ts"],
     dependencies: { wrangler: "^3.0.0" },
-    secrets: [{ name: "CLOUDFLARE_API_TOKEN", description: "token", sandbox: true }],
+    secrets: [
+      { name: "CLOUDFLARE_API_TOKEN", description: "token", sandbox: true },
+    ],
   },
   files: { "tools/cloudflare-deploy.ts": "export default {};\n" },
 };
@@ -119,8 +121,13 @@ describe("planInstall — path mapping", () => {
     // No package.json existed → a fresh one is written at the repo root, carrying the dep.
     expect(paths).toContain("package.json");
     const lockWrite = plan.writes.find((w) => w.path === "eden-lock.json")!;
-    expect(findInstall(parseLock(JSON.parse(lockWrite.content)), "cloudflare-deploy", null))
-      .toBeDefined();
+    expect(
+      findInstall(
+        parseLock(JSON.parse(lockWrite.content)),
+        "cloudflare-deploy",
+        null,
+      ),
+    ).toBeDefined();
   });
 
   it("maps an agent into a NEW team member with a generated package.json", () => {
@@ -142,7 +149,8 @@ describe("planInstall — path mapping", () => {
     expect(plan.conflicts).toEqual([]);
 
     const gen = JSON.parse(
-      plan.writes.find((w) => w.path === "agents/deployer/package.json")!.content,
+      plan.writes.find((w) => w.path === "agents/deployer/package.json")!
+        .content,
     );
     expect(gen.name).toBe("deployer");
     expect(gen.type).toBe("module");
@@ -156,7 +164,9 @@ describe("planInstall — path mapping", () => {
     // The lock records final paths, EXCLUDING the generated package.json.
     const entry = findInstall(
       parseLock(
-        JSON.parse(plan.writes.find((w) => w.path === "eden-lock.json")!.content),
+        JSON.parse(
+          plan.writes.find((w) => w.path === "eden-lock.json")!.content,
+        ),
       ),
       "cloudflare-deployment-engineer",
       "deployer",
@@ -171,8 +181,12 @@ describe("planInstall — path mapping", () => {
 
 describe("planInstall — dependency merge policy", () => {
   it("adds a dependency the package doesn't have", () => {
-    const plan = planInstall(memberCtx({ packageJson: pkg({ zod: "^3.23.0" }) }));
-    const pkgWrite = plan.writes.find((w) => w.path === "agents/pm/package.json")!;
+    const plan = planInstall(
+      memberCtx({ packageJson: pkg({ zod: "^3.23.0" }) }),
+    );
+    const pkgWrite = plan.writes.find(
+      (w) => w.path === "agents/pm/package.json",
+    )!;
     expect(pkgWrite).toBeDefined();
     expect(JSON.parse(pkgWrite.content).dependencies).toEqual({
       wrangler: "^3.0.0",

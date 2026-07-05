@@ -8,14 +8,29 @@
  *                → same session, context retained (the token stays valid for the session)
  *   Events:      GET  /eve/v1/session/:id/stream   — NDJSON {type, data, meta.at}:
  *                session.started (runtime.modelId) → turn.started → message.received →
- *                step.started → message.appended (messageSoFar) → message.completed
- *                (data.message = full reply) → step.completed (data.usage tokens) →
- *                turn.completed → session.waiting
+ *                step.started → actions.requested → action.result → message.appended
+ *                (messageSoFar) → message.completed (data.message = full reply) →
+ *                step.completed (data.usage tokens) → turn.completed → session.waiting
  *
  * IMPORTANT: the stream REPLAYS the session's whole history on connect, so a follow-up turn
  * must attribute events to OUR turn (matched by message text + a post-time timestamp guard)
  * rather than settling on the first replayed turn.completed.
+ *
+ * The turn is consumed as a live async generator (`streamTurn`): it yields incremental
+ * `TalkEvent`s — model, thinking, tool actions, cumulative reply text, completed steps — and
+ * ALWAYS ends with a `done` event carrying the settled `TurnResult`. `sendTurn` is a thin
+ * wrapper that drains the generator and returns that result, so callers that only want the
+ * final transcript keep the same shape and semantics they always had.
  */
+
+/** One action (tool call) inside a step, correlated request → result. */
+export interface TurnAction {
+  toolName: string;
+  summary?: string;
+  /** Process exit code when the tool's output carried one (bash-style tools). */
+  exitCode?: number;
+  isError?: boolean;
+}
 
 export interface TurnStep {
   type: string;
@@ -24,6 +39,15 @@ export interface TurnStep {
   tokensIn?: number;
   tokensOut?: number;
   isError: boolean;
+  code?: string;
+  message?: string;
+  details?: string;
+  /** Primary tool of the step's actions (additive). */
+  toolName?: string;
+  /** Compacted summary of the primary action (command, skill, path) (additive). */
+  summary?: string;
+  /** Every tool call made during the step, request correlated to result (additive). */
+  actions?: TurnAction[];
 }
 
 export interface TurnResult {
@@ -36,16 +60,39 @@ export interface TurnResult {
   replyIsStructured: boolean;
   /** Model that served the turn (from session.started runtime metadata). */
   modelId: string | null;
+  /** eve's per-session turn id (turn_0, turn_1, …); the run's external id component. */
+  turnId: string | null;
   steps: TurnStep[];
   error: string | null;
 }
+
+/**
+ * Live events yielded while a turn runs. Every stream ends with exactly one `done`, on every
+ * path (success, failure, timeout, unreachable agent) — consumers can rely on it.
+ */
+export type TalkEvent =
+  | { kind: "session"; sessionId: string; continuationToken: string | null }
+  | { kind: "turn"; turnId: string }
+  | { kind: "model"; modelId: string }
+  | { kind: "thinking" }
+  | { kind: "action"; toolName: string; summary?: string }
+  | { kind: "text"; text: string }
+  | { kind: "step"; step: TurnStep }
+  | { kind: "done"; result: TurnResult };
 
 /** Pull a human-readable text out of an unknown event payload, if one exists. */
 function textOf(obj: unknown): string | null {
   if (typeof obj === "string") return obj;
   if (typeof obj !== "object" || obj === null) return null;
   const o = obj as Record<string, unknown>;
-  for (const key of ["text", "content", "message", "output", "result", "reply"]) {
+  for (const key of [
+    "text",
+    "content",
+    "message",
+    "output",
+    "result",
+    "reply",
+  ]) {
     const v = o[key];
     if (typeof v === "string" && v.trim()) return v;
     if (typeof v === "object" && v !== null) {
@@ -56,21 +103,125 @@ function textOf(obj: unknown): string | null {
   return null;
 }
 
-/** Send one message and wait for the turn to settle (or `timeoutMs`). */
-export async function sendTurn(input: {
+function stringField(obj: Record<string, unknown>, key: string): string | null {
+  const value = obj[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function compactText(value: string, max = 2_000): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+function detailsOf(value: unknown): string | null {
+  if (typeof value === "string")
+    return value.trim() ? compactText(value.trim()) : null;
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
+  try {
+    return compactText(JSON.stringify(value, null, 2));
+  } catch {
+    return null;
+  }
+}
+
+function failureOf(
+  data: Record<string, unknown>,
+  fallback: string,
+): { message: string; code?: string; details?: string; text: string } {
+  const message = stringField(data, "message") ?? textOf(data) ?? fallback;
+  const code = stringField(data, "code") ?? undefined;
+  const details = detailsOf(data.details) ?? undefined;
+  return {
+    message,
+    code,
+    details,
+    text: [
+      message,
+      code ? `Code: ${code}` : null,
+      details ? `Details: ${details}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  };
+}
+
+/**
+ * A one-line summary of a tool call's input: the command, skill, or file it acts on, falling
+ * back to the first string value. Compacted so an activity line stays readable.
+ */
+function summarizeActionInput(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null) return undefined;
+  const o = input as Record<string, unknown>;
+  const preferred =
+    o.command ?? o.skill ?? o.path ?? o.file_path ?? firstStringValue(o);
+  if (typeof preferred !== "string") return undefined;
+  const trimmed = preferred.trim().replace(/\s+/g, " ");
+  if (!trimmed) return undefined;
+  return trimmed.length > 160 ? `${trimmed.slice(0, 159)}…` : trimmed;
+}
+
+function firstStringValue(obj: Record<string, unknown>): string | undefined {
+  for (const v of Object.values(obj)) {
+    if (typeof v === "string" && v.trim()) return v;
+  }
+  return undefined;
+}
+
+/** Detect + prettify a JSON reply (structured output) so the UI can render it as code. */
+function normalizeReply(reply: string | null): {
+  reply: string | null;
+  replyIsStructured: boolean;
+} {
+  if (!reply) return { reply, replyIsStructured: false };
+  const t = reply.trim();
+  if (t.startsWith("{") || t.startsWith("[")) {
+    try {
+      return { reply: JSON.stringify(JSON.parse(t), null, 2), replyIsStructured: true };
+    } catch {
+      // plain prose that happens to start with a brace — leave as-is
+    }
+  }
+  return { reply, replyIsStructured: false };
+}
+
+/**
+ * Send one message and stream the turn as it runs. Yields incremental events and ALWAYS ends
+ * with a single `done` carrying the settled result — even when the agent is unreachable or the
+ * turn times out (default 90s). See the file header for the eve contract and replay caveat.
+ */
+export async function* streamTurn(input: {
   baseUrl: string;
   message: string;
   /** Both present → follow-up turn on the existing session (context retained). */
   sessionId?: string | null;
   continuationToken?: string | null;
   timeoutMs?: number;
-}): Promise<TurnResult> {
+}): AsyncGenerator<TalkEvent> {
   const base = input.baseUrl.replace(/\/+$/, "");
   const timeoutMs = input.timeoutMs ?? 90_000;
   const deadline = Date.now() + timeoutMs;
   // Events older than this are history replay, not our turn (same-box clocks; generous skew).
   const postedAt = Date.now() - 30_000;
   const isFollowUp = !!(input.sessionId && input.continuationToken);
+
+  const fail = (error: string, ids?: {
+    sessionId?: string | null;
+    continuationToken?: string | null;
+  }): TalkEvent => ({
+    kind: "done",
+    result: {
+      ok: false,
+      sessionId: ids?.sessionId ?? null,
+      continuationToken: ids?.continuationToken ?? null,
+      reply: null,
+      replyIsStructured: false,
+      modelId: null,
+      turnId: null,
+      steps: [],
+      error,
+    },
+  });
 
   // 1. Start a session with the message — or continue the existing one.
   let sessionId: string | null = null;
@@ -91,18 +242,15 @@ export async function sendTurn(input: {
       },
     );
     if (!res.ok && res.status !== 202) {
-      return {
-        ok: false,
-        sessionId: null,
-        continuationToken: null,
-        reply: null,
-        replyIsStructured: false,
-        modelId: null,
-        steps: [],
-        error: `Agent returned ${res.status} ${res.statusText} for POST /eve/v1/session.`,
-      };
+      yield fail(
+        `Agent returned ${res.status} ${res.statusText} for POST /eve/v1/session.`,
+      );
+      return;
     }
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = (await res.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
     sessionId =
       res.headers.get("x-eve-session-id") ??
       (typeof body.sessionId === "string" ? body.sessionId : null);
@@ -112,35 +260,25 @@ export async function sendTurn(input: {
         ? body.continuationToken
         : (input.continuationToken ?? null);
   } catch (error) {
-    return {
-      ok: false,
-      sessionId: null,
-      continuationToken: null,
-      reply: null,
-      replyIsStructured: false,
-      modelId: null,
-      steps: [],
-      error: `Couldn't reach the agent: ${(error as Error).message}`,
-    };
+    yield fail(`Couldn't reach the agent: ${(error as Error).message}`);
+    return;
   }
   if (!sessionId) {
-    return {
-      ok: false,
-      sessionId: null,
+    yield fail("The agent accepted the message but returned no session id.", {
       continuationToken,
-      reply: null,
-      replyIsStructured: false,
-      modelId: null,
-      steps: [],
-      error: "The agent accepted the message but returned no session id.",
-    };
+    });
+    return;
   }
+  yield { kind: "session", sessionId, continuationToken };
 
   // 2. Read the event stream until the turn settles.
   const steps: TurnStep[] = [];
   let reply: string | null = null;
   let error: string | null = null;
+  let lastStepFailure: string | null = null;
   let modelId: string | null = null;
+  let ourTurnId: string | null = null;
+  let turnAnnounced = false;
   try {
     const res = await fetch(`${base}/eve/v1/session/${sessionId}/stream`, {
       signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
@@ -152,11 +290,13 @@ export async function sendTurn(input: {
     const decoder = new TextDecoder();
     let buf = "";
     let settled = false;
-    // step.started timestamps by stepIndex, to compute durations at step.completed.
+    // step.started timestamps by sequence, to compute durations at step.completed.
+    // NOTE: eve's stepIndex stays 0 for the whole turn; `sequence` is the real per-step
+    // counter — key on it (falling back to stepIndex on older instances).
     const stepStarts = new Map<number, number>();
-    // The stream replays session history — only events belonging to OUR turn count. We learn
-    // our turnId from the message.received that matches our text at a recent timestamp.
-    let ourTurnId: string | null = null;
+    // Tool calls per sequence, correlated request → result by callId (attached to the step).
+    const actionsBySeq = new Map<number, TurnAction[]>();
+    const actionByCallId = new Map<string, TurnAction>();
 
     while (!settled && Date.now() < deadline) {
       const { done, value } = await reader.read();
@@ -182,14 +322,20 @@ export async function sendTurn(input: {
         const type = String(evt.type ?? "");
         const data = evt.data ?? {};
         const at = evt.meta?.at ? Date.parse(evt.meta.at) : Date.now();
-        const stepIndex = typeof data.stepIndex === "number" ? data.stepIndex : 0;
+        const stepIndex =
+          typeof data.stepIndex === "number" ? data.stepIndex : 0;
+        const sequence =
+          typeof data.sequence === "number" ? data.sequence : stepIndex;
         const turnId = typeof data.turnId === "string" ? data.turnId : null;
         const ours = ourTurnId !== null && turnId === ourTurnId;
 
         switch (type) {
           case "session.started": {
             const runtime = data.runtime as Record<string, unknown> | undefined;
-            if (runtime && typeof runtime.modelId === "string") modelId = runtime.modelId;
+            if (runtime && typeof runtime.modelId === "string") {
+              modelId = runtime.modelId;
+              yield { kind: "model", modelId };
+            }
             break;
           }
           case "message.received":
@@ -197,35 +343,127 @@ export async function sendTurn(input: {
             // timestamp after we posted — replayed history is older and is skipped.
             if (data.message === input.message && at >= postedAt) {
               ourTurnId = turnId;
+              if (ourTurnId !== null && !turnAnnounced) {
+                turnAnnounced = true;
+                yield { kind: "turn", turnId: ourTurnId };
+              }
             }
             break;
           case "step.started":
-            if (ours) stepStarts.set(stepIndex, at);
+            if (ours) {
+              stepStarts.set(sequence, at);
+              yield { kind: "thinking" };
+            }
+            break;
+          case "actions.requested": {
+            if (!ours) break;
+            const list = Array.isArray(data.actions) ? data.actions : [];
+            const seqActions = actionsBySeq.get(sequence) ?? [];
+            for (const rawAction of list) {
+              if (typeof rawAction !== "object" || rawAction === null) continue;
+              const a = rawAction as Record<string, unknown>;
+              const toolName =
+                typeof a.toolName === "string" ? a.toolName : "tool";
+              const summary = summarizeActionInput(a.input);
+              const record: TurnAction = { toolName, summary };
+              seqActions.push(record);
+              if (typeof a.callId === "string")
+                actionByCallId.set(a.callId, record);
+              yield { kind: "action", toolName, summary };
+            }
+            actionsBySeq.set(sequence, seqActions);
+            break;
+          }
+          case "action.result": {
+            if (!ours) break;
+            const result = data.result as Record<string, unknown> | undefined;
+            const callId =
+              result && typeof result.callId === "string"
+                ? result.callId
+                : null;
+            const record = callId ? actionByCallId.get(callId) : undefined;
+            if (record) {
+              const output = result?.output;
+              if (
+                output &&
+                typeof output === "object" &&
+                typeof (output as Record<string, unknown>).exitCode === "number"
+              ) {
+                record.exitCode = (output as Record<string, unknown>)
+                  .exitCode as number;
+              }
+              record.isError =
+                data.status === "failed" ||
+                (record.exitCode != null && record.exitCode !== 0);
+            }
+            break;
+          }
+          case "message.appended":
+            // Cumulative reply text so far — stream it live (the settled reply still comes
+            // from message.completed below).
+            if (ours && typeof data.messageSoFar === "string") {
+              yield { kind: "text", text: data.messageSoFar };
+            }
             break;
           case "step.completed":
           case "step.failed": {
             if (!ours) break;
             const usage = data.usage as Record<string, unknown> | undefined;
-            const started = stepStarts.get(stepIndex);
-            steps.push({
+            const started = stepStarts.get(sequence);
+            const failure =
+              type === "step.failed"
+                ? failureOf(data, "The agent step failed.")
+                : null;
+            if (failure) lastStepFailure = failure.text;
+            const actions = actionsBySeq.get(sequence);
+            const primary = actions?.[0];
+            const step: TurnStep = {
               type,
-              durationMs: started != null ? Math.max(0, at - started) : undefined,
-              tokensIn: usage && typeof usage.inputTokens === "number" ? usage.inputTokens : undefined,
-              tokensOut: usage && typeof usage.outputTokens === "number" ? usage.outputTokens : undefined,
+              name: stringField(data, "name") ?? undefined,
+              durationMs:
+                started != null ? Math.max(0, at - started) : undefined,
+              tokensIn:
+                usage && typeof usage.inputTokens === "number"
+                  ? usage.inputTokens
+                  : undefined,
+              tokensOut:
+                usage && typeof usage.outputTokens === "number"
+                  ? usage.outputTokens
+                  : undefined,
               isError: type === "step.failed",
-            });
+              code: failure?.code,
+              message: failure?.message,
+              details: failure?.details,
+              toolName: primary?.toolName,
+              summary: primary?.summary,
+              actions: actions && actions.length > 0 ? actions : undefined,
+            };
+            steps.push(step);
+            yield { kind: "step", step };
             break;
           }
           case "message.completed":
             // The full reply text: data.message (streamed earlier via message.appended).
             if (ours) {
-              reply = typeof data.message === "string" ? data.message : (textOf(data) ?? reply);
+              reply =
+                typeof data.message === "string"
+                  ? data.message
+                  : (textOf(data) ?? reply);
             }
             break;
           case "turn.failed":
           case "session.failed":
             if (ours || type === "session.failed") {
-              error = textOf(data) ?? "The turn failed (no detail in the event).";
+              const failure = failureOf(
+                data,
+                "The turn failed (no detail in the event).",
+              );
+              error =
+                failure.code || failure.details || lastStepFailure === null
+                  ? failure.text
+                  : lastStepFailure.includes(failure.message)
+                    ? lastStepFailure
+                    : `${failure.text}\nStep: ${lastStepFailure}`;
               settled = true;
             }
             break;
@@ -235,12 +473,24 @@ export async function sendTurn(input: {
           case "session.waiting":
             // Only trust a waiting marker once our turn produced a reply — earlier ones are
             // history replay from previous turns.
-            if (ourTurnId !== null && (reply !== null || error !== null)) settled = true;
+            if (ourTurnId !== null && (reply !== null || error !== null))
+              settled = true;
+            if (
+              ourTurnId !== null &&
+              reply === null &&
+              lastStepFailure !== null
+            ) {
+              error = lastStepFailure;
+              settled = true;
+            }
             break;
         }
       }
     }
     reader.cancel().catch(() => {});
+    if (reply === null && error === null && lastStepFailure !== null) {
+      error = lastStepFailure;
+    }
     if (!settled && reply === null && error === null) {
       error = `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for the turn to complete.`;
     }
@@ -250,28 +500,36 @@ export async function sendTurn(input: {
     }
   }
 
-  // Structured output (a JSON reply) is fine — detect it so the UI renders it as code.
-  let replyIsStructured = false;
-  if (reply) {
-    const t = reply.trim();
-    if (t.startsWith("{") || t.startsWith("[")) {
-      try {
-        reply = JSON.stringify(JSON.parse(t), null, 2);
-        replyIsStructured = true;
-      } catch {
-        // plain prose that happens to start with a brace — leave as-is
-      }
-    }
-  }
-
-  return {
-    ok: error === null,
-    sessionId,
-    continuationToken,
-    reply,
-    replyIsStructured,
-    modelId,
-    steps,
-    error,
+  const normalized = normalizeReply(reply);
+  yield {
+    kind: "done",
+    result: {
+      ok: error === null,
+      sessionId,
+      continuationToken,
+      reply: normalized.reply,
+      replyIsStructured: normalized.replyIsStructured,
+      modelId,
+      turnId: ourTurnId,
+      steps,
+      error,
+    },
   };
+}
+
+/** Send one message and wait for the turn to settle (or `timeoutMs`). */
+export async function sendTurn(input: {
+  baseUrl: string;
+  message: string;
+  /** Both present → follow-up turn on the existing session (context retained). */
+  sessionId?: string | null;
+  continuationToken?: string | null;
+  timeoutMs?: number;
+}): Promise<TurnResult> {
+  let result: TurnResult | null = null;
+  for await (const event of streamTurn(input)) {
+    if (event.kind === "done") result = event.result;
+  }
+  // `streamTurn` always ends with a `done` event, so this is never null.
+  return result as TurnResult;
 }

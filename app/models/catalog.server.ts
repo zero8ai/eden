@@ -2,7 +2,7 @@
  * OpenRouter model catalog — the source of truth for the agent model picker.
  *
  * Eden supports OpenRouter as the primary model path for deployed agents. The picker lists
- * OpenRouter model ids, and the settings route writes those ids into `openrouter("...")`
+ * OpenRouter model ids, and the settings route writes those ids into `openrouter.chatModel("...")`
  * provider wiring in `agent.ts`. The endpoint is public; every non-id field is optional so
  * parsing stays loose and OpenRouter can add fields without breaking the picker.
  */

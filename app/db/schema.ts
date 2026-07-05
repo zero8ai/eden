@@ -266,6 +266,13 @@ export const secretsMetadata = pgTable(
       onDelete: "cascade",
     }),
     key: text("key").notNull(),
+    /**
+     * Expose this secret to the agent's SANDBOX shell (not just its tools). Deploys join the
+     * exposed names into EDEN_SANDBOX_ENV — the allowlist the scaffolded sandbox.ts forwards
+     * into the sandbox env (~/eve/templates). Metadata, not a value: it lives here (never in
+     * the SecretsProvider) so exposure survives provider swaps and value rotations.
+     */
+    sandboxExposed: boolean("sandbox_exposed").notNull().default(false),
     updatedBy: text("updated_by").references(() => users.id),
     updatedAt: updatedAt(),
   },

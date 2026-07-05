@@ -153,6 +153,14 @@ export function resourcePath(kind: ResourceKind, slug: string, root = "agent"): 
  *  - This module forwards exactly those variables into the sandbox backend's `env`, so the
  *    agent's bash sees them. Everything else stays sealed out of the sandbox (eve's
  *    sealed-by-default model — sandboxes never inherit the instance's process env).
+ *
+ * Two propagation semantics worth knowing (verified against eve@0.19.0's docker backend):
+ *  - The resolved backend options INCLUDING env values are hashed into the template image
+ *    reference — so for templated sandboxes, rotating an exposed secret's value changes the
+ *    expected `eve-sbx-tpl-*` name, and the next `eve start` (deploy/wake) rebuilds it
+ *    automatically. Harmless, just the slow path once.
+ *  - Session containers are REUSED by name (docker start, not recreate), so env changes
+ *    reach NEW sessions only; existing sessions keep the env they started with.
  */
 export const DEFAULT_SANDBOX_MODULE = `import { defaultBackend, defineSandbox } from "eve/sandbox";
 

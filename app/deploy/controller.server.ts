@@ -18,7 +18,7 @@
 import type { DataStore, Deployment, Release } from "~/data/ports";
 import { enqueue } from "~/jobs/queue.server";
 import { getRuntime } from "~/seams/index.server";
-import type { DeployTarget, SecretsProvider } from "~/seams/types";
+import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
 import { isVersionLabelCollision, versionLabel } from "./versioning";
 
 export type { Release, Deployment } from "~/data/ports";
@@ -30,6 +30,8 @@ export interface DeployDeps {
   secrets: SecretsProvider;
   /** Org-level model key lookup (PRD §12): deploys inherit OPENROUTER_API_KEY from it. */
   workspaceModelKey?: (orgId: string) => Promise<string | null>;
+  /** Names of secrets marked "available in the agent's sandbox shell" for a deploy scope. */
+  sandboxExposedNames?: (scope: SecretScope) => Promise<string[]>;
 }
 
 function deployDeps(): DeployDeps {
@@ -40,6 +42,8 @@ function deployDeps(): DeployDeps {
     secrets: r.secrets,
     workspaceModelKey: (orgId) =>
       import("~/org/workspace.server").then((m) => m.getWorkspaceModelKey(orgId)),
+    sandboxExposedNames: (scope) =>
+      import("~/seams/oss/secret-store").then((m) => m.listSandboxExposedNames(scope)),
   };
 }
 
@@ -220,17 +224,28 @@ export async function deployRelease(
       await store.releases.setImageRef(release.id, built.imageRef);
     }
 
-    const envVars = await secrets.resolve({
+    const scope: SecretScope = {
       projectId: release.projectId,
       agentId: release.agentId,
       environmentId: input.environmentId,
-    });
+    };
+    const envVars = await secrets.resolve(scope);
     // A model key is a prerequisite for every agent (PRD §12): inherit the workspace-level
     // OpenRouter key unless a project/environment secret explicitly overrides it.
     if (!envVars.OPENROUTER_API_KEY && project && deps.workspaceModelKey) {
       const wsKey = await deps.workspaceModelKey(project.orgId);
       if (wsKey) envVars.OPENROUTER_API_KEY = wsKey;
     }
+    // EDEN_SANDBOX_ENV (sandbox exposure convention): the comma-joined NAMES of the secrets
+    // the human marked "available in the agent's sandbox shell"; the scaffolded sandbox.ts
+    // forwards exactly those vars into the sandbox env (~/eve/templates). Eden-owned and set
+    // AFTER the secret resolve, so a user secret named EDEN_SANDBOX_ENV can never smuggle its
+    // own allowlist. Names only — never values — and only names that actually resolved to an
+    // injected env var (exposing a secret that doesn't exist in scope forwards nothing).
+    delete envVars.EDEN_SANDBOX_ENV;
+    const exposed = deps.sandboxExposedNames ? await deps.sandboxExposedNames(scope) : [];
+    const allowlist = exposed.filter((name) => name in envVars);
+    if (allowlist.length > 0) envVars.EDEN_SANDBOX_ENV = allowlist.join(",");
     const health = await deployTarget.deploy({
       deploymentId: dep.id,
       imageRef: imageRef ?? "",

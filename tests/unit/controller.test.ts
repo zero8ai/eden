@@ -95,6 +95,72 @@ describe("deployRelease", () => {
     expect(deployedEnvs[1].OPENROUTER_API_KEY).toBe("sk-or-project");
   });
 
+  it("joins sandbox-exposed secret names into EDEN_SANDBOX_ENV (names only, after the spread)", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "c3".repeat(20) }, store);
+    const deployedEnvs: Record<string, string>[] = [];
+    const base = {
+      store,
+      deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedEnvs }),
+    };
+
+    // Exposed + resolved → the allowlist carries exactly those names.
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        ...base,
+        secrets: fakeSecrets({ GH_TOKEN: "gho_x", NPM_TOKEN: "npm_y", PRIVATE: "keep-out" }),
+        sandboxExposedNames: async () => ["GH_TOKEN", "NPM_TOKEN"],
+      },
+    );
+    expect(deployedEnvs[0].EDEN_SANDBOX_ENV).toBe("GH_TOKEN,NPM_TOKEN");
+    expect(deployedEnvs[0].PRIVATE).toBe("keep-out"); // still injected — just not allowlisted
+
+    // Exposure of a name that resolved to nothing forwards nothing.
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        ...base,
+        secrets: fakeSecrets({ GH_TOKEN: "gho_x" }),
+        sandboxExposedNames: async () => ["GH_TOKEN", "DELETED_SECRET"],
+      },
+    );
+    expect(deployedEnvs[1].EDEN_SANDBOX_ENV).toBe("GH_TOKEN");
+  });
+
+  it("omits EDEN_SANDBOX_ENV when nothing is exposed, and strips a user secret squatting the name", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "d4".repeat(20) }, store);
+    const deployedEnvs: Record<string, string>[] = [];
+    const base = {
+      store,
+      deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedEnvs }),
+    };
+
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      { ...base, secrets: fakeSecrets({ GH_TOKEN: "gho_x" }), sandboxExposedNames: async () => [] },
+    );
+    expect(deployedEnvs[0]).not.toHaveProperty("EDEN_SANDBOX_ENV");
+
+    // The variable is Eden-owned: a user secret named EDEN_SANDBOX_ENV must never smuggle
+    // its own allowlist into the sandbox.
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        ...base,
+        secrets: fakeSecrets({ EDEN_SANDBOX_ENV: "PRIVATE", PRIVATE: "keep-out" }),
+        sandboxExposedNames: async () => [],
+      },
+    );
+    expect(deployedEnvs[1]).not.toHaveProperty("EDEN_SANDBOX_ENV");
+
+    // Deps without the lookup (older callers/tests) behave as "nothing exposed".
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      { ...base, secrets: fakeSecrets({ GH_TOKEN: "gho_x" }) },
+    );
+    expect(deployedEnvs[2]).not.toHaveProperty("EDEN_SANDBOX_ENV");
+  });
+
   it("keys the Workflow world by ENVIRONMENT — two deploys of one env share a worldKey", async () => {
     // The durability invariant this feature exists for: a redeploy reuses the environment's
     // world (so sessions + their sandboxes survive), which means the worldKey must be stable

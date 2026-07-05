@@ -5,7 +5,7 @@
  * in-memory KV with real crypto, while the Drizzle impl here owns the two-table persistence
  * (values + metadata).
  */
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import { secretsMetadata, secretValues } from "~/db/schema";
@@ -128,3 +128,71 @@ export const drizzleSecretKV: SecretKVStore = {
     }));
   },
 };
+
+// ── Sandbox exposure (metadata, never values) ────────────────────────────────
+// The per-secret "available in the agent's sandbox shell" flag lives on the METADATA index,
+// not behind the SecretsProvider: it's control-plane policy about a name, so it survives
+// provider swaps (KMS/Vault store values, not Eden decisions) and value rotations. Deploys
+// join the exposed names into EDEN_SANDBOX_ENV (see ~/deploy/controller.server.ts).
+
+function metadataScope(ref: { agentId: string; environmentId: string | null; key: string }) {
+  return and(
+    eq(secretsMetadata.agentId, ref.agentId),
+    ref.environmentId === null
+      ? isNull(secretsMetadata.environmentId)
+      : eq(secretsMetadata.environmentId, ref.environmentId),
+    eq(secretsMetadata.key, ref.key),
+  );
+}
+
+/** Flip one secret's sandbox exposure (exact scope — the row the Settings list shows). */
+export async function setSecretSandboxExposed(
+  ref: SecretRef,
+  exposed: boolean,
+  updatedBy?: string | null,
+): Promise<void> {
+  await db
+    .update(secretsMetadata)
+    .set({ sandboxExposed: exposed, updatedBy: updatedBy ?? null, updatedAt: new Date() })
+    .where(metadataScope(ref));
+}
+
+/** Exposure flags for a Settings list's exact scope: key → exposed. */
+export async function listSandboxExposure(scope: SecretScope): Promise<Record<string, boolean>> {
+  const rows = await db
+    .select({ key: secretsMetadata.key, exposed: secretsMetadata.sandboxExposed })
+    .from(secretsMetadata)
+    .where(
+      and(
+        eq(secretsMetadata.agentId, scope.agentId),
+        scope.environmentId === null
+          ? isNull(secretsMetadata.environmentId)
+          : eq(secretsMetadata.environmentId, scope.environmentId),
+      ),
+    );
+  return Object.fromEntries(rows.map((r) => [r.key, r.exposed]));
+}
+
+/**
+ * Names exposed to the sandbox for a DEPLOY scope: agent-wide rows plus the environment's,
+ * matching how `resolve` merges values. A name is exposed when ANY in-scope row marks it —
+ * deliberately the simple rule; exposure is per-name policy, not per-override.
+ */
+export async function listSandboxExposedNames(scope: SecretScope): Promise<string[]> {
+  const rows = await db
+    .select({ key: secretsMetadata.key })
+    .from(secretsMetadata)
+    .where(
+      and(
+        eq(secretsMetadata.agentId, scope.agentId),
+        eq(secretsMetadata.sandboxExposed, true),
+        scope.environmentId === null
+          ? isNull(secretsMetadata.environmentId)
+          : or(
+              isNull(secretsMetadata.environmentId),
+              eq(secretsMetadata.environmentId, scope.environmentId),
+            ),
+      ),
+    );
+  return [...new Set(rows.map((r) => r.key))].sort();
+}

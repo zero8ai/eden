@@ -927,6 +927,39 @@ two-source-of-truth reconciliation problem.
   probable **Cloudflare** target — revisit after VPS parity is proven. The seam stays: nothing in
   M8 hard-codes the topology outside the local-docker target.
 
+**Milestone 8.1 — Sandbox platform: prewarm fix, editable sandbox.ts, secret exposure (shipped)**
+- **The bug (confirmed live).** Agent images booted the raw Nitro entry (`node
+  .output/server/index.mjs`), which skips eve's sandbox-template prewarm. Any agent whose sandbox
+  has a non-null template key — a `bootstrap()` hook, or workspace resources (a `skills/`
+  directory counts) — then hit `SandboxTemplateNotProvisionedError` on first bash use, forever:
+  eve's docker backend requires the `eve-sbx-tpl-*` template image to pre-exist, `eve build` only
+  prewarms on Vercel, and the runtime's self-heal retry is disabled for built servers. Off-Vercel,
+  `eve start` is the only supported prewarm path.
+- **The fix.** The generated image's final stage now inherits the FULL build stage (`eve start`
+  needs node_modules + `.eve/compile`; the layers are already retained as the `-build` tag, so
+  disk cost ≈ zero) and boots `CMD ["node_modules/.bin/eve", "start"]` — the bin directly, since
+  npm exec/run don't reliably forward SIGTERM as PID 1 and scale-to-zero is a `docker stop`. The
+  instance `docker run` gains `--init`. Health waits split into named budgets: 10 min on deploy
+  (first boot may pull the sandbox base image, run bootstrap, snapshot the template) vs 120 s on
+  wake (prewarm re-runs but hits the cached-template fast path). A health failure now folds the
+  container's log tail into the error so a failed bootstrap shows its real cause in the UI.
+- **Sandbox as a first-class surface.** The eve sandbox definition (`agent/sandbox.ts`, or
+  `sandbox/sandbox.ts` + `workspace/` seed) is parsed like instructions (a singleton per agent
+  and per subagent), shown as an Overview section (custom vs framework default), and edited
+  through the same draft rails as every file. New scaffolds (create repo, add member, both
+  catalog agent templates) ship a default `sandbox.ts`; the assistant's METHOD teaches the
+  surface, so "add the GitHub CLI to my sandbox" is an assistant edit.
+- **Secret exposure — the `EDEN_SANDBOX_ENV` convention.** eve sandboxes are sealed by default
+  (they never inherit the instance env — a property we keep). Each secret gets an
+  "available in the agent's sandbox shell" toggle (`secrets_metadata.sandbox_exposed` — metadata,
+  never values). At deploy, Eden joins the exposed names that actually resolved into
+  `EDEN_SANDBOX_ENV`, set AFTER the user-secret spread so it can't be shadowed or smuggled; the
+  scaffolded `sandbox.ts` forwards exactly those variables into the sandbox backend's `env`
+  (docker + vercel bags). With nothing exposed the allowlist is absent and behavior is identical
+  to the framework default. Two propagation facts, by eve's design: env values are hashed into
+  the docker template image name (rotating an exposed value → automatic template rebuild at next
+  start), and session containers are reused, so env changes reach new sessions only.
+
 ---
 
 ## 12. Open questions & risks

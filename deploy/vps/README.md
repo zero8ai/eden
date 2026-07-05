@@ -143,9 +143,15 @@ and buffered SSE looks like a hang.
 4. **Connect** a repo (the GitHub App install flow should round-trip through your domain and
    land back on `/connect`).
 5. Create or open an agent, **Ship** it, and talk to it in the **Playground**. The first ship
-   builds a full agent image (several minutes); the deploy itself is seconds after that.
+   builds a full agent image (several minutes). The deploy itself is usually seconds — but an
+   agent with skills or a sandbox `bootstrap()` prewarms its sandbox template on first boot
+   (pulls `ghcr.io/vercel/eve`, runs bootstrap, snapshots an `eve-sbx-tpl-*` image), which can
+   add several more minutes the first time. Eden waits up to 10 minutes before calling a
+   deploy failed; later deploys and wakes reuse the cached template and are fast.
 
-If Ship fails at the build step, `docker compose … logs eden` has the real error.
+If Ship fails at the build step, `docker compose … logs eden` has the real error. A deploy-step
+failure includes the agent container's own log tail in the UI's failure detail (a broken
+sandbox `bootstrap()` shows up there).
 
 ## 8. Operations
 
@@ -175,9 +181,10 @@ docker image prune -f          # dangling layers only — safe
 ```
 
 Do **not** run `docker system prune -a` or `docker volume prune`: agent version images (reused
-for instant rollback) and `eden-home-*` volumes (each agent's persistent `/workspace/home`)
-look "unused" to Docker whenever the agent isn't running, and pruning them destroys rollbacks
-and agent state.
+for instant rollback), `eve-sbx-tpl-*` sandbox template images (a RUNNING instance whose
+template is pruned loses its bash tools until the instance restarts and re-prewarms), and
+`eden-home-*` volumes (each agent's persistent `/workspace/home`) all look "unused" to Docker
+whenever the agent isn't running, and pruning them destroys rollbacks and agent state.
 
 **Logs** — `docker compose … logs eden` for the control plane; agent containers are named
 `eden-inst-<deploymentId>` (`docker logs <name>`) and sandbox containers carry the

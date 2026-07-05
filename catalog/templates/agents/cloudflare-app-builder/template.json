@@ -2,8 +2,8 @@
   "id": "cloudflare-app-builder",
   "type": "agent",
   "name": "Cloudflare App Builder",
-  "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend, scaffolded, verified, and deployed per Cloudflare's framework guide.",
-  "version": "0.2.1",
+  "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend — and ships every project to GitHub. It builds; it does not deploy.",
+  "version": "0.3.0",
   "eve": ">=0.1.0",
   "model": "anthropic/claude-sonnet-5",
   "files": [
@@ -14,12 +14,14 @@
   ],
   "secrets": [
     {
-      "name": "CLOUDFLARE_API_TOKEN",
-      "description": "API token with the 'Edit Cloudflare Workers' permission for the target account."
+      "name": "GITHUB_TOKEN",
+      "description": "Personal access token with repo access to the organisation — the agent's gh CLI reads it from its shell environment.",
+      "sandbox": true
     },
     {
-      "name": "CLOUDFLARE_ACCOUNT_ID",
-      "description": "The Cloudflare account id the app deploys into."
+      "name": "GITHUB_ORG",
+      "description": "The GitHub organisation the agent creates repos in and works under.",
+      "sandbox": true
     }
   ]
 }

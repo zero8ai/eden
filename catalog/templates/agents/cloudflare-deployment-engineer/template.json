@@ -2,27 +2,35 @@
   "id": "cloudflare-deployment-engineer",
   "type": "agent",
   "name": "Cloudflare Deployment Engineer",
-  "description": "An agent that deploys Cloudflare Workers with wrangler — instructions and tool pre-wired.",
-  "version": "0.1.1",
+  "description": "An agent that deploys any Cloudflare Workers app straight from its GitHub repo, using the terminal — gh + wrangler with sandbox-exposed credentials, no bespoke tools.",
+  "version": "0.2.0",
   "eve": ">=0.1.0",
   "model": "anthropic/claude-sonnet-5",
   "files": [
     "instructions.md",
     "agent.ts",
-    "sandbox.ts",
-    "tools/cloudflare-deploy.ts"
+    "sandbox.ts"
   ],
-  "dependencies": {
-    "wrangler": "^3.0.0"
-  },
   "secrets": [
     {
+      "name": "GITHUB_TOKEN",
+      "description": "Personal access token with read access to the organisation's repos — the agent's gh CLI reads it from its shell environment.",
+      "sandbox": true
+    },
+    {
+      "name": "GITHUB_ORG",
+      "description": "The GitHub organisation the deployable repos live in.",
+      "sandbox": true
+    },
+    {
       "name": "CLOUDFLARE_API_TOKEN",
-      "description": "API token with the 'Edit Cloudflare Workers' permission for the target account."
+      "description": "API token with the 'Edit Cloudflare Workers' permission for the target account — wrangler reads it from the shell environment.",
+      "sandbox": true
     },
     {
       "name": "CLOUDFLARE_ACCOUNT_ID",
-      "description": "The Cloudflare account id the Worker deploys into."
+      "description": "The Cloudflare account id the apps deploy into.",
+      "sandbox": true
     }
   ]
 }

@@ -58,6 +58,7 @@ import {
   type InstallTarget,
 } from "~/marketplace/install.server";
 import { overlayLock } from "~/marketplace/lock";
+import { setSecretSandboxExposed } from "~/seams/oss/secret-store";
 import {
   TEMPLATE_TYPES,
   isTemplateSlug,
@@ -116,7 +117,7 @@ interface PreviewData {
   conflicts: string[];
   warnings: string[];
   deps: DependencyDecision[];
-  secrets: Array<{ name: string; description?: string }>;
+  secrets: Array<{ name: string; description?: string; sandbox?: boolean }>;
   isUpdate: boolean;
 }
 
@@ -375,15 +376,17 @@ export async function action(args: ActionFunctionArgs) {
       for (const s of template.manifest.secrets ?? []) {
         const value = String(form.get(`secret:${s.name}`) ?? "").trim();
         if (!value) continue;
-        await secrets.set(
-          {
-            projectId: project.id,
-            agentId: secretAgent.id,
-            environmentId: null,
-            key: s.name,
-          },
-          value,
-        );
+        const ref = {
+          projectId: project.id,
+          agentId: secretAgent.id,
+          environmentId: null,
+          key: s.name,
+        };
+        await secrets.set(ref, value);
+        // Manifest opted this secret into the sandbox shell (EDEN_SANDBOX_ENV) — flip the
+        // exposure flag now so the agent's terminal has its credentials on first deploy.
+        // Secrets left blank get the flag when the user sets them, from Settings.
+        if (s.sandbox) await setSecretSandboxExposed(ref, true, auth.user.id);
       }
     }
 
@@ -693,6 +696,12 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                       {s.description && (
                         <p className="text-xs text-muted-foreground">
                           {s.description}
+                        </p>
+                      )}
+                      {s.sandbox && (
+                        <p className="text-xs text-muted-foreground">
+                          Made available in the agent's sandbox shell on install — its
+                          terminal reads this from the environment.
                         </p>
                       )}
                       <Input

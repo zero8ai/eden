@@ -70,7 +70,7 @@ export interface InstallPlan {
   /** True when this (id, member) was already installed — an overwrite, not a first install. */
   isUpdate: boolean;
   /** Secrets the manifest asks for, for the wizard to collect (values never touch the plan). */
-  secrets: Array<{ name: string; description?: string }>;
+  secrets: Array<{ name: string; description?: string; sandbox?: boolean }>;
 }
 
 /** The lock's registry locator, from the same env the CatalogSource seam reads (index.server). */
@@ -338,6 +338,7 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     secrets: (manifest.secrets ?? []).map((s) => ({
       name: s.name,
       description: s.description,
+      sandbox: s.sandbox,
     })),
   };
 }

@@ -1,5 +1,5 @@
 ---
-description: Use when building, changing, shipping, or debugging a React web app that runs on Cloudflare Workers — the scaffold command, project layout, wrangler.jsonc semantics, the verify/deploy workflow, and the SPA-vs-Worker routing rules.
+description: Use when building, changing, shipping, or debugging a React web app that runs on Cloudflare Workers — the scaffold command, project layout, wrangler.jsonc semantics, the verify workflow, and the SPA-vs-Worker routing rules.
 ---
 
 # React on Cloudflare Workers
@@ -43,16 +43,14 @@ All commands run in the app directory.
 
 ```bash
 npm install --no-audit --no-fund   # once, or after dependency changes
-npm run build                      # production build — run after changes, ALWAYS before deploy
-npm run deploy                     # build + wrangler deploy → *.workers.dev or a custom domain
+npm run build                      # production build — run after changes, ALWAYS before pushing
 ```
 
-`npm run deploy` performs the same build first, so a clean `npm run build` means
-the deploy won't die in the build step. Deploying needs `CLOUDFLARE_API_TOKEN`
-(with the "Edit Cloudflare Workers" permission) and `CLOUDFLARE_ACCOUNT_ID` in
-the environment — they are configured as secrets, never pasted into chat. On
-success wrangler prints the deployed URL; report it. On failure, read the last
-lines of wrangler's output — that's the actual error — fix, re-verify, redeploy.
+A clean `npm run build` is your definition of shippable: the deploy downstream
+runs the same build, so what passes here won't die in the build step there. You
+do not deploy — that happens after your PR merges, with credentials you don't
+have or need. On a build failure, read the last lines of the output — that's
+the actual error — fix, and re-verify before pushing.
 
 For local development with hot reload (a human at a browser): `npm run dev`.
 

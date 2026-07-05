@@ -960,6 +960,26 @@ two-source-of-truth reconciliation problem.
   the docker template image name (rotating an exposed value → automatic template rebuild at next
   start), and session containers are reused, so env changes reach new sessions only.
 
+**Milestone 8.2 — Catalog agents: capabilities via terminal, not bespoke tools (shipped)**
+- **The principle.** A catalog agent's capability lives in `instructions.md` (the playbook), its
+  permission in sandbox-exposed secrets (env vars in the shell), and its execution in eve's
+  standard bash/file tools. No per-agent `tools/` wrappers for things a terminal already does —
+  the versatility IS the terminal. Modeled on the proven live `cloudflare-dev` agent, minus its
+  ask-in-chat token bootstrap (credentials now arrive as env, never through the transcript).
+- **Cloudflare App Builder 0.3.0** — a developer, not a deployer: builds React-on-Workers apps
+  and ships them to GitHub (`gh` CLI: new repo → scaffold → push; existing repo → branch → PR,
+  never merges its own). Needs `GITHUB_TOKEN` + `GITHUB_ORG`, nothing from Cloudflare; the
+  `react-on-workers` skill's deploy step is gone (a clean production build is its definition of
+  shippable).
+- **Cloudflare Deployment Engineer 0.2.0** — the downstream half: clones any org repo, reads its
+  wrangler config, builds, dry-runs, deploys with `npx wrangler deploy`, curls the URL, reports.
+  The bespoke `cloudflare-deploy.ts` tool and its wrangler dependency are deleted. Needs
+  `GITHUB_TOKEN`/`GITHUB_ORG`/`CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID`.
+- **Manifest `secrets[].sandbox: true`.** A template can declare a secret as sandbox-bound: the
+  install wizard flips its exposure flag as it stores the value (and says so under the field), so
+  a terminal-driven agent's first deploy has working credentials without a manual Settings trip.
+  Secrets left blank at install get the flag when set later from Settings.
+
 ---
 
 ## 12. Open questions & risks

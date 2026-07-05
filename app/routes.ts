@@ -111,6 +111,8 @@ export default [
   route("repos/:projectId/secrets", "routes/shims.repo-tabs.tsx", {
     id: "shim-secrets",
   }),
+  // Staged-draft count for the nav pill (AgentNav); `?agent=` scopes to one member.
+  route("repos/:projectId/staged-count", "routes/api.staged-count.tsx"),
   route("api/github/webhook", "routes/api.github.webhook.tsx"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
   // Legacy URLs from before the repositories rename — 301 into /repos/.

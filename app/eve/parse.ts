@@ -112,6 +112,12 @@ function stripExtension(filename: string): string {
  */
 function extractModel(agentModuleSource: string | undefined): string | null {
   if (!agentModuleSource) return null;
+  // Provider-wrapped form first (`model: openrouter("...")`), then the bare literal —
+  // the same order `readModel` in ~/eve/agentModule uses, so repo and draft views agree.
+  const call = agentModuleSource.match(
+    /\bmodel\s*:\s*[A-Za-z_$][\w$]*\(\s*(['"`])([^'"`]+)\1/,
+  );
+  if (call) return call[2];
   const match = agentModuleSource.match(
     /\bmodel\s*:\s*(['"`])([^'"`]+)\1/,
   );

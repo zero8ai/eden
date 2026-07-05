@@ -43,7 +43,10 @@ export interface CreatedRepo {
   htmlUrl: string;
 }
 
-const DEFAULT_MODEL = "anthropic/claude-sonnet-5";
+// Scaffolds ship with a deliberately CHEAP model: the customer never chose one at this
+// point, and a silent default must not be able to run up a real bill. Picking the model
+// they actually want is a Settings-tab decision, not something we guess for them.
+const DEFAULT_MODEL = "moonshotai/kimi-k2.7-code";
 /** The scaffolded first member of a team repo — a placeholder the customer renames/extends. */
 const STARTER_MEMBER = "assistant";
 

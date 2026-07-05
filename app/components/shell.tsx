@@ -8,7 +8,16 @@
  * collapse both levels into one merged row.
  */
 import { LogOut, User, Users } from "lucide-react";
-import { Form, Link, NavLink, useLocation, useNavigate, useNavigation } from "react-router";
+import { useEffect } from "react";
+import {
+  Form,
+  Link,
+  NavLink,
+  useFetcher,
+  useLocation,
+  useNavigate,
+  useNavigation,
+} from "react-router";
 
 import { ThemeToggle } from "~/components/theme-toggle";
 import { Button } from "~/components/ui/button";
@@ -335,12 +344,47 @@ export function AgentNav({
             </NavLink>
           ))}
         </nav>
-        {level === "member" && roster && activeAgent && (
-          <AgentSwitcher roster={roster} activeAgent={activeAgent} />
-        )}
+        <div className="flex items-center gap-3">
+          <StagedChangesPill base={base} />
+          {level === "member" && roster && activeAgent && (
+            <AgentSwitcher roster={roster} activeAgent={activeAgent} />
+          )}
+        </div>
       </div>
       <Separator className="mt-2" />
     </div>
+  );
+}
+
+/**
+ * Always-visible staged-work indicator (sits in the tab row, so it survives tab switches):
+ * "N staged changes" for the CURRENT scope — a member's own drafts (+ shared) at the member
+ * level, the whole repo at the repo/single level — linking to that scope's Deployment tab.
+ * Self-fetching from the staged-count resource route so every page gets it without
+ * threading a count through each loader; fetcher data revalidates after actions, which is
+ * what keeps it live as changes stage and publish.
+ */
+function StagedChangesPill({ base }: { base: string }) {
+  const fetcher = useFetcher<{ count: number }>();
+  const match = base.match(/^\/repos\/([^/]+)(?:\/agents\/([^/]+))?$/);
+  const url = match
+    ? `/repos/${match[1]}/staged-count${match[2] ? `?agent=${match[2]}` : ""}`
+    : null;
+  const { load } = fetcher;
+  useEffect(() => {
+    if (url) load(url);
+  }, [url, load]);
+  const count = fetcher.data?.count ?? 0;
+  if (count === 0) return null;
+  return (
+    <Link
+      to={`${base}/deployment`}
+      prefetch="intent"
+      className="flex items-center gap-1.5 whitespace-nowrap rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden />
+      {count} staged {count === 1 ? "change" : "changes"}
+    </Link>
   );
 }
 

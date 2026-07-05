@@ -225,9 +225,17 @@ export const loader = (args: LoaderFunctionArgs) =>
           view === "team"
             ? roster.map((a) => {
                 const c = buildAgentConfig(source, a.root);
+                // A staged agent.ts draft wins over the repo value — same rule the
+                // member view follows, so the roster badge never lags a model change.
+                const draft = drafts.find(
+                  (d) => d.path === `${a.root}/agent.ts` && d.content !== null,
+                );
+                const model = draft?.content
+                  ? (readModel(draft.content) ?? c.model)
+                  : c.model;
                 return {
                   name: a.name,
-                  model: c.model,
+                  model,
                   tools: c.tools.length,
                   skills: c.skills.length,
                   schedules: c.schedules.length,

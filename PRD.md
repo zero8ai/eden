@@ -863,15 +863,44 @@ two-source-of-truth reconciliation problem.
   defaults to allow-all (a repo can opt into deny-all via `defineSandbox`).
 - **Deliberately punted:** (1) **sandbox-container GC on environment delete** — stopped sibling
   sandbox containers are currently orphaned; the `eve.sandbox` label makes them findable, so a
-  future `gc` sweep can reap them. (2) **sandbox egress-policy defaults** — the docker backend
-  honors only allow-all / deny-all today; per-destination policy is upstream work. (3) **agent-level
-  persistent home directory** (design below).
-- **Follow-up design — agent home across sessions.** eve's sandbox persists `/workspace` per
-  *durable session*; there is no per-*agent* filesystem. Planned: an upstream eve PR adding a
-  `mounts` option to the `docker()` sandbox backend (`docker-options.ts` + `docker run -v` args +
-  inclusion in the options hash), then Eden scaffolds `agent/sandbox/sandbox.ts` mounting an
-  Eden-managed named volume (`EDEN_HOME_VOLUME` env, per agent+environment) at `/workspace/home`,
-  with the volume's lifecycle tied to environment delete.
+  future `gc` sweep can reap them. *(Partially closed in 6.2: `destroyWorld` now reaps the containers
+  mounting a dead environment's home volume.)* (2) **sandbox egress-policy defaults** — the docker
+  backend honors only allow-all / deny-all today; per-destination policy is upstream work.
+  (3) **agent-level persistent home directory** — *shipped in Milestone 6.2 below (the eve-docker shim),
+  NOT the upstream-mounts route once planned here.*
+
+**Milestone 6.2 — Agent home: persistent `/workspace/home` across sessions (shipped)**
+- **The gap.** 6.1 made *sessions* durable, but eve's sandbox filesystem is per **durable session** —
+  a new session starts from a clean template. There is no per-*agent* home, so anything an agent set
+  up for itself (an SSH key it generated, a package cache, notes-to-self) evaporated the moment eve
+  rotated to a fresh session. Agents couldn't accumulate a working environment.
+- **The rejected paths.** (1) *Upstream `mounts` option* — eve's `docker()` backend exposes only
+  `{ image, env, networkPolicy, pullPolicy }`; adding a `mounts` option (what 6.1 had planned) was an
+  **owner decision to reject** rather than carry an eve fork. (2) *Materializing a secret store into
+  the home* — would have made per-agent key setup a standing behavioral obligation of the control
+  plane (provision, rotate, reconcile), the exact two-source-of-truth trap we avoid elsewhere.
+- **The design — an `EVE_DOCKER_PATH` shim.** eve shells out to the docker CLI at `EVE_DOCKER_PATH`.
+  The instance image ships a tiny POSIX-sh wrapper at `/usr/local/bin/eve-docker`
+  (`EVE_DOCKER_SHIM`, eve-image.server.ts); the deploy target sets `EVE_DOCKER_PATH` to it and
+  `EDEN_HOME_VOLUME` to this environment's volume (both injected AFTER the user-secret env spread, so
+  a secret can never shadow them). On a `run` that carries eve's session-container label pair
+  `--label eve.sandbox.role=session`, the shim injects `-v $EDEN_HOME_VOLUME:/workspace/home` right
+  after the `run` token and `exec`s the real client; everything else — template-build runs (shared,
+  must not capture a volume), `start`/`exec`/`stop`/`rm`, an unset volume — passes through untouched.
+  (The image runs as root, so the mount is already writable — no chown needed.)
+- **The tripwire.** The shim keys on eve's `eve.sandbox.role=session` label. If a future eve upgrade
+  renames it, the shim silently stops matching: no injection, sandboxes still run, homes just quietly
+  stop mounting — a graceful degradation back to pre-6.2 behaviour, documented here as the thing to
+  check when "my SSH key vanished again" resurfaces.
+- **Volume naming & lifecycle.** One named volume per environment: `homeVolumeName(worldKey)` =
+  `eden-home-<sanitized>-<sha1slug8>` (same stability/collision-safety shape as `worldDbName`, wider
+  volume charset). Docker auto-creates it on first sandbox use — no provisioning. `destroyWorld` now
+  tears the whole environment down: drop the world DB, then (best-effort) reap the sandbox containers
+  mounting that volume — a `docker ps --filter volume=<name>` finds exactly this env's siblings, which
+  also closes part of the 6.1 sandbox-GC punt — then remove the volume.
+- **The agent-visible contract.** Anything an agent keeps under `/workspace/home` — SSH keys, caches,
+  notes-to-self — **survives new sessions, redeploys, and instance restarts, and dies with the
+  environment.** Everything outside `/workspace/home` remains per-session scratch.
 
 **Milestone 7 — Teams (peer teams, §7.9)**
 - The `agents/*` monorepo convention: detection, per-member parse, per-member build → image →

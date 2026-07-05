@@ -68,6 +68,21 @@ export const worldDbName = (worldKey: string): string => {
   return `eden_env_${sanitized}_${slug}`;
 };
 
+/**
+ * Docker named-volume for an environment's agent home (`/workspace/home`, mounted by the
+ * eve-docker shim onto every session sandbox — see eve-image.server.ts). Keyed by the same stable
+ * worldKey as the world DB, so one environment has exactly one home that outlives its sessions and
+ * redeploys and dies only with the environment (destroyWorld). Same shape as worldDbName but the
+ * volume charset is wider ([a-zA-Z0-9_.-]); sanitize lowercase, cap 24, then append a sha1 slice of
+ * the RAW key so keys that sanitize alike can't collide onto one volume. Docker auto-creates it on
+ * first sandbox use — no provisioning step.
+ */
+export const homeVolumeName = (worldKey: string): string => {
+  const sanitized = worldKey.toLowerCase().replace(/[^a-z0-9_.-]/g, "").slice(0, 24);
+  const slug = createHash("sha1").update(worldKey).digest("hex").slice(0, 8);
+  return `eden-home-${sanitized}-${slug}`;
+};
+
 async function docker(args: string[]): Promise<string> {
   const { stdout } = await exec("docker", args, { maxBuffer: 16 * 1024 * 1024 });
   return stdout.trim();
@@ -242,6 +257,10 @@ export const localDockerTarget: DeployTarget = {
       WORKFLOW_POSTGRES_URL: dbUrl,
       DATABASE_URL: dbUrl,
       PORT: String(INSTANCE_PORT),
+      // Point eve at the shim (eve-image.server.ts) and tell it which volume is this
+      // environment's agent home. AFTER the req.env spread so user secrets can never shadow them.
+      EVE_DOCKER_PATH: "/usr/local/bin/eve-docker",
+      EDEN_HOME_VOLUME: homeVolumeName(req.worldKey),
     }).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
 
     await docker([
@@ -321,7 +340,32 @@ export const localDockerTarget: DeployTarget = {
 
   async destroyWorld(worldKey: string): Promise<void> {
     // Environment/repository teardown, after every deployment's `destroy`: no instance of this
-    // environment survives to need its sessions, so drop the shared world database.
+    // environment survives to need its sessions, so tear the whole world down.
+    //   1. drop the shared world database (the sessions);
+    //   2. reap this env's sibling sandbox containers — they are exactly the ones mounting this
+    //      env's home volume, so a `volume=` filter finds them (also a slice of the M6.1 sandbox-GC
+    //      punt: those stopped containers were otherwise orphaned);
+    //   3. remove the home volume itself.
+    // Each step is best-effort and independent — a failure in one must not strand the others.
     await dropWorldDb(worldKey);
+    const volume = homeVolumeName(worldKey);
+    try {
+      const ids = await docker(["ps", "-aq", "--filter", `volume=${volume}`]);
+      const containers = ids.split("\n").map((s) => s.trim()).filter(Boolean);
+      if (containers.length > 0) {
+        try {
+          await docker(["rm", "-f", ...containers]);
+        } catch {
+          // best-effort: leave the volume rm to still try
+        }
+      }
+    } catch {
+      // best-effort: docker unavailable or no matches
+    }
+    try {
+      await docker(["volume", "rm", volume]);
+    } catch {
+      // best-effort: volume may never have been created, or still referenced
+    }
   },
 };

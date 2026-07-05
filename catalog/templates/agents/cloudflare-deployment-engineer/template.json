@@ -3,10 +3,15 @@
   "type": "agent",
   "name": "Cloudflare Deployment Engineer",
   "description": "An agent that deploys Cloudflare Workers with wrangler — instructions and tool pre-wired.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "eve": ">=0.1.0",
   "model": "anthropic/claude-sonnet-5",
-  "files": ["instructions.md", "agent.ts", "tools/cloudflare-deploy.ts"],
+  "files": [
+    "instructions.md",
+    "agent.ts",
+    "sandbox.ts",
+    "tools/cloudflare-deploy.ts"
+  ],
   "dependencies": {
     "wrangler": "^3.0.0"
   },

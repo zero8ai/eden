@@ -4,17 +4,17 @@
       "id": "cloudflare-app-builder",
       "type": "agent",
       "name": "Cloudflare App Builder",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend, scaffolded, verified, and deployed per Cloudflare's framework guide.",
-      "hash": "44ad2ba9b0c3d34e0885f720fb43637246282231"
+      "hash": "5743ef65215cede72f0ba0f61babb4b6f2919db4"
     },
     {
       "id": "cloudflare-deployment-engineer",
       "type": "agent",
       "name": "Cloudflare Deployment Engineer",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "An agent that deploys Cloudflare Workers with wrangler — instructions and tool pre-wired.",
-      "hash": "82e27d6d0e07900441eda7c84f2a68ab292ef76d"
+      "hash": "9b93009f3084a3e3758e45a8c5eee73595c8e3fb"
     },
     {
       "id": "writing-a-prd",

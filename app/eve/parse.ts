@@ -9,6 +9,7 @@ import {
   AGENT_CATEGORIES,
   type AgentConfig,
   type AgentResource,
+  type AgentSandbox,
 } from "./types";
 
 /** Root directory that marks an eve agent. */
@@ -105,6 +106,34 @@ function stripExtension(filename: string): string {
   return dot > 0 ? filename.slice(0, dot) : filename;
 }
 
+/** Module extensions eve's discovery accepts (verified against eve's discover/filesystem). */
+const MODULE_FILE = /^sandbox\.(?:cts|mts|cjs|mjs|ts|js)$/;
+
+/**
+ * Detect the authored sandbox definition under `base` (an agent root, or a subagent
+ * directory), mirroring eve's discovery order: a `sandbox/` folder owns the sandbox when it
+ * exists (`sandbox/sandbox.<ext>`, optionally alongside a `workspace/` seed tree); otherwise
+ * the top-level `sandbox.<ext>` shorthand. A `sandbox/` folder with only a workspace and no
+ * module still runs eve's default backend — but there is no file to edit, so we surface it
+ * only via the module-carrying layouts.
+ */
+export function detectSandbox(paths: string[], base: string): AgentSandbox | null {
+  const folderPrefix = `${base}/sandbox/`;
+  const folderModule = paths.find(
+    (p) => p.startsWith(folderPrefix) && MODULE_FILE.test(p.slice(folderPrefix.length)),
+  );
+  if (folderModule) {
+    return {
+      path: folderModule,
+      hasWorkspace: paths.some((p) => p.startsWith(`${folderPrefix}workspace/`)),
+    };
+  }
+  const flat = paths.find(
+    (p) => p.startsWith(`${base}/`) && MODULE_FILE.test(p.slice(base.length + 1)),
+  );
+  return flat ? { path: flat, hasWorkspace: false } : null;
+}
+
 /**
  * Best-effort model id from `agent.ts`. eve agents commonly declare a model as a string
  * literal (e.g. `model: 'anthropic/claude-...'`); we grab the first such literal. This is a
@@ -142,10 +171,20 @@ export function buildAgentConfig(source: AgentSource, root: string = AGENT_ROOT)
   const agentModulePath = `${root}/agent.ts`;
   const instructionsPath = `${root}/instructions.md`;
 
+  // Sandboxes are singletons per agent (and per subagent) — detected, not listed.
+  const subagentSandboxes: Record<string, AgentSandbox> = {};
+  for (const sub of categories.subagents) {
+    if (!sub.isDirectory) continue;
+    const sandbox = detectSandbox(paths, `${root}/subagents/${sub.name}`);
+    if (sandbox) subagentSandboxes[sub.name] = sandbox;
+  }
+
   return {
     hasAgentModule: paths.includes(agentModulePath),
     model: extractModel(files[agentModulePath]),
     instructions: files[instructionsPath] ?? null,
+    sandbox: detectSandbox(paths, root),
+    subagentSandboxes,
     ...categories,
   };
 }

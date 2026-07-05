@@ -29,7 +29,7 @@ import {
   stageDraft,
   type FileView,
 } from "~/drafts/drafts.server";
-import { RESOURCE_KINDS } from "~/eve/templates";
+import { DEFAULT_SANDBOX_MODULE, RESOURCE_KINDS } from "~/eve/templates";
 import { formatSource, isFormattable } from "~/lib/format";
 import { contextPath } from "~/lib/paths";
 import {
@@ -64,6 +64,12 @@ interface FileEditView {
 
 /** Starter content for a brand-new file, by its category directory (null if none applies). */
 function templateFor(path: string): string | null {
+  // The sandbox definition is a singleton directly under the agent root (both layouts), not
+  // a category — a repo running the framework default starts from Eden's scaffold, which is
+  // behaviorally identical until a secret is exposed (EDEN_SANDBOX_ENV convention).
+  if (/^(?:agent|agents\/[^/]+\/agent)\/sandbox\.[cm]?[jt]s$/.test(path)) {
+    return DEFAULT_SANDBOX_MODULE;
+  }
   // Root agent (agent/<cat>/<name>) or a team member (agents/<m>/agent/<cat>/<name>) — §7.9.
   const m = path.match(
     /^(?:agent|agents\/[^/]+\/agent)\/([^/]+)\/([^/]+)\.[a-z]+$/,

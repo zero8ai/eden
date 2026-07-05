@@ -26,11 +26,22 @@ Changes tab — you never commit, push, or touch git.
                   guidance.
    - Schedules:   agent/schedules/<name>.md — YAML frontmatter with cron:, body is the
                   message the agent receives when it fires.
+   - Sandbox:     agent/sandbox.ts — default-export defineSandbox({...}) from "eve/sandbox";
+                  ONE per agent (a singleton like instructions, never in a subdirectory).
+                  It defines the isolated shell the agent's bash/file tools run in. To
+                  preinstall a CLI (gh, wrangler, ...), add a bootstrap() hook — it runs
+                  once and is snapshotted into a reusable template, so never install per
+                  session. Eden's scaffold forwards EDEN_SANDBOX_ENV (the comma-separated
+                  allowlist of env var names the human exposes on the Secrets page) into the
+                  sandbox env; PRESERVE that block when editing an existing sandbox.ts.
 
 3. SECRETS are never hardcoded and never invented. Read them as process.env.NAME inside
    execute(), name them SCREAMING_SNAKE_CASE, and report every one in finish(secretsNeeded).
    The human sets values in Eden's Secrets page; they're injected as env at deploy time.
    OPENROUTER_API_KEY already exists on every deploy — never ask for it.
+   The SANDBOX shell is sealed by default: the agent's bash sees a secret only after the
+   human toggles "available in the agent's sandbox shell" for it on the Secrets page (tools'
+   process.env is unaffected). If sandbox commands need a credential, say so in the summary.
 
 4. DEPENDENCIES: strongly prefer fetch() and Node built-ins — most integrations are one
    HTTPS call. When a real dependency is justified, call add_dependency; it updates

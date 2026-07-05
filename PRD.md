@@ -912,6 +912,21 @@ two-source-of-truth reconciliation problem.
 - (Later, cheap once 6+7 exist:) team templates in the marketplace — a scaffold referencing agent
   templates plus a wiring spec.
 
+**Milestone 8 — Self-host: single-VPS deployment (next)**
+- The supported production topology for OSS v1: **one Linux VPS runs everything** — Eden,
+  Postgres, agent instances, sandbox containers. Co-residency is a feature of the local-docker
+  target (loopback instance URLs), not an accident; multi-host is out of scope.
+- Deliverable is a **runbook, not an installer** (owner decision): `deploy/vps/README.md` walks
+  firewall → Docker Engine → clone → env file → compose stack (Postgres + Eden, host networking,
+  socket mount) → nginx + Let's Encrypt (host packages, not Caddy) → GitHub App/WorkOS pointed at
+  the domain → smoke test. Supporting artifacts: production `Dockerfile` (docker CLI + tar in the
+  runtime image), `deploy/vps/docker-compose.yml`, `nginx-eden.conf`, `env.example`.
+- **Acceptance (owner's words):** clone the repo on a fresh VPS, follow the README top to bottom,
+  and Eden is up on the domain — connect a repo, ship, and talk to the agent in the playground.
+- **Deprioritized:** the Vercel target (§7.4 "later" adapter) moves behind this and behind a
+  probable **Cloudflare** target — revisit after VPS parity is proven. The seam stays: nothing in
+  M8 hard-codes the topology outside the local-docker target.
+
 ---
 
 ## 12. Open questions & risks

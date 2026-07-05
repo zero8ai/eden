@@ -121,6 +121,11 @@ eden/
 
 ## Deployment
 
-`npm run build` emits a standard Node server build under `build/` (client + server). The included
-`Dockerfile` containerizes it — deployable to any Docker host. See `ARCHITECTURE.md` for the
-managed-service infrastructure.
+**Self-hosting on a VPS is the supported production path** — the full runbook is
+[`deploy/vps/README.md`](./deploy/vps/README.md) (firewall → Docker → compose stack →
+nginx + Let's Encrypt → GitHub App/WorkOS). One Linux box runs everything: Eden, Postgres,
+and the agent instances it deploys.
+
+`npm run build` emits a standard Node server build under `build/` (client + server); the
+included `Dockerfile` containerizes it with the Docker CLI the deploy target needs. See
+`ARCHITECTURE.md` for the managed-service infrastructure.

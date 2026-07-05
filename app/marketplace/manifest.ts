@@ -65,9 +65,19 @@ export const templateManifestSchema = z.object({
   files: z.array(relativeFilePath).min(1),
   /** npm name → version range, JSON-merged into the target's package.json at install (PRD §7.8). */
   dependencies: z.record(npmName, z.string().min(1)).optional(),
-  /** Secrets the template needs, by name — the wizard creates per-environment placeholders. */
+  /**
+   * Secrets the template needs, by name — the wizard collects values at install. `sandbox: true`
+   * marks one for the agent's sandbox shell (EDEN_SANDBOX_ENV convention): the install flips the
+   * exposure flag so terminal-driven agents get their credentials without a manual Settings trip.
+   */
   secrets: z
-    .array(z.object({ name: secretName, description: z.string().optional() }))
+    .array(
+      z.object({
+        name: secretName,
+        description: z.string().optional(),
+        sandbox: z.boolean().optional(),
+      }),
+    )
     .optional(),
   /** Declared external connections (future use — reserved by the format now). */
   connections: z.array(z.string().min(1)).optional(),

@@ -139,3 +139,47 @@ export default defineMcpClientConnection({
 export function resourcePath(kind: ResourceKind, slug: string, root = "agent"): string {
   return `${root}/${kind.key}/${slug}${kind.ext}`;
 }
+
+/**
+ * Default sandbox definition — scaffolded into new agents and used as the starter template
+ * when a repo without one opens the sandbox editor. Behaviorally identical to eve's
+ * framework default until the human exposes a secret: with no EDEN_SANDBOX_ENV names the
+ * env map is empty, which is exactly what `defaultBackend()` gets when it isn't configured.
+ *
+ * The EDEN_SANDBOX_ENV contract (Eden convention, both sides must agree):
+ *  - Eden's deploy pipeline sets it on the INSTANCE container to the comma-separated NAMES
+ *    of the secrets marked "available in the agent's sandbox shell" (Settings → Secrets).
+ *    Names only, never values — the values are already in the instance env as secrets.
+ *  - This module forwards exactly those variables into the sandbox backend's `env`, so the
+ *    agent's bash sees them. Everything else stays sealed out of the sandbox (eve's
+ *    sealed-by-default model — sandboxes never inherit the instance's process env).
+ *
+ * Two propagation semantics worth knowing (verified against eve@0.19.0's docker backend):
+ *  - The resolved backend options INCLUDING env values are hashed into the template image
+ *    reference — so for templated sandboxes, rotating an exposed secret's value changes the
+ *    expected `eve-sbx-tpl-*` name, and the next `eve start` (deploy/wake) rebuilds it
+ *    automatically. Harmless, just the slow path once.
+ *  - Session containers are REUSED by name (docker start, not recreate), so env changes
+ *    reach NEW sessions only; existing sessions keep the env they started with.
+ */
+export const DEFAULT_SANDBOX_MODULE = `import { defaultBackend, defineSandbox } from "eve/sandbox";
+
+// This agent's sandbox: the isolated shell its bash/read/write tools run in. Add a
+// bootstrap() hook to preinstall CLIs (gh, wrangler, ...) — it runs ONCE and is snapshotted
+// into a reusable template, so sessions start fast with the tools already in place.
+//
+// Eden convention: EDEN_SANDBOX_ENV is a comma-separated allowlist of env var NAMES
+// (managed from the Secrets page — "available in the agent's sandbox shell") forwarded from
+// the instance into the sandbox. Everything else stays sealed out of the shell.
+const names = (process.env.EDEN_SANDBOX_ENV ?? "").split(",").filter(Boolean);
+const env = Object.fromEntries(names.map((n) => [n, process.env[n] ?? ""]));
+
+export default defineSandbox({
+  backend: () => defaultBackend({ docker: { env }, vercel: { env } }),
+});
+`;
+
+/** Path an agent's sandbox definition is created at, under an agent root (§7.9). */
+export function sandboxPath(root = "agent"): string {
+  return `${root}/sandbox.ts`;
+}

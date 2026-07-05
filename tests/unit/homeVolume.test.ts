@@ -9,8 +9,9 @@ import { describe, expect, it } from "vitest";
 
 import { EDEN_EVE_DOCKERFILE, EVE_DOCKER_SHIM } from "~/deploy/eve-image.server";
 import {
+  DEPLOY_HEALTH_TIMEOUT_MS,
   homeVolumeName,
-  LOCAL_DOCKER_DEPLOY_HEALTH_TIMEOUT_MS,
+  WAKE_HEALTH_TIMEOUT_MS,
 } from "~/seams/oss/deploy.localdocker.server";
 
 describe("homeVolumeName", () => {
@@ -60,9 +61,10 @@ describe("runtime image installs the shim", () => {
   });
 });
 
-describe("local docker deploy health timeout", () => {
-  it("allows several minutes for first sandbox template prewarm", () => {
-    expect(LOCAL_DOCKER_DEPLOY_HEALTH_TIMEOUT_MS).toBe(300_000);
+describe("local docker health budgets", () => {
+  it("allows minutes on deploy (first template prewarm) but stays tight on wake", () => {
+    expect(DEPLOY_HEALTH_TIMEOUT_MS).toBe(600_000);
+    expect(WAKE_HEALTH_TIMEOUT_MS).toBe(120_000);
   });
 });
 

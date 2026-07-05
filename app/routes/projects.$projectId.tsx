@@ -63,7 +63,7 @@ import { shipHead, shipStagedChanges } from "~/deploy/ship.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { readModel } from "~/eve/agentModule";
 import { buildAgentConfig, detectAgentRoots } from "~/eve/parse";
-import { RESOURCE_KINDS, slugifyResourceName } from "~/eve/templates";
+import { RESOURCE_KINDS, sandboxPath, slugifyResourceName } from "~/eve/templates";
 import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
 import { memberScaffold } from "~/github/create.server";
 import { getAgentSource } from "~/github/cached.server";
@@ -450,8 +450,8 @@ export async function action(args: ActionFunctionArgs) {
         files: memberScaffold(name, model ?? undefined),
         title: `Add team member: ${name}`,
         body:
-          `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, an ` +
-          `example tool, package.json). Eden picks the member up on merge.`,
+          `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, a ` +
+          `default sandbox, an example tool, package.json). Eden picks the member up on merge.`,
       });
       return {
         ok: true as const,
@@ -1119,6 +1119,21 @@ function AgentSurface({
     [instructionsStaged],
   );
 
+  // Sandbox is a singleton like instructions: the repo file wins; a staged NEW sandbox.ts
+  // (draft not yet in the repo) still counts as a custom definition in progress.
+  const sandboxFile = config.sandbox?.path ?? sandboxPath(root);
+  const sandboxStaged = drafted.has(sandboxFile);
+  const hasCustomSandbox = config.sandbox !== null || sandboxStaged;
+  const sandboxBadges = useMemo(
+    () =>
+      sandboxStaged ? (
+        <Badge variant="outline" className="text-xs">
+          staged
+        </Badge>
+      ) : null,
+    [sandboxStaged],
+  );
+
   return (
     <div className="space-y-8">
       {/* Model moved to the Settings tab (M5.8). */}
@@ -1220,6 +1235,42 @@ function AgentSurface({
             );
           })}
         </div>
+      </section>
+
+      {/* Sandbox — the isolated shell the agent's bash/file tools run in (one per agent). */}
+      <section>
+        <SectionHeader
+          title="Sandbox"
+          badges={sandboxBadges}
+          actions={
+            <Button variant="outline" size="sm" asChild>
+              <Link to={`${ctx}/edit?path=${encodeURIComponent(sandboxFile)}`}>
+                {hasCustomSandbox ? "Edit" : "Customize"}
+              </Link>
+            </Button>
+          }
+        />
+        {hasCustomSandbox ? (
+          <p className="text-sm text-muted-foreground">
+            Custom definition at{" "}
+            <span className="font-mono text-foreground">{sandboxFile}</span>
+            {config.sandbox?.hasWorkspace && (
+              <>
+                {" "}
+                · seeds files from{" "}
+                <span className="font-mono">sandbox/workspace/</span>
+              </>
+            )}
+            . Its bootstrap runs once and is snapshotted into a reusable
+            template every session starts from.
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Framework default — an isolated shell for the agent&rsquo;s bash
+            and file tools. Customize it to preinstall CLIs at bootstrap or to
+            forward secrets marked for the sandbox (Settings → Secrets).
+          </p>
+        )}
       </section>
     </div>
   );

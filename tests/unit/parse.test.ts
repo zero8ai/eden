@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAgentConfig,
   detectAgentRoots,
+  detectSandbox,
   isEveRepo,
 } from "~/eve/parse";
 
@@ -82,6 +83,85 @@ describe("buildAgentConfig with a member root", () => {
   it("defaults to the single-agent root", () => {
     const config = buildAgentConfig({ paths: SINGLE, files: {} });
     expect(config.tools.map((t) => t.name)).toEqual(["example"]);
+  });
+});
+
+describe("detectSandbox", () => {
+  it("detects the flat sandbox.<ext> shorthand under the agent root", () => {
+    expect(detectSandbox([...SINGLE, "agent/sandbox.ts"], "agent")).toEqual({
+      path: "agent/sandbox.ts",
+      hasWorkspace: false,
+    });
+  });
+
+  it("detects the sandbox/ folder layout, noting the workspace seed tree", () => {
+    const paths = [
+      ...SINGLE,
+      "agent/sandbox/sandbox.ts",
+      "agent/sandbox/workspace/notes/setup.md",
+    ];
+    expect(detectSandbox(paths, "agent")).toEqual({
+      path: "agent/sandbox/sandbox.ts",
+      hasWorkspace: true,
+    });
+  });
+
+  it("prefers the folder layout when both exist (eve's discovery order)", () => {
+    const paths = ["agent/sandbox.ts", "agent/sandbox/sandbox.js"];
+    expect(detectSandbox(paths, "agent")).toEqual({
+      path: "agent/sandbox/sandbox.js",
+      hasWorkspace: false,
+    });
+  });
+
+  it("returns null for the framework default, and ignores lookalike paths", () => {
+    expect(detectSandbox(SINGLE, "agent")).toBeNull();
+    // Not a sandbox module: wrong extension, nested under a category, or another agent's.
+    expect(
+      detectSandbox(
+        ["agent/sandbox.md", "agent/tools/sandbox.ts", "agents/x/agent/sandbox.ts"],
+        "agent",
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("buildAgentConfig sandbox detection", () => {
+  it("surfaces the root agent's sandbox and each subagent's own", () => {
+    const paths = [
+      ...SINGLE,
+      "agent/sandbox.ts",
+      "agent/subagents/researcher/instructions.md",
+      "agent/subagents/researcher/sandbox.ts",
+      "agent/subagents/writer/instructions.md",
+    ];
+    const config = buildAgentConfig({ paths, files: {} });
+    expect(config.sandbox).toEqual({ path: "agent/sandbox.ts", hasWorkspace: false });
+    expect(config.subagentSandboxes).toEqual({
+      researcher: { path: "agent/subagents/researcher/sandbox.ts", hasWorkspace: false },
+    });
+  });
+
+  it("reports the framework default (null) when no definition exists", () => {
+    const config = buildAgentConfig({ paths: SINGLE, files: {} });
+    expect(config.sandbox).toBeNull();
+    expect(config.subagentSandboxes).toEqual({});
+  });
+
+  it("scopes detection to the member's root in a team repo", () => {
+    const config = buildAgentConfig(
+      { paths: [...TEAM, "agents/deployer/agent/sandbox.ts"], files: {} },
+      "agents/deployer/agent",
+    );
+    expect(config.sandbox).toEqual({
+      path: "agents/deployer/agent/sandbox.ts",
+      hasWorkspace: false,
+    });
+    const other = buildAgentConfig(
+      { paths: [...TEAM, "agents/deployer/agent/sandbox.ts"], files: {} },
+      "agents/product-manager/agent",
+    );
+    expect(other.sandbox).toBeNull();
   });
 });
 

@@ -4,17 +4,17 @@
       "id": "cloudflare-app-builder",
       "type": "agent",
       "name": "Cloudflare App Builder",
-      "version": "0.2.0",
-      "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend, scaffolded, verified, and deployed per Cloudflare's framework guide.",
-      "hash": "b041dd820ec5413a331795afbd4a9e386c8bf493"
+      "version": "0.3.0",
+      "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend — and ships every project to GitHub. It builds; it does not deploy.",
+      "hash": "0371984da5d7637fff2f7e0ca594c8e2ff0120d9"
     },
     {
       "id": "cloudflare-deployment-engineer",
       "type": "agent",
       "name": "Cloudflare Deployment Engineer",
-      "version": "0.1.0",
-      "description": "An agent that deploys Cloudflare Workers with wrangler — instructions and tool pre-wired.",
-      "hash": "9f4c7b9e44f244f30616368a2ff4ce882a6f972e"
+      "version": "0.2.0",
+      "description": "An agent that deploys any Cloudflare Workers app straight from its GitHub repo, using the terminal — gh + wrangler with sandbox-exposed credentials, no bespoke tools.",
+      "hash": "f936fbb16a0f841c0c8b8e96f6293351a2300778"
     },
     {
       "id": "writing-a-prd",

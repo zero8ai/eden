@@ -101,6 +101,10 @@ import {
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { ConnectedProject } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
+import {
+  listSandboxExposure,
+  setSecretSandboxExposed,
+} from "~/seams/oss/secret-store";
 import type { Route } from "./+types/projects.$projectId.settings";
 
 const ALL = "all";
@@ -123,7 +127,7 @@ interface SettingsView {
   /** Member: secrets scope state. */
   envs: Environment[];
   scope: { environmentId: string | null; label: string };
-  secretNames: string[];
+  secrets: { name: string; sandboxExposed: boolean }[];
   secretsConfigured: boolean;
   secretsError: string | null;
   /** Marketplace installs in the current settings scope. */
@@ -262,7 +266,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         modelStaged: false,
         envs: [],
         scope: { environmentId: null, label: "All environments" },
-        secretNames: [],
+        secrets: [],
         secretsConfigured: true,
         secretsError: null,
         installs: buildInstalls(
@@ -300,11 +304,19 @@ export const loader = (args: LoaderFunctionArgs) =>
           envs,
         );
         try {
-          base.secretNames = await getRuntime().secrets.listNames({
+          const secretScope = {
             projectId: project.id,
             agentId: active.id,
             environmentId: base.scope.environmentId,
-          });
+          };
+          const [names, exposure] = await Promise.all([
+            getRuntime().secrets.listNames(secretScope),
+            listSandboxExposure(secretScope),
+          ]);
+          base.secrets = names.map((name) => ({
+            name,
+            sandboxExposed: exposure[name] ?? false,
+          }));
         } catch (error) {
           base.secretsConfigured = false;
           base.secretsError = (error as Error).message;
@@ -528,6 +540,27 @@ export async function action(args: ActionFunctionArgs) {
         await secrets.delete(ref);
       }
       throw redirect(`${back}?env=${encodeURIComponent(envRaw)}`);
+    }
+
+    // ── Secret sandbox exposure: flip the per-secret allowlist flag (fetcher, no redirect) ──
+    if (intent === "secret-expose") {
+      const { active } = await resolveAgentContext(
+        project.id,
+        String(form.get("agent") ?? "") || null,
+      );
+      const envs = await listAgentEnvironments(active.id);
+      const { environmentId } = resolveScope(String(form.get("env") ?? ALL), envs);
+      await setSecretSandboxExposed(
+        {
+          projectId: project.id,
+          agentId: active.id,
+          environmentId,
+          key: String(form.get("key") ?? "").trim(),
+        },
+        form.get("exposed") === "1",
+        auth.user.id,
+      );
+      return { ok: true as const };
     }
 
     // ── Member danger zone: remove agent (change-set PR deleting its directory) ──
@@ -770,7 +803,7 @@ function SecretsSection({
   const {
     envs,
     scope,
-    secretNames,
+    secrets,
     secretsConfigured,
     secretsError,
     activeAgent,
@@ -782,10 +815,10 @@ function SecretsSection({
   const secretsBadge = useMemo(
     () => (
       <Badge variant="secondary">
-        {scope.label} · {secretNames.length}
+        {scope.label} · {secrets.length}
       </Badge>
     ),
-    [scope.label, secretNames.length],
+    [scope.label, secrets.length],
   );
 
   return (
@@ -817,7 +850,10 @@ function SecretsSection({
       <p className="mb-3 text-sm text-muted-foreground">
         {isTeam
           ? "Scoped to this member only — teammates cannot read each other's credentials. Values are injected at deploy time and never shown again."
-          : "Stored encrypted, never in the repo. Reference them by name in tools and connections; values are injected at deploy time and never shown again."}
+          : "Stored encrypted, never in the repo. Reference them by name in tools and connections; values are injected at deploy time and never shown again."}{" "}
+        Secrets stay out of the agent&rsquo;s sandbox shell unless marked
+        below — anything its bash runs can read an exposed value, so prefer
+        narrowly-scoped tokens there.
       </p>
 
       {!secretsConfigured && (
@@ -827,34 +863,41 @@ function SecretsSection({
         </Alert>
       )}
 
-      {secretNames.length > 0 && (
+      {secrets.length > 0 && (
         <ul className="mb-4 divide-y rounded-lg border text-sm">
-          {secretNames.map((name) => (
+          {secrets.map((secret) => (
             <li
-              key={name}
+              key={secret.name}
               className="flex items-center justify-between gap-2 px-4 py-2"
             >
               <div className="flex items-center gap-2">
-                <span className="font-mono">{name}</span>
+                <span className="font-mono">{secret.name}</span>
                 <Badge variant={scope.environmentId ? "secondary" : "outline"}>
                   {scope.environmentId ? scope.label : "all environments"}
                 </Badge>
               </div>
-              <Form method="post">
-                <input type="hidden" name="intent" value="secret-delete" />
-                <input type="hidden" name="env" value={envValue} />
-                <input type="hidden" name="agent" value={activeAgent} />
-                <input type="hidden" name="key" value={name} />
-                <Button
-                  type="submit"
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  className="text-destructive hover:text-destructive"
-                >
-                  Delete
-                </Button>
-              </Form>
+              <div className="flex items-center gap-3">
+                <SandboxExposeToggle
+                  secret={secret}
+                  envValue={envValue}
+                  activeAgent={activeAgent}
+                />
+                <Form method="post">
+                  <input type="hidden" name="intent" value="secret-delete" />
+                  <input type="hidden" name="env" value={envValue} />
+                  <input type="hidden" name="agent" value={activeAgent} />
+                  <input type="hidden" name="key" value={secret.name} />
+                  <Button
+                    type="submit"
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    Delete
+                  </Button>
+                </Form>
+              </div>
             </li>
           ))}
         </ul>
@@ -1010,6 +1053,50 @@ function MarketplaceInstallsSection({
         </CardContent>
       </Card>
     </section>
+  );
+}
+
+/**
+ * Per-secret "available in the agent's sandbox shell" toggle. Flipping it updates metadata
+ * only (never the value) and takes effect on the NEXT deploy, when the exposed names are
+ * joined into EDEN_SANDBOX_ENV and the agent's sandbox.ts forwards them into its shell.
+ */
+function SandboxExposeToggle({
+  secret,
+  envValue,
+  activeAgent,
+}: {
+  secret: { name: string; sandboxExposed: boolean };
+  envValue: string;
+  activeAgent: string;
+}) {
+  const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
+  // Optimistic while the flip is in flight, so the checkbox doesn't snap back.
+  const exposed = fetcher.formData
+    ? fetcher.formData.get("exposed") === "1"
+    : secret.sandboxExposed;
+  return (
+    <Label className="flex items-center gap-1.5 text-xs font-normal text-muted-foreground">
+      <input
+        type="checkbox"
+        checked={exposed}
+        disabled={fetcher.state !== "idle"}
+        aria-label={`Make ${secret.name} available in the agent's sandbox shell (its bash can read it)`}
+        onChange={(e) =>
+          fetcher.submit(
+            {
+              intent: "secret-expose",
+              key: secret.name,
+              env: envValue,
+              agent: activeAgent,
+              exposed: e.target.checked ? "1" : "0",
+            },
+            { method: "post" },
+          )
+        }
+      />
+      Sandbox shell
+    </Label>
   );
 }
 

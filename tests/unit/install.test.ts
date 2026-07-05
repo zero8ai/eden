@@ -38,7 +38,7 @@ const toolTpl: CatalogTemplate = {
     eve: ">=0.1.0",
     files: ["tools/cloudflare-deploy.ts"],
     dependencies: { wrangler: "^3.0.0" },
-    secrets: [{ name: "CLOUDFLARE_API_TOKEN", description: "token" }],
+    secrets: [{ name: "CLOUDFLARE_API_TOKEN", description: "token", sandbox: true }],
   },
   files: { "tools/cloudflare-deploy.ts": "export default {};\n" },
 };
@@ -102,7 +102,8 @@ describe("planInstall — path mapping", () => {
     expect(plan.conflicts).toEqual([]);
     expect(plan.isUpdate).toBe(false);
     expect(plan.secrets).toEqual([
-      { name: "CLOUDFLARE_API_TOKEN", description: "token" },
+      // sandbox rides through so the wizard can flip the exposure flag on install.
+      { name: "CLOUDFLARE_API_TOKEN", description: "token", sandbox: true },
     ]);
   });
 

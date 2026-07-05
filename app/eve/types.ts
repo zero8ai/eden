@@ -19,6 +19,19 @@ export interface AgentResource {
   isDirectory: boolean;
 }
 
+/**
+ * The authored sandbox definition for an agent (or subagent) — a singleton like
+ * instructions, not a directory category. eve accepts `sandbox.<ext>` directly under the
+ * agent root, or a `sandbox/` folder owning `sandbox/sandbox.<ext>` plus an optional
+ * `workspace/` seed tree. Absent = eve's framework default sandbox.
+ */
+export interface AgentSandbox {
+  /** Repo-relative path to the definition module (`…/sandbox.ts` or `…/sandbox/sandbox.ts`). */
+  path: string;
+  /** True when the folder layout carries a `sandbox/workspace/` seed tree. */
+  hasWorkspace: boolean;
+}
+
 /** The eve concepts we surface. Keyed so the UI can iterate categories generically. */
 export interface AgentConfig {
   /** Whether `agent/agent.ts` exists (the agent entrypoint module). */
@@ -27,6 +40,10 @@ export interface AgentConfig {
   model: string | null;
   /** Contents of `agent/instructions.md`, or null when absent. */
   instructions: string | null;
+  /** The agent's own sandbox definition, or null when it runs eve's framework default. */
+  sandbox: AgentSandbox | null;
+  /** Subagent sandbox definitions by subagent name (each subagent owns its own sandbox). */
+  subagentSandboxes: Record<string, AgentSandbox>;
   tools: AgentResource[];
   skills: AgentResource[];
   subagents: AgentResource[];

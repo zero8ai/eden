@@ -22,6 +22,7 @@ import {
   ZOD_VERSION,
   scaffoldAgentModule,
 } from "~/eve/agentModule";
+import { DEFAULT_SANDBOX_MODULE, sandboxPath } from "~/eve/templates";
 import { commitFiles, type FileChange } from "./write.server";
 import { getInstallationOctokit } from "./client.server";
 
@@ -58,7 +59,7 @@ const STARTER_MEMBER = "assistant";
 
 const GITIGNORE = ".eve/\n.output/\n.workflow-data/\nnode_modules/\n.env\n.env.*\n";
 
-/** The three files every eve agent directory starts with, under `root` (e.g. "agent"). */
+/** The files every eve agent directory starts with, under `root` (e.g. "agent"). */
 function agentDirFiles(root: string, displayName: string, model: string): FileChange[] {
   return [
     {
@@ -66,6 +67,10 @@ function agentDirFiles(root: string, displayName: string, model: string): FileCh
       content: `# ${displayName}\n\nYou are a helpful agent. Describe the agent's role, tone, and\nboundaries here — this Markdown is the always-on system prompt.\n`,
     },
     { path: `${root}/agent.ts`, content: scaffoldAgentModule(model) },
+    // The Eden default sandbox: identical to eve's framework default until a secret is
+    // exposed (the EDEN_SANDBOX_ENV convention — see ~/eve/templates), but present from day
+    // one so "make X available in my sandbox" is an edit, not a new concept.
+    { path: sandboxPath(root), content: DEFAULT_SANDBOX_MODULE },
     {
       path: `${root}/tools/example.ts`,
       content: `import { defineTool } from 'eve';\nimport { z } from 'zod';\n\nexport default defineTool({\n  description: 'An example tool. Replace with your own.',\n  inputSchema: z.object({\n    name: z.string().describe('Who to greet'),\n  }),\n  async execute({ name }) {\n    return \`Hello, \${name}!\`;\n  },\n});\n`,

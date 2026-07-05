@@ -14,7 +14,9 @@ export const SUGGESTED_MODELS = [
   "anthropic/claude-haiku-4-5",
   "openai/gpt-5.1",
   "google/gemini-3-pro",
-  "z-ai/glm-5.2",
+  // Ids are AI GATEWAY slugs (ai-gateway.vercel.sh/v1/models/catalog) — eve's build
+  // resolves context-window metadata there, so e.g. OpenRouter's "z-ai/…" fails.
+  "zai/glm-5.2",
   "moonshotai/kimi-k2.7-code",
 ] as const;
 

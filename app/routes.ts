@@ -44,6 +44,11 @@ export default [
     "repos/:projectId/playground",
     "routes/projects.$projectId.playground.tsx",
   ),
+  memberRoute(
+    "/playground",
+    "routes/projects.$projectId.playground.tsx",
+    "member-playground",
+  ),
   route("repos/:projectId/runs", "routes/projects.$projectId.runs.tsx"),
   memberRoute("/runs", "routes/projects.$projectId.runs.tsx", "member-runs"),
   route(

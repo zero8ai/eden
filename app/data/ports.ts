@@ -187,7 +187,10 @@ export interface AuditRepo {
 }
 
 /** The full data seam handed to control-plane logic. */
-/** A persisted chat transcript (assistant / playground) — one per (project, kind, user). */
+/**
+ * A persisted chat transcript (assistant / playground) — one per (project, kind, user).
+ * `kind` is surface-owned and may include a scope suffix, e.g. playground:<agentId>.
+ */
 export interface Conversation {
   id: string;
   projectId: string;

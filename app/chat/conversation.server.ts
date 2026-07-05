@@ -1,15 +1,16 @@
 /**
- * The ONE conversation per (project, surface, user) — deliberately no session management.
- * It survives navigation (persisted, PRD-style "it should still be there when I come back")
- * and goes stale instead of accumulating: after IDLE_EXPIRY without a message, the next
- * visit starts fresh (the row is simply overwritten on the next save). "New conversation"
- * deletes it explicitly.
+ * The ONE conversation per (project, surface/scope, user) — deliberately no session
+ * management. It survives navigation (persisted, PRD-style "it should still be there when
+ * I come back") and goes stale instead of accumulating: after IDLE_EXPIRY without a
+ * message, the next visit starts fresh (the row is simply overwritten on the next save).
+ * "New conversation" deletes it explicitly.
  */
 import type { ChatEntry } from "~/chat/types";
 import type { DataStore } from "~/data/ports";
 import { getRuntime } from "~/seams/index.server";
 
-export type ConversationKind = "assistant" | "playground";
+export type ConversationKind =
+  "assistant" | "playground" | `playground:${string}`;
 
 /** Idle time after which a conversation no longer resumes (fresh start on next visit). */
 export const IDLE_EXPIRY_MS = 24 * 60 * 60 * 1000;

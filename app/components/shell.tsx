@@ -129,8 +129,8 @@ function NavProgress() {
 function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }) {
   return (
     <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm">
-      {crumbs.map((crumb, i) => (
-        <span key={i} className="flex min-w-0 items-center gap-1.5">
+      {crumbs.map((crumb) => (
+        <span key={crumbKey(crumb)} className="flex min-w-0 items-center gap-1.5">
           <span className="text-muted-foreground">/</span>
           {crumb.to ? (
             <Link
@@ -147,6 +147,14 @@ function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }) {
       ))}
     </nav>
   );
+}
+
+function crumbKey(crumb: Crumb): string {
+  if (crumb.to) return crumb.to;
+  if (typeof crumb.label === "string" || typeof crumb.label === "number") {
+    return String(crumb.label);
+  }
+  return "current";
 }
 
 /**
@@ -273,13 +281,13 @@ const TABS: Record<NavLevel, { path: string; label: string }[]> = {
   repo: [
     { path: "", label: "Overview" },
     { path: "/deployment", label: "Deployment" },
-    { path: "/playground", label: "Playground" },
     { path: "/settings", label: "Settings" },
   ],
   // One team member: the member-scoped surfaces (+ the switcher).
   member: [
     { path: "", label: "Overview" },
     { path: "/deployment", label: "Deployment" },
+    { path: "/playground", label: "Playground" },
     { path: "/runs", label: "Runs" },
     { path: "/assistant", label: "Assistant" },
     { path: "/settings", label: "Settings" },

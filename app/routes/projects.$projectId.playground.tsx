@@ -1,5 +1,5 @@
 /**
- * Playground — a persistent conversation with a live deployment of this agent.
+ * Playground — a persistent per-agent conversation with a live deployment of this agent.
  *
  * The transcript and the eve session (id + continuation token) persist server-side
  * (chat/conversation.server.ts): navigate away and back, the conversation is still here and
@@ -18,6 +18,7 @@ import {
 
 import { sendTurn } from "~/agent/talk.server";
 import {
+  type ConversationKind,
   loadConversation,
   resetConversation,
   saveConversation,
@@ -42,9 +43,14 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { listDeployments } from "~/deploy/controller.server";
-import { listEnvironments } from "~/db/queries.server";
+import { listAgentEnvironments } from "~/db/queries.server";
 import { newId } from "~/lib/id";
-import { resolveAgentContext } from "~/project/agent-context.server";
+import { contextPath } from "~/lib/paths";
+import {
+  agentFromParams,
+  agentParamRedirect,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.playground";
 
@@ -67,8 +73,12 @@ const EMPTY_STATE: PlaygroundState = {
   continuationToken: null,
 };
 
-async function liveTargets(projectId: string): Promise<Target[]> {
-  const envs = await listEnvironments(projectId);
+function playgroundKind(agentId: string): ConversationKind {
+  return `playground:${agentId}`;
+}
+
+async function liveTargets(agentId: string): Promise<Target[]> {
+  const envs = await listAgentEnvironments(agentId);
   const perEnv = await Promise.all(
     envs.map(async (env) => {
       const deployments = await listDeployments(env.id);
@@ -103,17 +113,26 @@ export const loader = (args: LoaderFunctionArgs) =>
           args.params.projectId,
         ),
       );
-      // Repo-level page (M5.8): no member variant exists — the agent context is only
-      // resolved for the nav roster and the single/repo level split.
-      const [targets, conversation, { roster, isTeam }] = await Promise.all([
-        liveTargets(project.id),
+      const agentName = agentFromParams(args.params);
+      if (!agentName) {
+        const legacy = agentParamRedirect(args.request, project.id);
+        if (legacy) throw legacy;
+      }
+      const { roster, active, isTeam } = await resolveAgentContext(
+        project.id,
+        agentName,
+      );
+      // Teams have no repo-level Playground — the tab exists only at the member level.
+      if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
+
+      const [targets, conversation] = await Promise.all([
+        liveTargets(active.id),
         loadConversation<PlaygroundState>(
           project.id,
-          "playground",
+          playgroundKind(active.id),
           auth.user!.id,
           EMPTY_STATE,
         ),
-        resolveAgentContext(project.id, null),
       ]);
       return {
         project,
@@ -122,6 +141,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         expired: conversation.expired,
         lastDeploymentId: conversation.state.deploymentId,
         roster: roster.map((a) => ({ name: a.name })),
+        activeAgent: active.name,
         isTeam,
       };
     },
@@ -141,10 +161,14 @@ export async function action(args: ActionFunctionArgs) {
       args.params.projectId,
     ),
   );
+  const agentName = agentFromParams(args.params);
+  const { active, isTeam } = await resolveAgentContext(project.id, agentName);
+  if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
+  const kind = playgroundKind(active.id);
 
   const form = await args.request.formData();
   if (String(form.get("intent")) === "reset") {
-    await resetConversation(project.id, "playground", auth.user.id);
+    await resetConversation(project.id, kind, auth.user.id);
     return { ok: true as const };
   }
 
@@ -152,8 +176,8 @@ export async function action(args: ActionFunctionArgs) {
   const message = String(form.get("message") ?? "").trim();
   if (!message) return { error: "Type a message first." };
 
-  // Only talk to live deployments that belong to THIS project (tenancy guard).
-  const targets = await liveTargets(project.id);
+  // Only talk to live deployments that belong to THIS agent (tenancy guard).
+  const targets = await liveTargets(active.id);
   const target = targets.find((t) => t.deploymentId === deploymentId);
   if (!target) {
     return {
@@ -164,7 +188,7 @@ export async function action(args: ActionFunctionArgs) {
 
   const conversation = await loadConversation<PlaygroundState>(
     project.id,
-    "playground",
+    kind,
     auth.user.id,
     EMPTY_STATE,
   );
@@ -190,7 +214,7 @@ export async function action(args: ActionFunctionArgs) {
     error: result.error,
   });
 
-  await saveConversation(project.id, "playground", auth.user.id, entries, {
+  await saveConversation(project.id, kind, auth.user.id, entries, {
     deploymentId,
     sessionId: result.sessionId ?? null,
     continuationToken: result.continuationToken ?? null,
@@ -210,9 +234,10 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     expired,
     lastDeploymentId,
     roster,
+    activeAgent,
     isTeam,
   } = loaderData;
-  const base = `/repos/${project.id}`;
+  const base = contextPath(project.id, isTeam ? activeAgent : null);
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
   const pendingMessage =
@@ -253,16 +278,19 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       breadcrumbs={repoCrumbs({
         projectId: project.id,
         repoName: project.name,
+        isTeam,
+        agentName: activeAgent,
         tail: [{ label: "Playground" }],
       })}
     >
       <AgentNav
         base={base}
-        level={isTeam ? "repo" : "single"}
+        level={isTeam ? "member" : "single"}
         roster={roster}
+        activeAgent={isTeam ? activeAgent : undefined}
       />
       <PageHeader
-        title="Playground"
+        title={isTeam ? `Playground — ${activeAgent}` : "Playground"}
         description="Talk to a live deployment of this agent. Each reply is tagged with the version that produced it."
         actions={
           entries.length > 0 ? (
@@ -280,7 +308,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         <Alert>
           <AlertTitle>No live deployment to talk to</AlertTitle>
           <AlertDescription>
-            Deploy a release first (Deployment tab), then come back here to try
+            Deploy this agent first (Deployment tab), then come back here to try
             it.
           </AlertDescription>
         </Alert>
@@ -323,7 +351,11 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           </ChatTranscript>
 
           <ChatComposer
-            placeholder="Say something to the agent…"
+            placeholder={
+              isTeam
+                ? `Say something to ${activeAgent}...`
+                : "Say something to the agent..."
+            }
             busy={busy}
             onSend={(message) =>
               fetcher.submit({ message, deploymentId }, { method: "post" })

@@ -13,6 +13,11 @@
  * The build runs entirely inside linux containers, so the host needs Docker but not Node 24
  * or the eve toolchain, and native modules are traced for the right platform.
  *
+ * The final stage intentionally inherits the full build stage. `eve start` needs the authored
+ * source, node_modules, and `.eve/compile` so it can prewarm sandbox templates before the
+ * Nitro server starts. The deploy pipeline already keeps the build-stage image for Workflow
+ * migrations, so reusing it avoids duplicating the heavy layers into another runtime stage.
+ *
  * The runtime image also ships the static Docker CLI *client* (no daemon) at
  * /usr/local/bin/docker. eve's `defaultBackend()` gives an agent a real sandbox only when a
  * docker CLI + a reachable daemon are both present; without the client it silently degrades to
@@ -120,16 +125,14 @@ RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm inst
 COPY . .
 RUN npm exec -- eve build
 
-FROM node:24-slim
+FROM build
 WORKDIR /app
-COPY --from=build /usr/local/bin/docker /usr/local/bin/docker
 # eve-docker shim (EVE_DOCKER_PATH): mounts the agent's home volume onto session sandboxes.
 # See EVE_DOCKER_SHIM / eve-image.server.ts for why and how it degrades. base64 in, decode out.
 RUN echo '${EVE_DOCKER_SHIM_B64}' | base64 -d > /usr/local/bin/eve-docker && chmod 0755 /usr/local/bin/eve-docker
-COPY --from=build /app/.output ./.output
 ENV PORT=3000
 EXPOSE 3000
-CMD ["node", ".output/server/index.mjs"]
+CMD ["node_modules/.bin/eve", "start"]
 `;
 
 const EDEN_DOCKERIGNORE = `node_modules

@@ -73,35 +73,35 @@ import {
   deleteEnvironment,
   renameEnvironment,
 } from "~/deploy/environments.server";
-import { listAgentEnvironments, listReleases } from "~/db/queries.server";
+import {
+  listAgentEnvironments,
+  listReleases,
+  syncProjectAgents,
+} from "~/db/queries.server";
 import {
   discardDrafts,
   listDrafts,
   publishDrafts,
-  stageDeletions,
-  stageDraft,
 } from "~/drafts/drafts.server";
-import { getAgentSource, getOpenChanges } from "~/github/cached.server";
-import { fetchAgentSource, readAgentFile } from "~/github/repo.server";
+import {
+  getAgentSource,
+  getOpenChanges,
+  invalidateRepoSource,
+  warmAgentSource,
+} from "~/github/cached.server";
+import { fetchAgentSource } from "~/github/repo.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
 import { timeAgo } from "~/lib/time";
 import {
-  catalogLocator,
-  packageJsonPathForRoot,
-  planInstall,
-  planUninstall,
-} from "~/marketplace/install.server";
-import { overlayLock } from "~/marketplace/lock";
-import type { TemplateType } from "~/marketplace/manifest";
-import { getRuntime } from "~/seams/index.server";
-import semver from "semver";
-import {
   agentFromParams,
   agentParamRedirect,
+  memberFromPath,
   resolveAgentContext,
+  resolveSyncedAgentContext,
 } from "~/project/agent-context.server";
+import { detectAgentRoots } from "~/eve/parse";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type {
   DeploymentWithRelease,
@@ -112,22 +112,6 @@ import type {
 import type { ConnectedProject } from "~/project/guard.server";
 import type { OpenChange } from "~/github/write.server";
 import type { Route } from "./+types/projects.$projectId.deployments";
-
-/** A marketplace install as the Deployment tab shows it — provenance + update availability. */
-interface InstallDisplay {
-  id: string;
-  type: TemplateType;
-  name: string;
-  version: string;
-  /** Owning member; null = the single-agent repo's root agent. */
-  member: string | null;
-  /** Files uninstall would delete (from the lock). */
-  files: string[];
-  /** npm packages uninstall leaves for the reviewer to prune. */
-  depsLeft: string[];
-  /** The newer catalog version when an update is available, else null. */
-  update: string | null;
-}
 
 /** One shape for both views so the loader's branches unify (member fields empty on repo). */
 interface DeploymentData {
@@ -146,42 +130,6 @@ interface DeploymentData {
     name: string;
     latest: { version: string; gitSha: string; createdAt: Date } | null;
   }[];
-  /** Marketplace installs: this member's (member view) or all, attributed (repo view). */
-  installs: InstallDisplay[];
-}
-
-/**
- * Build the install display rows from the effective lock, tagging each with the newer catalog
- * version when one exists. The catalog is remote/optional — a caller that couldn't reach it
- * passes an empty index, and every row simply reports no update (the tab must never break just
- * because the marketplace is down).
- */
-function buildInstalls(
-  lock: ReturnType<typeof overlayLock>,
-  index: { id: string; type: TemplateType; version: string }[],
-  keep: (member: string | null) => boolean,
-): InstallDisplay[] {
-  return lock.installs
-    .filter((e) => keep(e.member))
-    .map((e) => {
-      const row = index.find((r) => r.id === e.id && r.type === e.type);
-      let update: string | null = null;
-      try {
-        if (row && semver.gt(row.version, e.version)) update = row.version;
-      } catch {
-        update = null;
-      }
-      return {
-        id: e.id,
-        type: e.type,
-        name: e.name,
-        version: e.version,
-        member: e.member,
-        files: e.files,
-        depsLeft: Object.keys(e.dependencies ?? {}),
-        update,
-      };
-    });
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -203,13 +151,6 @@ export const loader = (args: LoaderFunctionArgs) =>
         const legacy = agentParamRedirect(args.request, project.id);
         if (legacy) throw legacy;
       }
-      const { roster, active, isTeam } = await resolveAgentContext(
-        project.id,
-        agentName,
-      );
-      const level: NavLevel = agentName ? "member" : isTeam ? "repo" : "single";
-      const view = level === "repo" ? ("repo" as const) : ("member" as const);
-
       const [allDrafts, changes, releaseRows, source] = await Promise.all([
         listDrafts(project.id),
         getOpenChanges(project.repoInstallationId, {
@@ -222,19 +163,13 @@ export const loader = (args: LoaderFunctionArgs) =>
           repo: project.repoName,
         }),
       ]);
-
-      // Install provenance: the effective lock (staged draft wins), tagged with catalog updates.
-      // A catalog outage must not break this tab — degrade to no update buttons.
-      const lock = overlayLock(
-        source.files["eden-lock.json"] ?? null,
-        allDrafts.map((d) => ({ path: d.path, content: d.content })),
+      const { roster, active, isTeam } = await resolveSyncedAgentContext(
+        project.id,
+        agentName,
+        source.paths,
       );
-      let index: { id: string; type: TemplateType; version: string }[] = [];
-      try {
-        index = (await getRuntime().catalog.index()).templates;
-      } catch (error) {
-        console.warn("[deployment] catalog index unavailable:", error);
-      }
+      const level: NavLevel = agentName ? "member" : isTeam ? "repo" : "single";
+      const view = level === "repo" ? ("repo" as const) : ("member" as const);
 
       if (view === "repo") {
         // Team rollup: drafts grouped by owning member (null = shared), latest version per
@@ -243,8 +178,8 @@ export const loader = (args: LoaderFunctionArgs) =>
         const groups = new Map<string, typeof allDrafts>();
         for (const d of allDrafts) {
           const key = d.agentId
-            ? (nameById.get(d.agentId) ?? "shared")
-            : "shared";
+            ? (nameById.get(d.agentId) ?? memberFromPath(d.path) ?? "shared")
+            : (memberFromPath(d.path) ?? "shared");
           groups.set(key, [...(groups.get(key) ?? []), d]);
         }
         const members = roster.map((a) => {
@@ -276,8 +211,6 @@ export const loader = (args: LoaderFunctionArgs) =>
           drafts: [],
           releases: [],
           envs: [],
-          // Repo rollup: every install, attributed by its member.
-          installs: buildInstalls(lock, index, () => true),
         };
       }
 
@@ -307,12 +240,6 @@ export const loader = (args: LoaderFunctionArgs) =>
         envs,
         draftGroups: [],
         members: [],
-        // This member's installs (single-agent: the null-member root installs).
-        installs: buildInstalls(
-          lock,
-          index,
-          (member) => member === active.name || (member === null && !isTeam),
-        ),
       };
     },
     { ensureSignedIn: true },
@@ -373,6 +300,20 @@ export async function action(args: ActionFunctionArgs) {
         pullNumber,
         branch,
       );
+      try {
+        const source = await fetchAgentSource(project.repoInstallationId, {
+          ...repo,
+          ref: mergeSha,
+        });
+        await syncProjectAgents(project.id, detectAgentRoots(source.paths));
+        invalidateRepoSource(project.repoInstallationId, repo);
+        warmAgentSource(project.repoInstallationId, repo, {
+          ...source,
+          ref: project.defaultBranch,
+        });
+      } catch (error) {
+        console.warn("[deployment] merged but couldn't sync roster:", error);
+      }
       const results = await ensureReleasesForCommit({
         projectId: project.id,
         gitSha: mergeSha,
@@ -381,96 +322,6 @@ export async function action(args: ActionFunctionArgs) {
       });
       const version = results[0]?.release.version ?? "";
       throw redirect(`${back}?released=${encodeURIComponent(version)}`);
-    }
-
-    // ── Marketplace installs (PRD §7.8): update / uninstall re-stage a change-set ──
-    if (intent === "update-install") {
-      const type = String(form.get("type") ?? "") as TemplateType;
-      const id = String(form.get("id") ?? "");
-      const member = String(form.get("member") ?? "") || null;
-      if (!type || !id) return { error: "Missing install to update." };
-      const { roster, active } = await resolveAgentContext(project.id, member);
-      const template = await getRuntime().catalog.template(type, id);
-      // Actions read raw — a stale read merged into a write could clobber newer content.
-      const [source, drafts] = await Promise.all([
-        fetchAgentSource(project.repoInstallationId, repo),
-        listDrafts(project.id),
-      ]);
-      const draftPaths = drafts.map((d) => ({ path: d.path, content: d.content }));
-      const lock = overlayLock(source.files["eden-lock.json"] ?? null, draftPaths);
-      // A staged package.json draft wins over the branch copy — merging over the branch would
-      // drop dependencies a previously staged install already added.
-      const pkgPath = packageJsonPathForRoot(active.root);
-      const pkgDraft = drafts.find((d) => d.path === pkgPath);
-      const packageJson =
-        pkgDraft !== undefined
-          ? pkgDraft.content
-          : await readAgentFile(project.repoInstallationId, repo, pkgPath);
-      const plan = planInstall({
-        template,
-        registry: catalogLocator(),
-        repoPaths: source.paths,
-        drafts: draftPaths,
-        packageJson,
-        lock,
-        rosterNames: roster.map((a) => a.name),
-        target: { kind: "member", memberName: member, root: active.root },
-      });
-      if (plan.conflicts.length > 0) {
-        return {
-          error: `Update blocked — these files were changed locally:\n${plan.conflicts.join("\n")}`,
-        };
-      }
-      for (const w of plan.writes) {
-        await stageDraft({
-          projectId: project.id,
-          path: w.path,
-          content: w.content,
-          createdBy: auth.user.id,
-        });
-      }
-      if (plan.deletions.length > 0) {
-        await stageDeletions({
-          projectId: project.id,
-          paths: plan.deletions,
-          createdBy: auth.user.id,
-        });
-      }
-      throw redirect(`${back}?installed=${encodeURIComponent(id)}`);
-    }
-    if (intent === "uninstall") {
-      const id = String(form.get("id") ?? "");
-      const member = String(form.get("member") ?? "") || null;
-      if (!id) return { error: "Missing install to remove." };
-      const [source, drafts] = await Promise.all([
-        fetchAgentSource(project.repoInstallationId, repo),
-        listDrafts(project.id),
-      ]);
-      const draftPaths = drafts.map((d) => ({ path: d.path, content: d.content }));
-      const lock = overlayLock(source.files["eden-lock.json"] ?? null, draftPaths);
-      const plan = planUninstall({
-        lock,
-        id,
-        memberName: member,
-        repoPaths: source.paths,
-      });
-      if (plan.notFound) {
-        return { error: "That install isn't recorded in eden-lock.json." };
-      }
-      if (plan.deletions.length > 0) {
-        await stageDeletions({
-          projectId: project.id,
-          paths: plan.deletions,
-          createdBy: auth.user.id,
-        });
-      }
-      await stageDraft({
-        projectId: project.id,
-        path: plan.lockWrite.path,
-        content: plan.lockWrite.content,
-        createdBy: auth.user.id,
-      });
-      throw redirect(`${back}?uninstalled=${encodeURIComponent(id)}`);
     }
 
     // ── Environment CRUD (M5.7: user-defined, per member) ──
@@ -507,12 +358,17 @@ export async function action(args: ActionFunctionArgs) {
     }
 
     // ── Deploys ──
-    if (intent === "deploy-version" || intent === "retry") {
+    if (
+      intent === "deploy-version" ||
+      intent === "retry" ||
+      intent === "redeploy-version"
+    ) {
       ensureWorkerStarted();
       await queueDeploy({
         environmentId: String(form.get("environmentId")),
         releaseId: String(form.get("releaseId")),
         rollback: intent === "deploy-version",
+        rebuild: intent === "redeploy-version",
         createdBy: auth.user.id,
       });
       return { ok: true as const };
@@ -542,6 +398,22 @@ type ChangeRow = LoaderData["changes"][number];
 
 const IN_FLIGHT = new Set(["queued", "pending", "building"]);
 
+function PublishStatus({ active }: { active: boolean }) {
+  if (!active) return null;
+  return (
+    <div
+      className="mt-3 rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+      role="status"
+      aria-live="polite"
+    >
+      Checking the build and opening a change request. This can take a minute.
+      <div className="mt-2 h-1 overflow-hidden rounded-full bg-border">
+        <div className="eden-loading-line bg-primary/60" />
+      </div>
+    </div>
+  );
+}
+
 /** The deployment an environment is currently running (post-M5.6 there is at most one). */
 function runningOf(deployments: DeploymentRow[]): DeploymentRow | undefined {
   return deployments.find((d) => d.status === "live");
@@ -559,7 +431,6 @@ export default function Deployment({
   const [params] = useSearchParams();
   const justReleased = params.get("released");
   const justInstalled = params.get("installed");
-  const justUninstalled = params.get("uninstalled");
 
   // Progress: while any deployment is queued/building, re-fetch every few seconds.
   const revalidator = useRevalidator();
@@ -612,13 +483,9 @@ export default function Deployment({
         </Alert>
       )}
 
-      {(justInstalled || justUninstalled) && (
+      {justInstalled && (
         <Alert className="mb-6">
-          <AlertTitle>
-            {justInstalled
-              ? `${justInstalled} install staged`
-              : `${justUninstalled} uninstall staged`}
-          </AlertTitle>
+          <AlertTitle>{justInstalled} install staged</AlertTitle>
           <AlertDescription>
             Review and publish it with your other staged changes below.
           </AlertDescription>
@@ -646,92 +513,15 @@ export default function Deployment({
 /* ────────────────────────────── member pipeline ────────────────────────────── */
 
 function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
-  const { drafts, changes, releases, envs, activeAgent, isTeam, installs } =
-    loaderData;
+  const { drafts, changes, releases, envs, activeAgent, isTeam } = loaderData;
 
   return (
     <>
       <StagedChangesCard drafts={drafts} isTeam={isTeam} />
-      <MarketplaceInstalls installs={installs} />
       <ChangeRequests changes={changes} isTeam={isTeam} />
       <EnvironmentsCard envs={envs} activeAgent={activeAgent} />
       <VersionHistory releases={releases} envs={envs} />
     </>
-  );
-}
-
-/**
- * Marketplace installs recorded in eden-lock.json for this member (PRD §7.8 provenance): each
- * with an Update button when the catalog has a newer version, and an Uninstall that stages a
- * change-set removing the owned files (npm packages are left for the reviewer to prune).
- */
-function MarketplaceInstalls({ installs }: { installs: InstallDisplay[] }) {
-  const submit = useSubmit();
-  const navigation = useNavigation();
-  const busy = navigation.state !== "idle" && navigation.formData != null;
-
-  if (installs.length === 0) return null;
-  return (
-    <Card className="mb-6">
-      <CardHeader className="pb-3">
-        <div className="flex items-center gap-2">
-          <CardTitle className="text-base">Marketplace installs</CardTitle>
-          <Badge variant="secondary">{installs.length}</Badge>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <ul className="divide-y rounded-lg border text-sm">
-          {installs.map((i) => (
-            <li key={`${i.type}/${i.id}`} className="flex flex-wrap items-center gap-3 px-3 py-2">
-              <span className="min-w-0 flex-1 truncate font-medium">{i.name}</span>
-              <span className="font-mono text-xs text-muted-foreground">
-                v{i.version}
-              </span>
-              <Badge variant="outline">{i.type}</Badge>
-              {i.update && (
-                <Form method="post">
-                  <input type="hidden" name="intent" value="update-install" />
-                  <input type="hidden" name="type" value={i.type} />
-                  <input type="hidden" name="id" value={i.id} />
-                  <input type="hidden" name="member" value={i.member ?? ""} />
-                  <Button type="submit" size="sm" variant="secondary" disabled={busy}>
-                    Update to {i.update}
-                  </Button>
-                </Form>
-              )}
-              <ConfirmDialog
-                trigger={
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    className="text-destructive hover:text-destructive"
-                    disabled={busy}
-                  >
-                    Uninstall
-                  </Button>
-                }
-                title={`Uninstall ${i.name}?`}
-                description={
-                  `Stages a change-set deleting ${i.files.length} file${i.files.length === 1 ? "" : "s"}:\n` +
-                  i.files.join("\n") +
-                  (i.depsLeft.length > 0
-                    ? `\n\nnpm packages left for review: ${i.depsLeft.join(", ")}`
-                    : "")
-                }
-                confirmLabel="Uninstall"
-                onConfirm={() =>
-                  submit(
-                    { intent: "uninstall", id: i.id, member: i.member ?? "" },
-                    { method: "post" },
-                  )
-                }
-              />
-            </li>
-          ))}
-        </ul>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -839,10 +629,11 @@ function StagedChangesCard({
               />
               <Button type="submit" disabled={busy}>
                 {activeIntent === "publish"
-                  ? "Checking build & publishing…"
+                  ? "Publishing…"
                   : "Publish selected as change request"}
               </Button>
             </div>
+            <PublishStatus active={activeIntent === "publish"} />
           </Form>
         )}
       </CardContent>
@@ -1017,8 +808,14 @@ function MergeabilityBadge({
 /* ────────────────────────────── team rollup ────────────────────────────── */
 
 function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
-  const { project, draftGroups, changes, members, installs } = loaderData;
+  const { project, draftGroups, changes, members } = loaderData;
+  const navigation = useNavigation();
   const totalDrafts = draftGroups.reduce((n, g) => n + g.drafts.length, 0);
+  const memberNames = new Set(members.map((m) => m.name));
+  const busy = navigation.state !== "idle" && navigation.formData != null;
+  const activeIntent = busy
+    ? String(navigation.formData!.get("intent") ?? "")
+    : null;
 
   return (
     <>
@@ -1036,7 +833,8 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
               published.
             </p>
           ) : (
-            <div className="space-y-4">
+            <Form method="post" className="space-y-4">
+              <input type="hidden" name="intent" value="publish" />
               {draftGroups.map((g) => (
                 <div key={g.owner}>
                   <p className="mb-1 text-sm font-medium">
@@ -1047,13 +845,20 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                           · affects all members
                         </span>
                       </>
-                    ) : (
+                    ) : memberNames.has(g.owner) ? (
                       <Link
                         to={`${contextPath(project.id, g.owner)}/deployment`}
                         className="underline-offset-4 hover:underline"
                       >
                         {g.owner}
                       </Link>
+                    ) : (
+                      <>
+                        {g.owner}{" "}
+                        <Badge variant="outline" className="align-middle">
+                          new member
+                        </Badge>
+                      </>
                     )}
                   </p>
                   <ul className="divide-y rounded-lg border text-sm">
@@ -1062,6 +867,14 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                         key={d.id}
                         className="flex items-center gap-3 px-3 py-1.5"
                       >
+                        <input
+                          type="checkbox"
+                          name="path"
+                          value={d.path}
+                          defaultChecked
+                          className="size-4 accent-primary"
+                          aria-label={`Include ${d.path}`}
+                        />
                         <span
                           className={`min-w-0 flex-1 truncate font-mono text-xs ${
                             d.content === null
@@ -1087,61 +900,25 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                   </ul>
                 </div>
               ))}
-              <p className="text-xs text-muted-foreground">
-                Publish from a member&rsquo;s Deployment tab (or Ship from their
-                Overview).
-              </p>
-            </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <Input
+                  name="title"
+                  placeholder="Change title (optional)"
+                  className="h-9 w-72"
+                />
+                <Button type="submit" disabled={busy}>
+                  {activeIntent === "publish"
+                    ? "Publishing…"
+                    : "Publish selected as change request"}
+                </Button>
+              </div>
+              <PublishStatus active={activeIntent === "publish"} />
+            </Form>
           )}
         </CardContent>
       </Card>
 
       <ChangeRequests changes={changes} isTeam />
-
-      {installs.length > 0 && (
-        <Card className="mb-6">
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <CardTitle className="text-base">Marketplace installs</CardTitle>
-              <Badge variant="secondary">{installs.length}</Badge>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <ul className="divide-y rounded-lg border text-sm">
-              {installs.map((i) => (
-                <li
-                  key={`${i.type}/${i.id}`}
-                  className="flex flex-wrap items-center gap-3 px-3 py-2"
-                >
-                  <span className="min-w-0 flex-1 truncate font-medium">
-                    {i.name}
-                  </span>
-                  <span className="font-mono text-xs text-muted-foreground">
-                    v{i.version}
-                  </span>
-                  <Badge variant="outline">{i.type}</Badge>
-                  {i.member ? (
-                    <Link
-                      to={`${contextPath(project.id, i.member)}/deployment`}
-                      className="text-xs underline-offset-4 hover:underline"
-                    >
-                      {i.member}
-                    </Link>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">shared</span>
-                  )}
-                  {i.update && (
-                    <Badge variant="secondary">update → {i.update}</Badge>
-                  )}
-                </li>
-              ))}
-            </ul>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Update or uninstall from the owning member&rsquo;s Deployment tab.
-            </p>
-          </CardContent>
-        </Card>
-      )}
 
       <Card>
         <CardHeader className="pb-3">
@@ -1394,6 +1171,11 @@ function VersionHistory({
       { intent: "deploy-version", environmentId, releaseId },
       { method: "post" },
     );
+  const redeploy = (environmentId: string, releaseId: string) =>
+    fetcher.submit(
+      { intent: "redeploy-version", environmentId, releaseId },
+      { method: "post" },
+    );
   // Which environments each release is running on, for the rows' badges.
   const runningEnvNames = new Map<string, string[]>();
   for (const { env, deployments } of envs) {
@@ -1442,6 +1224,7 @@ function VersionHistory({
                   envs={envs}
                   busy={busy}
                   onDeploy={deploy}
+                  onRedeploy={redeploy}
                 />
               </li>
             ))}
@@ -1453,29 +1236,40 @@ function VersionHistory({
 }
 
 /**
- * The per-version deploy affordance. One environment: a plain Deploy button (hidden when
- * the version is already running there — the badge says so). Several: one "Deploy ▾" menu;
- * environments already running the version show as checked and disabled. Every deploy
- * confirms — the dialog names the target (the realistic multi-env mistake) and teaches
- * that switching back is just another deploy.
+ * The per-version deploy affordance. One environment: a plain Deploy button, or Redeploy
+ * when the version is already running there. Several: one menu with deploy/redeploy actions
+ * per environment. Every deploy confirms — the dialog names the target (the realistic
+ * multi-env mistake) and teaches that switching back is just another deploy.
  */
 function DeployControl({
   release,
   envs,
   busy,
   onDeploy,
+  onRedeploy,
 }: {
   release: ReleaseRow;
   envs: EnvState[];
   busy: boolean;
   onDeploy: (environmentId: string, releaseId: string) => void;
+  onRedeploy: (environmentId: string, releaseId: string) => void;
 }) {
-  const [target, setTarget] = useState<EnvState | null>(null);
+  type DeployMode = "deploy" | "redeploy";
+  const [target, setTarget] = useState<{
+    envState: EnvState;
+    mode: DeployMode;
+  } | null>(null);
   const runningHere = (s: EnvState) =>
     runningOf(s.deployments)?.releaseId === release.id;
 
-  const confirmFor = (s: EnvState) => {
+  const confirmFor = (s: EnvState, mode: DeployMode) => {
     const current = runningOf(s.deployments);
+    if (mode === "redeploy") {
+      return {
+        title: `Redeploy ${release.version} to ${s.env.name}?`,
+        description: `Builds a fresh image from this version's commit and switches ${s.env.name} over once it's healthy. The current instance keeps serving until then.`,
+      };
+    }
     return {
       title: `Deploy ${release.version} to ${s.env.name}?`,
       description: current
@@ -1486,20 +1280,28 @@ function DeployControl({
 
   if (envs.length === 1) {
     const only = envs[0];
-    if (runningHere(only)) return null;
-    const copy = confirmFor(only);
+    const mode = runningHere(only) ? "redeploy" : "deploy";
+    const copy = confirmFor(only, mode);
     return (
       <ConfirmDialog
         trigger={
-          <Button size="sm" variant="secondary" disabled={busy}>
-            Deploy
+          <Button
+            size="sm"
+            variant={mode === "redeploy" ? "outline" : "secondary"}
+            disabled={busy}
+          >
+            {mode === "redeploy" ? "Redeploy" : "Deploy"}
           </Button>
         }
         title={copy.title}
         description={copy.description}
-        confirmLabel="Deploy"
+        confirmLabel={mode === "redeploy" ? "Redeploy" : "Deploy"}
         variant="default"
-        onConfirm={() => onDeploy(only.env.id, release.id)}
+        onConfirm={() =>
+          mode === "redeploy"
+            ? onRedeploy(only.env.id, release.id)
+            : onDeploy(only.env.id, release.id)
+        }
       />
     );
   }
@@ -1509,18 +1311,24 @@ function DeployControl({
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button size="sm" variant="secondary" disabled={busy || everywhere}>
-            Deploy ▾
+          <Button size="sm" variant="secondary" disabled={busy}>
+            {everywhere ? "Redeploy" : "Deploy"} ▾
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {envs.map((s) =>
             runningHere(s) ? (
-              <DropdownMenuItem key={s.env.id} disabled>
-                ✓ Running on {s.env.name}
+              <DropdownMenuItem
+                key={s.env.id}
+                onSelect={() => setTarget({ envState: s, mode: "redeploy" })}
+              >
+                Redeploy in {s.env.name}
               </DropdownMenuItem>
             ) : (
-              <DropdownMenuItem key={s.env.id} onSelect={() => setTarget(s)}>
+              <DropdownMenuItem
+                key={s.env.id}
+                onSelect={() => setTarget({ envState: s, mode: "deploy" })}
+              >
                 Deploy to {s.env.name}
               </DropdownMenuItem>
             ),
@@ -1533,12 +1341,16 @@ function DeployControl({
           onOpenChange={(open) => {
             if (!open) setTarget(null);
           }}
-          title={confirmFor(target).title}
-          description={confirmFor(target).description}
-          confirmLabel="Deploy"
+          title={confirmFor(target.envState, target.mode).title}
+          description={confirmFor(target.envState, target.mode).description}
+          confirmLabel={target.mode === "redeploy" ? "Redeploy" : "Deploy"}
           variant="default"
           onConfirm={() => {
-            onDeploy(target.env.id, release.id);
+            if (target.mode === "redeploy") {
+              onRedeploy(target.envState.env.id, release.id);
+            } else {
+              onDeploy(target.envState.env.id, release.id);
+            }
             setTarget(null);
           }}
         />

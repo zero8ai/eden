@@ -216,12 +216,6 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
 
       <div className="space-y-4 pb-4">
         <ChatTranscript dep={`${entries.length}:${pendingMessage ?? ""}`}>
-          {entries.length === 0 && !pendingMessage && (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              e.g. &ldquo;Add a tool that sends a message to our Discord
-              channel.&rdquo;
-            </p>
-          )}
           {(entries as ChatEntry[]).map((e) =>
             e.role === "user" ? (
               <UserBubble key={e.id} text={e.text} />

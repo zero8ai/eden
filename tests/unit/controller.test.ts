@@ -95,6 +95,47 @@ describe("deployRelease", () => {
     expect(deployedEnvs[1].OPENROUTER_API_KEY).toBe("sk-or-project");
   });
 
+  it("inherits local AI Gateway credentials unless a scoped secret overrides them", async () => {
+    const oldGateway = process.env.AI_GATEWAY_API_KEY;
+    const oldOidc = process.env.VERCEL_OIDC_TOKEN;
+    process.env.AI_GATEWAY_API_KEY = "aigw-local";
+    process.env.VERCEL_OIDC_TOKEN = "oidc-local";
+
+    try {
+      const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "c3".repeat(20) }, store);
+      const deployedEnvs: Record<string, string>[] = [];
+      const base = {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedEnvs }),
+      };
+
+      await deployRelease(
+        { environmentId: ENV, releaseId: release.id },
+        { ...base, secrets: fakeSecrets() },
+      );
+      expect(deployedEnvs[0].AI_GATEWAY_API_KEY).toBe("aigw-local");
+      expect(deployedEnvs[0].VERCEL_OIDC_TOKEN).toBe("oidc-local");
+
+      await deployRelease(
+        { environmentId: ENV, releaseId: release.id },
+        {
+          ...base,
+          secrets: fakeSecrets({
+            AI_GATEWAY_API_KEY: "aigw-secret",
+            VERCEL_OIDC_TOKEN: "oidc-secret",
+          }),
+        },
+      );
+      expect(deployedEnvs[1].AI_GATEWAY_API_KEY).toBe("aigw-secret");
+      expect(deployedEnvs[1].VERCEL_OIDC_TOKEN).toBe("oidc-secret");
+    } finally {
+      if (oldGateway === undefined) delete process.env.AI_GATEWAY_API_KEY;
+      else process.env.AI_GATEWAY_API_KEY = oldGateway;
+      if (oldOidc === undefined) delete process.env.VERCEL_OIDC_TOKEN;
+      else process.env.VERCEL_OIDC_TOKEN = oldOidc;
+    }
+  });
+
   it("keys the Workflow world by ENVIRONMENT — two deploys of one env share a worldKey", async () => {
     // The durability invariant this feature exists for: a redeploy reuses the environment's
     // world (so sessions + their sandboxes survive), which means the worldKey must be stable
@@ -110,6 +151,43 @@ describe("deployRelease", () => {
     const d2 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
     expect(d1.id).not.toBe(d2.id); // two distinct deployments…
     expect(deployedWorldKeys).toEqual([ENV, ENV]); // …one shared, env-keyed world
+  });
+
+  it("rebuilds an already-built release when requested", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "ab".repeat(20) }, store);
+    const builtRefs: string[] = [];
+
+    const first = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live", url: "http://first" },
+          buildImageRef: "img:first",
+          builtRefs,
+        }),
+        secrets: fakeSecrets(),
+      },
+    );
+    expect(first.status).toBe("live");
+    expect((await store.releases.findById(release.id))?.imageRef).toBe("img:first");
+
+    const rebuilt = await deployRelease(
+      { environmentId: ENV, releaseId: release.id, rebuild: true },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live", url: "http://rebuilt" },
+          buildImageRef: "img:rebuilt",
+          builtRefs,
+        }),
+        secrets: fakeSecrets(),
+      },
+    );
+
+    expect(rebuilt.status).toBe("live");
+    expect((await store.releases.findById(release.id))?.imageRef).toBe("img:rebuilt");
+    expect(builtRefs).toEqual(["img:first", "img:rebuilt"]);
   });
 
   it("records failed status WITH the reason when the target throws", async () => {
@@ -145,6 +223,7 @@ describe("deployRelease", () => {
     expect(dep.errorDetail).toBe("container did not become healthy");
     expect(stoppedIds).toContain(dep.id);
   });
+
 });
 
 describe("queueDeploy", () => {
@@ -172,6 +251,31 @@ describe("queueDeploy", () => {
     expect(done.id).toBe(queued.id);
     expect(done.status).toBe("live");
     expect(await listDeployments(ENV, store)).toHaveLength(1);
+  });
+
+  it("preserves the rebuild flag in the queued deploy job", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a9".repeat(20) }, store);
+
+    const queued = await queueDeploy(
+      {
+        environmentId: ENV,
+        releaseId: release.id,
+        rebuild: true,
+        createdBy: "user_1",
+      },
+      store,
+    );
+    const job = await store.jobs.claimNext(new Date());
+
+    expect(queued.status).toBe("queued");
+    expect(job?.kind).toBe("deploy_release");
+    expect(job?.payload).toMatchObject({
+      environmentId: ENV,
+      releaseId: release.id,
+      deploymentId: queued.id,
+      rebuild: true,
+      createdBy: "user_1",
+    });
   });
 });
 

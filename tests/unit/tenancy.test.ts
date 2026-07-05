@@ -12,6 +12,10 @@ import {
   listProjects,
   resolveUniqueSlug,
 } from "~/db/queries.server";
+import {
+  resolveAgentContext,
+  resolveSyncedAgentContext,
+} from "~/project/agent-context.server";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
 
 let store: FakeStore;
@@ -57,6 +61,40 @@ describe("tenant isolation", () => {
     // Environments are user-defined (M5.7): a new member starts with exactly one.
     expect((await store.environments.listByProject(first.id)).map((e) => e.name)).toEqual([
       "default",
+    ]);
+  });
+});
+
+describe("agent context", () => {
+  it("treats a one-member agents/* roster as a team repo", async () => {
+    const project = await createProject(
+      {
+        orgId: ORG_A,
+        name: "My Team",
+        roster: [{ name: "deployer", root: "agents/deployer/agent" }],
+      },
+      store,
+    );
+
+    const ctx = await resolveAgentContext(project.id, null, store);
+
+    expect(ctx.isTeam).toBe(true);
+    expect(ctx.active.name).toBe("deployer");
+  });
+
+  it("syncs a stale single-agent roster from the repo's team layout", async () => {
+    const project = await createProject({ orgId: ORG_A, name: "My Team" }, store);
+
+    const ctx = await resolveSyncedAgentContext(
+      project.id,
+      null,
+      ["agents/deployer/agent/agent.ts"],
+      store,
+    );
+
+    expect(ctx.isTeam).toBe(true);
+    expect(ctx.roster.map((a) => ({ name: a.name, root: a.root }))).toEqual([
+      { name: "deployer", root: "agents/deployer/agent" },
     ]);
   });
 });

@@ -149,7 +149,7 @@ describe("planInstall — path mapping", () => {
     expect(gen.dependencies).toEqual({
       eve: "latest",
       wrangler: "^3.0.0",
-      zod: "^3.23.0",
+      zod: "^4.4.3",
     });
 
     // The lock records final paths, EXCLUDING the generated package.json.

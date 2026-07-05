@@ -7,7 +7,7 @@
  * Usage (from main repo root):
  *   node scripts/worktree-teardown.mjs <name>
  *
- * Called by the `clawd --remove <name>` shell function. The name is NOT
+ * Called by the global `clawd -r <name>` launcher (~/.claude/clawd.sh). The name is NOT
  * validated — removal must work on bare names and convention-following ones
  * (`feature/tanga-integration`) alike. Derivation of dir / DB matches
  * `worktree-setup.mjs` exactly.

@@ -1,37 +1,34 @@
 /**
- * normalizeCatalog — the pure join of the two AI Gateway payloads that feeds the model picker.
- * Pins the rules that matter for correctness: only language models, tolerant of missing/extra
- * fields, pricing converted to per-1M numbers, providers joined by slug, sorted, descriptions
- * truncated. filterModels covers the picker's case-insensitive id+name search.
+ * normalizeCatalog — the pure OpenRouter model-list parser that feeds the model picker.
+ * Pins the rules that matter for correctness: text-output models only, tolerant of
+ * missing/extra fields, pricing converted to per-1M numbers, sorted, descriptions truncated.
+ * filterModels covers the picker's case-insensitive id+name search.
  */
 import { describe, expect, it } from "vitest";
 
-import { normalizeCatalog } from "~/models/catalog.server";
-import { filterModels } from "~/components/model-select";
+import { normalizeCatalog, type ModelCatalogEntry } from "~/models/catalog.server";
+import { filterModels } from "~/models/filter";
 
-/** A minimal `/v1/models` payload; `extra` fields prove unknown keys pass through untouched. */
-const rich = (models: unknown[]) => ({ data: models, extra: "ignored" });
-/** A minimal `/v1/models/catalog` payload. */
-const catalog = (models: unknown[]) => ({ models, providerAliases: {} });
+/** A minimal OpenRouter `/api/v1/models` payload. */
+const models = (data: unknown[]) => ({ data, extra: "ignored" });
 
 describe("normalizeCatalog", () => {
-  it("keeps only language models", () => {
+  it("keeps text-output models and drops non-text models", () => {
     const out = normalizeCatalog(
-      rich([
-        { id: "a/lang", type: "language" },
-        { id: "b/embed", type: "embedding" },
-        { id: "c/image", type: "image" },
+      models([
+        { id: "a/text", architecture: { output_modalities: ["text"] } },
+        { id: "b/image", architecture: { output_modalities: ["image"] } },
+        { id: "c/missing-architecture" },
       ]),
-      catalog([]),
     );
-    expect(out.map((m) => m.id)).toEqual(["a/lang"]);
+    expect(out.map((m) => m.id)).toEqual([
+      "a/text",
+      "c/missing-architecture",
+    ]);
   });
 
-  it("treats missing pricing and context_window as null", () => {
-    const [m] = normalizeCatalog(
-      rich([{ id: "a/model", type: "language" }]),
-      catalog([]),
-    );
+  it("treats missing pricing and context metadata as null", () => {
+    const [m] = normalizeCatalog(models([{ id: "a/model" }]));
     expect(m.contextWindow).toBeNull();
     expect(m.maxOutputTokens).toBeNull();
     expect(m.inputPerMTok).toBeNull();
@@ -43,14 +40,12 @@ describe("normalizeCatalog", () => {
 
   it("converts pricing strings to USD per 1M tokens", () => {
     const [m] = normalizeCatalog(
-      rich([
+      models([
         {
-          id: "zai/glm-5.2",
-          type: "language",
-          pricing: { input: "0.0000014", output: "0.0000044" },
+          id: "z-ai/glm-5.2",
+          pricing: { prompt: "0.0000014", completion: "0.0000044" },
         },
       ]),
-      catalog([]),
     );
     expect(m.inputPerMTok).toBeCloseTo(1.4, 6);
     expect(m.outputPerMTok).toBeCloseTo(4.4, 6);
@@ -58,83 +53,72 @@ describe("normalizeCatalog", () => {
 
   it("yields null for unparseable pricing", () => {
     const [m] = normalizeCatalog(
-      rich([
-        { id: "a/model", type: "language", pricing: { input: "abc", output: null } },
+      models([
+        { id: "a/model", pricing: { prompt: "abc", completion: null } },
       ]),
-      catalog([]),
     );
     expect(m.inputPerMTok).toBeNull();
     expect(m.outputPerMTok).toBeNull();
   });
 
-  it("joins provider names by slug", () => {
+  it("uses top provider metadata for max output tokens", () => {
     const [m] = normalizeCatalog(
-      rich([{ id: "zai/glm-5.2", type: "language" }]),
-      catalog([
+      models([
         {
-          slug: "zai/glm-5.2",
-          providers: [
-            { provider: "baseten", providerModelId: "zai-org/GLM-5.2" },
-            { provider: "fireworks" },
-          ],
+          id: "anthropic/claude-sonnet-5",
+          context_length: 1_000_000,
+          top_provider: { max_completion_tokens: 128_000 },
+          supported_parameters: ["tools", "reasoning"],
         },
-        { slug: "other/model", providers: [{ provider: "openai" }] },
       ]),
     );
-    expect(m.providers).toEqual(["baseten", "fireworks"]);
+    expect(m.contextWindow).toBe(1_000_000);
+    expect(m.maxOutputTokens).toBe(128_000);
+    expect(m.tags).toEqual(["tools", "reasoning"]);
   });
 
   it("tolerates unknown extra fields on every payload", () => {
     const out = normalizeCatalog(
-      rich([
+      models([
         {
           id: "a/model",
-          type: "language",
           name: "A",
           someNewField: 123,
-          pricing: { input: "0.000001", output: "0.000002", newPriceKey: "x" },
+          pricing: { prompt: "0.000001", completion: "0.000002", newPriceKey: "x" },
         },
       ]),
-      catalog([{ slug: "a/model", providers: [{ provider: "p", futureKey: 1 }], extra: true }]),
     );
     expect(out).toHaveLength(1);
-    expect(out[0].providers).toEqual(["p"]);
+    expect(out[0].name).toBe("A");
   });
 
   it("sorts by id", () => {
     const out = normalizeCatalog(
-      rich([
-        { id: "z/last", type: "language" },
-        { id: "a/first", type: "language" },
-        { id: "m/mid", type: "language" },
+      models([
+        { id: "z/last" },
+        { id: "a/first" },
+        { id: "m/mid" },
       ]),
-      catalog([]),
     );
     expect(out.map((m) => m.id)).toEqual(["a/first", "m/mid", "z/last"]);
   });
 
   it("truncates long descriptions", () => {
     const long = "x".repeat(400);
-    const [m] = normalizeCatalog(
-      rich([{ id: "a/model", type: "language", description: long }]),
-      catalog([]),
-    );
+    const [m] = normalizeCatalog(models([{ id: "a/model", description: long }]));
     expect(m.description).not.toBeNull();
-    expect(m.description!.length).toBeLessThanOrEqual(161); // 160 + ellipsis
-    expect(m.description!.endsWith("…")).toBe(true);
+    expect(m.description!.length).toBeLessThanOrEqual(163); // 160 + "..."
+    expect(m.description!.endsWith("...")).toBe(true);
   });
 
   it("falls back to id when name is absent", () => {
-    const [m] = normalizeCatalog(
-      rich([{ id: "a/model", type: "language" }]),
-      catalog([]),
-    );
+    const [m] = normalizeCatalog(models([{ id: "a/model" }]));
     expect(m.name).toBe("a/model");
   });
 });
 
 describe("filterModels", () => {
-  const model = (id: string, name: string): Parameters<typeof filterModels>[0][number] => ({
+  const model = (id: string, name: string): ModelCatalogEntry => ({
     id,
     name,
     description: null,
@@ -145,27 +129,29 @@ describe("filterModels", () => {
     outputPerMTok: null,
     providers: [],
   });
-  const models = [
+  const catalog = [
     model("anthropic/claude-opus-4-8", "Claude Opus 4.8"),
     model("openai/gpt-5.1", "GPT-5.1"),
-    model("zai/glm-5.2", "GLM 5.2"),
+    model("z-ai/glm-5.2", "GLM 5.2"),
   ];
 
   it("returns everything for an empty query", () => {
-    expect(filterModels(models, "  ")).toHaveLength(3);
+    expect(filterModels(catalog, "  ")).toHaveLength(3);
   });
 
   it("matches on id, case-insensitively", () => {
-    expect(filterModels(models, "ZAI").map((m) => m.id)).toEqual(["zai/glm-5.2"]);
+    expect(filterModels(catalog, "Z-AI").map((m) => m.id)).toEqual([
+      "z-ai/glm-5.2",
+    ]);
   });
 
   it("matches on name", () => {
-    expect(filterModels(models, "opus").map((m) => m.id)).toEqual([
+    expect(filterModels(catalog, "opus").map((m) => m.id)).toEqual([
       "anthropic/claude-opus-4-8",
     ]);
   });
 
   it("returns nothing when no id or name matches", () => {
-    expect(filterModels(models, "nomatch")).toEqual([]);
+    expect(filterModels(catalog, "nomatch")).toEqual([]);
   });
 });

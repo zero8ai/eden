@@ -53,6 +53,10 @@ const INSTANCE_PORT = Number(process.env.EDEN_INSTANCE_PORT ?? 3000);
 /** How the container reaches the host's Postgres (Docker Desktop). */
 const DB_HOST_FROM_CONTAINER =
   process.env.EDEN_DB_HOST_FROM_CONTAINER ?? "host.docker.internal";
+/** First deploys may prewarm eve sandbox templates before the server binds its port. */
+export const LOCAL_DOCKER_DEPLOY_HEALTH_TIMEOUT_MS = Number(
+  process.env.EDEN_DEPLOY_HEALTH_TIMEOUT_MS ?? 300_000,
+);
 
 const containerName = (deploymentId: string) => `eden-inst-${deploymentId}`;
 
@@ -87,6 +91,8 @@ async function docker(args: string[]): Promise<string> {
   const { stdout } = await exec("docker", args, { maxBuffer: 16 * 1024 * 1024 });
   return stdout.trim();
 }
+
+type DockerRunner = (args: string[]) => Promise<string>;
 
 function commandErrorText(error: unknown): string {
   if (typeof error === "object" && error !== null) {
@@ -170,14 +176,31 @@ async function inspectRunning(name: string): Promise<boolean | null> {
  * Skipped when no build-stage image exists (e.g. a plain test image), since such an image
  * cannot be an eve agent needing a World.
  */
-async function runWorldMigrations(imageRef: string, dbUrl: string): Promise<void> {
+export const WORLD_POSTGRES_SETUP_SCRIPT =
+  "node_modules/@workflow/world-postgres/bin/setup.js";
+
+export async function runWorldMigrations(
+  imageRef: string,
+  dbUrl: string,
+  runDocker: DockerRunner = docker,
+): Promise<void> {
   const buildTag = buildStageTagFor(imageRef);
   try {
-    await docker(["image", "inspect", buildTag]);
+    await runDocker(["image", "inspect", buildTag]);
   } catch {
     return; // no build-stage image — nothing to migrate
   }
-  await docker([
+
+  try {
+    await runDocker(["run", "--rm", buildTag, "test", "-f", WORLD_POSTGRES_SETUP_SCRIPT]);
+  } catch {
+    console.warn(
+      `[deploy] ${WORLD_POSTGRES_SETUP_SCRIPT} not found in ${buildTag}; skipping Workflow world migrations.`,
+    );
+    return;
+  }
+
+  await runDocker([
     "run",
     "--rm",
     "--add-host",
@@ -186,12 +209,15 @@ async function runWorldMigrations(imageRef: string, dbUrl: string): Promise<void
     `WORKFLOW_POSTGRES_URL=${dbUrl}`,
     buildTag,
     "node",
-    "node_modules/@workflow/world-postgres/bin/setup.js",
+    WORLD_POSTGRES_SETUP_SCRIPT,
   ]);
 }
 
 /** Poll the instance's HTTP endpoint until it responds or the timeout elapses. */
-async function waitForHealth(url: string, timeoutMs = 30_000): Promise<boolean> {
+async function waitForHealth(
+  url: string,
+  timeoutMs = LOCAL_DOCKER_DEPLOY_HEALTH_TIMEOUT_MS,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {

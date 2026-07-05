@@ -1,15 +1,13 @@
 /**
- * Searchable model picker over the live Vercel AI Gateway catalog (replaces the old shortlist
+ * Searchable model picker over the live OpenRouter catalog (replaces the old shortlist
  * dropdown + free-text field).
  *
- * Agent model ids MUST be gateway slugs — eve resolves context-window metadata against the
- * gateway, so a wrong id (e.g. OpenRouter's `z-ai/glm-5.2` vs the gateway's `zai/glm-5.2`)
- * only fails at publish. Searching the real catalog and flagging off-catalog ids up front makes
- * that mistake hard to make. The catalog is fetched lazily (`/api/models`, on first open) so the
+ * Agent model ids are OpenRouter ids and are written into `openrouter("...")` provider wiring
+ * by the settings route. The catalog is fetched lazily (`/api/models`, on first open) so the
  * settings page pays nothing until the picker opens, and the whole thing degrades gracefully:
- * if the gateway is unreachable the picker becomes a plain free-text field, so model editing is
- * never blocked. Committing a value calls onCommit — the caller stages the agent.ts draft like
- * every other edit.
+ * if OpenRouter is unreachable the picker becomes a plain free-text field, so model editing
+ * is never blocked. Committing a value calls onCommit — the caller stages the agent.ts draft
+ * like every other edit.
  */
 import * as React from "react";
 import { useMemo, useState } from "react";
@@ -23,23 +21,12 @@ import {
   PopoverTrigger,
 } from "~/components/ui/popover";
 import { SUGGESTED_MODELS } from "~/eve/agentModule";
-import type { GatewayModel } from "~/models/catalog.server";
+import { filterModels } from "~/models/filter";
+import type { ModelCatalogEntry } from "~/models/catalog.server";
 import { cn } from "~/lib/utils";
 
 /** Show at most this many rows — the catalog is ~300 models; a plain list stays snappy. */
 const MAX_ROWS = 50;
-
-/** Case-insensitive filter over id + name. Pure + exported so it's unit-testable. */
-export function filterModels(
-  models: GatewayModel[],
-  query: string,
-): GatewayModel[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return models;
-  return models.filter(
-    (m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
-  );
-}
 
 /** "1.0M ctx" / "256K ctx" — compact context-window label, or null when unknown. */
 function formatContext(tokens: number | null): string | null {
@@ -50,7 +37,7 @@ function formatContext(tokens: number | null): string | null {
 }
 
 /** "$1.40 / $4.40 per M" (input/output USD per 1M tokens), or null when priceless. */
-function formatPricing(model: GatewayModel): string | null {
+function formatPricing(model: ModelCatalogEntry): string | null {
   if (model.inputPerMTok == null || model.outputPerMTok == null) return null;
   return `$${model.inputPerMTok.toFixed(2)} / $${model.outputPerMTok.toFixed(2)} per M`;
 }
@@ -66,7 +53,7 @@ export function ModelSelect({
   busy: boolean;
   onCommit: (model: string) => void;
 }) {
-  const fetcher = useFetcher<{ models: GatewayModel[] | null }>();
+  const fetcher = useFetcher<{ models: ModelCatalogEntry[] | null }>();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
@@ -103,7 +90,7 @@ export function ModelSelect({
   const { display, targets } = useMemo(() => {
     type Row =
       | { type: "label"; text: string }
-      | { type: "model"; model: GatewayModel; index: number }
+      | { type: "model"; model: ModelCatalogEntry; index: number }
       | { type: "custom"; id: string; index: number };
 
     const rows: Row[] = [];
@@ -111,7 +98,7 @@ export function ModelSelect({
     if (!models) return { display: rows, targets: commitTargets };
 
     const q = query.trim();
-    const pushModels = (list: GatewayModel[]) => {
+    const pushModels = (list: ModelCatalogEntry[]) => {
       for (const m of list) {
         rows.push({ type: "model", model: m, index: commitTargets.length });
         commitTargets.push(m.id);
@@ -121,7 +108,7 @@ export function ModelSelect({
     if (!q) {
       const popular = SUGGESTED_MODELS.map((id) =>
         models.find((m) => m.id === id),
-      ).filter((m): m is GatewayModel => Boolean(m));
+      ).filter((m): m is ModelCatalogEntry => Boolean(m));
       if (popular.length > 0) {
         rows.push({ type: "label", text: "Popular" });
         pushModels(popular);
@@ -268,9 +255,8 @@ export function ModelSelect({
       </Popover>
       {offCatalog && (
         <p className="mt-2 max-w-md text-xs text-amber-600 dark:text-amber-500">
-          <span className="font-mono">{value}</span> is not in the AI Gateway
-          catalog — publishing will fail unless agent.ts sets{" "}
-          <span className="font-mono">modelContextWindowTokens</span>.
+          <span className="font-mono">{value}</span> is not in the OpenRouter
+          catalog. It will be saved as a custom model id.
         </p>
       )}
     </div>
@@ -293,8 +279,15 @@ function Option({
     <div
       role="option"
       aria-selected={highlighted}
+      tabIndex={highlighted ? 0 : -1}
       onMouseMove={onHighlight}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
       className={cn(
         "flex cursor-pointer items-center gap-3 rounded-md px-2 py-1.5",
         highlighted && "bg-accent text-accent-foreground",

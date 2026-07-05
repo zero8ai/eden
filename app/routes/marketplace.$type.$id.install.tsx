@@ -46,6 +46,7 @@ import {
 import { syncTenant } from "~/auth/tenant.server";
 import type { Agent } from "~/data/ports";
 import { stageDeletions, stageDraft, listDrafts } from "~/drafts/drafts.server";
+import { ZOD_PACKAGE, ZOD_VERSION } from "~/eve/agentModule";
 import { getAgentSource } from "~/github/cached.server";
 import { fetchAgentSource, readAgentFile } from "~/github/repo.server";
 import { contextPath } from "~/lib/paths";
@@ -65,7 +66,7 @@ import {
   type TemplateType,
 } from "~/marketplace/manifest";
 import { listProjects } from "~/db/queries.server";
-import { resolveAgentContext } from "~/project/agent-context.server";
+import { resolveSyncedAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
 import type { Route } from "./+types/marketplace.$type.$id.install";
@@ -174,11 +175,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         ),
       );
       const repo = { owner: project.repoOwner, repo: project.repoName };
-      const [source, drafts, ctx] = await Promise.all([
+      const [source, drafts] = await Promise.all([
         getAgentSource(project.repoInstallationId, repo),
         listDrafts(project.id),
-        resolveAgentContext(project.id, null),
       ]);
+      const ctx = await resolveSyncedAgentContext(project.id, null, source.paths);
       base.projectName = project.name;
       base.isTeam = ctx.isTeam;
       base.roster = ctx.roster.map((a) => ({ name: a.name }));
@@ -212,7 +213,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           conflicts: plan.conflicts,
           warnings: plan.warnings,
           deps: describeDependencies(
-            { eve: "latest", zod: "^3.23.0" },
+            { eve: "latest", [ZOD_PACKAGE]: ZOD_VERSION },
             template.manifest.dependencies,
           ),
           secrets: plan.secrets,
@@ -296,13 +297,13 @@ export async function action(args: ActionFunctionArgs) {
       ),
     );
     const repo = { owner: project.repoOwner, repo: project.repoName };
-    const template = await getRuntime().catalog.template(type, id);
-    const ctx = await resolveAgentContext(project.id, null);
     // ACTIONS read raw — a stale read composed into a write could clobber newer content.
-    const [source, drafts] = await Promise.all([
+    const [template, source, drafts] = await Promise.all([
+      getRuntime().catalog.template(type, id),
       fetchAgentSource(project.repoInstallationId, repo),
       listDrafts(project.id),
     ]);
+    const ctx = await resolveSyncedAgentContext(project.id, null, source.paths);
     const registry = catalogLocator();
     const draftPaths = drafts.map((d) => ({ path: d.path, content: d.content }));
     const lock = overlayLock(source.files["eden-lock.json"] ?? null, draftPaths);

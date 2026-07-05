@@ -7,10 +7,12 @@ import {
   Form,
   Link,
   redirect,
+  useFetcher,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
 
+import { ModelSelect } from "~/components/model-select";
 import { AppShell, PageHeader } from "~/components/shell";
 import { Button } from "~/components/ui/button";
 import {
@@ -49,7 +51,7 @@ interface OrgSettingsView {
   audit: (typeof auditLog.$inferSelect)[];
   /** A workspace OpenRouter key is configured (value never leaves the server). */
   hasModelKey: boolean;
-  /** OpenRouter model id the authoring assistant uses (null = Eden default). */
+  /** Workspace default OpenRouter model id (null = Eden default). */
   assistantModel: string | null;
 }
 
@@ -105,7 +107,7 @@ export async function action(args: ActionFunctionArgs) {
 
   const form = await args.request.formData();
 
-  // ── Workspace model key (PRD §12): set or clear the org's OpenRouter key ──
+  // ── Workspace model key: set or clear the org's OpenRouter key ──
   const intent = String(form.get("intent") ?? "");
   if (intent === "set-model-key" || intent === "clear-model-key") {
     const value =
@@ -154,6 +156,7 @@ export function meta() {
 
 export default function OrgSettings({ loaderData }: Route.ComponentProps) {
   const { user, org, mode, limit, used, audit, hasModelKey, assistantModel } = loaderData;
+  const modelFetcher = useFetcher<typeof action>();
 
   if (!org) {
     return (
@@ -182,15 +185,15 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
       />
 
       <div className="space-y-6">
-        {/* Model provider (PRD §12): the key every agent needs, set once per workspace */}
+        {/* Model provider: OpenRouter key + default model for authoring and agents */}
         <Card>
           <CardHeader>
             <CardTitle>Model provider</CardTitle>
             <CardDescription>
-              Every agent needs a model key. Deploys inject this OpenRouter key as{" "}
-              <span className="font-mono">OPENROUTER_API_KEY</span> automatically (a
-              project or environment secret with that name overrides it), and the
-              authoring assistant uses it too.
+              OpenRouter is the default model provider. Eden injects this key as{" "}
+              <span className="font-mono">OPENROUTER_API_KEY</span> for deployments,
+              and the default model below is used by the authoring assistant and by
+              agents that do not have their own model set.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -222,29 +225,48 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
               </Form>
             )}
 
-            <Form method="post" className="mt-6 flex max-w-xl items-end gap-2 border-t pt-4">
-              <input type="hidden" name="intent" value="set-assistant-model" />
-              <div className="flex-1 space-y-1.5">
-                <Label htmlFor="assistantModel">Assistant model</Label>
-                <Input
-                  id="assistantModel"
-                  name="assistantModel"
-                  defaultValue={assistantModel ?? ""}
-                  placeholder="anthropic/claude-sonnet-5 (default)"
-                  className="font-mono"
-                  spellCheck={false}
+            <div className="mt-6 max-w-xl space-y-2 border-t pt-4">
+              <Label>Default model</Label>
+              <div className="flex flex-wrap items-center gap-2">
+                <ModelSelect
+                  value={assistantModel}
+                  busy={modelFetcher.state !== "idle"}
+                  onCommit={(model) =>
+                    modelFetcher.submit(
+                      { intent: "set-assistant-model", assistantModel: model },
+                      { method: "post" },
+                    )
+                  }
                 />
-                <p className="text-xs text-muted-foreground">
-                  Any OpenRouter model id, e.g.{" "}
-                  <span className="font-mono">z-ai/glm-5.2</span> or{" "}
-                  <span className="font-mono">anthropic/claude-fable-latest</span>. Needs
-                  tool-calling support. Leave empty for the default.
-                </p>
+                {assistantModel && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    disabled={modelFetcher.state !== "idle"}
+                    onClick={() =>
+                      modelFetcher.submit(
+                        { intent: "set-assistant-model", assistantModel: "" },
+                        { method: "post" },
+                      )
+                    }
+                  >
+                    Use Eden default
+                  </Button>
+                )}
               </div>
-              <Button type="submit" variant="secondary">
-                Save model
-              </Button>
-            </Form>
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">
+                  Any OpenRouter model id. Needs tool-calling support for
+                  tool-using agents.
+                </p>
+                {!assistantModel && (
+                  <p className="text-xs text-muted-foreground">
+                    No workspace default set; Eden's built-in default is used.
+                  </p>
+                )}
+              </div>
+            </div>
           </CardContent>
         </Card>
 

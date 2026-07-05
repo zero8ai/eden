@@ -8,7 +8,10 @@
 import { describe, expect, it } from "vitest";
 
 import { EDEN_EVE_DOCKERFILE, EVE_DOCKER_SHIM } from "~/deploy/eve-image.server";
-import { homeVolumeName } from "~/seams/oss/deploy.localdocker.server";
+import {
+  homeVolumeName,
+  LOCAL_DOCKER_DEPLOY_HEALTH_TIMEOUT_MS,
+} from "~/seams/oss/deploy.localdocker.server";
 
 describe("homeVolumeName", () => {
   it("is stable for a given worldKey (a redeploy reuses the same home)", () => {
@@ -30,6 +33,17 @@ describe("homeVolumeName", () => {
 });
 
 describe("runtime image installs the shim", () => {
+  it("uses the build stage as runtime and starts through eve start", () => {
+    expect(EDEN_EVE_DOCKERFILE).toContain("FROM build");
+    expect(EDEN_EVE_DOCKERFILE).toContain(
+      'CMD ["node_modules/.bin/eve", "start"]',
+    );
+    expect(EDEN_EVE_DOCKERFILE).not.toContain(
+      'CMD ["node", ".output/server/index.mjs"]',
+    );
+    expect(EDEN_EVE_DOCKERFILE).not.toContain("COPY --from=build /app/.output");
+  });
+
   it("writes /usr/local/bin/eve-docker and chmods it 0755", () => {
     expect(EDEN_EVE_DOCKERFILE).toContain("/usr/local/bin/eve-docker");
     expect(EDEN_EVE_DOCKERFILE).toContain("chmod 0755 /usr/local/bin/eve-docker");
@@ -43,6 +57,12 @@ describe("runtime image installs the shim", () => {
     const m = EDEN_EVE_DOCKERFILE.match(/echo '([A-Za-z0-9+/=]+)' \| base64 -d/);
     expect(m).not.toBeNull();
     expect(Buffer.from(m![1], "base64").toString("utf8")).toBe(EVE_DOCKER_SHIM);
+  });
+});
+
+describe("local docker deploy health timeout", () => {
+  it("allows several minutes for first sandbox template prewarm", () => {
+    expect(LOCAL_DOCKER_DEPLOY_HEALTH_TIMEOUT_MS).toBe(300_000);
   });
 });
 

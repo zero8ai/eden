@@ -6,30 +6,70 @@
  */
 import { data, redirect } from "react-router";
 
-import type { Agent } from "~/data/ports";
-import { listAgents } from "~/db/queries.server";
+import type { Agent, DataStore } from "~/data/ports";
+import {
+  listAgents,
+  syncProjectAgents,
+  withPreservedNames,
+} from "~/db/queries.server";
+import { detectAgentRoots } from "~/eve/parse";
 
 export interface AgentContext {
   /** The project's full roster, by name. */
   roster: Agent[];
   /** The member the current request operates on. */
   active: Agent;
-  /** True when the roster has more than one member (render the switcher). */
+  /** True when the repo uses the `agents/<member>/agent` team layout. */
   isTeam: boolean;
+}
+
+function isTeamRoster(roster: Agent[]): boolean {
+  return roster.some((a) => a.root !== "agent");
+}
+
+function rosterMatches(
+  roster: Agent[],
+  detected: { name: string; root: string }[],
+): boolean {
+  const known = new Set(roster.map((a) => `${a.name}:${a.root}`));
+  return (
+    detected.length === roster.length &&
+    detected.every((d) => known.has(`${d.name}:${d.root}`))
+  );
 }
 
 /** Resolve the roster + active member from a member name/id (or a form's `agent` field). */
 export async function resolveAgentContext(
   projectId: string,
   agentName: string | null,
+  store?: DataStore,
 ): Promise<AgentContext> {
-  const roster = await listAgents(projectId);
+  const roster = await listAgents(projectId, store);
   if (roster.length === 0) {
     // Pre-split projects that never re-synced; connect/webhook normally prevent this.
     throw data("Project has no agents — reconnect the repository.", { status: 500 });
   }
   const active = roster.find((a) => a.name === agentName || a.id === agentName) ?? roster[0];
-  return { roster, active, isTeam: roster.length > 1 };
+  return { roster, active, isTeam: isTeamRoster(roster) };
+}
+
+/**
+ * Resolve context after reconciling the stored roster with a freshly-read repo tree, so external
+ * pushes/webhook misses do not leave Eden classifying a team-layout repo as a single-agent repo.
+ */
+export async function resolveSyncedAgentContext(
+  projectId: string,
+  agentName: string | null,
+  paths: string[],
+  store?: DataStore,
+): Promise<AgentContext> {
+  const ctx = await resolveAgentContext(projectId, agentName, store);
+  const detected = withPreservedNames(ctx.roster, detectAgentRoots(paths));
+  if (detected.length === 0 || rosterMatches(ctx.roster, detected)) {
+    return ctx;
+  }
+  await syncProjectAgents(projectId, detected, store);
+  return resolveAgentContext(projectId, agentName, store);
 }
 
 /** The member selector for a route: the `:agentName` path segment (auto URL-decoded). */

@@ -4,24 +4,27 @@
  * Two levels share this module (route ids `settings` + `member-settings`):
  *  - MEMBER sections (team members at /agents/:name/settings; included for single-agent
  *    repos): Model (staged into agent.ts like any edit), Secrets (per-member + per-
- *    environment, write-only values), and the member danger zone (remove agent — a
- *    change-set PR deleting its directory).
+ *    environment, write-only values), Marketplace installs, and the member danger zone
+ *    (remove agent — a change-set PR deleting its directory).
  *  - REPO sections (team repos at /repos/:id/settings; appended for single-agent repos):
- *    General (the GitHub connection), Run ingestion tokens, and the repo danger zone —
- *    Delete repository, a FULL Eden-side teardown (instances stopped and destroyed, every
- *    row cascaded). The GitHub repository itself is never touched.
+ *    Marketplace installs, General (the GitHub connection), Run ingestion tokens, and the repo
+ *    danger zone — Delete repository, a FULL Eden-side teardown (instances stopped and
+ *    destroyed, every row cascaded). The GitHub repository itself is never touched.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { useMemo, useState } from "react";
 import {
   Form,
+  Link,
   redirect,
   useFetcher,
   useNavigation,
+  useSearchParams,
   useSubmit,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
+import semver from "semver";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
 import { ModelSelect } from "~/components/model-select";
@@ -65,19 +68,35 @@ import {
 import {
   listDrafts,
   resolveFileView,
+  stageDeletions,
   stageDraft,
 } from "~/drafts/drafts.server";
-import { readModel, scaffoldAgentModule, setModel } from "~/eve/agentModule";
+import {
+  ensureOpenRouterDependency,
+  readModel,
+  scaffoldAgentModule,
+  setModel,
+} from "~/eve/agentModule";
 import { buildAgentConfig } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
-import { fetchAgentSource } from "~/github/repo.server";
+import { fetchAgentSource, readAgentFile } from "~/github/repo.server";
 import { proposeChange, type FileChange } from "~/github/write.server";
 import { contextPath } from "~/lib/paths";
-import { isKnownModel } from "~/models/catalog.server";
+import {
+  catalogLocator,
+  packageJsonPathForRoot,
+  planInstall,
+  planUninstall,
+} from "~/marketplace/install.server";
+import { overlayLock } from "~/marketplace/lock";
+import type { TemplateType } from "~/marketplace/manifest";
+import { findModel } from "~/models/catalog.server";
+import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
   agentFromParams,
   agentParamRedirect,
   resolveAgentContext,
+  resolveSyncedAgentContext,
 } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { ConnectedProject } from "~/project/guard.server";
@@ -98,6 +117,7 @@ interface SettingsView {
   canRemoveMember: boolean;
   /** Member: current model (staged draft wins) + staging state. */
   model: string | null;
+  modelInherited: boolean;
   hasAgentModule: boolean;
   modelStaged: boolean;
   /** Member: secrets scope state. */
@@ -106,6 +126,8 @@ interface SettingsView {
   secretNames: string[];
   secretsConfigured: boolean;
   secretsError: string | null;
+  /** Marketplace installs in the current settings scope. */
+  installs: InstallDisplay[];
   /** Repo: ingest tokens. */
   tokens: {
     id: string;
@@ -113,6 +135,22 @@ interface SettingsView {
     createdAt: string;
     lastUsedAt: string | null;
   }[];
+}
+
+/** A marketplace install as Settings shows it: provenance + update availability. */
+interface InstallDisplay {
+  id: string;
+  type: TemplateType;
+  name: string;
+  version: string;
+  /** Owning member; null = the single-agent repo's root agent. */
+  member: string | null;
+  /** Files uninstall would delete (from the lock). */
+  files: string[];
+  /** npm packages uninstall leaves for the reviewer to prune. */
+  depsLeft: string[];
+  /** The newer catalog version when an update is available, else null. */
+  update: string | null;
 }
 
 /** Resolve the `?env=` param to an environmentId (null == agent-wide), validated. */
@@ -126,6 +164,38 @@ function resolveScope(
   return env
     ? { environmentId: env.id, label: env.name }
     : { environmentId: null, label: "All environments" };
+}
+
+/**
+ * Build install display rows from the effective lock, tagging each with the newer catalog version
+ * when one exists. The catalog is optional; when it is unavailable, rows simply show no updates.
+ */
+function buildInstalls(
+  lock: ReturnType<typeof overlayLock>,
+  index: { id: string; type: TemplateType; version: string }[],
+  keep: (member: string | null) => boolean,
+): InstallDisplay[] {
+  return lock.installs.reduce<InstallDisplay[]>((rows, entry) => {
+    if (!keep(entry.member)) return rows;
+    const row = index.find((r) => r.id === entry.id && r.type === entry.type);
+    let update: string | null = null;
+    try {
+      if (row && semver.gt(row.version, entry.version)) update = row.version;
+    } catch {
+      update = null;
+    }
+    rows.push({
+      id: entry.id,
+      type: entry.type,
+      name: entry.name,
+      version: entry.version,
+      member: entry.member,
+      files: entry.files,
+      depsLeft: Object.keys(entry.dependencies ?? {}),
+      update,
+    });
+    return rows;
+  }, []);
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -147,13 +217,35 @@ export const loader = (args: LoaderFunctionArgs) =>
         const legacy = agentParamRedirect(args.request, project.id);
         if (legacy) throw legacy;
       }
-      const { roster, active, isTeam } = await resolveAgentContext(
+      const repo = { owner: project.repoOwner, repo: project.repoName };
+      const [source, drafts] = await Promise.all([
+        getAgentSource(project.repoInstallationId, repo),
+        listDrafts(project.id),
+      ]);
+      const { roster, active, isTeam } = await resolveSyncedAgentContext(
         project.id,
         agentName,
+        source.paths,
       );
       const level: NavLevel = agentName ? "member" : isTeam ? "repo" : "single";
       const showMember = level !== "repo";
       const showRepo = level !== "member";
+      const draftPaths = drafts.map((d) => ({
+        path: d.path,
+        content: d.content,
+      }));
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        draftPaths,
+      );
+      let index: { id: string; type: TemplateType; version: string }[] = [];
+      if (lock.installs.length > 0) {
+        try {
+          index = (await getRuntime().catalog.index()).templates;
+        } catch (error) {
+          console.warn("[settings] catalog index unavailable:", error);
+        }
+      }
 
       const base: SettingsView = {
         project,
@@ -165,6 +257,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         showRepo,
         canRemoveMember: showMember && isTeam && active.root !== "agent",
         model: null,
+        modelInherited: false,
         hasAgentModule: false,
         modelStaged: false,
         envs: [],
@@ -172,17 +265,21 @@ export const loader = (args: LoaderFunctionArgs) =>
         secretNames: [],
         secretsConfigured: true,
         secretsError: null,
+        installs: buildInstalls(
+          lock,
+          index,
+          level === "repo"
+            ? () => true
+            : (member) =>
+                member === active.name || (member === null && !isTeam),
+        ),
         tokens: [],
       };
 
       if (showMember) {
-        const [source, drafts, envs] = await Promise.all([
-          getAgentSource(project.repoInstallationId, {
-            owner: project.repoOwner,
-            repo: project.repoName,
-          }),
-          listDrafts(project.id),
+        const [envs, orgDefaultModel] = await Promise.all([
           listAgentEnvironments(active.id),
+          getWorkspaceAssistantModel(project.orgId).catch(() => null),
         ]);
         const config = buildAgentConfig(source, active.root);
         // The model shown must reflect the newest intent: a staged agent.ts draft wins.
@@ -190,9 +287,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         const agentTsDraft = drafts.find(
           (d) => d.path === `${active.root}/agent.ts` && d.content !== null,
         );
-        base.model = agentTsDraft?.content
+        const agentModel = agentTsDraft?.content
           ? (readModel(agentTsDraft.content) ?? config.model)
           : config.model;
+        base.model = agentModel ?? orgDefaultModel;
+        base.modelInherited = !agentModel && !!orgDefaultModel;
         base.hasAgentModule = config.hasAgentModule || !!agentTsDraft;
         base.modelStaged = !!agentTsDraft;
         base.envs = envs;
@@ -250,15 +349,7 @@ export async function action(args: ActionFunctionArgs) {
     if (intent === "set-model") {
       const model = String(form.get("model") ?? "").trim();
       if (!model) return { error: "Pick or enter a model." };
-      // Reject off-catalog ids before staging — eve resolves context-window metadata against
-      // the AI Gateway, so an id it doesn't know publishes to a hard failure. `null` means the
-      // catalog was unreachable (fail open — don't block a legitimate edit on a gateway hiccup).
-      const known = await isKnownModel(model);
-      if (known === false) {
-        return {
-          error: `"${model}" is not an AI Gateway model id — pick one from the list.`,
-        };
-      }
+      const modelInfo = await findModel(model);
       const { active } = await resolveAgentContext(
         project.id,
         String(form.get("agent") ?? "") || null,
@@ -266,15 +357,147 @@ export async function action(args: ActionFunctionArgs) {
       const path = `${active.root}/agent.ts`;
       const view = await resolveFileView(project, path);
       const next = view.content
-        ? setModel(view.content, model)
-        : scaffoldAgentModule(model);
+        ? setModel(view.content, model, {
+            contextWindowTokens: modelInfo?.contextWindow,
+          })
+        : scaffoldAgentModule(model, {
+            contextWindowTokens: modelInfo?.contextWindow,
+          });
+
+      const pkgPath = packageJsonPathForRoot(active.root);
+      const pkgView = await resolveFileView(project, pkgPath);
+      let packageJson: string;
+      try {
+        packageJson = ensureOpenRouterDependency(pkgView.content);
+      } catch {
+        return { error: `${pkgPath} is not valid JSON — fix it before setting the model.` };
+      }
+
+      await Promise.all([
+        stageDraft({
+          projectId: project.id,
+          path,
+          content: next,
+          createdBy: auth.user.id,
+        }),
+        packageJson !== pkgView.content
+          ? stageDraft({
+              projectId: project.id,
+              path: pkgPath,
+              content: packageJson,
+              createdBy: auth.user.id,
+            })
+          : Promise.resolve(),
+      ]);
+      return { ok: true as const };
+    }
+
+    // ── Marketplace installs: update / uninstall stage reviewable repo changes ──
+    if (intent === "update-install") {
+      const type = String(form.get("type") ?? "") as TemplateType;
+      const id = String(form.get("id") ?? "");
+      const member = String(form.get("member") ?? "") || null;
+      if (!type || !id) return { error: "Missing install to update." };
+      // Actions read raw — a stale read merged into a write could clobber newer content.
+      const [template, source, drafts] = await Promise.all([
+        getRuntime().catalog.template(type, id),
+        fetchAgentSource(project.repoInstallationId, repo),
+        listDrafts(project.id),
+      ]);
+      const { roster, active } = await resolveSyncedAgentContext(
+        project.id,
+        member,
+        source.paths,
+      );
+      const draftPaths = drafts.map((d) => ({
+        path: d.path,
+        content: d.content,
+      }));
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        draftPaths,
+      );
+      // A staged package.json draft wins over the branch copy — otherwise a second staged
+      // install/update could silently drop dependencies added by the first.
+      const pkgPath = packageJsonPathForRoot(active.root);
+      const pkgDraft = drafts.find((d) => d.path === pkgPath);
+      const packageJson =
+        pkgDraft !== undefined
+          ? pkgDraft.content
+          : await readAgentFile(project.repoInstallationId, repo, pkgPath);
+      const plan = planInstall({
+        template,
+        registry: catalogLocator(),
+        repoPaths: source.paths,
+        drafts: draftPaths,
+        packageJson,
+        lock,
+        rosterNames: roster.map((a) => a.name),
+        target: { kind: "member", memberName: member, root: active.root },
+      });
+      if (plan.conflicts.length > 0) {
+        return {
+          error: `Update blocked — these files were changed locally:\n${plan.conflicts.join("\n")}`,
+        };
+      }
+      await Promise.all(
+        plan.writes.map((w) =>
+          stageDraft({
+            projectId: project.id,
+            path: w.path,
+            content: w.content,
+            createdBy: auth.user.id,
+          }),
+        ),
+      );
+      if (plan.deletions.length > 0) {
+        await stageDeletions({
+          projectId: project.id,
+          paths: plan.deletions,
+          createdBy: auth.user.id,
+        });
+      }
+      throw redirect(`${back}?updated=${encodeURIComponent(id)}`);
+    }
+    if (intent === "uninstall") {
+      const id = String(form.get("id") ?? "");
+      const member = String(form.get("member") ?? "") || null;
+      if (!id) return { error: "Missing install to remove." };
+      const [source, drafts] = await Promise.all([
+        fetchAgentSource(project.repoInstallationId, repo),
+        listDrafts(project.id),
+      ]);
+      const draftPaths = drafts.map((d) => ({
+        path: d.path,
+        content: d.content,
+      }));
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        draftPaths,
+      );
+      const plan = planUninstall({
+        lock,
+        id,
+        memberName: member,
+        repoPaths: source.paths,
+      });
+      if (plan.notFound) {
+        return { error: "That install isn't recorded in eden-lock.json." };
+      }
+      if (plan.deletions.length > 0) {
+        await stageDeletions({
+          projectId: project.id,
+          paths: plan.deletions,
+          createdBy: auth.user.id,
+        });
+      }
       await stageDraft({
         projectId: project.id,
-        path,
-        content: next,
+        path: plan.lockWrite.path,
+        content: plan.lockWrite.content,
         createdBy: auth.user.id,
       });
-      return { ok: true as const };
+      throw redirect(`${back}?uninstalled=${encodeURIComponent(id)}`);
     }
 
     // ── Secrets (per-member + per-environment; values write-only) ──
@@ -391,6 +614,9 @@ export default function Settings({
     canRemoveMember,
   } = loaderData;
   const base = contextPath(project.id, level === "member" ? activeAgent : null);
+  const [params] = useSearchParams();
+  const justUpdated = params.get("updated");
+  const justUninstalled = params.get("uninstalled");
   const newToken =
     actionData && "token" in actionData
       ? (actionData.token as string | null)
@@ -444,10 +670,23 @@ export default function Settings({
           </AlertDescription>
         </Alert>
       )}
+      {(justUpdated || justUninstalled) && (
+        <Alert className="mb-6">
+          <AlertTitle>
+            {justUpdated
+              ? `${justUpdated} update staged`
+              : `${justUninstalled} uninstall staged`}
+          </AlertTitle>
+          <AlertDescription>
+            Review and publish it from the Deployment tab.
+          </AlertDescription>
+        </Alert>
+      )}
 
       <div className="space-y-10">
         {showMember && <ModelSection loaderData={loaderData} />}
         {showMember && <SecretsSection loaderData={loaderData} />}
+        <MarketplaceInstallsSection loaderData={loaderData} />
         {showRepo && <GeneralSection project={project} />}
         {showRepo && (
           <IngestSection loaderData={loaderData} newToken={newToken} />
@@ -472,7 +711,8 @@ function ModelSection({
 }: {
   loaderData: Route.ComponentProps["loaderData"];
 }) {
-  const { model, hasAgentModule, modelStaged, activeAgent } = loaderData;
+  const { model, modelInherited, hasAgentModule, modelStaged, activeAgent } =
+    loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const modelBadges = useMemo(
     () => (
@@ -482,6 +722,11 @@ function ModelSection({
             staged
           </Badge>
         )}
+        {modelInherited && (
+          <Badge variant="outline" className="text-xs">
+            inherited default
+          </Badge>
+        )}
         {!hasAgentModule && (
           <Badge variant="outline" className="text-xs">
             no agent.ts — picking one scaffolds it
@@ -489,7 +734,7 @@ function ModelSection({
         )}
       </>
     ),
-    [modelStaged, hasAgentModule],
+    [modelStaged, modelInherited, hasAgentModule],
   );
   return (
     <section>
@@ -643,6 +888,127 @@ function SecretsSection({
           {busy ? "Saving…" : "Save secret"}
         </Button>
       </Form>
+    </section>
+  );
+}
+
+/**
+ * Marketplace provenance from eden-lock.json. Updates and uninstalls stage normal repo changes;
+ * Deployment remains the review/publish surface for those staged files.
+ */
+function MarketplaceInstallsSection({
+  loaderData,
+}: {
+  loaderData: Route.ComponentProps["loaderData"];
+}) {
+  const { project, installs, level } = loaderData;
+  const submit = useSubmit();
+  const navigation = useNavigation();
+  const busy = navigation.state !== "idle" && navigation.formData != null;
+  const showOwner = level === "repo";
+  const installsBadge = useMemo(
+    () => <Badge variant="secondary">{installs.length}</Badge>,
+    [installs.length],
+  );
+
+  return (
+    <section>
+      <SectionHeader title="Marketplace installs" badges={installsBadge} />
+      <Card>
+        <CardContent className="py-4">
+          {installs.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No marketplace installs recorded for this scope.
+            </p>
+          ) : (
+            <ul className="divide-y rounded-lg border text-sm">
+              {installs.map((install) => (
+                <li
+                  key={`${install.member ?? "root"}:${install.type}/${install.id}`}
+                  className="flex flex-wrap items-center gap-3 px-3 py-2"
+                >
+                  <span className="min-w-0 flex-1 truncate font-medium">
+                    {install.name}
+                  </span>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    v{install.version}
+                  </span>
+                  <Badge variant="outline">{install.type}</Badge>
+                  {showOwner &&
+                    (install.member ? (
+                      <Link
+                        to={`${contextPath(project.id, install.member)}/settings`}
+                        className="text-xs underline-offset-4 hover:underline"
+                      >
+                        {install.member}
+                      </Link>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        shared
+                      </span>
+                    ))}
+                  {install.update && (
+                    <Form method="post">
+                      <input
+                        type="hidden"
+                        name="intent"
+                        value="update-install"
+                      />
+                      <input type="hidden" name="type" value={install.type} />
+                      <input type="hidden" name="id" value={install.id} />
+                      <input
+                        type="hidden"
+                        name="member"
+                        value={install.member ?? ""}
+                      />
+                      <Button
+                        type="submit"
+                        size="sm"
+                        variant="secondary"
+                        disabled={busy}
+                      >
+                        Update to {install.update}
+                      </Button>
+                    </Form>
+                  )}
+                  <ConfirmDialog
+                    trigger={
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive"
+                        disabled={busy}
+                      >
+                        Uninstall
+                      </Button>
+                    }
+                    title={`Uninstall ${install.name}?`}
+                    description={
+                      `Stages a change-set deleting ${install.files.length} file${install.files.length === 1 ? "" : "s"}:\n` +
+                      install.files.join("\n") +
+                      (install.depsLeft.length > 0
+                        ? `\n\nnpm packages left for review: ${install.depsLeft.join(", ")}`
+                        : "")
+                    }
+                    confirmLabel="Uninstall"
+                    onConfirm={() =>
+                      submit(
+                        {
+                          intent: "uninstall",
+                          id: install.id,
+                          member: install.member ?? "",
+                        },
+                        { method: "post" },
+                      )
+                    }
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
     </section>
   );
 }

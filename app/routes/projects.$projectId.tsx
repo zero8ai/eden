@@ -71,6 +71,7 @@ import { proposeChange } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
 import { timeAgo } from "~/lib/time";
+import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -213,6 +214,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           ));
         }
 
+        const orgDefaultModel = await getWorkspaceAssistantModel(project.orgId).catch(
+          () => null,
+        );
         const teamLayout = active.root !== "agent";
         // The hierarchy: a team repo LANDS on the team (roster) view; a member's config
         // surface is a drill-in (?agent=<name>). Single-agent repos go straight to their
@@ -235,7 +239,7 @@ export const loader = (args: LoaderFunctionArgs) =>
                   : c.model;
                 return {
                   name: a.name,
-                  model,
+                  model: model ?? orgDefaultModel,
                   tools: c.tools.length,
                   skills: c.skills.length,
                   schedules: c.schedules.length,
@@ -257,6 +261,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         if (config && agentTsDraft?.content) {
           config.model = readModel(agentTsDraft.content) ?? config.model;
           config.hasAgentModule = true;
+        }
+        if (config) {
+          config.model = config.model ?? orgDefaultModel;
         }
 
         // Deploy status for the member surface: what's running per environment (header
@@ -434,10 +441,13 @@ export async function action(args: ActionFunctionArgs) {
       if (roster.some((a) => a.name === name)) {
         return { error: `A member named "${name}" already exists.` };
       }
+      const model = await getWorkspaceAssistantModel(project.orgId).catch(
+        () => null,
+      );
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
         branch: `eden/add-member-${name}`,
-        files: memberScaffold(name),
+        files: memberScaffold(name, model ?? undefined),
         title: `Add team member: ${name}`,
         body:
           `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, an ` +

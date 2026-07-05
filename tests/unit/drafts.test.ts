@@ -216,6 +216,46 @@ describe("publish gate (build check)", () => {
     });
   });
 
+  it("normalizes stale OpenRouter package drafts before the build gate", async () => {
+    await stageDraft({
+      projectId: PROJECT.id,
+      path: "package.json",
+      content:
+        JSON.stringify(
+          {
+            dependencies: {
+              "@openrouter/ai-sdk-provider": "^2.10.0",
+              eve: "latest",
+              zod: "^3.23.0",
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+    }, store);
+    const check = vi.fn().mockResolvedValue({ ok: true });
+    const propose = vi.fn().mockResolvedValue(proposed);
+
+    await publishDrafts(
+      { project: PROJECT, paths: ["package.json"] },
+      store,
+      propose,
+      check,
+    );
+
+    const checkedPackage = check.mock.calls[0][0].overlay.find(
+      (file: { path: string }) => file.path === "package.json",
+    );
+    expect(JSON.parse(checkedPackage.content).dependencies).toEqual({
+      "@openrouter/ai-sdk-provider": "^6.0.0-alpha.1",
+      eve: "latest",
+      zod: "^4.4.3",
+    });
+    expect(propose.mock.calls[0][2].files).toEqual([
+      { path: "package.json", content: checkedPackage.content },
+    ]);
+  });
+
   it("stages shared root files unattributed, and a mixed selection checks the repo root", async () => {
     // package.json is outside every member — staged with no owning agent (add_dependency).
     const shared = await stageDraft(
@@ -254,6 +294,48 @@ describe("publish gate (build check)", () => {
       store,
     );
     expect(draft.agentId).toBe("agent_pm");
+  });
+
+  it("checks a staged new team member against its inferred agent root", async () => {
+    await stageDraft(
+      {
+        projectId: PROJECT.id,
+        path: "agents/deployer/agent/instructions.md",
+        content: "# deployer",
+      },
+      store,
+    );
+    await stageDraft(
+      {
+        projectId: PROJECT.id,
+        path: "agents/deployer/package.json",
+        content: "{}",
+      },
+      store,
+    );
+    await stageDraft(
+      { projectId: PROJECT.id, path: "eden-lock.json", content: "{}" },
+      store,
+    );
+
+    const check = vi.fn().mockResolvedValue({ ok: true });
+    await publishDrafts(
+      {
+        project: PROJECT,
+        paths: [
+          "agents/deployer/agent/instructions.md",
+          "agents/deployer/package.json",
+          "eden-lock.json",
+        ],
+      },
+      store,
+      vi.fn().mockResolvedValue(proposed),
+      check,
+    );
+
+    expect(check).toHaveBeenCalledWith(
+      expect.objectContaining({ agentRoot: "agents/deployer/agent" }),
+    );
   });
 
   it("a skipped check (no toolchain) still publishes", async () => {

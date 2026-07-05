@@ -8,6 +8,10 @@
  */
 import type { DataStore, DraftChange } from "~/data/ports";
 import { agentForPath } from "~/db/queries.server";
+import {
+  ensureOpenRouterDependency,
+  OPENROUTER_PROVIDER_PACKAGE,
+} from "~/eve/agentModule";
 import { readAgentFile } from "~/github/repo.server";
 import {
   findOpenChangeForFile,
@@ -83,6 +87,33 @@ export function discardDrafts(
   store: DataStore = getRuntime().data,
 ): Promise<void> {
   return store.drafts.deleteByPaths(projectId, paths);
+}
+
+function stagedTeamMemberRoot(path: string): string | null {
+  const agentMatch = path.match(/^agents\/([^/]+)\/agent(?:\/|$)/);
+  if (agentMatch) return `agents/${agentMatch[1]}/agent`;
+  const packageMatch = path.match(/^agents\/([^/]+)\/package\.json$/);
+  return packageMatch ? `agents/${packageMatch[1]}/agent` : null;
+}
+
+function inferBuildRoot(agents: { id: string; root: string }[], drafts: DraftChange[]) {
+  let root: string | undefined;
+  for (const draft of drafts) {
+    const agentRoot =
+      (draft.agentId
+        ? agents.find((a) => a.id === draft.agentId)?.root
+        : undefined) ?? stagedTeamMemberRoot(draft.path);
+    if (agentRoot) {
+      if (root && root !== agentRoot) return undefined;
+      root = agentRoot;
+      continue;
+    }
+    // Marketplace provenance is repo-level but should not force a whole-repo build when
+    // selected with one member's install/update drafts.
+    if (draft.path === "eden-lock.json") continue;
+    return undefined;
+  }
+  return root;
 }
 
 /**
@@ -170,6 +201,75 @@ const runtimeCheckBuild: CheckBuildFn = async (req) => {
   return target.checkBuild ? target.checkBuild(req) : { ok: true, skipped: true };
 };
 
+type PublishFile = { path: string; content: string | null };
+
+function packageJsonPathForAgentRoot(root: string): string {
+  if (root === "agent") return "package.json";
+  return `${root.replace(/\/agent$/, "")}/package.json`;
+}
+
+function agentRootForAgentModule(path: string): string | null {
+  if (path === "agent/agent.ts") return "agent";
+  const match = path.match(/^(agents\/[^/]+\/agent)\/agent\.ts$/);
+  return match ? match[1] : null;
+}
+
+function usesOpenRouter(source: string | null | undefined): boolean {
+  return Boolean(
+    source &&
+      (source.includes(OPENROUTER_PROVIDER_PACKAGE) ||
+        /\bopenrouter\s*\(/.test(source)),
+  );
+}
+
+async function normalizeOpenRouterPackageDrafts(input: {
+  project: {
+    repoInstallationId: string;
+    repoOwner: string;
+    repoName: string;
+  };
+  files: PublishFile[];
+}): Promise<PublishFile[]> {
+  const byPath = new Map(input.files.map((file) => [file.path, file]));
+
+  // If a stale package draft is selected, fix it in-place before the build gate sees it.
+  for (const file of byPath.values()) {
+    if (
+      file.path.endsWith("package.json") &&
+      file.content?.includes(OPENROUTER_PROVIDER_PACKAGE)
+    ) {
+      file.content = ensureOpenRouterDependency(file.content);
+    }
+  }
+
+  // If an OpenRouter-backed agent.ts is selected without its package file, add the required
+  // package overlay too. Otherwise the publish check builds a tree with code that imports the
+  // provider but no compatible provider dependency.
+  const roots = new Set<string>();
+  for (const file of byPath.values()) {
+    const root = agentRootForAgentModule(file.path);
+    if (root && usesOpenRouter(file.content)) roots.add(root);
+  }
+  if (roots.size === 0) return [...byPath.values()];
+
+  const repo = { owner: input.project.repoOwner, repo: input.project.repoName };
+  for (const root of roots) {
+    const pkgPath = packageJsonPathForAgentRoot(root);
+    const selected = byPath.get(pkgPath);
+    if (selected?.content === null) continue;
+    const base =
+      selected?.content ??
+      (await readAgentFile(input.project.repoInstallationId, repo, pkgPath));
+    if (base === null) continue;
+    const normalized = ensureOpenRouterDependency(base);
+    if (normalized !== base || !selected) {
+      byPath.set(pkgPath, { path: pkgPath, content: normalized });
+    }
+  }
+
+  return [...byPath.values()];
+}
+
 /**
  * Publish the SELECTED staged drafts as one change-set: one branch, one commit per file, one
  * PR. Published drafts are deleted (they're now on the branch); unselected drafts stay staged
@@ -202,18 +302,22 @@ export async function publishDrafts(
   // Publish gate: the change-set must compile against the branch it targets. A failed check
   // creates NOTHING (no branch, no PR) and keeps the drafts staged so they can be fixed and
   // republished — broken code never becomes a change request. When every selected draft
-  // belongs to one roster member, the gate builds that member's directory (team repos, §7.9);
-  // mixed or shared (unattributed) selections check the repo root.
-  const memberIds = new Set(selected.map((d) => d.agentId));
-  const soleId = memberIds.size === 1 ? selected[0].agentId : null;
-  const soleMember = soleId ? await store.agents.findById(soleId) : null;
+  // belongs to one roster member, the gate builds that member's directory. For staged new
+  // members, there is no agent row yet, so infer the same root from `agents/<name>/...`.
+  // Mixed or truly shared selections check the repo root.
+  const agents = await store.agents.listByProject(input.project.id);
+  const agentRoot = inferBuildRoot(agents, selected);
+  const files = await normalizeOpenRouterPackageDrafts({
+    project: input.project,
+    files: selected.map((d) => ({ path: d.path, content: d.content })),
+  });
   const check = await checkBuild({
     projectId: input.project.id,
     repo: { owner: input.project.repoOwner, repo: input.project.repoName },
     ref: input.project.defaultBranch,
     installationId: input.project.repoInstallationId,
-    overlay: selected.map((d) => ({ path: d.path, content: d.content })),
-    agentRoot: soleMember?.root,
+    overlay: files,
+    agentRoot,
   });
   if (!check.ok) {
     throw new Error(
@@ -224,12 +328,12 @@ export async function publishDrafts(
   const deletions = selected.filter((d) => d.content === null).length;
   const title =
     input.title?.trim() ||
-    (selected.length === 1
+    (files.length === 1
       ? `${deletions === 1 ? "Remove" : "Update"} ${selected[0].path}`
-      : `Update ${selected.length} agent files`);
+      : `Update ${files.length} agent files`);
   const body = [
     "Published from Eden's staged changes:",
-    ...selected.map((d) => `- ${d.content === null ? "delete " : ""}\`${d.path}\``),
+    ...files.map((d) => `- ${d.content === null ? "delete " : ""}\`${d.path}\``),
   ].join("\n");
 
   const change = await propose(
@@ -238,7 +342,7 @@ export async function publishDrafts(
     {
       base: input.project.defaultBranch,
       branch: `eden/publish-${newId()}`,
-      files: selected.map((d) => ({ path: d.path, content: d.content })),
+      files,
       title,
       body,
       commitMessage: title,

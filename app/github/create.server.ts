@@ -15,7 +15,13 @@
  * Personal-account creation isn't available via an installation token, so that path returns a
  * clear error pointing the user at "connect an existing repo".
  */
-import { scaffoldAgentModule } from "~/eve/agentModule";
+import {
+  OPENROUTER_PROVIDER_PACKAGE,
+  OPENROUTER_PROVIDER_VERSION,
+  ZOD_PACKAGE,
+  ZOD_VERSION,
+  scaffoldAgentModule,
+} from "~/eve/agentModule";
 import { commitFiles, type FileChange } from "./write.server";
 import { getInstallationOctokit } from "./client.server";
 
@@ -82,7 +88,11 @@ function singleAgentFiles(name: string, model: string, agentName: string): FileC
         private: true,
         type: "module",
         scripts: { dev: "eve dev", build: "eve build" },
-        dependencies: { eve: "latest", zod: "^3.23.0" },
+        dependencies: {
+          [OPENROUTER_PROVIDER_PACKAGE]: OPENROUTER_PROVIDER_VERSION,
+          eve: "latest",
+          [ZOD_PACKAGE]: ZOD_VERSION,
+        },
       }),
     },
     {
@@ -108,7 +118,11 @@ export function memberScaffold(member: string, model: string = DEFAULT_MODEL): F
         private: true,
         type: "module",
         scripts: { dev: "eve dev", build: "eve build" },
-        dependencies: { eve: "latest", zod: "^3.23.0" },
+        dependencies: {
+          [OPENROUTER_PROVIDER_PACKAGE]: OPENROUTER_PROVIDER_VERSION,
+          eve: "latest",
+          [ZOD_PACKAGE]: ZOD_VERSION,
+        },
       }),
     },
   ];

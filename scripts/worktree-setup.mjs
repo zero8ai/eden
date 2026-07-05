@@ -7,7 +7,7 @@
  * Usage (from main repo root):
  *   node scripts/worktree-setup.mjs [--skip-validate] <prefix>/<kebab-name>
  *
- * Called by the `clawd -w <prefix>/<kebab-name>` shell function after
+ * Called by the global `clawd -w <prefix>/<kebab-name>` launcher (~/.claude/clawd.sh) after
  * `git worktree add` has created the worktree at
  * `.worktrees/<prefix>-<kebab-name>`.
  *

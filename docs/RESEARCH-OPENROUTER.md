@@ -5,7 +5,7 @@ models — and does it buy us anything for the managed offering?
 
 ## Verified by execution (spike agent, eve 0.18.1)
 
-Wired `@openrouter/ai-sdk-provider@2.10.0` into the spike agent's `agent.ts`:
+Wired `@openrouter/ai-sdk-provider` into the spike agent's `agent.ts`:
 
 ```ts
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
@@ -28,9 +28,10 @@ export default defineAgent({
   with OpenRouter's "Missing Authentication header" (empty key) — the Vercel gateway is
   completely out of the path. With a real `OPENROUTER_API_KEY` env the same wiring should
   serve turns (not yet run — no key on this machine).
-- Peer-dep note: 2.10.0 declares `ai ^6` while eve pins `ai ^7`; it installs and works
-  (interface-compatible at runtime). A `6.0.0-alpha` line with no `ai` peer dep exists if
-  this ever breaks. Treat provider-version ↔ eve-version as another pinned pair.
+- Peer-dep note: `2.10.0` declares `ai ^6` while eve 0.19 pins `ai ^7`, so npm 11 rejects
+  the install during Eden's publish/build check. Use `@openrouter/ai-sdk-provider@^6.0.0-alpha.1`
+  with `zod@^4.4.3`; that line implements AI SDK provider v3 and avoids the `ai` peer conflict.
+  Treat provider-version ↔ eve-version as another pinned pair.
 
 ## From OpenRouter docs (web, 2026-07)
 

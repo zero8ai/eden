@@ -48,6 +48,7 @@ import {
   rememberInstallation,
 } from "~/github/installations.server";
 import { warmAgentSource } from "~/github/cached.server";
+import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
   fetchAgentSource,
   listInstallationRepos,
@@ -156,7 +157,14 @@ export async function action(args: ActionFunctionArgs) {
     if (!owner || !name) return { error: "Owner and repository name are required." };
     if (!agentName) return { error: "Agent name is required." };
     try {
-      const repo = await createEveRepo(installationId, { owner, name, layout, agentName });
+      const model = await getWorkspaceAssistantModel(org.id).catch(() => null);
+      const repo = await createEveRepo(installationId, {
+        owner,
+        name,
+        layout,
+        agentName,
+        model: model ?? undefined,
+      });
       const project = await createProject({
         orgId: org.id,
         name,

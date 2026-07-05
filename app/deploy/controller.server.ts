@@ -28,7 +28,7 @@ export interface DeployDeps {
   store: DataStore;
   deployTarget: DeployTarget;
   secrets: SecretsProvider;
-  /** Org-level model key lookup (PRD §12): deploys inherit OPENROUTER_API_KEY from it. */
+  /** Org-level OpenRouter key lookup used by the authoring assistant and deployed agents. */
   workspaceModelKey?: (orgId: string) => Promise<string | null>;
 }
 
@@ -175,6 +175,8 @@ export async function deployRelease(
     releaseId: string;
     /** Existing `queued` row to take over (from queueDeploy); otherwise one is created. */
     deploymentId?: string;
+    /** Force a fresh image build even when the Release already has an imageRef. */
+    rebuild?: boolean;
     trafficWeight?: number;
     createdBy?: string | null;
   },
@@ -208,7 +210,11 @@ export async function deployRelease(
 
   try {
     let imageRef = release.imageRef;
-    if (!imageRef && project?.repoOwner && project.repoName) {
+    const shouldBuild = input.rebuild || !imageRef;
+    if (shouldBuild) {
+      if (!project?.repoOwner || !project.repoName) {
+        throw new Error("Cannot build release: project is not connected to a GitHub repo.");
+      }
       const built = await deployTarget.build({
         projectId: release.projectId,
         repo: { owner: project.repoOwner, repo: project.repoName },
@@ -225,8 +231,15 @@ export async function deployRelease(
       agentId: release.agentId,
       environmentId: input.environmentId,
     });
-    // A model key is a prerequisite for every agent (PRD §12): inherit the workspace-level
-    // OpenRouter key unless a project/environment secret explicitly overrides it.
+    // Legacy/plain Eve model strings call Vercel AI Gateway. Eden-authored model choices use
+    // OpenRouter wiring, but keep this fallback so older repos still run if configured.
+    for (const key of ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const) {
+      const value = process.env[key];
+      if (!envVars[key] && value) envVars[key] = value;
+    }
+
+    // Eden's primary model path: OpenRouter key inherited from the workspace unless an
+    // agent/environment secret explicitly overrides it.
     if (!envVars.OPENROUTER_API_KEY && project && deps.workspaceModelKey) {
       const wsKey = await deps.workspaceModelKey(project.orgId);
       if (wsKey) envVars.OPENROUTER_API_KEY = wsKey;
@@ -341,6 +354,7 @@ export async function queueDeploy(
     environmentId: string;
     releaseId: string;
     rollback?: boolean;
+    rebuild?: boolean;
     createdBy?: string | null;
   },
   store: DataStore = getRuntime().data,
@@ -358,6 +372,7 @@ export async function queueDeploy(
       environmentId: input.environmentId,
       releaseId: input.releaseId,
       deploymentId: dep.id,
+      rebuild: input.rebuild ?? false,
       createdBy: input.createdBy ?? null,
     },
     undefined,

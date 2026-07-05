@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 
 import semver from "semver";
 
+import { ZOD_PACKAGE, ZOD_VERSION } from "~/eve/agentModule";
 import type { CatalogTemplate } from "~/seams/types";
 import { isTemplateSlug } from "./manifest";
 import {
@@ -169,7 +170,7 @@ function newMemberPackageJson(
   templateDeps: Record<string, string>,
 ): { content: string; warnings: string[] } {
   const { deps, warnings } = mergeDependencies(
-    { eve: "latest", zod: "^3.23.0" },
+    { eve: "latest", [ZOD_PACKAGE]: ZOD_VERSION },
     templateDeps,
   );
   return {

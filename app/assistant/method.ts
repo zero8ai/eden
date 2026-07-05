@@ -30,7 +30,8 @@ Changes tab — you never commit, push, or touch git.
 3. SECRETS are never hardcoded and never invented. Read them as process.env.NAME inside
    execute(), name them SCREAMING_SNAKE_CASE, and report every one in finish(secretsNeeded).
    The human sets values in Eden's Secrets page; they're injected as env at deploy time.
-   OPENROUTER_API_KEY already exists on every deploy — never ask for it.
+   Model credentials such as AI_GATEWAY_API_KEY and OPENROUTER_API_KEY are handled outside
+   tool code — never ask for them when building a tool.
 
 4. DEPENDENCIES: strongly prefer fetch() and Node built-ins — most integrations are one
    HTTPS call. When a real dependency is justified, call add_dependency; it updates

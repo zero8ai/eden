@@ -1,8 +1,8 @@
 /**
- * Workspace-level model provider key (PRD §12 resolution). One OpenRouter key per org:
- *  - every deploy inherits it as OPENROUTER_API_KEY unless a project/environment secret
- *    overrides it (deploy controller), and
- *  - the authoring assistant uses it to talk to models.
+ * Workspace-level OpenRouter key:
+ *  - the authoring assistant uses it to talk to models,
+ *  - deploys expose it as OPENROUTER_API_KEY (scoped secrets can override it), and
+ *  - the workspace model id is the inherited default for agents with no local model.
  * Write-only from the UI (like secrets): sealed with the same AES-GCM box, plaintext never
  * listed back. In managed mode this collapses into the ModelGateway (Eden owns keys).
  */
@@ -54,7 +54,7 @@ export async function getWorkspaceModelKey(orgId: string): Promise<string | null
   });
 }
 
-/** Set (or clear, with null) the OpenRouter model id the authoring assistant uses. */
+/** Set (or clear, with null) the workspace default OpenRouter model id. */
 export async function setWorkspaceAssistantModel(
   orgId: string,
   model: string | null,
@@ -68,7 +68,7 @@ export async function setWorkspaceAssistantModel(
     });
 }
 
-/** The org's configured assistant model id, or null for Eden's default. */
+/** The org's configured default model id, or null for Eden's default. */
 export async function getWorkspaceAssistantModel(orgId: string): Promise<string | null> {
   const [row] = await db
     .select({ model: workspaceSettings.assistantModel })

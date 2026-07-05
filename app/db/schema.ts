@@ -530,9 +530,8 @@ export const jobs = pgTable(
 );
 
 /**
- * Workspace-level model provider key (PRD §12 resolution): one OpenRouter key per org that
- * every deploy inherits as OPENROUTER_API_KEY unless a project/environment secret overrides
- * it, and that the authoring assistant uses. Sealed with the same AES-GCM box as secrets.
+ * Workspace-level OpenRouter settings: encrypted key plus the default model id inherited by
+ * the authoring assistant and agents with no local model.
  */
 export const workspaceSettings = pgTable("workspace_settings", {
   orgId: text("org_id")
@@ -541,7 +540,7 @@ export const workspaceSettings = pgTable("workspace_settings", {
   modelKeyCiphertext: text("model_key_ciphertext"),
   modelKeyIv: text("model_key_iv"),
   modelKeyAuthTag: text("model_key_auth_tag"),
-  /** OpenRouter model id the authoring assistant uses (null = Eden's default). */
+  /** Workspace default OpenRouter model id (null = Eden's default). */
   assistantModel: text("assistant_model"),
   updatedAt: updatedAt(),
 });

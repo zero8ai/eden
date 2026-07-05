@@ -20,6 +20,8 @@ export interface DeployReleasePayload {
   releaseId: string;
   /** Pre-created `queued` deployment row the job takes over (visible in the UI immediately). */
   deploymentId?: string;
+  /** Force a fresh image build even when the Release already has an imageRef. */
+  rebuild?: boolean;
   trafficWeight?: number;
   createdBy?: string | null;
   [key: string]: unknown;

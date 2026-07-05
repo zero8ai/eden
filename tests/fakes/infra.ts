@@ -18,6 +18,8 @@ export function fakeDeployTarget(opts: {
   deployError?: string;
   buildImageRef?: string;
   stopError?: string;
+  /** Captures the image refs produced by build(), for cache/rebuild assertions. */
+  builtRefs?: string[];
   /** Captures the env each deploy() received, for injection assertions. */
   deployedEnvs?: Record<string, string>[];
   /** Captures stopped deployment ids for cleanup/cutover assertions. */
@@ -33,7 +35,9 @@ export function fakeDeployTarget(opts: {
   return {
     name: "fake",
     async build() {
-      return { imageRef: opts.buildImageRef ?? "img:fake", digest: "sha256:fake" };
+      const imageRef = opts.buildImageRef ?? "img:fake";
+      opts.builtRefs?.push(imageRef);
+      return { imageRef, digest: "sha256:fake" };
     },
     async deploy(req): Promise<InstanceHealth> {
       opts.deployedEnvs?.push(req.env);

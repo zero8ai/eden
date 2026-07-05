@@ -3,20 +3,14 @@
   "type": "agent",
   "name": "Cloudflare App Builder",
   "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend, scaffolded, verified, and deployed per Cloudflare's framework guide.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "eve": ">=0.1.0",
   "model": "anthropic/claude-sonnet-5",
   "files": [
     "instructions.md",
     "agent.ts",
-    "skills/react-on-workers.md",
-    "tools/scaffold-app.ts",
-    "tools/check-app.ts",
-    "tools/deploy-app.ts"
+    "skills/react-on-workers.md"
   ],
-  "dependencies": {
-    "wrangler": "^4.0.0"
-  },
   "secrets": [
     {
       "name": "CLOUDFLARE_API_TOKEN",

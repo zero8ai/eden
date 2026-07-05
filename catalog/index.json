@@ -4,9 +4,9 @@
       "id": "cloudflare-app-builder",
       "type": "agent",
       "name": "Cloudflare App Builder",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend, scaffolded, verified, and deployed per Cloudflare's framework guide.",
-      "hash": "6adcd9de5b7ab6e4915995df96ae0032b0c13c5f"
+      "hash": "44ad2ba9b0c3d34e0885f720fb43637246282231"
     },
     {
       "id": "cloudflare-deployment-engineer",

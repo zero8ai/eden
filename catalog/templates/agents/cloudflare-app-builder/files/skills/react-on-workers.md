@@ -1,5 +1,5 @@
 ---
-description: Use when building, changing, or debugging a React web app that runs on Cloudflare Workers — project layout, wrangler.jsonc semantics, the dev/build/deploy commands, and the SPA-vs-Worker routing rules.
+description: Use when building, changing, shipping, or debugging a React web app that runs on Cloudflare Workers — the scaffold command, project layout, wrangler.jsonc semantics, the verify/deploy workflow, and the SPA-vs-Worker routing rules.
 ---
 
 # React on Cloudflare Workers
@@ -15,7 +15,9 @@ deployed.
 npm create cloudflare@latest -- <app-name> --framework=react --no-deploy --git=false
 ```
 
-(The `scaffold-app` tool runs exactly this.) The generated project:
+Run it non-interactively (`CI=true` in the environment helps), with a kebab-case
+app name. `--no-deploy` matters: deploying is a separate, deliberate step, never
+a side effect of scaffolding. The generated project:
 
 | Path | What it is |
 |---|---|
@@ -35,13 +37,24 @@ npm create cloudflare@latest -- <app-name> --framework=react --no-deploy --git=f
    Worker and never import bindings into `src/` — React reaches compute,
    storage, and AI only through `fetch()` to the Worker.
 
-## Commands
+## Verify, then ship
+
+All commands run in the app directory.
 
 ```bash
-npm run dev      # Vite dev server + local Worker emulation, HMR
-npm run build    # production build (what check-app runs after install)
-npm run deploy   # build + wrangler deploy → *.workers.dev or a custom domain
+npm install --no-audit --no-fund   # once, or after dependency changes
+npm run build                      # production build — run after changes, ALWAYS before deploy
+npm run deploy                     # build + wrangler deploy → *.workers.dev or a custom domain
 ```
+
+`npm run deploy` performs the same build first, so a clean `npm run build` means
+the deploy won't die in the build step. Deploying needs `CLOUDFLARE_API_TOKEN`
+(with the "Edit Cloudflare Workers" permission) and `CLOUDFLARE_ACCOUNT_ID` in
+the environment — they are configured as secrets, never pasted into chat. On
+success wrangler prints the deployed URL; report it. On failure, read the last
+lines of wrangler's output — that's the actual error — fix, re-verify, redeploy.
+
+For local development with hot reload (a human at a browser): `npm run dev`.
 
 ## Bindings (KV, D1, R2, AI, …)
 

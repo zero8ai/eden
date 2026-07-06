@@ -12,7 +12,10 @@ import { data, redirect, type ActionFunctionArgs } from "react-router";
 import type { Target } from "~/chat/playground.server";
 import { asString, streamTurnResponse } from "~/chat/turn-stream.server";
 import { ensureAssistantInstance } from "~/assistant/instance.server";
-import { ensureConversationCheckout } from "~/assistant/checkout-sync.server";
+import {
+  ensureConversationCheckout,
+  getCheckoutRow,
+} from "~/assistant/checkout-sync.server";
 import {
   conversationBranch,
   conversationCheckoutPath,
@@ -101,10 +104,13 @@ export async function action(args: ActionFunctionArgs) {
   // checkout path on the first turn plus a note if the base branch advanced. The checkout is on the
   // shared home volume, so the model's sandbox sees the same tree the sync engine later mirrors.
   const firstTurn = !playgroundSessionId;
-  const ensured = await ensureConversationCheckout({
-    conversationId: session.id,
-    deploymentId: target.deploymentId,
-  });
+  const [ensured, checkoutRow] = await Promise.all([
+    ensureConversationCheckout({
+      conversationId: session.id,
+      deploymentId: target.deploymentId,
+    }),
+    getCheckoutRow(session.id).catch(() => null),
+  ]);
   const prefixParts: string[] = [];
   if (firstTurn) {
     prefixParts.push(
@@ -112,6 +118,12 @@ export async function action(args: ActionFunctionArgs) {
     );
   }
   if (ensured.note) prefixParts.push(`[Eden] ${ensured.note}`);
+  // Last sync's policy notes: edits Eden stripped or skipped (assistant.json, .ts under
+  // .eden/assistant, binary/oversize files, symlinks). Without this the model would believe a
+  // stripped edit landed.
+  for (const warning of checkoutRow?.warnings ?? []) {
+    prefixParts.push(`[Eden] From your last sync: ${warning}`);
+  }
   const messagePrefix = prefixParts.length > 0 ? prefixParts.join("\n") : null;
 
   return streamTurnResponse({

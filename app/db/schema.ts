@@ -743,6 +743,12 @@ export const assistantCheckouts = pgTable(
     prDraft: boolean("pr_draft").notNull().default(true),
     /** Content hash of the last mirrored tree state — a matching hash means "skip, no change". */
     lastSyncedHash: text("last_synced_hash"),
+    /**
+     * Human-readable notes from the last sync (paths stripped by the path policy, binary/oversize
+     * skips, symlinks refused). Injected into the model's next turn and shown in the PR body, so a
+     * silently-excluded edit is never mistaken for a landed one.
+     */
+    warnings: jsonb("warnings").$type<string[]>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

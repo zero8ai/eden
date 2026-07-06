@@ -18,11 +18,7 @@ import { eq } from "drizzle-orm";
 import { db } from "~/db/client.server";
 import { assistantCheckouts } from "~/db/schema";
 import { getInstallationOctokit } from "~/github/client.server";
-import {
-  markPullRequestReady,
-  openPullRequest,
-  type FileChange,
-} from "~/github/write.server";
+import { markPullRequestReady, openPullRequest } from "~/github/write.server";
 import { getRuntime } from "~/seams/index.server";
 import type { DataStore } from "~/data/ports";
 import {
@@ -30,6 +26,7 @@ import {
   planCommit,
   policyWarnings,
   type CommitPlan,
+  type PlanFile,
   type TreeState,
 } from "./checkout-sync";
 
@@ -78,7 +75,9 @@ async function upsertCheckoutRow(input: {
   prNumber: number | null;
   prDraft: boolean;
   lastSyncedHash: string;
+  warnings: string[];
 }): Promise<void> {
+  const warnings = input.warnings.length > 0 ? input.warnings : null;
   await db
     .insert(assistantCheckouts)
     .values({
@@ -89,6 +88,7 @@ async function upsertCheckoutRow(input: {
       prNumber: input.prNumber,
       prDraft: input.prDraft,
       lastSyncedHash: input.lastSyncedHash,
+      warnings,
     })
     .onConflictDoUpdate({
       target: assistantCheckouts.conversationId,
@@ -98,6 +98,7 @@ async function upsertCheckoutRow(input: {
         prNumber: input.prNumber,
         prDraft: input.prDraft,
         lastSyncedHash: input.lastSyncedHash,
+        warnings,
         updatedAt: new Date(),
       },
     });
@@ -194,18 +195,32 @@ export async function syncConversationCheckout(input: {
   const plan = planCommit(tree);
   const row = await getCheckoutRow(input.conversationId);
   const branch = conversationBranch(input.conversationId);
+  const warnings = policyWarnings(plan);
 
-  // Nothing committable and no PR yet → nothing to mirror. (A revert-to-base after a PR exists still
-  // re-syncs so the branch reflects the empty diff.)
+  // Nothing committable and no PR yet → nothing to mirror. But the warnings must still land on the
+  // row: a turn whose ONLY edits were stripped (e.g. the model touched assistant.json) would
+  // otherwise be totally silent, and the model/user would believe the change stuck. The next turn's
+  // messagePrefix reads them from the row.
   if (plan.files.length === 0 && !row?.prNumber) {
-    return { synced: false, reason: "no committable changes" };
+    if (warnings.length > 0) {
+      await upsertCheckoutRow({
+        conversationId: input.conversationId,
+        projectId: input.projectId,
+        branch,
+        baseBranch: ctx.defaultBranch,
+        prNumber: null,
+        prDraft: true,
+        lastSyncedHash: plan.hash,
+        warnings,
+      });
+    }
+    return { synced: false, reason: "no committable changes", warnings: warnings.length > 0 ? warnings : undefined };
   }
   // Unchanged since the last mirror → skip.
   if (row?.lastSyncedHash === plan.hash) {
     return { synced: false, reason: "unchanged", prNumber: row?.prNumber ?? null };
   }
 
-  const warnings = policyWarnings(plan);
   await mirrorSnapshot(ctx, branch, tree.baseSha, plan, input.conversationId);
 
   let prNumber = row?.prNumber ?? null;
@@ -224,6 +239,10 @@ export async function syncConversationCheckout(input: {
     );
     prNumber = opened.pullRequestNumber;
     prDraft = opened.draft;
+  } else if (prNumber && !sameWarnings(row?.warnings ?? null, warnings)) {
+    // The PR already exists but this sync's notes differ (a new stripped path, or a previous
+    // warning cleared) — keep the PR body honest.
+    await updatePullRequestBody(ctx, prNumber, prBody(input.title, warnings));
   }
 
   await upsertCheckoutRow({
@@ -234,9 +253,30 @@ export async function syncConversationCheckout(input: {
     prNumber,
     prDraft,
     lastSyncedHash: plan.hash,
+    warnings,
   });
 
   return { synced: true, prNumber, warnings: warnings.length > 0 ? warnings : undefined };
+}
+
+function sameWarnings(a: string[] | null, b: string[]): boolean {
+  const left = a ?? [];
+  return left.length === b.length && left.every((w, i) => w === b[i]);
+}
+
+/** Rewrite a conversation PR's body (warnings changed after the PR was opened). Best-effort. */
+async function updatePullRequestBody(ctx: RepoCtx, pullNumber: number, body: string): Promise<void> {
+  try {
+    const octokit = await getInstallationOctokit(ctx.installationId);
+    await octokit.rest.pulls.update({
+      owner: ctx.owner,
+      repo: ctx.repo,
+      pull_number: pullNumber,
+      body,
+    });
+  } catch (error) {
+    console.warn("[assistant-sync] couldn't update PR body:", error);
+  }
 }
 
 /** HTTP status of an Octokit request error, if present. */
@@ -261,7 +301,7 @@ async function mirrorSnapshot(
 ): Promise<string> {
   const octokit = await getInstallationOctokit(ctx.installationId);
   const { owner, repo } = ctx;
-  const writes = plan.files.filter((f): f is FileChange & { content: string } => f.content !== null);
+  const writes = plan.files.filter((f): f is PlanFile & { content: string } => f.content !== null);
   const deletes = plan.files.filter((f) => f.content === null);
   const [blobs, baseCommit] = await Promise.all([
     Promise.all(
@@ -283,7 +323,8 @@ async function mirrorSnapshot(
     tree: [
       ...writes.map((f, i) => ({
         path: f.path,
-        mode: "100644" as const,
+        // Mode fidelity: a script the model chmod +x'd keeps its exec bit on the branch.
+        mode: f.executable ? ("100755" as const) : ("100644" as const),
         type: "blob" as const,
         sha: blobs[i].data.sha,
       })),

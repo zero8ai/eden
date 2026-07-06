@@ -1,5 +1,5 @@
 {
-  "id": "a2c4a30a-4756-4383-a369-989bf1bf4138",
+  "id": "82809fcf-9597-4b38-8f32-68f7735d9a86",
   "prevId": "2d9a03cf-d55d-4b2b-b685-756f9ba7d569",
   "version": "7",
   "dialect": "postgresql",
@@ -267,6 +267,12 @@
         "last_synced_hash": {
           "name": "last_synced_hash",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "warnings": {
+          "name": "warnings",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

@@ -7,6 +7,7 @@ CREATE TABLE "assistant_checkouts" (
 	"pr_number" integer,
 	"pr_draft" boolean DEFAULT true NOT NULL,
 	"last_synced_hash" text,
+	"warnings" jsonb,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );

@@ -16,7 +16,7 @@
 // sandbox can reach this port over the network but can only read tree state, which is its own work).
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
-import { mkdir, stat, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, stat, readFile, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,8 +33,18 @@ const MAX_FILE_BYTES = Number(process.env.EDEN_SYNC_MAX_BYTES ?? 1024 * 1024);
 const checkoutDir = (id) => join(CHECKOUT_ROOT, id.replace(/[^A-Za-z0-9_-]/g, ""));
 const convBranch = (id) => `eden/conv-${id}`;
 
-/** Ask the control plane for the narrowed read token + repo coordinates for this instance. */
+/**
+ * Narrowed read token + repo coordinates, cached in-process until ~5 minutes before the token
+ * expires (GitHub installation tokens live ~1h). One mint serves many ensure/tree calls instead of
+ * two mints per turn; /tree paths that only need coordinates reuse the cache without forcing a mint.
+ */
+let credsCache = null; // { creds, expiresAtMs }
+const CREDS_SLACK_MS = 5 * 60_000;
+
 async function repoCreds() {
+  if (credsCache && Date.now() < credsCache.expiresAtMs - CREDS_SLACK_MS) {
+    return credsCache.creds;
+  }
   if (!API_URL || !TOKEN) throw new Error("checkout sidecar: EDEN_API_URL / EDEN_ASSISTANT_TOKEN unset");
   const res = await fetch(`${API_URL}/api/assistant/read-token`, {
     method: "POST",
@@ -46,13 +56,22 @@ async function repoCreds() {
   if (!res.ok || !body || body.ok === false || !body.token) {
     throw new Error(`read-token failed (${res.status}): ${body?.error ?? "no token"}`);
   }
-  return {
+  const creds = {
     token: body.token,
     owner: body.owner,
     repo: body.repo,
     defaultBranch: body.defaultBranch ?? "main",
     cloneUrl: `https://github.com/${body.owner}/${body.repo}.git`,
   };
+  const expiresAtMs = Date.parse(body.expiresAt ?? "") || Date.now() + 50 * 60_000;
+  credsCache = { creds, expiresAtMs };
+  return creds;
+}
+
+/** Repo coordinates only (no token needed) — the cached copy when present, else one mint fills it. */
+async function repoCoords() {
+  if (credsCache) return credsCache.creds; // coordinates never change; ok past token expiry
+  return repoCreds();
 }
 
 /** git with a per-invocation Authorization header (token never persisted to the volume). */
@@ -132,11 +151,19 @@ async function hasRemoteBranch(dir, branch, token) {
  * Full snapshot of the checkout vs the merge-base with the base branch — committed AND uncommitted
  * (including untracked). Computed with a THROWAWAY index (GIT_INDEX_FILE) so the model's own index
  * is never mutated: stage the entire working tree into the temp index, then diff it against the
- * merge-base. Binary files and files over the size cap are reported with a flag but no body.
+ * merge-base with `--raw` so each entry carries git's own MODE (100644/100755/120000/160000).
+ * Binary files and files over the size cap are reported with a flag but no body.
+ *
+ * SECURITY: entries whose mode is not a regular file — symlinks (120000), submodules (160000) —
+ * are NEVER read. The model controls the checkout and could `ln -s /proc/1/environ leak`; this
+ * process runs in the INSTANCE (whose env holds EDEN_ASSISTANT_TOKEN), so following a link here
+ * would exfiltrate instance secrets into the mirrored branch. Such paths get `notFile: true` and
+ * no body. An `lstat` isFile() re-check before every read is the second line of defense (a path
+ * swapped for a symlink between `git add` and the read still won't be followed).
  */
 async function tree(conversationId) {
-  const creds = await repoCreds().catch(() => null);
-  const base = creds?.defaultBranch ?? "main";
+  const coords = await repoCoords().catch(() => null);
+  const base = coords?.defaultBranch ?? "main";
   const dir = checkoutDir(conversationId);
   const branch = convBranch(conversationId);
   if (!(await exists(join(dir, ".git")))) {
@@ -154,33 +181,57 @@ async function tree(conversationId) {
     await exec("git", ["-C", dir, "add", "-A"], { env, timeout: 120_000, maxBuffer: 64 * 1024 * 1024 });
     const { stdout } = await exec(
       "git",
-      ["-C", dir, "diff", "--cached", "--name-status", "-z", "--no-renames", mergeBase],
+      ["-C", dir, "diff", "--cached", "--raw", "-z", "--no-renames", mergeBase],
       { env, timeout: 120_000, maxBuffer: 64 * 1024 * 1024 },
     );
-    const dirty = await parseNameStatus(stdout, dir);
+    const dirty = await parseRawDiff(stdout, dir);
     return { branch, baseSha: mergeBase, dirty };
   } finally {
     await rm(tmpIndex, { force: true }).catch(() => {});
   }
 }
 
-/** Parse `git diff --name-status -z` (status\0path\0…) and attach bodies for adds/mods. */
-async function parseNameStatus(z, dir) {
+/**
+ * Classify one `git diff --raw -z` record meta (":oldmode newmode oldsha newsha status") into the
+ * dirty-entry skeleton. Pure (exported for tests): mode comes straight from git — 100755 →
+ * executable flag; anything that isn't a regular file (120000 symlink, 160000 submodule, …) →
+ * notFile, meaning the body must never be read. Returns null for a non-record line.
+ */
+export function classifyRawRecord(meta, path) {
+  if (!meta.startsWith(":")) return null;
+  const fields = meta.slice(1).split(/\s+/); // [oldMode, newMode, oldSha, newSha, status]
+  const newMode = fields[1] ?? "";
+  const code = (fields[4] ?? "")[0];
+  if (code === "D") return { path, status: "deleted" };
+  const info = { path, status: code === "A" ? "added" : "modified" };
+  if (newMode === "100755") info.executable = true;
+  if (newMode !== "100644" && newMode !== "100755") info.notFile = true;
+  return info;
+}
+
+/**
+ * Parse `git diff --raw -z` output (meta\0path\0…) and attach bodies for regular-file adds/mods
+ * only — notFile entries are reported but their bodies are NEVER read (see `tree`'s security note).
+ */
+async function parseRawDiff(z, dir) {
   const parts = z.split("\0").filter((p) => p.length > 0);
   const out = [];
   for (let i = 0; i + 1 < parts.length; i += 2) {
-    const code = parts[i][0];
-    const path = parts[i + 1];
-    if (code === "D") {
-      out.push({ path, status: "deleted" });
+    const info = classifyRawRecord(parts[i], parts[i + 1]);
+    if (!info) continue;
+    if (info.status === "deleted" || info.notFile) {
+      out.push(info);
       continue;
     }
-    const status = code === "A" ? "added" : "modified";
+    const { path } = info;
     const abs = join(dir, path);
-    let info = { path, status };
     try {
-      const st = await stat(abs);
-      if (st.size > MAX_FILE_BYTES) {
+      // lstat (never follows links) + isFile(): a path that became a symlink after `git add`
+      // still must not be read through.
+      const st = await lstat(abs);
+      if (!st.isFile()) {
+        info.notFile = true;
+      } else if (st.size > MAX_FILE_BYTES) {
         info.oversize = true;
       } else {
         const buf = await readFile(abs);
@@ -240,6 +291,10 @@ function readBody(req) {
   });
 }
 
-server.listen(AUX_PORT, "0.0.0.0", () => {
-  console.log(`[assistant] checkout sidecar listening on :${AUX_PORT}`);
-});
+// Listen only when run as the entrypoint's process (node checkout-sidecar.mjs) — importing this
+// module (Eden's unit tests import classifyRawRecord) must not bind a port.
+if (process.argv[1] && process.argv[1].endsWith("checkout-sidecar.mjs")) {
+  server.listen(AUX_PORT, "0.0.0.0", () => {
+    console.log(`[assistant] checkout sidecar listening on :${AUX_PORT}`);
+  });
+}

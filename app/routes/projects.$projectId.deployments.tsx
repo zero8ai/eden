@@ -645,7 +645,10 @@ export default function Deployment({
       )}
 
       {view === "repo" ? (
-        <TeamRollup loaderData={loaderData} />
+        <>
+          <TeamRollup loaderData={loaderData} />
+          <DiscordSetupTeamHint />
+        </>
       ) : (
         <MemberPipeline loaderData={loaderData} />
       )}
@@ -667,11 +670,7 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
     <>
       <StagedChangesCard drafts={drafts} isTeam={isTeam} />
       <ChangeRequests changes={changes} isTeam={isTeam} />
-      <EnvironmentsCard
-        envs={envs}
-        activeAgent={activeAgent}
-        discordSetup={loaderData.discordSetup}
-      />
+      <EnvironmentsCard envs={envs} activeAgent={activeAgent} />
       <VersionHistory
         releases={releases}
         envs={envs}
@@ -681,6 +680,7 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
           settingsAction,
         }}
       />
+      <DiscordSetupHelp envs={envs} setup={loaderData.discordSetup} />
     </>
   );
 }
@@ -1169,11 +1169,9 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
 function EnvironmentsCard({
   envs,
   activeAgent,
-  discordSetup,
 }: {
   envs: EnvState[];
   activeAgent: string;
-  discordSetup: LoaderData["discordSetup"];
 }) {
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
@@ -1205,9 +1203,6 @@ function EnvironmentsCard({
             <AlertTitle>Couldn&rsquo;t update environments</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
-        )}
-        {discordSetup.enabled && (
-          <DiscordSetupHelp envs={envs} setup={discordSetup} />
         )}
         <ul className="divide-y rounded-lg border text-sm">
           {envs.map(({ env, deployments }) => {
@@ -1370,9 +1365,11 @@ function DiscordSetupHelp({
     setup.origin.includes("0.0.0.0");
 
   return (
-    <Alert className="mb-4">
-      <AlertTitle>Discord setup</AlertTitle>
-      <AlertDescription>
+    <Card className="mb-6 mt-6">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Discord setup</CardTitle>
+      </CardHeader>
+      <CardContent>
         <div className="space-y-3 text-sm">
           <p>
             Add the bot to your server with the <code>bot</code> and{" "}
@@ -1380,16 +1377,23 @@ function DiscordSetupHelp({
             Portal, paste the endpoint for the environment you want Discord to
             reach into General Information → Interactions Endpoint URL.
           </p>
-          <ul className="space-y-2">
-            {envs.map(({ env }) => (
-              <li key={env.id}>
-                <span className="font-medium">{env.name}: </span>
-                <code className="break-all rounded bg-muted px-1.5 py-0.5">
-                  {envIngressUrl(setup.origin, env.id, setup.routePath)}
-                </code>
-              </li>
-            ))}
-          </ul>
+          {envs.length > 0 ? (
+            <ul className="space-y-2">
+              {envs.map(({ env }) => (
+                <li key={env.id}>
+                  <span className="font-medium">{env.name}: </span>
+                  <code className="break-all rounded bg-muted px-1.5 py-0.5">
+                    {envIngressUrl(setup.origin, env.id, setup.routePath)}
+                  </code>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>
+              Create an environment below and this page will show its Discord
+              endpoint.
+            </p>
+          )}
           {isLocal && (
             <p>
               Discord cannot call localhost. For local development, expose Eden
@@ -1402,8 +1406,26 @@ function DiscordSetupHelp({
             permissions for the bot and deny access elsewhere.
           </p>
         </div>
-      </AlertDescription>
-    </Alert>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DiscordSetupTeamHint() {
+  return (
+    <Card className="mb-6 mt-6">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Discord setup</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm">
+          Discord endpoints are per member and per environment. Open a member
+          below, then use the endpoint shown at the top of that member&rsquo;s
+          Deployment page as the Interactions Endpoint URL in Discord Developer
+          Portal.
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 

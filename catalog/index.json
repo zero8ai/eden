@@ -6,7 +6,7 @@
       "name": "Cloudflare App Builder",
       "version": "0.3.1",
       "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend — and ships every project to GitHub. It builds; it does not deploy.",
-      "hash": "b4160b11a78d2fb50ee7ebbb8be3a1279df37f1e"
+      "hash": "106a0cbc2d67fab70c14d266337152757bb74978"
     },
     {
       "id": "cloudflare-deployment-engineer",

@@ -179,6 +179,8 @@ export interface ChangedFile {
   status: string;
   additions: number;
   deletions: number;
+  /** Unified-diff hunks GitHub computed for the file (absent for binary/too-large files). */
+  patch?: string;
 }
 
 /** An open change-set (PR) awaiting review, with enough to review + merge it in-app. */
@@ -195,6 +197,8 @@ export interface OpenChange {
   mergeable: boolean | null;
   /** e.g. "clean", "dirty" (conflicts), "blocked", "unknown". */
   mergeableState: string;
+  /** True while the PR is still a draft/WIP (assistant conversation PRs open as drafts). */
+  draft: boolean;
   files: ChangedFile[];
 }
 
@@ -239,11 +243,13 @@ export async function listOpenChanges(
         createdAt: pr.created_at,
         mergeable: detail.data.mergeable,
         mergeableState: detail.data.mergeable_state,
+        draft: detail.data.draft ?? false,
         files: files.data.map((f) => ({
           path: f.filename,
           status: f.status,
           additions: f.additions,
           deletions: f.deletions,
+          patch: f.patch,
         })),
       } satisfies OpenChange;
     }),
@@ -403,6 +409,21 @@ function mergeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+/** A GitHub error whose 422 is specifically "this plan/repo can't create draft PRs". */
+function isDraftUnsupported(error: unknown): boolean {
+  if (statusOf(error) !== 422) return false;
+  const message =
+    typeof error === "object" && error !== null && "message" in error
+      ? String((error as { message?: unknown }).message ?? "")
+      : String(error);
+  return /draft/i.test(message);
+}
+
+/** Whether an open PR opened for this branch is still a draft (extends ProposedChange). */
+export interface OpenedPullRequest extends ProposedChange {
+  draft: boolean;
+}
+
 async function openOrReusePullRequest(
   octokit: InstallationOctokit,
   { owner, repo }: RepoRef,
@@ -411,8 +432,9 @@ async function openOrReusePullRequest(
     branch,
     title,
     body,
-  }: { base: string; branch: string; title: string; body?: string },
-): Promise<ProposedChange> {
+    draft,
+  }: { base: string; branch: string; title: string; body?: string; draft?: boolean },
+): Promise<OpenedPullRequest> {
   try {
     const created = await octokit.rest.pulls.create({
       owner,
@@ -421,6 +443,7 @@ async function openOrReusePullRequest(
       head: branch,
       title,
       body,
+      draft: draft ?? false,
     });
     return {
       branch,
@@ -428,8 +451,19 @@ async function openOrReusePullRequest(
       pullRequestUrl: created.data.html_url,
       pullRequestNumber: created.data.number,
       reusedPullRequest: false,
+      draft: created.data.draft ?? false,
     };
   } catch (error) {
+    // Free-plan private repos reject draft PRs with a 422 — retry as a regular PR tagged [WIP].
+    if (draft && isDraftUnsupported(error)) {
+      return openOrReusePullRequest(octokit, { owner, repo }, {
+        base,
+        branch,
+        title: title.startsWith("[WIP]") ? title : `[WIP] ${title}`,
+        body,
+        draft: false,
+      });
+    }
     // 422 == a PR for this head already exists; find and return it.
     if (statusOf(error) !== 422) throw error;
     const existing = await octokit.rest.pulls.list({
@@ -447,6 +481,47 @@ async function openOrReusePullRequest(
       pullRequestUrl: pr.html_url,
       pullRequestNumber: pr.number,
       reusedPullRequest: true,
+      draft: pr.draft ?? false,
     };
   }
+}
+
+/**
+ * Open (or reuse) a PR for a branch, optionally as a DRAFT — the assistant coding-agent sync
+ * engine's entry (docs/ASSISTANT.md). Thin installation-scoped wrapper over the internal
+ * open/reuse logic (which already falls back from an unsupported draft to a `[WIP]` regular PR).
+ */
+export async function openPullRequest(
+  installationId: string | number,
+  { owner, repo }: RepoRef,
+  input: { base: string; branch: string; title: string; body?: string; draft?: boolean },
+): Promise<OpenedPullRequest> {
+  const octokit = await getInstallationOctokit(installationId);
+  const result = await openOrReusePullRequest(octokit, { owner, repo }, input);
+  invalidateRepoChanges(installationId, { owner, repo });
+  return result;
+}
+
+/**
+ * Mark a draft PR ready-for-review (the assistant "Publish" action). REST `pulls.update` can't
+ * flip `draft`, so this uses the GraphQL `markPullRequestReadyForReview` mutation. Idempotent —
+ * a already-ready PR is left as-is by GitHub. Returns true when the PR is (now) ready.
+ */
+export async function markPullRequestReady(
+  installationId: string | number,
+  { owner, repo }: RepoRef,
+  pullNumber: number,
+): Promise<boolean> {
+  const octokit = await getInstallationOctokit(installationId);
+  const pr = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+  if (!pr.data.draft) {
+    invalidateRepoChanges(installationId, { owner, repo });
+    return true;
+  }
+  await octokit.graphql(
+    `mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }`,
+    { id: pr.data.node_id },
+  );
+  invalidateRepoChanges(installationId, { owner, repo });
+  return true;
 }

@@ -59,6 +59,12 @@ const exec = promisify(execFile);
 
 /** Port the eve/Nitro server listens on inside the container. */
 const INSTANCE_PORT = Number(process.env.EDEN_INSTANCE_PORT ?? 3000);
+/**
+ * Port the assistant checkout sidecar listens on inside the container (docs/ASSISTANT.md —
+ * coding-agent model). Only the assistant image runs a sidecar; regular agent images ignore the
+ * extra published port. Kept in sync with `EDEN_AUX_PORT` the sidecar reads.
+ */
+const AUX_PORT = Number(process.env.EDEN_AUX_PORT ?? 3100);
 /** How the container reaches the host's Postgres (Docker Desktop). */
 const DB_HOST_FROM_CONTAINER =
   process.env.EDEN_DB_HOST_FROM_CONTAINER ?? "host.docker.internal";
@@ -353,6 +359,9 @@ export const localDockerTarget: DeployTarget = {
       // environment's agent home. AFTER the req.env spread so user secrets can never shadow them.
       EVE_DOCKER_PATH: "/usr/local/bin/eve-docker",
       EDEN_HOME_VOLUME: homeVolumeName(req.worldKey),
+      // The assistant checkout sidecar binds this port inside the container; the published mapping
+      // below uses the same value, so `auxEndpoint` can find it. Ignored by non-assistant images.
+      EDEN_AUX_PORT: String(AUX_PORT),
     }).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
 
     await docker([
@@ -370,8 +379,17 @@ export const localDockerTarget: DeployTarget = {
       // Docker sandbox instead of just-bash. Standard socket path on Docker Desktop/OrbStack/Colima.
       "-v",
       "/var/run/docker.sock:/var/run/docker.sock",
+      // Mount the environment's agent-home volume into the INSTANCE too (the eve-docker shim only
+      // mounts it into session sandboxes). The assistant sidecar clones per-conversation checkouts
+      // under /workspace/home/checkouts so both the instance and the model's sandbox see one shared
+      // tree (docs/ASSISTANT.md). Benign for non-assistant instances (nothing writes there).
+      "-v",
+      `${homeVolumeName(req.worldKey)}:/workspace/home`,
       "-p",
       `127.0.0.1:0:${INSTANCE_PORT}`,
+      // Second published port for the assistant checkout sidecar (loopback-bound on the host).
+      "-p",
+      `127.0.0.1:0:${AUX_PORT}`,
       ...envArgs,
       req.imageRef,
     ]);
@@ -444,6 +462,24 @@ export const localDockerTarget: DeployTarget = {
       return { status: running ? "live" : "stopped" };
     } catch (error) {
       return { status: "failed", detail: commandErrorText(error) };
+    }
+  },
+
+  async auxEndpoint(deploymentId: string): Promise<string | null> {
+    // The sidecar's host-published port for this container (127.0.0.1-bound). Absent for images
+    // that don't publish AUX_PORT (a pre-sidecar container), or when the container is gone.
+    const name = containerName(deploymentId);
+    try {
+      const hostPort = await docker([
+        "inspect",
+        "--format",
+        `{{with (index .NetworkSettings.Ports "${AUX_PORT}/tcp")}}{{(index . 0).HostPort}}{{end}}`,
+        name,
+      ]);
+      if (!hostPort) return null;
+      return `http://127.0.0.1:${hostPort}`;
+    } catch {
+      return null;
     }
   },
 

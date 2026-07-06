@@ -19,4 +19,9 @@ if [ -f .eden-user-layer ]; then
   node_modules/.bin/eve build
 fi
 
+# Checkout sidecar (docs/ASSISTANT.md — coding-agent model): owns the per-conversation git
+# checkouts on the shared home volume and answers the control plane's ensure/tree calls on a second
+# port. Backgrounded before `eve start` takes over PID 1; --init (deploy target) reaps it on stop.
+node checkout-sidecar.mjs &
+
 exec node_modules/.bin/eve start

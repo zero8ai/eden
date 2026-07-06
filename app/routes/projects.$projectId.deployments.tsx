@@ -91,6 +91,12 @@ import {
 } from "~/github/cached.server";
 import { fetchAgentSource } from "~/github/repo.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
+import {
+  discardConversationCheckoutByBranch,
+  isConversationBranch,
+  publishConversationPr,
+} from "~/assistant/checkout-sync.server";
+import { getRuntime } from "~/seams/index.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
 import { overlayLock } from "~/marketplace/lock";
@@ -122,6 +128,7 @@ import type {
 } from "~/data/ports";
 import type { ConnectedProject } from "~/project/guard.server";
 import type { OpenChange } from "~/github/write.server";
+import { DiffView } from "~/components/diff-view";
 import type { Route } from "./+types/projects.$projectId.deployments";
 
 /** One shape for both views so the loader's branches unify (member fields empty on repo). */
@@ -345,8 +352,18 @@ export async function action(args: ActionFunctionArgs) {
         pullNumber,
         branch,
       );
+      // An assistant conversation branch is discarded with its PR — drop the checkout link row.
+      if (isConversationBranch(branch)) await discardConversationCheckoutByBranch(branch!);
       // Closing an unmerged change is the other abandonment path — same sweep (§4.4).
       await sweepPendingSecrets(project.id);
+      throw redirect(back);
+    }
+    if (intent === "ready-change") {
+      // Publish an assistant conversation change: flip its draft/WIP PR to ready-for-review.
+      const conversationId = String(form.get("conversationId") ?? "");
+      if (!conversationId) return { error: "Missing conversation to publish." };
+      const res = await publishConversationPr({ projectId: project.id, conversationId });
+      if (!res.ok) return { error: res.reason ?? "Couldn't publish this change." };
       throw redirect(back);
     }
     if (intent === "merge") {
@@ -354,6 +371,28 @@ export async function action(args: ActionFunctionArgs) {
       const branch = String(form.get("branch") ?? "") || undefined;
       const title = String(form.get("title") ?? "");
       if (!pullNumber) return { error: "Missing change to merge." };
+      // Authoritative pre-merge gate for assistant conversation branches: build the branch's tree
+      // exactly as it will exist after merge (tarball at the branch ref, NO draft overlay). The
+      // model's own in-sandbox checks are advisory; this is the one that blocks a bad merge.
+      if (isConversationBranch(branch)) {
+        const checkBuild = getRuntime().deployTarget.checkBuild;
+        if (checkBuild) {
+          const agentRoot = String(form.get("agentRoot") ?? "") || undefined;
+          const check = await checkBuild({
+            projectId: project.id,
+            repo,
+            ref: branch!,
+            installationId: project.repoInstallationId,
+            overlay: [],
+            agentRoot,
+          });
+          if (!check.ok) {
+            return {
+              error: `This change doesn't build yet, so it can't be merged:\n${check.output}`,
+            };
+          }
+        }
+      }
       // Merge → one commit on the default branch (the version identity) → a Release per
       // roster member (idempotent with the webhook path; team merges are atomic, §7.9).
       const { mergeSha } = await mergePullRequest(
@@ -382,6 +421,7 @@ export async function action(args: ActionFunctionArgs) {
         changelog: `#${pullNumber} ${title}`.trim(),
         createdBy: auth.user.id,
       });
+      if (isConversationBranch(branch)) await discardConversationCheckoutByBranch(branch!);
       const version = results[0]?.release.version ?? "";
       throw redirect(`${back}?released=${encodeURIComponent(version)}`);
     }
@@ -764,6 +804,22 @@ function ChangeRequests({
   );
 }
 
+/**
+ * The eve build directory for a conversation PR's changed files: a single team member's agent dir
+ * when every non-config path is under one `agents/<member>/`, otherwise undefined (the repo root —
+ * a single-agent repo). `.eden/**` config files don't belong to any build and are ignored.
+ */
+function inferAgentRoot(paths: string[]): string | undefined {
+  const members = new Set<string>();
+  for (const p of paths) {
+    if (p.startsWith(".eden/")) continue;
+    const m = p.match(/^agents\/([^/]+)\//);
+    if (!m) return undefined; // a repo-root / `agent/` file → build the repo root
+    members.add(m[1]);
+  }
+  return members.size === 1 ? `agents/${[...members][0]}/agent` : undefined;
+}
+
 function ChangeCard({
   change,
   busy,
@@ -778,6 +834,15 @@ function ChangeCard({
   const submit = useSubmit();
   const conflicted = change.mergeable === false;
   const checking = change.mergeable === null;
+  // Assistant conversation PRs branch under `eden/conv-<id>` and open as drafts; a draft one gets a
+  // "Publish" (mark ready-for-review) action before it's merged.
+  const conversationId = change.branch.startsWith("eden/conv-")
+    ? change.branch.slice("eden/conv-".length)
+    : null;
+  const isDraftConversation = !!conversationId && change.draft;
+  // Build directory for the pre-merge gate on a conversation branch: a single team member's dir
+  // when every changed file lives under one `agents/<m>/`, else the repo root (single-agent repo).
+  const agentRoot = inferAgentRoot(change.files.map((f) => f.path));
 
   return (
     <Card>
@@ -824,11 +889,23 @@ function ChangeCard({
                 )
               }
             />
+            {isDraftConversation && (
+              <Form method="post">
+                <input type="hidden" name="intent" value="ready-change" />
+                <input type="hidden" name="conversationId" value={conversationId!} />
+                <Button type="submit" size="sm" variant="secondary" disabled={busy}>
+                  Publish
+                </Button>
+              </Form>
+            )}
             <Form method="post">
               <input type="hidden" name="intent" value="merge" />
               <input type="hidden" name="pullNumber" value={change.number} />
               <input type="hidden" name="branch" value={change.branch} />
               <input type="hidden" name="title" value={change.title} />
+              {agentRoot && (
+                <input type="hidden" name="agentRoot" value={agentRoot} />
+              )}
               <Button type="submit" size="sm" disabled={busy || conflicted}>
                 {merging ? "Merging…" : "Merge"}
               </Button>
@@ -842,17 +919,35 @@ function ChangeCard({
         ) : (
           <ul className="divide-y rounded-lg border text-sm">
             {change.files.map((f) => (
-              <li
-                key={f.path}
-                className="flex items-center justify-between gap-3 px-3 py-1.5"
-              >
-                <span className="truncate font-mono text-xs">{f.path}</span>
-                <span className="flex shrink-0 items-center gap-2 font-mono text-xs">
-                  <span className="text-emerald-600 dark:text-emerald-400">
-                    +{f.additions}
-                  </span>
-                  <span className="text-destructive">−{f.deletions}</span>
-                </span>
+              <li key={f.path} className="px-3 py-1.5">
+                {f.patch ? (
+                  <details className="group">
+                    <summary className="flex cursor-pointer items-center justify-between gap-3 [&::-webkit-details-marker]:hidden">
+                      <span className="truncate font-mono text-xs group-open:font-medium">
+                        {f.path}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-2 font-mono text-xs">
+                        <span className="text-emerald-600 dark:text-emerald-400">
+                          +{f.additions}
+                        </span>
+                        <span className="text-destructive">−{f.deletions}</span>
+                      </span>
+                    </summary>
+                    <div className="mt-2">
+                      <DiffView patch={f.patch} />
+                    </div>
+                  </details>
+                ) : (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="truncate font-mono text-xs">{f.path}</span>
+                    <span className="flex shrink-0 items-center gap-2 font-mono text-xs">
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        +{f.additions}
+                      </span>
+                      <span className="text-destructive">−{f.deletions}</span>
+                    </span>
+                  </div>
+                )}
               </li>
             ))}
           </ul>

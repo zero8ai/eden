@@ -25,6 +25,7 @@ import {
   savePlaygroundSessionProgress,
   type PlaygroundSession,
 } from "~/playground/sessions.server";
+import { syncConversationCheckout } from "~/assistant/checkout-sync.server";
 
 /** eve turns can run for many minutes — give the stream a long leash (30 min). */
 export const TURN_TIMEOUT_MS = 30 * 60_000;
@@ -65,8 +66,15 @@ export function streamTurnResponse(input: {
   channel: string;
   /** Recompute the session title on the first turn (null once titled). */
   title: string | null;
+  /**
+   * System context prepended to what's SENT to the agent this turn (e.g. the assistant's checkout
+   * path + a base-advanced note) but NOT recorded/echoed as the user's message. Optional.
+   */
+  messagePrefix?: string | null;
 }): Response {
   const { projectId, target, session: activeSession, message, channel, title } = input;
+  // What eve actually receives (prefixed with system context); recording/display use plain `message`.
+  const sentMessage = input.messagePrefix ? `${input.messagePrefix}\n\n${message}` : message;
   const tag = `[${channel}]`;
   const startedAt = new Date();
   const encoder = new TextEncoder();
@@ -126,7 +134,7 @@ export function streamTurnResponse(input: {
         try {
           for await (const event of streamTurn({
             baseUrl: target.url,
-            message,
+            message: sentMessage,
             sessionId,
             continuationToken: activeSession.continuationToken,
             streamIndex: activeSession.streamIndex,
@@ -253,6 +261,21 @@ export function streamTurnResponse(input: {
                 });
               } catch (e) {
                 console.error(`${tag} recordTurnFinish failed`, e);
+              }
+            }
+            // Assistant coding-agent sync (docs/ASSISTANT.md): after the turn settles, mirror the
+            // conversation's checkout to its PR. Runs regardless of turn success — a failed turn may
+            // still have edited files; the sync hashes the tree and no-ops when nothing changed.
+            if (channel === "assistant" && target.deploymentId) {
+              try {
+                await syncConversationCheckout({
+                  projectId,
+                  conversationId: activeSession.id,
+                  deploymentId: target.deploymentId,
+                  title: activeSession.title,
+                });
+              } catch (e) {
+                console.error(`${tag} assistant checkout sync failed`, e);
               }
             }
           }

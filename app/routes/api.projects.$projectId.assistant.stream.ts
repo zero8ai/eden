@@ -13,6 +13,14 @@ import type { Target } from "~/chat/playground.server";
 import { asString, streamTurnResponse } from "~/chat/turn-stream.server";
 import { ensureAssistantInstance } from "~/assistant/instance.server";
 import {
+  ensureConversationCheckout,
+  getCheckoutRow,
+} from "~/assistant/checkout-sync.server";
+import {
+  conversationBranch,
+  conversationCheckoutPath,
+} from "~/assistant/checkout-sync";
+import {
   createPlaygroundSession,
   getPlaygroundSession,
   markPlaygroundSessionRunning,
@@ -91,6 +99,33 @@ export async function action(args: ActionFunctionArgs) {
   }
   await markPlaygroundSessionRunning({ id: session.id, target, title });
 
+  // Coding-agent model (docs/ASSISTANT.md): make sure the conversation's git checkout exists on the
+  // instance before the turn runs (clone/fetch, recovering from volume loss), and hand the model its
+  // checkout path on the first turn plus a note if the base branch advanced. The checkout is on the
+  // shared home volume, so the model's sandbox sees the same tree the sync engine later mirrors.
+  const firstTurn = !playgroundSessionId;
+  const [ensured, checkoutRow] = await Promise.all([
+    ensureConversationCheckout({
+      conversationId: session.id,
+      deploymentId: target.deploymentId,
+    }),
+    getCheckoutRow(session.id).catch(() => null),
+  ]);
+  const prefixParts: string[] = [];
+  if (firstTurn) {
+    prefixParts.push(
+      `[Eden] Your working checkout for this conversation is at ${conversationCheckoutPath(session.id)} on branch ${conversationBranch(session.id)}. Do all repo edits there with bash — Eden auto-syncs your changes to a pull request after each turn.`,
+    );
+  }
+  if (ensured.note) prefixParts.push(`[Eden] ${ensured.note}`);
+  // Last sync's policy notes: edits Eden stripped or skipped (assistant.json, .ts under
+  // .eden/assistant, binary/oversize files, symlinks). Without this the model would believe a
+  // stripped edit landed.
+  for (const warning of checkoutRow?.warnings ?? []) {
+    prefixParts.push(`[Eden] From your last sync: ${warning}`);
+  }
+  const messagePrefix = prefixParts.length > 0 ? prefixParts.join("\n") : null;
+
   return streamTurnResponse({
     projectId: project.id,
     target,
@@ -98,5 +133,6 @@ export async function action(args: ActionFunctionArgs) {
     message,
     channel: "assistant",
     title,
+    messagePrefix,
   });
 }

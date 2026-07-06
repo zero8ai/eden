@@ -128,6 +128,16 @@ export const agents = pgTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     root: text("root").notNull(),
+    /**
+     * Roster classification. `member` is a normal roster agent detected from the repo tree
+     * (the default — every synced row). `assistant` is Eden's built-in, project-level authoring
+     * agent: one per project, created lazily, NEVER detected from the tree, so it must be
+     * exempt from the roster prune in `syncRoster` and filtered out of every roster-facing
+     * surface (team cards, switcher, teammate delegation, secrets scoping). It still keys
+     * environments/releases/deployments/drafts like any agent, which is how it reuses the
+     * whole deploy substrate for free.
+     */
+    kind: text("kind").notNull().default("member"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

@@ -163,7 +163,11 @@ export async function ensureReleasesForCommit(
   },
   store: DataStore = getRuntime().data,
 ): Promise<{ release: Release; created: boolean }[]> {
-  const roster = await store.agents.listByProject(input.projectId);
+  // Repo-commit releases are per member; the built-in assistant is versioned by template hash,
+  // not by repo commits, so it is excluded here.
+  const roster = (await store.agents.listByProject(input.projectId)).filter(
+    (a) => a.kind === "member",
+  );
   return Promise.all(
     roster.map((agent) =>
       ensureReleaseForCommit({ ...input, agentId: agent.id }, store),
@@ -203,7 +207,7 @@ export async function deployRelease(
   if (!release) throw new Error("Release not found.");
   if (!env) throw new Error("Environment not found.");
   // The project/agent/roster lookups and the building-row upsert don't depend on each other.
-  const [project, agent, roster, dep] = await Promise.all([
+  const [project, agent, allAgents, dep] = await Promise.all([
     store.projects.findById(release.projectId),
     store.agents.findById(release.agentId),
     store.agents.listByProject(release.projectId),
@@ -225,7 +229,9 @@ export async function deployRelease(
   // Eden's delegation wiring: the ask-teammate tool baked into its image (D2) and the relay
   // coordinates + roster injected as env (D3). A team of one is a member too — the tool ships
   // and the env is set; EDEN_TEAMMATES is simply an empty roster.
-  const isTeamMember = !!agent && agent.root !== "agent";
+  // Roster for teammate wiring is real members only (never the built-in assistant).
+  const roster = allAgents.filter((a) => a.kind === "member");
+  const isTeamMember = !!agent && agent.kind === "member" && agent.root !== "agent";
 
   try {
     const scope: SecretScope = {

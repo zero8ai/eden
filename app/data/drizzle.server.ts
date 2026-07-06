@@ -49,6 +49,9 @@ export const drizzleDataStore: DataStore = {
           await tx.delete(agents).where(
             and(
               eq(agents.projectId, projectId),
+              // Only prune tree-detected members. Internal rows (kind !== 'member', e.g. the
+              // built-in assistant) are never in the detected roster and must survive sync.
+              eq(agents.kind, "member"),
               notInArray(
                 agents.name,
                 roster.map((m) => m.name),
@@ -64,6 +67,26 @@ export const drizzleDataStore: DataStore = {
           .where(eq(agents.projectId, projectId))
           .orderBy(asc(agents.name));
       });
+    },
+    async findAssistant(projectId) {
+      const [row] = await db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.projectId, projectId), eq(agents.kind, "assistant")))
+        .limit(1);
+      return row ?? null;
+    },
+    async createAssistant(input) {
+      const [row] = await db
+        .insert(agents)
+        .values({
+          projectId: input.projectId,
+          name: input.name,
+          root: input.root,
+          kind: "assistant",
+        })
+        .returning();
+      return row;
     },
   },
 

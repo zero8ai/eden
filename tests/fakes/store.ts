@@ -30,7 +30,13 @@ function versionCollision(): Error {
 export interface FakeStore extends DataStore {
   /** Test seams: pre-populate rows the logic reads but doesn't create. */
   seedProject(p: Partial<Project> & { id: string; orgId: string }): Project;
-  seedAgent(a: { id: string; projectId: string; name?: string; root?: string }): Agent;
+  seedAgent(a: {
+    id: string;
+    projectId: string;
+    name?: string;
+    root?: string;
+    kind?: string;
+  }): Agent;
   seedEnvironment(e: {
     id: string;
     projectId: string;
@@ -85,6 +91,7 @@ export function makeFakeStore(): FakeStore {
         projectId: a.projectId,
         name: a.name ?? "agent",
         root: a.root ?? "agent",
+        kind: a.kind ?? "member",
         createdAt: new Date(0),
         updatedAt: new Date(0),
       };
@@ -119,7 +126,9 @@ export function makeFakeStore(): FakeStore {
         if (roster.length > 0) {
           const keep = new Set(roster.map((m) => m.name));
           for (const [aid, a] of agents) {
-            if (a.projectId === projectId && !keep.has(a.name)) agents.delete(aid);
+            // Only prune tree-detected members; internal rows (assistant) survive sync.
+            if (a.projectId === projectId && a.kind === "member" && !keep.has(a.name))
+              agents.delete(aid);
           }
           for (const m of roster) {
             const existing = [...agents.values()].find(
@@ -134,6 +143,7 @@ export function makeFakeStore(): FakeStore {
                 projectId,
                 name: m.name,
                 root: m.root,
+                kind: "member",
                 createdAt: new Date(++seq),
                 updatedAt: new Date(seq),
               });
@@ -143,6 +153,27 @@ export function makeFakeStore(): FakeStore {
         return [...agents.values()]
           .filter((a) => a.projectId === projectId)
           .sort((a, b) => a.name.localeCompare(b.name));
+      },
+      async findAssistant(projectId) {
+        return (
+          [...agents.values()].find(
+            (a) => a.projectId === projectId && a.kind === "assistant",
+          ) ?? null
+        );
+      },
+      async createAssistant(input) {
+        const aid = id("agent");
+        const row: Agent = {
+          id: aid,
+          projectId: input.projectId,
+          name: input.name,
+          root: input.root,
+          kind: "assistant",
+          createdAt: new Date(++seq),
+          updatedAt: new Date(seq),
+        };
+        agents.set(aid, row);
+        return row;
       },
     },
 

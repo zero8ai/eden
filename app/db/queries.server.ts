@@ -72,12 +72,36 @@ export async function createProject(
   return project;
 }
 
-/** A project's roster, by name. */
-export function listAgents(
+/**
+ * A project's ROSTER — the user-facing members (`kind === 'member'`), by name. The built-in
+ * assistant (`kind === 'assistant'`) is never a roster member, so it is filtered out here; this
+ * is the single choke point that keeps it off team cards, the member switcher, delegation
+ * targeting, and `resolveAgentContext`'s active-member selection. Surfaces that legitimately
+ * need the assistant row (drafts / `agentForPath`, the assistant instance service) read
+ * `store.agents.listByProject` / `findAssistantAgent` directly.
+ */
+export async function listAgents(
+  projectId: string,
+  store: DataStore = getRuntime().data,
+): Promise<Agent[]> {
+  const all = await store.agents.listByProject(projectId);
+  return all.filter((a) => a.kind === "member");
+}
+
+/** Every agent row including internal ones (assistant) — for drafts attribution and the like. */
+export function listAllAgents(
   projectId: string,
   store: DataStore = getRuntime().data,
 ): Promise<Agent[]> {
   return store.agents.listByProject(projectId);
+}
+
+/** The project's built-in assistant agent row, or null. */
+export function findAssistantAgent(
+  projectId: string,
+  store: DataStore = getRuntime().data,
+): Promise<Agent | null> {
+  return store.agents.findAssistant(projectId);
 }
 
 /**

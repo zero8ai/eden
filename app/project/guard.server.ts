@@ -36,12 +36,22 @@ export function requireRepo(project: Project): ConnectedProject {
 }
 
 /**
- * Validate a user-supplied repo path stays within the agent surface — the root `agent/`
- * directory or a team member's `agents/<member>/agent/` (PRD §7.9). Prevents editing files
+ * Validate a user-supplied repo path stays within the editable surface — the root `agent/`
+ * directory, a team member's `agents/<member>/agent/` (PRD §7.9), or the built-in assistant's
+ * user-config surface under `.eden/assistant/` (docs/ASSISTANT.md). Prevents editing files
  * outside those and path-traversal. Returns the normalized path or null if invalid.
  */
 const ROOT_FILE_ALLOWLIST = new Set(["package.json", "package-lock.json"]);
 const MEMBER_PATH = /^agents\/[A-Za-z0-9][\w.-]*\/(agent\/.+|package\.json|package-lock\.json)$/;
+
+/** The assistant's user-config surface: markdown config + the JSON model override, never code. */
+export const ASSISTANT_CONFIG_ROOT = ".eden/assistant";
+const ASSISTANT_CONFIG_PATH =
+  /^\.eden\/assistant\/(instructions\.md|(?:skills|schedules)\/[A-Za-z0-9][\w.-]*\.md|assistant\.json)$/;
+
+export function isAssistantConfigPath(path: string): boolean {
+  return ASSISTANT_CONFIG_PATH.test(path);
+}
 
 export function normalizeAgentPath(raw: string): string | null {
   const p = raw.trim().replace(/^\/+/, "");
@@ -51,5 +61,6 @@ export function normalizeAgentPath(raw: string): string | null {
   if (ROOT_FILE_ALLOWLIST.has(p)) return p;
   if (p.startsWith("agent/")) return p;
   if (MEMBER_PATH.test(p)) return p;
+  if (ASSISTANT_CONFIG_PATH.test(p)) return p;
   return null;
 }

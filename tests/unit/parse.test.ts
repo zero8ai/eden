@@ -189,6 +189,7 @@ describe("withPreservedNames", () => {
         projectId: "p",
         name: "pm",
         root: "agent",
+        kind: "member",
         createdAt: new Date(),
         updatedAt: new Date(),
       },

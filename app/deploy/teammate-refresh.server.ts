@@ -34,8 +34,9 @@ export async function refreshTeammatesForRosterChange(
   if (!membershipChanged) return 0;
 
   const roster = await store.agents.listByProject(input.projectId);
-  // Only team members carry EDEN_TEAMMATES; a single-agent repo has nothing to refresh.
-  const members = roster.filter((a) => a.root !== "agent");
+  // Only team members carry EDEN_TEAMMATES; a single-agent repo has nothing to refresh, and the
+  // built-in assistant (kind !== 'member') is never a teammate.
+  const members = roster.filter((a) => a.kind === "member" && a.root !== "agent");
   if (members.length === 0) return 0;
 
   let queued = 0;

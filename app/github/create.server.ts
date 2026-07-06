@@ -52,8 +52,13 @@ export interface CreatedRepo {
 // point, and a silent default must not be able to run up a real bill. Picking the model
 // they actually want is a Settings-tab decision, not something we guess for them.
 const DEFAULT_MODEL = "moonshotai/kimi-k2.7-code";
-/** The scaffolded first member of a team repo — a placeholder the customer renames/extends. */
-const STARTER_MEMBER = "assistant";
+/**
+ * The scaffolded first member of a team repo — a placeholder the customer renames/extends.
+ * NOT "assistant": that name is reserved for Eden's built-in project-level assistant agent
+ * (see docs/ASSISTANT.md), and a roster member sharing it would collide on the unique
+ * (project, name) index.
+ */
+const STARTER_MEMBER = "planner";
 
 const GITIGNORE =
   ".eve/\n.output/\n.workflow-data/\nnode_modules/\n.env\n.env.*\n";

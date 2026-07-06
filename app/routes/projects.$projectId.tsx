@@ -456,6 +456,12 @@ export async function action(args: ActionFunctionArgs) {
     if (intent === "add-member") {
       const name = slugifyResourceName(String(form.get("name") ?? ""));
       if (!name) return { error: "Member name is required." };
+      // "assistant" is reserved for Eden's built-in project-level assistant agent.
+      if (name === "assistant") {
+        return {
+          error: `"assistant" is reserved for Eden's built-in assistant — pick another name.`,
+        };
+      }
       const { roster } = await resolveAgentContext(project.id, null);
       if (roster.some((a) => a.name === name)) {
         return { error: `A member named "${name}" already exists.` };

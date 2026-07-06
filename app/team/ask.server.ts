@@ -107,8 +107,11 @@ export async function runAsk(input: AskInput, deps: AskDeps): Promise<AskResult>
   const project = await store.projects.findById(caller.projectId);
   if (!project) return deny("This repository is no longer connected.");
 
-  // 2. Resolve the target member by (project, name).
-  const roster = await store.agents.listByProject(project.id);
+  // 2. Resolve the target member by (project, name). Only real roster members are delegation
+  //    targets — the built-in assistant (kind !== 'member') is never a teammate.
+  const roster = (await store.agents.listByProject(project.id)).filter(
+    (a) => a.kind === "member",
+  );
   const target = roster.find((a) => a.name === teammate);
   if (!target) return deny(`No teammate named "${teammate}" is on this team.`);
   if (target.id === caller.id) return deny("You can't delegate a task to yourself.");

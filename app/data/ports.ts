@@ -44,16 +44,30 @@ export interface DeploymentWithRelease {
 
 export interface AgentRepo {
   findById(id: string): Promise<Agent | null>;
-  /** A project's roster, by name. Single-agent repos are a team of one. */
+  /**
+   * A project's FULL agent set (every `kind`), by name. Callers that want only the roster of
+   * user-facing members must filter `kind === 'member'` (or use `listAgents`), but drafts /
+   * `agentForPath` need the internal assistant row too, so this never filters.
+   */
   listByProject(projectId: string): Promise<Agent[]>;
   /**
    * Reconcile the roster with the repo's detected layout: upsert by (project, name) —
-   * updating `root` when a member moved — and delete members no longer present.
+   * updating `root` when a member moved — and delete members no longer present. Only rows with
+   * `kind === 'member'` are pruned; internal rows (the assistant) are never in the detected
+   * roster and survive every sync.
    */
   syncRoster(
     projectId: string,
     roster: { name: string; root: string }[],
   ): Promise<Agent[]>;
+  /** The project's built-in assistant row (`kind === 'assistant'`), or null. */
+  findAssistant(projectId: string): Promise<Agent | null>;
+  /** Create the built-in assistant row. Caller ensures single-instance via `findAssistant`. */
+  createAssistant(input: {
+    projectId: string;
+    name: string;
+    root: string;
+  }): Promise<Agent>;
 }
 
 export interface ReleaseRepo {

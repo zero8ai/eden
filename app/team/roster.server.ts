@@ -60,7 +60,10 @@ export async function teammateRoster(input: {
   roster: Agent[];
   selfAgentId: string;
 }): Promise<Teammate[]> {
-  const others = input.roster.filter((a) => a.id !== input.selfAgentId);
+  // Teammates are real roster members only — never the built-in assistant (kind !== 'member').
+  const others = input.roster.filter(
+    (a) => a.id !== input.selfAgentId && a.kind === "member",
+  );
   if (others.length === 0) return [];
   let files: Record<string, string> = {};
   try {

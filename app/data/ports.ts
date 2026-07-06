@@ -207,36 +207,6 @@ export interface AuditRepo {
 
 /** The full data seam handed to control-plane logic. */
 /**
- * A persisted chat transcript (assistant / playground) — one per (project, kind, user).
- * `kind` is surface-owned and may include a scope suffix, e.g. playground:<agentId>.
- */
-export interface Conversation {
-  id: string;
-  projectId: string;
-  kind: string;
-  createdBy: string;
-  /** Display transcript entries (shape owned by the surface). */
-  messages: unknown[];
-  /** Kind-specific continuation state (model history, eve session tokens). */
-  state: Record<string, unknown>;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface ConversationRepo {
-  get(projectId: string, kind: string, userId: string): Promise<Conversation | null>;
-  /** Upsert the single conversation for (project, kind, user). */
-  save(input: {
-    projectId: string;
-    kind: string;
-    createdBy: string;
-    messages: unknown[];
-    state: Record<string, unknown>;
-  }): Promise<Conversation>;
-  delete(projectId: string, kind: string, userId: string): Promise<void>;
-}
-
-/**
  * Directed teammate-collaboration overrides (Team delegation — D4). Default-allow: an ABSENT
  * row means the ask is permitted, so the relay's authz check reads a single row (or its
  * absence). Only pairs the human has touched exist here.
@@ -289,7 +259,6 @@ export interface DataStore {
   projects: ProjectRepo;
   jobs: JobRepo;
   drafts: DraftRepo;
-  conversations: ConversationRepo;
   audit: AuditRepo;
   agentLinks: AgentLinkRepo;
   delegations: DelegationRepo;

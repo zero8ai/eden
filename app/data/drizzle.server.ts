@@ -11,7 +11,6 @@ import {
   agentLinks,
   agents,
   auditLog,
-  conversations,
   delegations,
   deployments,
   draftChanges,
@@ -438,45 +437,6 @@ export const drizzleDataStore: DataStore = {
       await db
         .delete(draftChanges)
         .where(and(eq(draftChanges.projectId, projectId), inArray(draftChanges.path, paths)));
-    },
-  },
-
-  conversations: {
-    async get(projectId, kind, userId) {
-      const [row] = await db
-        .select()
-        .from(conversations)
-        .where(
-          and(
-            eq(conversations.projectId, projectId),
-            eq(conversations.kind, kind),
-            eq(conversations.createdBy, userId),
-          ),
-        )
-        .limit(1);
-      return row ?? null;
-    },
-    async save(input) {
-      const [row] = await db
-        .insert(conversations)
-        .values(input)
-        .onConflictDoUpdate({
-          target: [conversations.projectId, conversations.kind, conversations.createdBy],
-          set: { messages: input.messages, state: input.state, updatedAt: new Date() },
-        })
-        .returning();
-      return row;
-    },
-    async delete(projectId, kind, userId) {
-      await db
-        .delete(conversations)
-        .where(
-          and(
-            eq(conversations.projectId, projectId),
-            eq(conversations.kind, kind),
-            eq(conversations.createdBy, userId),
-          ),
-        );
     },
   },
 

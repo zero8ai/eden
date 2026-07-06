@@ -1,7 +1,8 @@
 /**
- * Display transcript entry for Eden's conversational surfaces (assistant, playground).
- * Persisted as jsonb in conversations.messages — keep it JSON-serializable and additive
- * (new optional fields are fine; renames break stored transcripts). Client+server safe.
+ * Display transcript entry for Eden's conversational surfaces (assistant + playground). These
+ * surfaces rebuild their transcript from Eve's durable event stream (`playgroundSessions` holds
+ * only the cursor), so this shape is a projection, not a stored record — keep it
+ * JSON-serializable and additive. Client+server safe.
  */
 
 export interface ChatStep {

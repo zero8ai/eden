@@ -188,15 +188,15 @@ add-dependency, plus `.eden/assistant/**` restricted to `instructions.md`, `skil
 
 ### Draft author attribution — decision
 
-The token authenticates the **deployment**, not a user. Threading the initiating user through
-eve's stateless tool call is not possible cheaply (the model calls the tool; the deployment,
-not the browser, holds the token). Drafts staged by the assistant use a synthetic author id
-`assistant:<projectId>`. Rationale: `createdBy` is a nullable FK to `users`; a real-but-wrong
-user id would be a lie and could break the users FK. The drafts UI tolerates a missing/unknown
-author (renders no attribution) — verified the Changes list does not hard-require a users join.
-We store `createdBy: null` on the draft row (the `users` FK forbids a synthetic id) and record
-the `assistant:<projectId>` provenance is implicit (all `.eden/assistant`-origin drafts are the
-assistant's). Documented here as the explicit, least-lying choice.
+Two draft-staging paths, two authors:
+- **Assistant model** (via a callback tool): the `EDEN_ASSISTANT_TOKEN` authenticates the
+  DEPLOYMENT, not a user — the model calls the tool, and the browser's user isn't threaded
+  through eve's stateless call. These drafts store `createdBy: null`. `createdBy` is a nullable
+  FK to `users`, so a synthetic id like `assistant:<projectId>` isn't storable and a real-but-
+  wrong user id would be a lie; null is the least-lying, FK-safe choice. The Changes UI tolerates
+  a null author.
+- **Human config edits** (the assistant config page, §8): staged with `createdBy = auth.user.id`,
+  the real editor — normal attribution.
 
 ### run-checks / publish-gate for assistant-only changesets
 

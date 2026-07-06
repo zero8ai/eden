@@ -7,6 +7,7 @@
  * project — no session management.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { useMemo } from "react";
 import {
   Link,
   redirect,
@@ -26,6 +27,7 @@ import {
   AssistantBubble,
   ChatComposer,
   ChatTranscript,
+  MarkdownText,
   PendingBubble,
   UserBubble,
 } from "~/components/chat";
@@ -168,11 +170,47 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
   const { project, entries, expired, roster, activeAgent, isTeam } = loaderData;
   const ctx = contextPath(project.id, isTeam ? activeAgent : null);
   const fetcher = useFetcher<typeof action>();
+  const ResetForm = fetcher.Form;
   const busy = fetcher.state !== "idle";
   const pendingMessage =
     busy && fetcher.formData?.get("intent") !== "reset"
       ? String(fetcher.formData?.get("message") ?? "")
       : null;
+  const hasEntries = entries.length > 0;
+
+  const headerActions = useMemo(
+    () =>
+      hasEntries ? (
+        <ResetForm method="post">
+          <input type="hidden" name="intent" value="reset" />
+          <Button type="submit" variant="outline" size="sm" disabled={busy}>
+            New conversation
+          </Button>
+        </ResetForm>
+      ) : undefined,
+    [ResetForm, busy, hasEntries],
+  );
+
+  const transcriptLead = useMemo(
+    () => (
+      <>
+        <PageHeader
+          title="Assistant"
+          description="Tell it what the agent should be able to do. It writes the code, verifies the build, and stages everything for your review on the Deployment tab."
+          actions={headerActions}
+        />
+        {expired && !hasEntries && (
+          <Alert className="mb-4">
+            <AlertDescription>
+              Your previous conversation expired after a day of inactivity —
+              starting fresh.
+            </AlertDescription>
+          </Alert>
+        )}
+      </>
+    ),
+    [expired, hasEntries, headerActions],
+  );
 
   return (
     <AppShell
@@ -197,37 +235,8 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
 
       <ChatTranscript
         dep={`${entries.length}:${pendingMessage ?? ""}`}
-        lead={
-          <>
-            <PageHeader
-              title="Assistant"
-              description="Tell it what the agent should be able to do. It writes the code, verifies the build, and stages everything for your review on the Deployment tab."
-              actions={
-                entries.length > 0 ? (
-                  <fetcher.Form method="post">
-                    <input type="hidden" name="intent" value="reset" />
-                    <Button
-                      type="submit"
-                      variant="outline"
-                      size="sm"
-                      disabled={busy}
-                    >
-                      New conversation
-                    </Button>
-                  </fetcher.Form>
-                ) : undefined
-              }
-            />
-            {expired && entries.length === 0 && (
-              <Alert className="mb-4">
-                <AlertDescription>
-                  Your previous conversation expired after a day of inactivity —
-                  starting fresh.
-                </AlertDescription>
-              </Alert>
-            )}
-          </>
-        }
+        forceScrollDep={pendingMessage}
+        lead={transcriptLead}
       >
         {(entries as ChatEntry[]).map((e) =>
           e.role === "user" ? (
@@ -267,7 +276,7 @@ function AssistantEntry({ entry, base }: { entry: ChatEntry; base: string }) {
       {entry.error ? (
         <p className="whitespace-pre-wrap text-destructive">{entry.error}</p>
       ) : (
-        <p className="whitespace-pre-wrap">{entry.text}</p>
+        <MarkdownText text={entry.text} />
       )}
 
       {entry.checks && (

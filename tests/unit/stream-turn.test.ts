@@ -55,13 +55,46 @@ describe("streamTurn", () => {
   it("emits events in order with cumulative reply text, ending in done", async () => {
     const at = new Date().toISOString();
     const out = await drain([
-      { type: "session.started", data: { runtime: { modelId: "m/x" } }, meta: { at } },
-      { type: "message.received", data: { message: "hi", turnId: "turn_1" }, meta: { at } },
-      { type: "step.started", data: { turnId: "turn_1", sequence: 1, stepIndex: 0 }, meta: { at } },
-      { type: "message.appended", data: { turnId: "turn_1", messageSoFar: "Hel" }, meta: { at } },
-      { type: "message.appended", data: { turnId: "turn_1", messageSoFar: "Hello" }, meta: { at } },
-      { type: "message.completed", data: { turnId: "turn_1", message: "Hello" }, meta: { at } },
-      { type: "step.completed", data: { turnId: "turn_1", sequence: 1, stepIndex: 0, usage: { inputTokens: 5, outputTokens: 3 } }, meta: { at } },
+      {
+        type: "session.started",
+        data: { runtime: { modelId: "m/x" } },
+        meta: { at },
+      },
+      {
+        type: "message.received",
+        data: { message: "hi", turnId: "turn_1" },
+        meta: { at },
+      },
+      {
+        type: "step.started",
+        data: { turnId: "turn_1", sequence: 1, stepIndex: 0 },
+        meta: { at },
+      },
+      {
+        type: "message.appended",
+        data: { turnId: "turn_1", messageSoFar: "Hel" },
+        meta: { at },
+      },
+      {
+        type: "message.appended",
+        data: { turnId: "turn_1", messageSoFar: "Hello" },
+        meta: { at },
+      },
+      {
+        type: "message.completed",
+        data: { turnId: "turn_1", message: "Hello" },
+        meta: { at },
+      },
+      {
+        type: "step.completed",
+        data: {
+          turnId: "turn_1",
+          sequence: 1,
+          stepIndex: 0,
+          usage: { inputTokens: 5, outputTokens: 3 },
+        },
+        meta: { at },
+      },
       { type: "turn.completed", data: { turnId: "turn_1" }, meta: { at } },
     ]);
 
@@ -82,17 +115,71 @@ describe("streamTurn", () => {
     expect(done?.kind === "done" && done.result.modelId).toBe("m/x");
   });
 
+  it("emits durable cursor progress while consuming Eve events", async () => {
+    const at = new Date().toISOString();
+    const out = await drain([
+      {
+        type: "message.received",
+        data: { message: "hi", turnId: "turn_1" },
+        meta: { at },
+      },
+      {
+        type: "message.completed",
+        data: { turnId: "turn_1", message: "hi back" },
+        meta: { at },
+      },
+      { type: "turn.completed", data: { turnId: "turn_1" }, meta: { at } },
+    ]);
+
+    const progress = out.flatMap((event) =>
+      event.kind === "progress" ? [event] : [],
+    );
+    expect(progress).toMatchObject([
+      { sessionId: "sess_1", continuationToken: "tok_1", streamIndex: 1 },
+      { sessionId: "sess_1", continuationToken: "tok_1", streamIndex: 2 },
+      { sessionId: "sess_1", continuationToken: "tok_1", streamIndex: 3 },
+    ]);
+  });
+
   it("keys step durations on sequence, not the always-zero stepIndex", async () => {
     const t0 = Date.now();
     const iso = (ms: number) => new Date(t0 + ms).toISOString();
     const out = await drain([
-      { type: "message.received", data: { message: "hi", turnId: "turn_1" }, meta: { at: iso(0) } },
-      { type: "step.started", data: { turnId: "turn_1", sequence: 1, stepIndex: 0 }, meta: { at: iso(0) } },
-      { type: "step.completed", data: { turnId: "turn_1", sequence: 1, stepIndex: 0 }, meta: { at: iso(1000) } },
-      { type: "step.started", data: { turnId: "turn_1", sequence: 2, stepIndex: 0 }, meta: { at: iso(2000) } },
-      { type: "step.completed", data: { turnId: "turn_1", sequence: 2, stepIndex: 0 }, meta: { at: iso(3000) } },
-      { type: "message.completed", data: { turnId: "turn_1", message: "ok" }, meta: { at: iso(3000) } },
-      { type: "turn.completed", data: { turnId: "turn_1" }, meta: { at: iso(3000) } },
+      {
+        type: "message.received",
+        data: { message: "hi", turnId: "turn_1" },
+        meta: { at: iso(0) },
+      },
+      {
+        type: "step.started",
+        data: { turnId: "turn_1", sequence: 1, stepIndex: 0 },
+        meta: { at: iso(0) },
+      },
+      {
+        type: "step.completed",
+        data: { turnId: "turn_1", sequence: 1, stepIndex: 0 },
+        meta: { at: iso(1000) },
+      },
+      {
+        type: "step.started",
+        data: { turnId: "turn_1", sequence: 2, stepIndex: 0 },
+        meta: { at: iso(2000) },
+      },
+      {
+        type: "step.completed",
+        data: { turnId: "turn_1", sequence: 2, stepIndex: 0 },
+        meta: { at: iso(3000) },
+      },
+      {
+        type: "message.completed",
+        data: { turnId: "turn_1", message: "ok" },
+        meta: { at: iso(3000) },
+      },
+      {
+        type: "turn.completed",
+        data: { turnId: "turn_1" },
+        meta: { at: iso(3000) },
+      },
     ]);
 
     const done = out.at(-1);
@@ -105,32 +192,68 @@ describe("streamTurn", () => {
   it("correlates actions to their step, including a failed action", async () => {
     const at = new Date().toISOString();
     const out = await drain([
-      { type: "message.received", data: { message: "hi", turnId: "turn_1" }, meta: { at } },
-      { type: "step.started", data: { turnId: "turn_1", sequence: 1 }, meta: { at } },
+      {
+        type: "message.received",
+        data: { message: "hi", turnId: "turn_1" },
+        meta: { at },
+      },
+      {
+        type: "step.started",
+        data: { turnId: "turn_1", sequence: 1 },
+        meta: { at },
+      },
       {
         type: "actions.requested",
         data: {
           turnId: "turn_1",
           sequence: 1,
           actions: [
-            { callId: "c1", toolName: "bash", input: { command: "npm test" }, kind: "tool-call" },
-            { callId: "c2", toolName: "read_file", input: { path: "/etc/x" }, kind: "tool-call" },
+            {
+              callId: "c1",
+              toolName: "bash",
+              input: { command: "npm test" },
+              kind: "tool-call",
+            },
+            {
+              callId: "c2",
+              toolName: "read_file",
+              input: { path: "/etc/x" },
+              kind: "tool-call",
+            },
           ],
         },
         meta: { at },
       },
       {
         type: "action.result",
-        data: { turnId: "turn_1", sequence: 1, status: "completed", result: { callId: "c1", output: { exitCode: 0, stdout: "ok" } } },
+        data: {
+          turnId: "turn_1",
+          sequence: 1,
+          status: "completed",
+          result: { callId: "c1", output: { exitCode: 0, stdout: "ok" } },
+        },
         meta: { at },
       },
       {
         type: "action.result",
-        data: { turnId: "turn_1", sequence: 1, status: "failed", result: { callId: "c2", output: "boom" } },
+        data: {
+          turnId: "turn_1",
+          sequence: 1,
+          status: "failed",
+          result: { callId: "c2", output: "boom" },
+        },
         meta: { at },
       },
-      { type: "step.completed", data: { turnId: "turn_1", sequence: 1 }, meta: { at } },
-      { type: "message.completed", data: { turnId: "turn_1", message: "done" }, meta: { at } },
+      {
+        type: "step.completed",
+        data: { turnId: "turn_1", sequence: 1 },
+        meta: { at },
+      },
+      {
+        type: "message.completed",
+        data: { turnId: "turn_1", message: "done" },
+        meta: { at },
+      },
       { type: "turn.completed", data: { turnId: "turn_1" }, meta: { at } },
     ]);
 
@@ -153,12 +276,36 @@ describe("streamTurn", () => {
   it("keeps every assistant message of the turn and surfaces ask_question prompts", async () => {
     const at = new Date().toISOString();
     const out = await drain([
-      { type: "message.received", data: { message: "hi", turnId: "turn_1" }, meta: { at } },
-      { type: "message.completed", data: { turnId: "turn_1", message: "Checking access." }, meta: { at } },
-      { type: "step.started", data: { turnId: "turn_1", sequence: 1 }, meta: { at } },
-      { type: "step.completed", data: { turnId: "turn_1", sequence: 1 }, meta: { at } },
-      { type: "message.appended", data: { turnId: "turn_1", messageSoFar: "One decision for you:" }, meta: { at } },
-      { type: "message.completed", data: { turnId: "turn_1", message: "One decision for you:" }, meta: { at } },
+      {
+        type: "message.received",
+        data: { message: "hi", turnId: "turn_1" },
+        meta: { at },
+      },
+      {
+        type: "message.completed",
+        data: { turnId: "turn_1", message: "Checking access." },
+        meta: { at },
+      },
+      {
+        type: "step.started",
+        data: { turnId: "turn_1", sequence: 1 },
+        meta: { at },
+      },
+      {
+        type: "step.completed",
+        data: { turnId: "turn_1", sequence: 1 },
+        meta: { at },
+      },
+      {
+        type: "message.appended",
+        data: { turnId: "turn_1", messageSoFar: "One decision for you:" },
+        meta: { at },
+      },
+      {
+        type: "message.completed",
+        data: { turnId: "turn_1", message: "One decision for you:" },
+        meta: { at },
+      },
       {
         type: "input.requested",
         data: {
@@ -210,17 +357,25 @@ describe("streamTurn", () => {
     expect(done?.kind === "done" && done.result.reply).toBe(
       "Checking access.\n\nOne decision for you:",
     );
-    expect(
-      done?.kind === "done" && done.result.inputRequests,
-    ).toMatchObject([{ requestId: "r1", display: "select" }]);
+    expect(done?.kind === "done" && done.result.inputRequests).toMatchObject([
+      { requestId: "r1", display: "select" },
+    ]);
     expect(done?.kind === "done" && done.result.ok).toBe(true);
   });
 
   it("surfaces the eve turnId on the turn event and the result", async () => {
     const at = new Date().toISOString();
     const out = await drain([
-      { type: "message.received", data: { message: "hi", turnId: "turn_1" }, meta: { at } },
-      { type: "message.completed", data: { turnId: "turn_1", message: "hi back" }, meta: { at } },
+      {
+        type: "message.received",
+        data: { message: "hi", turnId: "turn_1" },
+        meta: { at },
+      },
+      {
+        type: "message.completed",
+        data: { turnId: "turn_1", message: "hi back" },
+        meta: { at },
+      },
       { type: "turn.completed", data: { turnId: "turn_1" }, meta: { at } },
     ]);
     const turn = out.find((e) => e.kind === "turn");
@@ -235,14 +390,38 @@ describe("streamTurn", () => {
     const fresh = new Date(now).toISOString();
     const out = await drain([
       // Replayed previous turn — same text, but old, and a different turnId.
-      { type: "message.received", data: { message: "hi", turnId: "turn_0" }, meta: { at: old } },
-      { type: "step.completed", data: { turnId: "turn_0", sequence: 1 }, meta: { at: old } },
+      {
+        type: "message.received",
+        data: { message: "hi", turnId: "turn_0" },
+        meta: { at: old },
+      },
+      {
+        type: "step.completed",
+        data: { turnId: "turn_0", sequence: 1 },
+        meta: { at: old },
+      },
       { type: "turn.completed", data: { turnId: "turn_0" }, meta: { at: old } },
       // Our turn.
-      { type: "message.received", data: { message: "hi", turnId: "turn_1" }, meta: { at: fresh } },
-      { type: "step.completed", data: { turnId: "turn_1", sequence: 1 }, meta: { at: fresh } },
-      { type: "message.completed", data: { turnId: "turn_1", message: "our reply" }, meta: { at: fresh } },
-      { type: "turn.completed", data: { turnId: "turn_1" }, meta: { at: fresh } },
+      {
+        type: "message.received",
+        data: { message: "hi", turnId: "turn_1" },
+        meta: { at: fresh },
+      },
+      {
+        type: "step.completed",
+        data: { turnId: "turn_1", sequence: 1 },
+        meta: { at: fresh },
+      },
+      {
+        type: "message.completed",
+        data: { turnId: "turn_1", message: "our reply" },
+        meta: { at: fresh },
+      },
+      {
+        type: "turn.completed",
+        data: { turnId: "turn_1" },
+        meta: { at: fresh },
+      },
     ]);
 
     const done = out.at(-1);

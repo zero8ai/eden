@@ -82,6 +82,43 @@ export function getInstallationOctokit(installationId: string | number) {
   return getGitHubApp().getInstallationOctokit(Number(installationId));
 }
 
+/**
+ * Mint a short-lived installation token NARROWED to a single repo with read-only `contents`
+ * scope — the credential the assistant instance uses to clone/fetch a conversation checkout
+ * (docs/ASSISTANT.md — coding-agent model). Unlike `getInstallationOctokit` (full-installation
+ * scope), this asks GitHub for the minimal grant so a token that transiently reaches an instance
+ * can only READ the one repo it is editing. The token is never a WRITE credential and is never
+ * persisted to the shared checkout volume — the caller passes it per git invocation and drops it.
+ *
+ * Uses the App-JWT client's `apps.createInstallationAccessToken` (the `repositories`/`permissions`
+ * narrowing params only exist on that App-level endpoint, not on an already-scoped installation
+ * client). Returns the raw token string and its expiry.
+ */
+export async function mintNarrowedReadToken(input: {
+  installationId: string | number;
+  /** Repo name (not owner/name) — GitHub scopes `repositories` by name within the installation. */
+  repo: string;
+}): Promise<{ token: string; expiresAt: string }> {
+  const octokit = getGitHubApp().octokit;
+  const res = await octokit.rest.apps.createInstallationAccessToken(
+    narrowedReadTokenParams(input.installationId, input.repo),
+  );
+  return { token: res.data.token, expiresAt: res.data.expires_at };
+}
+
+/**
+ * The exact `createInstallationAccessToken` params for a single-repo, contents:read grant — the
+ * one place the narrowing shape is defined, extracted pure so a test can assert it without GitHub
+ * credentials. Any drift here (a wider permission, more repos) is the security-relevant thing to catch.
+ */
+export function narrowedReadTokenParams(installationId: string | number, repo: string) {
+  return {
+    installation_id: Number(installationId),
+    repositories: [repo],
+    permissions: { contents: "read" as const },
+  };
+}
+
 /** Public URL where a user installs the App on a new org/account. */
 export function getInstallUrl(state?: string): string {
   const base = `https://github.com/apps/${getGitHubConfig().slug}/installations/new`;

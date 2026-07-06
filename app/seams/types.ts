@@ -34,6 +34,12 @@ export interface BuildRequest {
    * runs in the member's package directory (the root's parent for team members).
    */
   agentRoot?: string;
+  /**
+   * Bake Eden's generated `ask-teammate` tool into this member's image (Team delegation — D2).
+   * Set by the controller only for a team member (roster > 1); the build skips injection if the
+   * repo already ships a file at that path (user override wins).
+   */
+  injectTeammateTool?: boolean;
 }
 
 export interface BuiltArtifact {

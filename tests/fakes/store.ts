@@ -7,8 +7,10 @@
  */
 import type {
   Agent,
+  AgentLink,
   Conversation,
   DataStore,
+  Delegation,
   Deployment,
   DraftChange,
   Environment,
@@ -53,6 +55,8 @@ export function makeFakeStore(): FakeStore {
   const jobs = new Map<string, Job>();
   const drafts = new Map<string, DraftChange>(); // key: projectId|path
   const conversations = new Map<string, Conversation>(); // key: projectId|kind|user
+  const agentLinks = new Map<string, AgentLink>(); // key: fromAgentId|toAgentId
+  const delegations = new Map<string, Delegation>();
   const auditEntries: { action: string; target?: string | null; orgId: string }[] = [];
   let forcedCollisions = 0;
 
@@ -191,6 +195,9 @@ export function makeFakeStore(): FakeStore {
     },
 
     deployments: {
+      async findById(did) {
+        return deployments.get(did) ?? null;
+      },
       async insert(input) {
         const row: Deployment = {
           id: id("dep"),
@@ -498,6 +505,81 @@ export function makeFakeStore(): FakeStore {
     audit: {
       async record(input) {
         auditEntries.push({ action: input.action, target: input.target, orgId: input.orgId });
+      },
+    },
+
+    agentLinks: {
+      async listByProject(projectId) {
+        return [...agentLinks.values()].filter((l) => l.projectId === projectId);
+      },
+      async get(fromAgentId, toAgentId) {
+        return agentLinks.get(`${fromAgentId}|${toAgentId}`) ?? null;
+      },
+      async set(input) {
+        const key = `${input.fromAgentId}|${input.toAgentId}`;
+        const existing = agentLinks.get(key);
+        agentLinks.set(key, {
+          id: existing?.id ?? id("link"),
+          projectId: input.projectId,
+          fromAgentId: input.fromAgentId,
+          toAgentId: input.toAgentId,
+          enabled: input.enabled,
+          createdAt: existing?.createdAt ?? new Date(++seq),
+          updatedAt: new Date(++seq),
+        });
+      },
+    },
+
+    delegations: {
+      async insert(input) {
+        const row: Delegation = {
+          id: id("deleg"),
+          projectId: input.projectId,
+          fromAgentId: input.fromAgentId,
+          fromEnvironmentId: input.fromEnvironmentId,
+          toAgentId: input.toAgentId,
+          toEnvironmentId: input.toEnvironmentId,
+          externalSessionId: null,
+          runId: null,
+          status: "running",
+          error: null,
+          startedAt: new Date(),
+          finishedAt: null,
+        };
+        delegations.set(row.id, row);
+        return row;
+      },
+      async finalize(did, patch) {
+        const cur = delegations.get(did);
+        if (!cur) return;
+        delegations.set(did, {
+          ...cur,
+          status: patch.status,
+          error: patch.error ?? null,
+          externalSessionId:
+            patch.externalSessionId !== undefined
+              ? patch.externalSessionId
+              : cur.externalSessionId,
+          runId: patch.runId !== undefined ? patch.runId : cur.runId,
+          finishedAt: patch.finishedAt ?? new Date(),
+        });
+      },
+      async countActiveEdge(fromAgentId, toAgentId, since) {
+        return [...delegations.values()].filter(
+          (d) =>
+            d.fromAgentId === fromAgentId &&
+            d.toAgentId === toAgentId &&
+            d.status === "running" &&
+            d.startedAt.getTime() > since.getTime(),
+        ).length;
+      },
+      async countActiveProject(projectId, since) {
+        return [...delegations.values()].filter(
+          (d) =>
+            d.projectId === projectId &&
+            d.status === "running" &&
+            d.startedAt.getTime() > since.getTime(),
+        ).length;
       },
     },
   };

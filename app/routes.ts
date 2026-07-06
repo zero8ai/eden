@@ -121,6 +121,8 @@ export default [
   ),
   route("api/github/webhook", "routes/api.github.webhook.tsx"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
+  // Teammate delegation relay: a team member's ask-teammate tool POSTs here (Bearer token).
+  route("api/team/ask", "routes/api.team.ask.ts"),
   route("api/models", "routes/api.models.tsx"),
   // Legacy URLs from before the repositories rename — 301 into /repos/.
   route("projects/:projectId/*", "routes/legacy.projects.tsx", {

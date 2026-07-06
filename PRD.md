@@ -902,17 +902,34 @@ two-source-of-truth reconciliation problem.
   notes-to-self — **survives new sessions, redeploys, and instance restarts, and dies with the
   environment.** Everything outside `/workspace/home` remains per-session scratch.
 
-**Milestone 7 — Teams (peer teams, §7.9) (partially shipped)**
+**Milestone 7 — Teams (peer teams, §7.9) (shipped)**
 - ✅ The `agents/*` monorepo convention: detection (`detectAgentRoots`), per-member parse,
   per-member build → image → Release → instance.
 - ✅ (Schema split already landed in Milestone 5.5.)
 - ✅ Full Teams UX: hierarchy-first IA (team landing, per-member tab rows, member switcher),
   roster CRUD, per-member environments + secret scope, team-fan-out Ship. (commits `0b8a7be`,
   `7bb3153`, `55fc29b`, `0397211`; IA in M5.8.)
-- ⬜ **NOT built — the runtime collaboration half:** auto-generated teammate delegation tools
-  (peer HTTP channel + route-auth secret injection), kept in sync with the roster; and
-  cross-agent correlation ids → linked traces in observability. Today members co-exist and ship
-  together but cannot *call each other*. **This is the main open piece of M7.**
+- ✅ **Runtime collaboration — teammate delegation.** Every team member gets an `ask-teammate`
+  tool, baked into its image at build time (never the repo; a repo file at that path wins), that
+  delegates a self-contained task to a peer and returns the peer's final reply. The design
+  (`docs/PLAN-TEAM-DELEGATION.md`):
+  - **Eden relay, not peer-to-peer** — the tool POSTs `POST /api/team/ask` on the control plane,
+    which resolves the peer's live deployment and drives its eve session via the hardened
+    `sendTurn` client. Instances stay loopback-only and unauthenticated; the relay is the single
+    authorization chokepoint and the natural correlation point.
+  - **Default-allow, directed permissions** (`agent_links` — absent row = allowed) with a
+    Settings → Team collaboration matrix; toggles apply live at the relay, no redeploy. Roster
+    identity (`EDEN_TEAMMATES`) + relay coordinates + an HMAC deployment token are env-injected at
+    deploy (stripped-then-set, like `EDEN_SANDBOX_ENV`); a roster change auto-redeploys the other
+    members to refresh it.
+  - **Linked traces** — a `delegations` row plus a relay-recorded peer run (channel `teammate`)
+    give the caller's tool step a link to the peer's run and the peer's run header a "Triggered
+    by" chip, with zero changes to the runs schema.
+  - **Deliberately punted** (bounded by concurrency caps + timeouts): approval gates across a
+    delegation chain (the parked request surfaces as an error), wake-on-delegation for stopped
+    instances, multi-turn teammate conversations (upstream continuation contract unproven),
+    streaming intermediate progress into the caller's transcript, cross-repo delegation, and
+    precise chain-depth tracking.
 - ⬜ (Later, cheap once 6+7 exist:) team templates in the marketplace — a scaffold referencing
   agent templates plus a wiring spec.
 
@@ -1041,9 +1058,18 @@ two-source-of-truth reconciliation problem.
   instances. v1's first-party curated catalog sidesteps this; third-party publishing needs a
   review/signing story before it exists. Related: how template versions pin against eve version
   churn (manifest declares an eve range, but enforcement/UX is undesigned).
-- **Teammate delegation semantics.** Generated delegation tools call the peer's HTTP channel —
+- ~~**Teammate delegation semantics.** Generated delegation tools call the peer's HTTP channel —
   fire-and-forget vs. wait-for-completion vs. streaming intermediate progress back into the caller's
-  turn; and how approval gates (`needsApproval`) compose across a delegation chain. Needs a spike.
+  turn; and how approval gates (`needsApproval`) compose across a delegation chain. Needs a spike.~~
+  **RESOLVED (2026-07-06): teammate delegation.** Not a peer HTTP channel — an **Eden relay**
+  (`POST /api/team/ask`, `docs/PLAN-TEAM-DELEGATION.md`): the baked-in `ask-teammate` tool speaks
+  plain JSON to the control plane, which drives the peer's eve session via `sendTurn` and returns
+  its final reply. **Wait-for-completion**, one ask = one fresh peer session (multi-turn punted —
+  the upstream continuation contract is unproven). **No progress streaming** into the caller's turn.
+  Approval gates **do not compose**: a peer turn that parks on `input.requested` is surfaced to the
+  caller as an error rather than tunnelling the gate. Runaway loops are bounded by per-edge (3) and
+  per-project (10) concurrency caps plus timeouts, not chain-depth tracking. Permissions are
+  default-allow directed overrides (`agent_links`) enforced live at the relay.
 - **Monorepo build scope.** On merge, build only the team members whose files changed (path-based
   change detection) vs. rebuild all — affects Release semantics when `packages/shared` changes.
 - **RESOLVED (2026-07-04): model API key placement.** Implemented the workspace-level model

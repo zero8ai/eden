@@ -20,6 +20,7 @@ import {
   Cpu,
   MessageSquare,
   Terminal,
+  Users,
   Wrench,
 } from "lucide-react";
 
@@ -244,6 +245,61 @@ function GenericRenderer({ data }: { data: ToolData }) {
   );
 }
 
+/**
+ * Detect Eden's generated delegation tool. eve derives a tool's name from its kebab filename
+ * (`ask-teammate.ts` → `ask-teammate`); match the underscore form defensively too.
+ */
+function isDelegationTool(toolName: string | null): boolean {
+  return toolName === "ask-teammate" || toolName === "ask_teammate";
+}
+
+/**
+ * A delegation step: the ask (input.message), the teammate's reply (output.reply) or the error,
+ * and — when the peer run was recorded — a link into it (linked traces, D6).
+ */
+function DelegationRenderer({ data }: { data: ToolData }) {
+  const input = (data.input ?? {}) as Record<string, unknown>;
+  const output = (data.output ?? {}) as Record<string, unknown>;
+  const teammate =
+    typeof output.teammate === "string"
+      ? output.teammate
+      : typeof input.teammate === "string"
+        ? input.teammate
+        : null;
+  const message = typeof input.message === "string" ? input.message : null;
+  const reply = typeof output.reply === "string" ? output.reply : null;
+  const error =
+    output.ok === false && typeof output.error === "string" ? output.error : null;
+  const runPath = typeof output.runPath === "string" ? output.runPath : null;
+  return (
+    <div>
+      {message && (
+        <Section title={`Asked ${teammate ?? "teammate"}`}>
+          <Mono>{message}</Mono>
+        </Section>
+      )}
+      {reply && (
+        <Section title="Reply">
+          <Mono>{reply}</Mono>
+        </Section>
+      )}
+      {error && (
+        <Section title="Result">
+          <p className="text-sm text-destructive whitespace-pre-wrap">{error}</p>
+        </Section>
+      )}
+      {runPath && (
+        <a
+          href={runPath}
+          className="mt-2 inline-block text-sm font-medium underline underline-offset-4"
+        >
+          View {teammate ?? "the teammate"}&rsquo;s run →
+        </a>
+      )}
+    </div>
+  );
+}
+
 /** Detect a bash-shaped call: named `bash` or carrying a string `input.command`. */
 function isBashShaped(toolName: string | null, data: ToolData): boolean {
   if (toolName === "bash" || toolName === "shell" || toolName === "exec")
@@ -266,19 +322,36 @@ function ToolCall({
 }) {
   const data = (step.data ?? {}) as ToolData;
   const rawJson = JSON.stringify(step.data ?? {}, null, 2);
+  const delegation = isDelegationTool(step.toolName);
+  const output = (data.output ?? {}) as Record<string, unknown>;
+  const input = (data.input ?? {}) as Record<string, unknown>;
+  const teammate =
+    typeof output.teammate === "string"
+      ? output.teammate
+      : typeof input.teammate === "string"
+        ? input.teammate
+        : null;
   return (
     <Expandable
       id={`step-${step.seq}`}
       defaultOpen={defaultOpen}
       header={() => (
         <span className="flex min-w-0 flex-1 items-center gap-2">
-          {isBashShaped(step.toolName, data) ? (
+          {delegation ? (
+            <Users className="size-4 shrink-0 text-muted-foreground" />
+          ) : isBashShaped(step.toolName, data) ? (
             <Terminal className="size-4 shrink-0 text-muted-foreground" />
           ) : (
             <Wrench className="size-4 shrink-0 text-muted-foreground" />
           )}
-          <span className="font-mono font-medium">{step.toolName ?? "tool"}</span>
-          {data.summary && (
+          {delegation ? (
+            <span className="font-medium">
+              Asked {teammate ?? "teammate"}
+            </span>
+          ) : (
+            <span className="font-mono font-medium">{step.toolName ?? "tool"}</span>
+          )}
+          {!delegation && data.summary && (
             <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
               {data.summary}
             </span>
@@ -313,6 +386,8 @@ function ToolBody({
     <div>
       {raw ? (
         <Mono>{rawJson}</Mono>
+      ) : isDelegationTool(toolName) ? (
+        <DelegationRenderer data={data} />
       ) : isBashShaped(toolName, data) ? (
         <BashRenderer data={data} />
       ) : (

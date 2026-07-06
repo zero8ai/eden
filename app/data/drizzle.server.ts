@@ -4,13 +4,15 @@
  * unique constraint, transactional weight updates) is realized here and trusted at the schema
  * level; the logic that orchestrates these calls is what gets unit-tested against the fake.
  */
-import { and, asc, desc, eq, inArray, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, notInArray, sql } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import {
+  agentLinks,
   agents,
   auditLog,
   conversations,
+  delegations,
   deployments,
   draftChanges,
   environments,
@@ -112,6 +114,14 @@ export const drizzleDataStore: DataStore = {
   },
 
   deployments: {
+    async findById(id) {
+      const [row] = await db
+        .select()
+        .from(deployments)
+        .where(eq(deployments.id, id))
+        .limit(1);
+      return row ?? null;
+    },
     async insert(input) {
       const [row] = await db
         .insert(deployments)
@@ -450,6 +460,94 @@ export const drizzleDataStore: DataStore = {
   audit: {
     async record(input) {
       await recordAudit(input);
+    },
+  },
+
+  agentLinks: {
+    async listByProject(projectId) {
+      return db.select().from(agentLinks).where(eq(agentLinks.projectId, projectId));
+    },
+    async get(fromAgentId, toAgentId) {
+      const [row] = await db
+        .select()
+        .from(agentLinks)
+        .where(
+          and(eq(agentLinks.fromAgentId, fromAgentId), eq(agentLinks.toAgentId, toAgentId)),
+        )
+        .limit(1);
+      return row ?? null;
+    },
+    async set(input) {
+      await db
+        .insert(agentLinks)
+        .values({
+          projectId: input.projectId,
+          fromAgentId: input.fromAgentId,
+          toAgentId: input.toAgentId,
+          enabled: input.enabled,
+        })
+        .onConflictDoUpdate({
+          target: [agentLinks.fromAgentId, agentLinks.toAgentId],
+          set: { enabled: input.enabled, updatedAt: new Date() },
+        });
+    },
+  },
+
+  delegations: {
+    async insert(input) {
+      const [row] = await db
+        .insert(delegations)
+        .values({
+          projectId: input.projectId,
+          fromAgentId: input.fromAgentId,
+          fromEnvironmentId: input.fromEnvironmentId,
+          toAgentId: input.toAgentId,
+          toEnvironmentId: input.toEnvironmentId,
+          status: "running",
+        })
+        .returning();
+      return row;
+    },
+    async finalize(id, patch) {
+      await db
+        .update(delegations)
+        .set({
+          status: patch.status,
+          error: patch.error ?? null,
+          ...(patch.externalSessionId !== undefined
+            ? { externalSessionId: patch.externalSessionId }
+            : {}),
+          ...(patch.runId !== undefined ? { runId: patch.runId } : {}),
+          finishedAt: patch.finishedAt ?? new Date(),
+        })
+        .where(eq(delegations.id, id));
+    },
+    async countActiveEdge(fromAgentId, toAgentId, since) {
+      const [{ c }] = await db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(delegations)
+        .where(
+          and(
+            eq(delegations.fromAgentId, fromAgentId),
+            eq(delegations.toAgentId, toAgentId),
+            eq(delegations.status, "running"),
+            gt(delegations.startedAt, since),
+          ),
+        );
+      return c ?? 0;
+    },
+    async countActiveProject(projectId, since) {
+      const [{ c }] = await db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(delegations)
+        .where(
+          and(
+            eq(delegations.projectId, projectId),
+            eq(delegations.status, "running"),
+            gt(delegations.startedAt, since),
+          ),
+        );
+      return c ?? 0;
     },
   },
 };

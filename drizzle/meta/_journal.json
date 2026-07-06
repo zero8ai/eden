@@ -141,6 +141,13 @@
       "when": 1783263307699,
       "tag": "0020_secrets_rework",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1783325182556,
+      "tag": "0021_melted_crystal",
+      "breakpoints": true
     }
   ]
 }

@@ -157,6 +157,22 @@ interface TurnIds {
   externalSessionId: string;
   /** Triggering user message — stored on run metadata so in-flight runs show their input. */
   userMessage?: string | null;
+  /** Producer channel — "playground" (default) or "teammate" (delegation relay, D6). */
+  channel?: string;
+  /** Extra run metadata (e.g. the delegation's `{ delegationId, fromAgentId, fromAgentName }`). */
+  metadata?: Record<string, unknown>;
+}
+
+/** Build a run's metadata: the triggering input plus any producer-supplied fields. */
+function runMetadata(
+  userMessage: string | null | undefined,
+  extra: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const meta: Record<string, unknown> = {
+    ...(userMessage ? { input: capString(userMessage).text } : {}),
+    ...(extra ?? {}),
+  };
+  return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
 /** A `running` run row so the turn shows in the Runs tab while it's in flight. */
@@ -164,20 +180,19 @@ export async function recordTurnStart(
   ids: TurnIds,
   now: Date = new Date(),
 ): Promise<void> {
+  const channel = ids.channel ?? "playground";
   const payload: IngestPayload = {
     externalRunId: ids.externalRunId,
     deploymentId: ids.deploymentId,
     releaseId: ids.releaseId,
-    channel: "playground",
+    channel,
     status: "running",
     startedAt: now.toISOString(),
-    metadata: ids.userMessage
-      ? { input: capString(ids.userMessage).text }
-      : undefined,
+    metadata: runMetadata(ids.userMessage, ids.metadata),
     session: {
       externalSessionId: ids.externalSessionId,
-      trigger: "playground",
-      channel: "playground",
+      trigger: channel,
+      channel,
     },
   };
   await ingestRun(ids.projectId, payload);
@@ -193,28 +208,31 @@ export async function recordTurnFinish(input: {
   result: TurnResult;
   /** Triggering user message — leads the transcript and is kept on run metadata. */
   userMessage?: string | null;
+  /** Producer channel — "playground" (default) or "teammate" (delegation relay, D6). */
+  channel?: string;
+  /** Extra run metadata (e.g. the delegation's `{ delegationId, fromAgentId, fromAgentName }`). */
+  metadata?: Record<string, unknown>;
   startedAt: Date;
   wallClockMs: number;
   finishedAt?: Date;
 }): Promise<void> {
   const finishedAt = input.finishedAt ?? new Date();
+  const channel = input.channel ?? "playground";
   const payload: IngestPayload = {
     externalRunId: input.externalRunId,
     deploymentId: input.deploymentId,
     releaseId: input.releaseId,
-    channel: "playground",
+    channel,
     status: input.result.ok ? "completed" : "failed",
     error: input.result.error ?? undefined,
     wallClockMs: input.wallClockMs,
     startedAt: input.startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
-    metadata: input.userMessage
-      ? { input: capString(input.userMessage).text }
-      : undefined,
+    metadata: runMetadata(input.userMessage, input.metadata),
     session: {
       externalSessionId: input.externalSessionId,
-      trigger: "playground",
-      channel: "playground",
+      trigger: channel,
+      channel,
     },
     ...sumTokens(input.result),
     steps: turnToSteps(input.result, { userMessage: input.userMessage }),

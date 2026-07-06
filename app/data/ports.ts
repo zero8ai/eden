@@ -8,7 +8,9 @@
  * Row types are the schema's inferred selects, so the fake and the real impl can't drift.
  */
 import type {
+  agentLinks,
   agents,
+  delegations,
   deployments,
   draftChanges,
   environments,
@@ -24,6 +26,8 @@ export type Deployment = typeof deployments.$inferSelect;
 export type Environment = typeof environments.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
+export type AgentLink = typeof agentLinks.$inferSelect;
+export type Delegation = typeof delegations.$inferSelect;
 
 /** A deployment row joined to its release's version/commit (the list/split view). */
 export interface DeploymentWithRelease {
@@ -72,6 +76,7 @@ export interface ReleaseRepo {
 }
 
 export interface DeploymentRepo {
+  findById(id: string): Promise<Deployment | null>;
   insert(input: {
     environmentId: string;
     releaseId: string;
@@ -217,6 +222,51 @@ export interface ConversationRepo {
   delete(projectId: string, kind: string, userId: string): Promise<void>;
 }
 
+/**
+ * Directed teammate-collaboration overrides (Team delegation — D4). Default-allow: an ABSENT
+ * row means the ask is permitted, so the relay's authz check reads a single row (or its
+ * absence). Only pairs the human has touched exist here.
+ */
+export interface AgentLinkRepo {
+  /** Every override row for a project — the Settings matrix reads this. */
+  listByProject(projectId: string): Promise<AgentLink[]>;
+  /** The override for one directed edge, or null (null = default-allow). */
+  get(fromAgentId: string, toAgentId: string): Promise<AgentLink | null>;
+  /** Upsert one directed edge's enabled flag (the matrix toggle). */
+  set(input: {
+    projectId: string;
+    fromAgentId: string;
+    toAgentId: string;
+    enabled: boolean;
+  }): Promise<void>;
+}
+
+/** The cross-agent correlation record for teammate asks (Team delegation — D6). */
+export interface DelegationRepo {
+  insert(input: {
+    projectId: string;
+    fromAgentId: string;
+    fromEnvironmentId: string | null;
+    toAgentId: string;
+    toEnvironmentId: string | null;
+  }): Promise<Delegation>;
+  /** Settle a delegation row once the peer turn finishes (or fails). */
+  finalize(
+    id: string,
+    patch: {
+      status: string;
+      error?: string | null;
+      externalSessionId?: string | null;
+      runId?: string | null;
+      finishedAt?: Date;
+    },
+  ): Promise<void>;
+  /** Active (running, not stale) delegations on one directed edge — the per-edge cap. */
+  countActiveEdge(fromAgentId: string, toAgentId: string, since: Date): Promise<number>;
+  /** Active (running, not stale) delegations across a project — the project-wide cap. */
+  countActiveProject(projectId: string, since: Date): Promise<number>;
+}
+
 export interface DataStore {
   agents: AgentRepo;
   releases: ReleaseRepo;
@@ -227,4 +277,6 @@ export interface DataStore {
   drafts: DraftRepo;
   conversations: ConversationRepo;
   audit: AuditRepo;
+  agentLinks: AgentLinkRepo;
+  delegations: DelegationRepo;
 }

@@ -5,7 +5,7 @@
  * scoped splits.
  * Row-locking / real constraint enforcement is the store impl's job (trusted at schema level).
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createRelease,
@@ -16,8 +16,22 @@ import {
   rollbackTo,
   setTrafficSplit,
 } from "~/deploy/controller.server";
+import type { DeployTarget } from "~/seams/types";
 import { fakeDeployTarget, fakeSecrets } from "../fakes/infra";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
+
+// Team-delegation roster reads go through the cached GitHub source — stub it so the controller
+// can build EDEN_TEAMMATES without network. (Only the team-injection tests exercise this.)
+vi.mock("~/github/cached.server", () => ({
+  getAgentSource: vi.fn(async () => ({
+    paths: [],
+    files: {
+      "agents/deployer/agent/instructions.md": "# Deployer\n\nDeploys builds to production.",
+    },
+    ref: "main",
+    truncated: false,
+  })),
+}));
 
 let store: FakeStore;
 const PROJECT = "proj_1";
@@ -511,6 +525,96 @@ describe("rollbackTo", () => {
     expect(demoted?.status).toBe("stopped");
     expect(demoted?.trafficWeight).toBe(0);
     expect(all.filter((d) => d.status === "live")).toHaveLength(1);
+  });
+});
+
+describe("team delegation env injection (D3)", () => {
+  const OLD_KEY = process.env.EDEN_SECRETS_KEY;
+  beforeEach(() => {
+    process.env.EDEN_SECRETS_KEY = "a".repeat(64); // 32-byte key as 64 hex chars
+    store.seedAgent({ id: "pm", projectId: PROJECT, name: "pm", root: "agents/pm/agent" });
+    store.seedAgent({
+      id: "deployer",
+      projectId: PROJECT,
+      name: "deployer",
+      root: "agents/deployer/agent",
+    });
+    store.seedEnvironment({ id: "env_pm", projectId: PROJECT, agentId: "pm", name: "production" });
+  });
+  afterEach(() => {
+    if (OLD_KEY === undefined) delete process.env.EDEN_SECRETS_KEY;
+    else process.env.EDEN_SECRETS_KEY = OLD_KEY;
+  });
+
+  function capturingTarget(
+    builtReqs: Parameters<DeployTarget["build"]>[0][],
+    deployedEnvs: Record<string, string>[],
+  ): DeployTarget {
+    return {
+      name: "cap",
+      async build(req) {
+        builtReqs.push(req);
+        return { imageRef: "img:fake", digest: "sha256:fake" };
+      },
+      async deploy(req) {
+        deployedEnvs.push(req.env);
+        return { status: "live", url: "http://x" };
+      },
+      async stop() {},
+      async start() {
+        return { status: "live" };
+      },
+      async health() {
+        return { status: "stopped" };
+      },
+    };
+  }
+
+  it("bakes the tool flag and injects EDEN_TEAM_* for a team member", async () => {
+    const builtReqs: Parameters<DeployTarget["build"]>[0][] = [];
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: "pm", gitSha: "d4".repeat(20) },
+      store,
+    );
+    const dep = await deployRelease(
+      { environmentId: "env_pm", releaseId: release.id },
+      {
+        store,
+        deployTarget: capturingTarget(builtReqs, deployedEnvs),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+      },
+    );
+    expect(dep.status).toBe("live");
+    expect(builtReqs[0].injectTeammateTool).toBe(true);
+    const env = deployedEnvs[0];
+    expect(env.EDEN_TEAM_URL).toBeTruthy();
+    expect(env.EDEN_TEAM_TOKEN.startsWith("ednt_")).toBe(true);
+    // Roster excludes self (pm); the description blurb is the deployer's first paragraph.
+    const teammates = JSON.parse(env.EDEN_TEAMMATES) as { name: string; role: string }[];
+    expect(teammates).toContainEqual({
+      name: "deployer",
+      role: "Deploys builds to production.",
+    });
+    expect(teammates.map((t) => t.name)).not.toContain("pm");
+  });
+
+  it("does not inject team env for a single-agent repo", async () => {
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "e5".repeat(20) },
+      store,
+    );
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+      },
+    );
+    expect(deployedEnvs[0].EDEN_TEAM_URL).toBeUndefined();
+    expect(deployedEnvs[0].EDEN_TEAM_TOKEN).toBeUndefined();
   });
 });
 

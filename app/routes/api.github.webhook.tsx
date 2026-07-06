@@ -11,8 +11,9 @@
  */
 import { data, type ActionFunctionArgs } from "react-router";
 
-import { syncProjectAgents } from "~/db/queries.server";
+import { listAgents, syncProjectAgents } from "~/db/queries.server";
 import { ensureReleasesForCommit, findProjectByRepo } from "~/deploy/controller.server";
+import { refreshTeammatesForRosterChange } from "~/deploy/teammate-refresh.server";
 import { detectAgentRoots } from "~/eve/parse";
 import {
   invalidateRepoChanges,
@@ -88,7 +89,15 @@ export async function action({ request }: ActionFunctionArgs) {
         repo,
         ref: payload.pull_request.merge_commit_sha,
       });
-      await syncProjectAgents(project.id, detectAgentRoots(source.paths));
+      const before = await listAgents(project.id);
+      const after = await syncProjectAgents(project.id, detectAgentRoots(source.paths));
+      // D7: a merge that added/removed a member must refresh the OTHER members' running
+      // instances so their EDEN_TEAMMATES reflects the new roster (image reuse, no rebuild).
+      await refreshTeammatesForRosterChange({
+        projectId: project.id,
+        previousNames: before.map((a) => a.name),
+        currentNames: after.map((a) => a.name),
+      });
       // The merge moved the default branch to this commit — drop every ref's source entry,
       // then warm the default-branch key with what we just read (next load is instant). The
       // read was pinned to the merge SHA, so restore the branch NAME in the cached `ref` —

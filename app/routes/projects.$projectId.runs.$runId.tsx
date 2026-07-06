@@ -8,6 +8,7 @@
  * from the Release commit linked here (link, not snapshot).
  */
 import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { Users } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import {
   Link,
@@ -120,6 +121,14 @@ export default function RunTranscriptRoute({ loaderData }: Route.ComponentProps)
   const metaInput =
     typeof run.metadata?.input === "string" ? run.metadata.input : null;
 
+  // Linked traces (D6): a delegated run carries its caller on run metadata.
+  const triggeredBy =
+    run.metadata &&
+    typeof run.metadata.delegationId === "string" &&
+    typeof run.metadata.fromAgentName === "string"
+      ? (run.metadata.fromAgentName as string)
+      : null;
+
   const firstErrorSeq = stepViews.find((s) => s.isError)?.seq ?? null;
 
   return (
@@ -198,6 +207,17 @@ export default function RunTranscriptRoute({ loaderData }: Route.ComponentProps)
           )}
         </Metric>
       </dl>
+      {triggeredBy && (
+        <div className="mt-3">
+          <Link
+            to={`/repos/${project.id}/agents/${encodeURIComponent(triggeredBy)}/runs`}
+            className="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 px-3 py-1 text-xs font-medium underline-offset-4 hover:underline"
+          >
+            <Users className="size-3.5" aria-hidden />
+            Triggered by {triggeredBy}
+          </Link>
+        </div>
+      )}
       <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         {run.channel && <span>Channel: {run.channel}</span>}
         <span>Started: {new Date(run.startedAt).toLocaleString()}</span>

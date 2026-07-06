@@ -730,3 +730,67 @@ export const playgroundSessions = pgTable(
     uniqueIndex("playground_sessions_external_uq").on(t.projectId, t.externalSessionId),
   ],
 );
+
+/**
+ * Directed teammate-collaboration overrides (Team delegation, PRD §7.9 runtime half — D4).
+ * A row exists ONLY for a (from → to) pair the human has touched; an ABSENT row means the ask
+ * is allowed (default-allow). This avoids seeding on roster sync, avoids a backfill migration,
+ * and never resurrects a deleted override when a member self-heals — new members collaborate
+ * immediately. `enabled=false` is the one thing this table records: a pair the human turned off.
+ * The relay checks it live on every ask, so a toggle takes effect with no redeploy.
+ */
+export const agentLinks = pgTable(
+  "agent_links",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    fromAgentId: varchar("from_agent_id", { length: 12 })
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    toAgentId: varchar("to_agent_id", { length: 12 })
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    enabled: boolean("enabled").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("agent_links_pair_uq").on(t.fromAgentId, t.toAgentId)],
+);
+
+/**
+ * One row per teammate ask — the cross-agent correlation record (Team delegation — D6). The
+ * relay writes it `running` before it forwards the message and finalizes it (completed|failed)
+ * once the peer's turn settles, recording the peer eve session, the peer's Eden run row, and
+ * timing. Concurrency caps count `running` rows younger than (timeout + slack), so a crashed
+ * relay can never wedge the caps. Agent FKs `set null` on member removal — the correlation
+ * record survives the roster change that outlived it.
+ */
+export const delegations = pgTable(
+  "delegations",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    fromAgentId: varchar("from_agent_id", { length: 12 }).references(() => agents.id, {
+      onDelete: "set null",
+    }),
+    fromEnvironmentId: varchar("from_environment_id", { length: 12 }),
+    toAgentId: varchar("to_agent_id", { length: 12 }).references(() => agents.id, {
+      onDelete: "set null",
+    }),
+    toEnvironmentId: varchar("to_environment_id", { length: 12 }),
+    /** The peer eve session the relay opened for this ask. */
+    externalSessionId: text("external_session_id"),
+    /** The peer's Eden run row (runs.id), for linked traces. */
+    runId: varchar("run_id", { length: 12 }),
+    // running | completed | failed
+    status: text("status").notNull().default("running"),
+    error: text("error"),
+    startedAt: createdAt(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [index("delegations_project_started_idx").on(t.projectId, t.startedAt)],
+);

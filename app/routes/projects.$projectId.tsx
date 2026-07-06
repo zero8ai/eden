@@ -757,9 +757,10 @@ function TeamSurface({
               atomically in one change request.
             </p>
             <p className="mt-2">
-              Coming next: teammates get auto-wired <em>delegation channels</em>{" "}
-              — each member receives tools to hand work to the others, so the
-              team behaves like an organisation, not a folder of agents.
+              Teammates can delegate to each other: every member gets an{" "}
+              <em>ask-teammate</em> tool wired to the rest of the roster, so the
+              team behaves like an organisation, not a folder of agents. Manage
+              who can ask whom under <span className="font-medium text-foreground">Settings → Team collaboration</span>.
             </p>
           </CardContent>
         </Card>

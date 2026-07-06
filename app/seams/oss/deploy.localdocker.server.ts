@@ -309,6 +309,7 @@ export const localDockerTarget: DeployTarget = {
       ref: req.ref,
       installationId: req.installationId,
       agentRoot: req.agentRoot,
+      injectTeammateTool: req.injectTeammateTool,
     });
   },
 

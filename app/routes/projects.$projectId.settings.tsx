@@ -118,6 +118,7 @@ import {
 } from "~/project/secrets.server";
 import { SecretsCard } from "~/components/secrets-card";
 import { SharedSecretsSection } from "~/components/shared-secrets-section";
+import { TeamLinksSection } from "~/components/team-links-section";
 import type { Route } from "./+types/projects.$projectId.settings";
 
 /** The fetcher-JSON secret intents delegated to ~/project/secrets.server (§6). */
@@ -184,6 +185,9 @@ interface SettingsView {
     createdAt: string;
     lastUsedAt: string | null;
   }[];
+  /** Repo (team only): the directed collaboration matrix — members + touched override rows. */
+  teamMembers: { id: string; name: string }[];
+  teamLinks: { fromAgentId: string; toAgentId: string; enabled: boolean }[];
 }
 
 /** One shared secret as the repo-level section shows it (§8). */
@@ -346,6 +350,8 @@ export const loader = (args: LoaderFunctionArgs) =>
                 member === active.name || (member === null && !isTeam),
         ),
         tokens: [],
+        teamMembers: [],
+        teamLinks: [],
       };
 
       if (showMember) {
@@ -452,6 +458,16 @@ export const loader = (args: LoaderFunctionArgs) =>
             ? new Date(t.lastUsedAt).toISOString()
             : null,
         }));
+        // Team collaboration matrix (D4): only meaningful with more than one member.
+        if (isTeam && roster.length > 1) {
+          base.teamMembers = roster.map((a) => ({ id: a.id, name: a.name }));
+          const links = await getRuntime().data.agentLinks.listByProject(project.id);
+          base.teamLinks = links.map((l) => ({
+            fromAgentId: l.fromAgentId,
+            toAgentId: l.toAgentId,
+            enabled: l.enabled,
+          }));
+        }
       }
       return base;
     },
@@ -670,6 +686,30 @@ export async function action(args: ActionFunctionArgs) {
       );
     }
 
+    // ── Team collaboration matrix: toggle a directed can-ask override (D4) ──
+    // Default-allow: an absent row = allowed; unchecking writes enabled=false. JSON in/out
+    // (fetcher), so a toggle never navigates. Both members are validated against the roster.
+    if (intent === "link-toggle") {
+      const fromAgentId = String(form.get("from") ?? "");
+      const toAgentId = String(form.get("to") ?? "");
+      const enabled = form.get("enabled") === "1";
+      if (!fromAgentId || !toAgentId || fromAgentId === toAgentId) {
+        return { error: "Pick two different team members." };
+      }
+      const { roster } = await resolveAgentContext(project.id, null);
+      const ids = new Set(roster.map((a) => a.id));
+      if (!ids.has(fromAgentId) || !ids.has(toAgentId)) {
+        return { error: "Unknown team member." };
+      }
+      await getRuntime().data.agentLinks.set({
+        projectId: project.id,
+        fromAgentId,
+        toAgentId,
+        enabled,
+      });
+      return { ok: true as const };
+    }
+
     // ── Member danger zone: remove agent (change-set PR deleting its directory) ──
     if (intent === "remove-member") {
       const name = String(form.get("name") ?? "");
@@ -865,6 +905,12 @@ export default function Settings({
             projectId={project.id}
             isTeam={isTeam}
             shared={loaderData.repoShared}
+          />
+        )}
+        {showRepo && loaderData.teamMembers.length > 1 && (
+          <TeamLinksSection
+            members={loaderData.teamMembers}
+            links={loaderData.teamLinks}
           />
         )}
         <MarketplaceInstallsSection loaderData={loaderData} />

@@ -339,6 +339,19 @@ export async function listRunChannels(
     .sort();
 }
 
+/** The Eden run id for a `(project, externalRunId)` pair, or null (delegation linking). */
+export async function getRunIdByExternal(
+  projectId: string,
+  externalRunId: string,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.projectId, projectId), eq(runs.externalRunId, externalRunId)))
+    .limit(1);
+  return row?.id ?? null;
+}
+
 /** One run with its ordered steps (the transcript), scoped to the project. */
 export async function getRunWithSteps(projectId: string, runId: string) {
   const [run] = await db

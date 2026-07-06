@@ -58,6 +58,17 @@ vi.mock("~/github/client.server", () => ({
   })),
 }));
 
+// Wrap writeFile so build-context injection is observable — it still writes to the temp dir.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    writeFile: vi.fn((...args: Parameters<typeof actual.writeFile>) =>
+      actual.writeFile(...args),
+    ),
+  };
+});
+
 describe("checkEveBuild", () => {
   beforeEach(() => {
     execFile.mockClear();
@@ -251,6 +262,63 @@ describe("checkEveBuild", () => {
  * raw Nitro entry left every skills/bootstrap-carrying agent permanently unable to use its
  * bash tools (SandboxTemplateNotProvisionedError; self-heal is disabled for built servers).
  */
+describe("ask-teammate tool injection (D2)", () => {
+  beforeEach(() => {
+    execFile.mockClear();
+    execFile.mockImplementation(defaultExecFile);
+  });
+
+  async function writeCalls() {
+    const fsp = await import("node:fs/promises");
+    return (fsp.writeFile as unknown as ReturnType<typeof vi.fn>).mock.calls as [
+      string,
+      string,
+    ][];
+  }
+
+  it("bakes the generated tool into a team member's build context", async () => {
+    const { buildEveImage } = await import("~/deploy/eve-image.server");
+    const fsp = await import("node:fs/promises");
+    (fsp.writeFile as unknown as ReturnType<typeof vi.fn>).mockClear();
+
+    // Injection happens in fetchSource, before the docker build — the build result is irrelevant
+    // to this assertion (the mocked docker CLI isn't wired for a full success path).
+    await buildEveImage({
+      projectId: "proj_1",
+      repo: { owner: "acme", repo: "agents" },
+      ref: "abc123",
+      installationId: "inst_1",
+      agentRoot: "agents/deployer/agent",
+      injectTeammateTool: true,
+    }).catch(() => {});
+
+    const toolWrite = (await writeCalls()).find(([p]) =>
+      String(p).endsWith("agents/deployer/agent/tools/ask-teammate.ts"),
+    );
+    expect(toolWrite).toBeTruthy();
+    expect(String(toolWrite![1])).toContain("defineTool");
+    expect(String(toolWrite![1])).toContain("/api/team/ask");
+  });
+
+  it("does not inject when the flag is unset (single-agent / non-member builds)", async () => {
+    const { buildEveImage } = await import("~/deploy/eve-image.server");
+    const fsp = await import("node:fs/promises");
+    (fsp.writeFile as unknown as ReturnType<typeof vi.fn>).mockClear();
+
+    await buildEveImage({
+      projectId: "proj_1",
+      repo: { owner: "acme", repo: "agents" },
+      ref: "abc123",
+      installationId: "inst_1",
+    }).catch(() => {});
+
+    const toolWrite = (await writeCalls()).find(([p]) =>
+      String(p).endsWith("tools/ask-teammate.ts"),
+    );
+    expect(toolWrite).toBeUndefined();
+  });
+});
+
 describe("EDEN_EVE_DOCKERFILE", () => {
   it("boots via the eve bin (`eve start`), not the raw Nitro entry", async () => {
     const { EDEN_EVE_DOCKERFILE } = await import("~/deploy/eve-image.server");

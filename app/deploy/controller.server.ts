@@ -19,6 +19,8 @@ import type { DataStore, Deployment, Release } from "~/data/ports";
 import { enqueue } from "~/jobs/queue.server";
 import { getRuntime } from "~/seams/index.server";
 import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
+import { teammateRoster } from "~/team/roster.server";
+import { mintDelegationToken } from "~/team/token.server";
 import { isVersionLabelCollision, versionLabel } from "./versioning";
 
 export type { Release, Deployment } from "~/data/ports";
@@ -200,10 +202,11 @@ export async function deployRelease(
   ]);
   if (!release) throw new Error("Release not found.");
   if (!env) throw new Error("Environment not found.");
-  // The project/agent lookups and the building-row upsert don't depend on each other.
-  const [project, agent, dep] = await Promise.all([
+  // The project/agent/roster lookups and the building-row upsert don't depend on each other.
+  const [project, agent, roster, dep] = await Promise.all([
     store.projects.findById(release.projectId),
     store.agents.findById(release.agentId),
+    store.agents.listByProject(release.projectId),
     input.deploymentId
       ? store.deployments.update(input.deploymentId, {
           status: "building",
@@ -217,6 +220,12 @@ export async function deployRelease(
           createdBy: input.createdBy ?? null,
         }),
   ]);
+
+  // A team member (an `agents/<name>/agent` root — never the single-agent repo's "agent") gets
+  // Eden's delegation wiring: the ask-teammate tool baked into its image (D2) and the relay
+  // coordinates + roster injected as env (D3). A team of one is a member too — the tool ships
+  // and the env is set; EDEN_TEAMMATES is simply an empty roster.
+  const isTeamMember = !!agent && agent.root !== "agent";
 
   try {
     const scope: SecretScope = {
@@ -255,6 +264,41 @@ export async function deployRelease(
     const allowlist = exposed.filter((name) => name in envVars);
     if (allowlist.length > 0) envVars.EDEN_SANDBOX_ENV = allowlist.join(",");
 
+    // Team delegation (D3): a team member gets the relay coordinates, an HMAC token identifying
+    // THIS deployment, and its roster — all Eden-owned, so stripped from user secrets first (the
+    // same anti-shadowing rule as EDEN_SANDBOX_ENV) then set. Discovery (EDEN_TEAMMATES) is env;
+    // authorization is enforced live at the relay, so a roster here is never permission-filtered.
+    for (const key of [
+      "EDEN_TEAM_URL",
+      "EDEN_TEAM_TOKEN",
+      "EDEN_TEAMMATES",
+      "EDEN_DELEGATION_TIMEOUT_MS",
+    ]) {
+      delete envVars[key];
+    }
+    if (isTeamMember && project && agent) {
+      // Default relay port matches how Eden is actually served: react-router-serve defaults to
+      // 3000 in production, the vite dev server to 5173 (vite.config.ts). PORT wins when set.
+      envVars.EDEN_TEAM_URL =
+        process.env.EDEN_TEAM_RELAY_URL ??
+        `http://host.docker.internal:${process.env.PORT ?? (process.env.NODE_ENV === "production" ? "3000" : "5173")}`;
+      envVars.EDEN_TEAM_TOKEN = mintDelegationToken(dep.id);
+      const teammates = await teammateRoster({
+        project: {
+          repoOwner: project.repoOwner ?? "",
+          repoName: project.repoName ?? "",
+          repoInstallationId: project.repoInstallationId ?? "",
+        },
+        roster,
+        selfAgentId: agent.id,
+      });
+      envVars.EDEN_TEAMMATES = JSON.stringify(teammates);
+      // Keep the tool's fetch budget aligned with the relay's when an operator overrides it.
+      if (process.env.EDEN_DELEGATION_TIMEOUT_MS) {
+        envVars.EDEN_DELEGATION_TIMEOUT_MS = process.env.EDEN_DELEGATION_TIMEOUT_MS;
+      }
+    }
+
     let imageRef = release.imageRef;
     const shouldBuild = input.rebuild || !imageRef;
     if (shouldBuild) {
@@ -267,6 +311,7 @@ export async function deployRelease(
         ref: release.gitSha,
         installationId: project.repoInstallationId,
         agentRoot: agent?.root,
+        injectTeammateTool: isTeamMember,
       });
       imageRef = built.imageRef;
       await store.releases.setImageRef(release.id, built.imageRef);

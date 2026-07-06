@@ -45,6 +45,10 @@ import { getInstallationOctokit } from "~/github/client.server";
 import { lowercaseLegacyId } from "~/lib/id";
 import type { BuiltArtifact } from "~/seams/types";
 import {
+  ASK_TEAMMATE_TOOL_PATH,
+  ASK_TEAMMATE_TOOL_SOURCE,
+} from "~/team/tool-template";
+import {
   assertDockerDaemonReady,
   commandErrorText,
   isDockerUnavailableError,
@@ -206,6 +210,8 @@ export interface EveImageBuildInput {
   installationId: string | number;
   /** Agent directory ("agent" or "agents/<member>/agent") — selects the build directory. */
   agentRoot?: string;
+  /** Bake Eden's generated `ask-teammate` tool into the build context (Team delegation — D2). */
+  injectTeammateTool?: boolean;
 }
 
 /** Fetch repo@ref into `workDir/src`, ensuring Dockerfile/.dockerignore. Returns srcDir. */
@@ -237,6 +243,17 @@ async function fetchSource(
   }
   if (!existsSync(path.join(buildDir, ".dockerignore"))) {
     await writeFile(path.join(buildDir, ".dockerignore"), EDEN_DOCKERIGNORE);
+  }
+
+  // Team delegation (D2): bake the generated ask-teammate tool into the member's build context,
+  // never the repo. The path is relative to the build dir (the member's package dir). A repo
+  // file already at that path wins — the user override is never clobbered.
+  if (input.injectTeammateTool) {
+    const toolPath = path.join(buildDir, ASK_TEAMMATE_TOOL_PATH);
+    if (!existsSync(toolPath)) {
+      await mkdir(path.dirname(toolPath), { recursive: true });
+      await writeFile(toolPath, ASK_TEAMMATE_TOOL_SOURCE);
+    }
   }
   return srcDir;
 }

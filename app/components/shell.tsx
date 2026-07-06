@@ -328,19 +328,21 @@ const TABS: Record<NavLevel, { path: string; label: string }[]> = {
     { path: "/assistant", label: "Assistant" },
     { path: "/settings", label: "Settings" },
   ],
-  // Team landing: only the repo-wide surfaces.
+  // Team landing: the repo-wide surfaces. Assistant is project-level (one per repo), so it lives
+  // here at the repo level for teams, NOT on each member (docs/ASSISTANT.md §1).
   repo: [
     { path: "", label: "Overview" },
     { path: "/deployment", label: "Deployment" },
+    { path: "/assistant", label: "Assistant" },
     { path: "/settings", label: "Settings" },
   ],
-  // One team member: the member-scoped surfaces (+ the switcher).
+  // One team member: the member-scoped surfaces (+ the switcher). No Assistant tab — it is a
+  // project-level surface at the repo level, not per member.
   member: [
     { path: "", label: "Overview" },
     { path: "/deployment", label: "Deployment" },
     { path: "/playground", label: "Playground" },
     { path: "/runs", label: "Runs" },
-    { path: "/assistant", label: "Assistant" },
     { path: "/settings", label: "Settings" },
   ],
 };

@@ -64,11 +64,8 @@ export default [
     "repos/:projectId/assistant",
     "routes/projects.$projectId.assistant.tsx",
   ),
-  memberRoute(
-    "/assistant",
-    "routes/projects.$projectId.assistant.tsx",
-    "member-assistant",
-  ),
+  // The assistant is project-level now; the old member-level tab 301s to the repo-level page.
+  memberRoute("/assistant", "routes/shims.member-assistant.tsx", "member-assistant"),
   route(
     "repos/:projectId/resources/:category",
     "routes/projects.$projectId.resources.$category.tsx",
@@ -118,6 +115,11 @@ export default [
   route(
     "api/repos/:projectId/playground/stream",
     "routes/api.projects.$projectId.playground.stream.ts",
+  ),
+  // Assistant streaming turn (project-level sibling of the playground stream).
+  route(
+    "api/repos/:projectId/assistant/stream",
+    "routes/api.projects.$projectId.assistant.stream.ts",
   ),
   route("api/github/webhook", "routes/api.github.webhook.tsx"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),

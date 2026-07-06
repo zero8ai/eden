@@ -332,6 +332,64 @@ export async function ensureAssistantInstance(
   };
 }
 
+/** A read-only snapshot for the loader — NO side effects (no enqueue, no wake, no build). */
+export interface AssistantSnapshot {
+  status: "live" | "provisioning" | "failed" | "idle";
+  agentId: string | null;
+  environmentId: string | null;
+  /** Present only when live. */
+  target: {
+    deploymentId: string;
+    environmentId: string;
+    releaseId: string;
+    url: string;
+    version: string;
+    environmentName: string;
+  } | null;
+}
+
+/**
+ * Report the assistant instance's current status without provisioning or waking it (loader-safe).
+ * `idle` means nothing usable is running (never deployed, or stopped) — the UI offers to set it
+ * up, and a turn provisions/wakes it on demand via `ensureAssistantInstance`.
+ */
+export async function peekAssistantInstance(
+  projectId: string,
+  store: DataStore = getRuntime().data,
+): Promise<AssistantSnapshot> {
+  const agent = await store.agents.findAssistant(projectId);
+  if (!agent) return { status: "idle", agentId: null, environmentId: null, target: null };
+  const envs = await store.environments.listByAgent(agent.id);
+  const env = envs.find((e) => e.name === ASSISTANT_ENV) ?? envs[0];
+  if (!env) return { status: "idle", agentId: agent.id, environmentId: null, target: null };
+  const base = { agentId: agent.id, environmentId: env.id };
+
+  const currentSha = templateGitSha(await assistantTemplateHash());
+  const deployments = await store.deployments.listByEnvironment(env.id);
+  const live = deployments.find((d) => d.status === "live" && d.url && d.gitSha === currentSha);
+  if (live && live.url) {
+    return {
+      ...base,
+      status: "live",
+      target: {
+        deploymentId: live.id,
+        environmentId: env.id,
+        releaseId: live.releaseId,
+        url: live.url,
+        version: live.version,
+        environmentName: ASSISTANT_ENV,
+      },
+    };
+  }
+  if (deployments.some((d) => d.status === "pending" || d.status === "building")) {
+    return { ...base, status: "provisioning", target: null };
+  }
+  if (deployments.length > 0 && deployments.every((d) => d.status === "failed")) {
+    return { ...base, status: "failed", target: null };
+  }
+  return { ...base, status: "idle", target: null };
+}
+
 /**
  * Restart the assistant instance so it re-fetches its config bundle and rebuilds (used by the
  * refresh-on-merge hook when `.eden/assistant/**` changes). Best-effort stop → start on the

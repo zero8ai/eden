@@ -1,53 +1,59 @@
 /**
- * Embedded authoring assistant (Author pillar, PRD §7.2 / D4) — a persistent CONVERSATION,
- * not a request form. Each user message runs the authoring agent (assistant/agent.server.ts)
- * with the conversation's model-level history, so follow-ups build on earlier turns. The
- * transcript + history persist server-side (chat/conversation.server.ts): navigate away and
- * back and it's still here; idle for 24h and it starts fresh. One conversation per user per
- * project — no session management.
+ * Assistant — Eden's built-in, project-level authoring agent as a durable, streaming chat.
+ *
+ * A real eve instance (see docs/ASSISTANT.md), not an in-process loop: the composer POSTs to the
+ * streaming resource route (api.projects.$projectId.assistant.stream) and this component reads the
+ * same NDJSON turn feed the playground uses. Conversation history rebuilds from Eve's durable
+ * stream on load (reusing playgroundSessions), so a mid-run reload re-attaches. First use shows a
+ * provisioning state while the instance builds/deploys.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Link,
   redirect,
   useFetcher,
+  useNavigate,
+  useRevalidator,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
 
-import { runAuthoringAgent, type ChatMessage } from "~/assistant/agent.server";
 import {
-  loadConversation,
-  resetConversation,
-  saveConversation,
-} from "~/chat/conversation.server";
-import type { ChatEntry } from "~/chat/types";
+  ensureAssistantAgent,
+  ensureAssistantInstance,
+  peekAssistantInstance,
+} from "~/assistant/instance.server";
+import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import {
   AssistantBubble,
   ChatComposer,
   ChatTranscript,
+  InputRequestsBlock,
   MarkdownText,
-  PendingBubble,
+  StepsCard,
   UserBubble,
 } from "~/components/chat";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
-import { Alert, AlertDescription } from "~/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { newId } from "~/lib/id";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import { listAgents } from "~/db/queries.server";
 import { contextPath } from "~/lib/paths";
 import {
-  agentFromParams,
-  agentParamRedirect,
-  resolveAgentContext,
-} from "~/project/agent-context.server";
+  createPlaygroundSession,
+  listPlaygroundSessions,
+  loadPlaygroundEntriesFromEve,
+  summarizePlaygroundSession,
+} from "~/playground/sessions.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.assistant";
-
-interface AssistantState extends Record<string, unknown> {
-  history: ChatMessage[];
-}
 
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
@@ -55,39 +61,60 @@ export const loader = (args: LoaderFunctionArgs) =>
     async ({ auth }) => {
       const project = requireRepo(
         await requireProject(
-          {
-            user: auth.user,
-            organizationId: auth.organizationId,
-            role: auth.role,
-          },
+          { user: auth.user, organizationId: auth.organizationId, role: auth.role },
           args.params.projectId,
         ),
       );
-      const agentName = agentFromParams(args.params);
-      if (!agentName) {
-        const legacy = agentParamRedirect(args.request, project.id);
-        if (legacy) throw legacy;
-      }
-      const [conversation, { roster, active, isTeam }] = await Promise.all([
-        loadConversation<AssistantState>(
-          project.id,
-          "assistant",
-          auth.user!.id,
-          {
-            history: [],
-          },
-        ),
-        resolveAgentContext(project.id, agentName),
+      const [snapshot, roster] = await Promise.all([
+        peekAssistantInstance(project.id),
+        listAgents(project.id),
       ]);
-      // Teams have no repo-level Assistant — the tab exists only at the member level.
-      if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
+      const isTeam = roster.some((a) => a.root !== "agent");
+
+      let entries: ChatEntry[] = [];
+      let historyError: string | null = null;
+      let currentSessionId: string | null = null;
+      let currentSessionStatus: string | null = null;
+      let sessions: ReturnType<typeof summarizePlaygroundSession>[] = [];
+
+      if (snapshot.agentId) {
+        const rows = await listPlaygroundSessions({
+          projectId: project.id,
+          agentId: snapshot.agentId,
+          userId: auth.user!.id,
+        });
+        sessions = rows.map(summarizePlaygroundSession);
+        const selected = args.url.searchParams.get("session");
+        const currentSession =
+          (selected ? rows.find((s) => s.id === selected) : null) ?? rows[0] ?? null;
+        currentSessionId = currentSession?.id ?? null;
+        currentSessionStatus = currentSession?.status ?? null;
+        if (currentSession?.externalSessionId) {
+          if (snapshot.target) {
+            try {
+              entries = await loadPlaygroundEntriesFromEve({
+                session: currentSession,
+                target: snapshot.target,
+              });
+            } catch (error) {
+              historyError = `Couldn't reload the assistant's history: ${(error as Error).message}`;
+            }
+          } else {
+            historyError = "History replays once the assistant is running again.";
+          }
+        }
+      }
+
       return {
         project,
-        entries: conversation.entries,
-        expired: conversation.expired,
-        roster: roster.map((a) => ({ name: a.name })),
-        activeAgent: active.name,
+        instanceStatus: snapshot.status,
+        sessions,
+        currentSessionId,
+        currentSessionStatus,
+        entries,
+        historyError,
         isTeam,
+        roster: roster.map((a) => ({ name: a.name })),
       };
     },
     { ensureSignedIn: true },
@@ -106,89 +133,198 @@ export async function action(args: ActionFunctionArgs) {
       args.params.projectId,
     ),
   );
-
   const form = await args.request.formData();
-  if (String(form.get("intent")) === "reset") {
-    await resetConversation(project.id, "assistant", auth.user.id);
-    return { ok: true as const };
+  const intent = String(form.get("intent"));
+
+  if (intent === "provision") {
+    // Kick off (or wake) the instance; the page then polls until it's live.
+    await ensureAssistantInstance(project.id);
+    throw redirect(`/repos/${project.id}/assistant`);
   }
-
-  const message = String(form.get("message") ?? "").trim();
-  if (!message) return { error: "Say what you want built." };
-
-  const [conversation, { active }] = await Promise.all([
-    loadConversation<AssistantState>(project.id, "assistant", auth.user.id, {
-      history: [],
-    }),
-    resolveAgentContext(project.id, String(form.get("agent") ?? "") || null),
-  ]);
-  const entries = [...conversation.entries];
-  entries.push({ id: newId(), role: "user", text: message });
-
-  try {
-    const result = await runAuthoringAgent({
-      project,
-      instruction: message,
-      createdBy: auth.user.id,
-      agentRoot: active.root,
-      history: conversation.state.history,
+  if (intent === "new-session") {
+    const { agent } = await ensureAssistantAgent(project.id);
+    const session = await createPlaygroundSession({
+      projectId: project.id,
+      agentId: agent.id,
+      userId: auth.user.id,
     });
-    entries.push({
-      id: newId(),
-      role: "assistant",
-      text: result.summary,
-      files: result.files,
-      secrets: result.secretsNeeded,
-      checks: result.checks.ran
-        ? { ran: true, ok: result.checks.ok }
-        : undefined,
-    });
-    await saveConversation(project.id, "assistant", auth.user.id, entries, {
-      history: result.history,
-    });
-    return { ok: true as const };
-  } catch (error) {
-    // Persist the user's message + the failure so the conversation stays coherent.
-    entries.push({
-      id: newId(),
-      role: "assistant",
-      text: "",
-      error: (error as Error).message,
-    });
-    await saveConversation(project.id, "assistant", auth.user.id, entries, {
-      history: conversation.state.history,
-    });
-    return { ok: true as const };
+    throw redirect(`/repos/${project.id}/assistant?session=${encodeURIComponent(session.id)}`);
   }
+  return { ok: true as const };
 }
 
 export function meta() {
   return [{ title: "Assistant · Eden" }];
 }
 
+interface LiveTurn {
+  userText: string;
+  text: string;
+  steps: ChatStep[];
+  activity: string | null;
+  modelId: string | null;
+  inputRequests: ChatInputRequest[];
+  error: string | null;
+  done: boolean;
+}
+
 export default function Assistant({ loaderData }: Route.ComponentProps) {
-  const { project, entries, expired, roster, activeAgent, isTeam } = loaderData;
-  const ctx = contextPath(project.id, isTeam ? activeAgent : null);
-  const fetcher = useFetcher<typeof action>();
-  const ResetForm = fetcher.Form;
-  const busy = fetcher.state !== "idle";
-  const pendingMessage =
-    busy && fetcher.formData?.get("intent") !== "reset"
-      ? String(fetcher.formData?.get("message") ?? "")
-      : null;
-  const hasEntries = entries.length > 0;
+  const {
+    project,
+    instanceStatus,
+    sessions,
+    currentSessionId,
+    currentSessionStatus,
+    entries,
+    historyError,
+    isTeam,
+    roster,
+  } = loaderData;
+  const base = contextPath(project.id, null);
+  const navigate = useNavigate();
+  const revalidator = useRevalidator();
+  const provisionFetcher = useFetcher<typeof action>();
+  const newSessionFetcher = useFetcher<typeof action>();
+  const NewSessionForm = newSessionFetcher.Form;
+  const ProvisionForm = provisionFetcher.Form;
+
+  const [live, setLive] = useState<LiveTurn | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  const remoteBusy = currentSessionStatus === "running";
+  const provisioning = instanceStatus === "provisioning";
+  const busy = (live !== null && !live.done) || remoteBusy || provisioning;
+  const replayingRunningSession = remoteBusy && !live;
+
+  // Poll while provisioning or replaying a running turn — the loader re-derives state each time.
+  useEffect(() => {
+    if (!provisioning && !replayingRunningSession) return;
+    const id = window.setInterval(() => void revalidator.revalidate(), 2_500);
+    return () => window.clearInterval(id);
+  }, [provisioning, replayingRunningSession, revalidator]);
+
+  const sessionPicker = useMemo(() => {
+    if (!currentSessionId || sessions.length === 0) return null;
+    return (
+      <Select
+        value={currentSessionId}
+        onValueChange={(id) =>
+          navigate(`${base}/assistant?session=${encodeURIComponent(id)}`)
+        }
+      >
+        <SelectTrigger
+          className="h-9 w-52 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
+          aria-label="Assistant conversation"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {sessions.map((s) => (
+            <SelectItem key={s.id} value={s.id}>
+              {formatSessionLabel(s.title, s.updatedAt)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }, [base, currentSessionId, navigate, sessions]);
+
+  const send = useCallback(
+    async (message: string) => {
+      setSendError(null);
+      setLive({
+        userText: message,
+        text: "",
+        steps: [],
+        activity: "Thinking…",
+        modelId: null,
+        inputRequests: [],
+        error: null,
+        done: false,
+      });
+      const apply = (evt: StreamEvent) =>
+        setLive((prev) => (prev ? reduceLive(prev, evt) : prev));
+
+      const form = new FormData();
+      form.set("message", message);
+      if (currentSessionId) form.set("playgroundSessionId", currentSessionId);
+
+      try {
+        const res = await fetch(`/api/repos/${project.id}/assistant/stream`, {
+          method: "POST",
+          body: form,
+        });
+        if (!res.ok || !res.body) {
+          const detail = (await res.json().catch(() => null)) as
+            | { error?: string; provisioning?: boolean }
+            | null;
+          if (detail?.provisioning || res.status === 409) {
+            setLive(null);
+            setSendError("Your assistant is starting up — it'll be ready in a moment.");
+            await revalidator.revalidate();
+            return;
+          }
+          throw new Error(detail?.error ?? `Stream failed (${res.status}).`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let nextSessionId = currentSessionId;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            let evt: StreamEvent;
+            try {
+              evt = JSON.parse(line) as StreamEvent;
+            } catch {
+              continue;
+            }
+            if (evt.type === "done" && evt.playgroundSessionId) {
+              nextSessionId = evt.playgroundSessionId;
+            }
+            apply(evt);
+          }
+        }
+        await revalidator.revalidate();
+        if (!currentSessionId && nextSessionId) {
+          navigate(`${base}/assistant?session=${encodeURIComponent(nextSessionId)}`, {
+            replace: true,
+          });
+        }
+        setLive(null);
+      } catch (error) {
+        setLive((prev) =>
+          prev
+            ? { ...prev, error: `Lost the live stream: ${(error as Error).message}`, activity: null, done: true }
+            : prev,
+        );
+        setSendError("The live view dropped — the reply may still have been recorded.");
+        await revalidator.revalidate();
+        setLive(null);
+      }
+    },
+    [base, currentSessionId, navigate, project.id, revalidator],
+  );
 
   const headerActions = useMemo(
-    () =>
-      hasEntries ? (
-        <ResetForm method="post">
-          <input type="hidden" name="intent" value="reset" />
+    () => (
+      <div className="flex flex-wrap items-center gap-2">
+        {sessionPicker}
+        <NewSessionForm method="post">
+          <input type="hidden" name="intent" value="new-session" />
           <Button type="submit" variant="outline" size="sm" disabled={busy}>
             New conversation
           </Button>
-        </ResetForm>
-      ) : undefined,
-    [ResetForm, busy, hasEntries],
+        </NewSessionForm>
+      </div>
+    ),
+    [NewSessionForm, busy, sessionPicker],
   );
 
   const transcriptLead = useMemo(
@@ -196,21 +332,35 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
       <>
         <PageHeader
           title="Assistant"
-          description="Tell it what the agent should be able to do. It writes the code, verifies the build, and stages everything for your review on the Deployment tab."
+          description="Tell it what your agents should do. It writes the code, verifies the build, and stages everything for review on the Deployment tab — you never touch git."
           actions={headerActions}
         />
-        {expired && !hasEntries && (
+        {provisioning && (
           <Alert className="mb-4">
+            <AlertTitle>Setting up your assistant…</AlertTitle>
             <AlertDescription>
-              Your previous conversation expired after a day of inactivity —
-              starting fresh.
+              Eden is building and starting your assistant instance. This takes a minute the
+              first time — the page updates automatically.
             </AlertDescription>
+          </Alert>
+        )}
+        {historyError && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>{historyError}</AlertDescription>
+          </Alert>
+        )}
+        {sendError && (
+          <Alert className="mb-4">
+            <AlertDescription>{sendError}</AlertDescription>
           </Alert>
         )}
       </>
     ),
-    [expired, hasEntries, headerActions],
+    [headerActions, historyError, provisioning, sendError],
   );
+
+  const idle = instanceStatus === "idle";
+  const failed = instanceStatus === "failed";
 
   return (
     <AppShell
@@ -219,36 +369,67 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         projectId: project.id,
         repoName: project.name,
         isTeam,
-        agentName: activeAgent,
         tail: [{ label: "Assistant" }],
       })}
     >
       <div className="mx-auto w-full max-w-5xl px-4 pt-8 sm:px-6">
-        <AgentNav
-          base={ctx}
-          level={isTeam ? "member" : "single"}
-          roster={roster}
-          activeAgent={isTeam ? activeAgent : undefined}
-          className="mb-0"
-        />
+        <AgentNav base={base} level={isTeam ? "repo" : "single"} roster={roster} className="mb-0" />
       </div>
 
       <ChatTranscript
-        dep={`${entries.length}:${pendingMessage ?? ""}`}
-        forceScrollDep={pendingMessage}
+        dep={`${entries.length}:${entries.at(-1)?.text.length ?? 0}:${entries.at(-1)?.steps?.length ?? 0}:${currentSessionStatus ?? ""}:${instanceStatus}:${live ? live.text.length + live.steps.length + live.inputRequests.length : 0}`}
+        forceScrollDep={live?.userText}
         lead={transcriptLead}
       >
-        {(entries as ChatEntry[]).map((e) =>
+        {(failed || idle) && entries.length === 0 && !live && (
+          <div className="py-6">
+            <Alert variant={failed ? "destructive" : undefined}>
+              <AlertTitle>
+                {failed ? "The assistant failed to start" : "Your assistant isn't running yet"}
+              </AlertTitle>
+              <AlertDescription className="space-y-3">
+                <p>
+                  {failed
+                    ? "The last attempt to start the assistant failed. Try starting it again."
+                    : "Start it once and it stays available. It builds and deploys as its own eve instance."}
+                </p>
+                <ProvisionForm method="post">
+                  <input type="hidden" name="intent" value="provision" />
+                  <Button type="submit" size="sm" disabled={provisionFetcher.state !== "idle"}>
+                    {failed ? "Try again" : "Set up the assistant"}
+                  </Button>
+                </ProvisionForm>
+              </AlertDescription>
+            </Alert>
+          </div>
+        )}
+
+        {entries.length === 0 && !live && !remoteBusy && !idle && !failed && !provisioning && (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            Say what you want built. The assistant keeps context across turns.
+          </p>
+        )}
+
+        {(entries as ChatEntry[]).map((e, i) =>
           e.role === "user" ? (
             <UserBubble key={e.id} text={e.text} />
           ) : (
-            <AssistantEntry key={e.id} entry={e} base={ctx} />
+            <AgentEntry
+              key={e.id}
+              entry={e}
+              onAnswer={i === entries.length - 1 && !live ? send : undefined}
+              busy={busy}
+              running={replayingRunningSession && i === entries.length - 1}
+            />
           ),
         )}
-        {pendingMessage && (
+        {replayingRunningSession && entries.at(-1)?.role !== "assistant" && (
+          <StepsCard steps={[]} idPrefix="running-session" activity="Still working…" />
+        )}
+        {live && (
           <>
-            <UserBubble text={pendingMessage} />
-            <PendingBubble />
+            <UserBubble text={live.userText} />
+            <LiveBubble live={live} />
           </>
         )}
       </ChatTranscript>
@@ -256,82 +437,142 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
       <div className="mx-auto w-full max-w-5xl px-4 pb-4 pt-3 sm:px-6">
         <ChatComposer
           placeholder={
-            roster.length > 1
-              ? `What should ${activeAgent} be able to do?`
-              : "What should the agent be able to do?"
+            idle || failed
+              ? "Set up the assistant to start…"
+              : provisioning
+                ? "Setting up your assistant…"
+                : "What should your agent be able to do?"
           }
-          busy={busy}
-          onSend={(message) =>
-            fetcher.submit({ message, agent: activeAgent }, { method: "post" })
-          }
+          busy={busy || idle || failed}
+          onSend={send}
         />
       </div>
     </AppShell>
   );
 }
 
-function AssistantEntry({ entry, base }: { entry: ChatEntry; base: string }) {
+type StreamEvent =
+  | { type: "model"; modelId: string }
+  | { type: "thinking" }
+  | { type: "action"; toolName: string; summary: string | null }
+  | { type: "text"; text: string }
+  | { type: "step"; step: ChatStep }
+  | { type: "input"; requests: ChatInputRequest[] }
+  | {
+      type: "done";
+      ok: boolean;
+      playgroundSessionId?: string;
+      reply: string | null;
+      structured: boolean;
+      inputRequests?: ChatInputRequest[];
+      error: string | null;
+      modelId: string | null;
+      version: string;
+    };
+
+function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
+  switch (evt.type) {
+    case "model":
+      return { ...prev, modelId: evt.modelId };
+    case "thinking":
+      return { ...prev, activity: "Thinking…" };
+    case "action":
+      return { ...prev, activity: evt.summary ? `${evt.toolName}: ${evt.summary}` : evt.toolName };
+    case "text":
+      return { ...prev, text: evt.text };
+    case "step":
+      return { ...prev, steps: [...prev.steps, evt.step], activity: "Thinking…" };
+    case "input":
+      return { ...prev, inputRequests: [...prev.inputRequests, ...evt.requests], activity: null };
+    case "done":
+      return {
+        ...prev,
+        text: evt.reply ?? prev.text,
+        inputRequests:
+          evt.inputRequests && evt.inputRequests.length > 0 ? evt.inputRequests : prev.inputRequests,
+        error: evt.error,
+        modelId: evt.modelId ?? prev.modelId,
+        activity: null,
+        done: true,
+      };
+    default:
+      return prev;
+  }
+}
+
+function formatSessionLabel(title: string, updatedAt: string): string {
+  const date = new Date(updatedAt);
+  const dateLabel = Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return dateLabel ? `${title} · ${dateLabel}` : title;
+}
+
+function LiveBubble({ live }: { live: LiveTurn }) {
   return (
-    <AssistantBubble>
-      {entry.error ? (
-        <p className="whitespace-pre-wrap text-destructive">{entry.error}</p>
-      ) : (
-        <MarkdownText text={entry.text} />
+    <div className="space-y-2">
+      {(live.text || live.error || live.inputRequests.length > 0) && (
+        <AssistantBubble>
+          {live.modelId && (
+            <span className="mb-1.5 flex items-center gap-1.5">
+              <span className="font-mono text-xs text-muted-foreground">{live.modelId}</span>
+            </span>
+          )}
+          {live.error ? (
+            <p className="whitespace-pre-wrap text-destructive">{live.error}</p>
+          ) : live.text ? (
+            <MarkdownText text={live.text} />
+          ) : null}
+          <InputRequestsBlock requests={live.inputRequests} busy />
+        </AssistantBubble>
       )}
+      <StepsCard steps={live.steps} idPrefix="live" activity={live.done ? null : live.activity} />
+    </div>
+  );
+}
 
-      {entry.checks && (
-        <p className="mt-2">
-          <Badge
-            variant={entry.checks.ok ? "secondary" : "destructive"}
-            className="text-xs"
-          >
-            {entry.checks.ok ? "checks passed" : "checks failed"}
-          </Badge>
-        </p>
-      )}
-
-      {entry.files && entry.files.length > 0 && (
-        <div className="mt-2 space-y-1 border-t pt-2 text-xs">
-          <p className="font-medium text-muted-foreground">Staged files</p>
-          <ul className="space-y-0.5">
-            {entry.files.map((f) => (
-              <li key={f}>
-                <Link
-                  to={`${base}/edit?path=${encodeURIComponent(f)}`}
-                  className="font-mono underline-offset-4 hover:underline"
-                >
-                  {f}
-                </Link>
-              </li>
-            ))}
-          </ul>
-          <p>
-            <Link
-              to={`${base}/deployment`}
-              className="font-medium underline underline-offset-4"
-            >
-              Review &amp; publish on the Deployment tab →
-            </Link>
-          </p>
-        </div>
-      )}
-
-      {entry.secrets && entry.secrets.length > 0 && (
-        <p className="mt-2 text-xs">
-          Secrets to set:{" "}
-          {entry.secrets.map((s) => (
-            <Badge key={s} variant="secondary" className="mr-1 font-mono">
-              {s}
+function AgentEntry({
+  entry,
+  onAnswer,
+  busy,
+  running,
+}: {
+  entry: ChatEntry;
+  onAnswer?: (text: string) => void;
+  busy?: boolean;
+  running?: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <AssistantBubble>
+        {entry.version && (
+          <span className="mb-1.5 flex items-center gap-1.5">
+            <Badge variant="secondary" className="text-xs">
+              {entry.version}
             </Badge>
-          ))}
-          <Link
-            to={`${base}/settings`}
-            className="underline underline-offset-4"
-          >
-            open Settings →
-          </Link>
-        </p>
-      )}
-    </AssistantBubble>
+            {entry.modelId && (
+              <span className="font-mono text-xs text-muted-foreground">{entry.modelId}</span>
+            )}
+          </span>
+        )}
+        {entry.error ? (
+          <p className="whitespace-pre-wrap text-destructive">{entry.error}</p>
+        ) : entry.structured ? (
+          <pre className="overflow-x-auto rounded-lg bg-muted/50 p-3 font-mono text-xs">
+            {entry.text}
+          </pre>
+        ) : entry.text || !entry.inputRequests?.length ? (
+          <MarkdownText text={entry.text || "(empty reply)"} />
+        ) : null}
+        {entry.inputRequests && (
+          <InputRequestsBlock requests={entry.inputRequests} onAnswer={onAnswer} busy={busy} />
+        )}
+      </AssistantBubble>
+      <StepsCard
+        steps={entry.steps ?? []}
+        idPrefix={entry.id}
+        activity={running ? "Still working…" : undefined}
+      />
+    </div>
   );
 }

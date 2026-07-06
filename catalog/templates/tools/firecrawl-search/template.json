@@ -1,0 +1,18 @@
+{
+  "id": "firecrawl-search",
+  "type": "tool",
+  "name": "Firecrawl Search",
+  "description": "Search the live web with Firecrawl and optionally return scraped page content.",
+  "version": "0.1.0",
+  "eve": ">=0.1.0",
+  "files": ["tools/firecrawl-search.ts"],
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "secrets": [
+    {
+      "name": "FIRECRAWL_API_KEY",
+      "description": "Firecrawl API key used as a Bearer token for the v2 Search API."
+    }
+  ]
+}

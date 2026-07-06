@@ -39,6 +39,14 @@
       "version": "0.1.1",
       "description": "Deploy a Cloudflare Worker with wrangler, using credentials from the environment.",
       "hash": "edfdb8c74978cdcd2b24ded53a81aace4d9e30a7"
+    },
+    {
+      "id": "firecrawl-search",
+      "type": "tool",
+      "name": "Firecrawl Search",
+      "version": "0.1.0",
+      "description": "Search the live web with Firecrawl and optionally return scraped page content.",
+      "hash": "95ada5cf643e28c222469ea74767c9c3700b96ce"
     }
   ]
 }

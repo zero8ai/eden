@@ -365,6 +365,10 @@ export interface AssistantSnapshot {
   status: "live" | "provisioning" | "failed" | "idle";
   agentId: string | null;
   environmentId: string | null;
+  /** Human stage label while provisioning (e.g. "Building the assistant image…"); null otherwise. */
+  provisionStage: string | null;
+  /** ISO timestamp the current provisioning deployment started, for an elapsed timer; null otherwise. */
+  provisionStartedAt: string | null;
   /** Present only when live. */
   target: {
     deploymentId: string;
@@ -385,12 +389,13 @@ export async function peekAssistantInstance(
   projectId: string,
   store: DataStore = getRuntime().data,
 ): Promise<AssistantSnapshot> {
+  const idle = { provisionStage: null, provisionStartedAt: null } as const;
   const agent = await store.agents.findAssistant(projectId);
-  if (!agent) return { status: "idle", agentId: null, environmentId: null, target: null };
+  if (!agent) return { status: "idle", agentId: null, environmentId: null, target: null, ...idle };
   const envs = await store.environments.listByAgent(agent.id);
   const env = envs.find((e) => e.name === ASSISTANT_ENV) ?? envs[0];
-  if (!env) return { status: "idle", agentId: agent.id, environmentId: null, target: null };
-  const base = { agentId: agent.id, environmentId: env.id };
+  if (!env) return { status: "idle", agentId: agent.id, environmentId: null, target: null, ...idle };
+  const base = { agentId: agent.id, environmentId: env.id, ...idle };
 
   const currentSha = templateGitSha(await assistantTemplateHash());
   const deployments = await store.deployments.listByEnvironment(env.id);
@@ -409,8 +414,18 @@ export async function peekAssistantInstance(
       },
     };
   }
-  if (deployments.some((d) => d.status === "pending" || d.status === "building")) {
-    return { ...base, status: "provisioning", target: null };
+  const active = deployments.find((d) => d.status === "pending" || d.status === "building");
+  if (active) {
+    return {
+      ...base,
+      status: "provisioning",
+      target: null,
+      provisionStage:
+        active.status === "building"
+          ? "Building the assistant image…"
+          : "Preparing the build…",
+      provisionStartedAt: active.createdAt.toISOString(),
+    };
   }
   if (deployments.length > 0 && deployments.every((d) => d.status === "failed")) {
     return { ...base, status: "failed", target: null };

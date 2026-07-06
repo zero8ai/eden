@@ -8,6 +8,7 @@
  * provisioning state while the instance builds/deploys.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Link,
@@ -109,6 +110,8 @@ export const loader = (args: LoaderFunctionArgs) =>
       return {
         project,
         instanceStatus: snapshot.status,
+        provisionStage: snapshot.provisionStage,
+        provisionStartedAt: snapshot.provisionStartedAt,
         sessions,
         currentSessionId,
         currentSessionStatus,
@@ -173,6 +176,8 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
   const {
     project,
     instanceStatus,
+    provisionStage,
+    provisionStartedAt,
     sessions,
     currentSessionId,
     currentSessionStatus,
@@ -193,7 +198,10 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
   const [sendError, setSendError] = useState<string | null>(null);
 
   const remoteBusy = currentSessionStatus === "running";
-  const provisioning = instanceStatus === "provisioning";
+  // Treat the just-submitted "provision" click as provisioning too, so feedback is instant —
+  // the loader may still report "idle" until the worker creates the building row.
+  const provisioning =
+    instanceStatus === "provisioning" || provisionFetcher.state !== "idle";
   const busy = (live !== null && !live.done) || remoteBusy || provisioning;
   const replayingRunningSession = remoteBusy && !live;
 
@@ -385,7 +393,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         forceScrollDep={live?.userText}
         lead={transcriptLead}
       >
-        {(failed || idle) && entries.length === 0 && !live && (
+        {(failed || idle) && entries.length === 0 && !live && !provisioning && (
           <div className="py-6">
             <Alert variant={failed ? "destructive" : undefined}>
               <AlertTitle>
@@ -405,6 +413,12 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
                 </ProvisionForm>
               </AlertDescription>
             </Alert>
+          </div>
+        )}
+
+        {provisioning && !live && (
+          <div className="py-6">
+            <ProvisioningCard stage={provisionStage} startedAt={provisionStartedAt} />
           </div>
         )}
 
@@ -510,6 +524,52 @@ function formatSessionLabel(title: string, updatedAt: string): string {
     ? ""
     : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   return dateLabel ? `${title} · ${dateLabel}` : title;
+}
+
+function ProvisioningCard({
+  stage,
+  startedAt,
+}: {
+  stage: string | null;
+  startedAt: string | null;
+}) {
+  const [elapsed, setElapsed] = useState<number | null>(null);
+  useEffect(() => {
+    if (!startedAt) {
+      setElapsed(null);
+      return;
+    }
+    const start = new Date(startedAt).getTime();
+    if (Number.isNaN(start)) return;
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    tick();
+    const id = window.setInterval(tick, 1_000);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+
+  return (
+    <div className="mx-auto w-full max-w-md rounded-xl border bg-muted/40 px-4 py-4">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+        <span>{stage ?? "Setting up your assistant…"}</span>
+        {elapsed !== null && (
+          <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
+            {formatElapsed(elapsed)}
+          </span>
+        )}
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        It builds and deploys as its own eve instance. The first build can take a few minutes —
+        this stays in sync automatically, so you can leave the page and come back.
+      </p>
+    </div>
+  );
+}
+
+function formatElapsed(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 function LiveBubble({ live }: { live: LiveTurn }) {

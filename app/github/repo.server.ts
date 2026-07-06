@@ -12,7 +12,13 @@
  * sits OUTSIDE every agent root, so the prefix-based parser (`detectAgentRoots`,
  * `buildAgentConfig`) never sees it — it's carried in `paths`/`files` for lock-aware callers only.
  */
-import { AGENT_ROOT, TEAM_ROOT, detectAgentRoots, type AgentSource } from "~/eve/parse";
+import {
+  AGENT_ROOT,
+  ASSISTANT_CONFIG_ROOT,
+  TEAM_ROOT,
+  detectAgentRoots,
+  type AgentSource,
+} from "~/eve/parse";
 import { getInstallationOctokit } from "./client.server";
 
 /** Repo-root marketplace install ledger (PRD §7.8) — carried alongside the agent tree. */
@@ -90,13 +96,18 @@ export async function fetchAgentSource(
 
   const agentPrefix = `${AGENT_ROOT}/`;
   const teamPrefix = `${TEAM_ROOT}/`;
+  // The built-in assistant's user-config surface (docs/ASSISTANT.md). It is not a roster member
+  // (detectAgentRoots ignores it), but the config editors and the assistant's own tools need to
+  // see and read these files, so include them in the source tree.
+  const assistantPrefix = `${ASSISTANT_CONFIG_ROOT}/`;
   const paths = tree.data.tree.flatMap((e) =>
     e.type === "blob" &&
     typeof e.path === "string" &&
     (e.path === AGENT_ROOT ||
       e.path === EDEN_LOCK ||
       e.path.startsWith(agentPrefix) ||
-      e.path.startsWith(teamPrefix))
+      e.path.startsWith(teamPrefix) ||
+      e.path.startsWith(assistantPrefix))
       ? [e.path]
       : [],
   );

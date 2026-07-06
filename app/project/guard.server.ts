@@ -7,6 +7,7 @@ import { data } from "react-router";
 
 import { syncTenant, type SessionAuth } from "~/auth/tenant.server";
 import { getProject, type Project } from "~/db/queries.server";
+import { ASSISTANT_CONFIG_ROOT } from "~/eve/parse";
 
 /** A project guaranteed to have a connected GitHub repo. */
 export type ConnectedProject = Project & {
@@ -45,7 +46,7 @@ const ROOT_FILE_ALLOWLIST = new Set(["package.json", "package-lock.json"]);
 const MEMBER_PATH = /^agents\/[A-Za-z0-9][\w.-]*\/(agent\/.+|package\.json|package-lock\.json)$/;
 
 /** The assistant's user-config surface: markdown config + the JSON model override, never code. */
-export const ASSISTANT_CONFIG_ROOT = ".eden/assistant";
+export { ASSISTANT_CONFIG_ROOT };
 const ASSISTANT_CONFIG_PATH =
   /^\.eden\/assistant\/(instructions\.md|(?:skills|schedules)\/[A-Za-z0-9][\w.-]*\.md|assistant\.json)$/;
 

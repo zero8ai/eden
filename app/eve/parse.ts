@@ -14,6 +14,12 @@ import {
 
 /** Root directory that marks an eve agent. */
 export const AGENT_ROOT = "agent";
+/**
+ * The built-in assistant's user-config surface (docs/ASSISTANT.md). Not a roster member —
+ * `detectAgentRoots` ignores it — but it is the repo-relative directory the assistant agent
+ * row's `root` points at, so drafts under it attribute to the assistant.
+ */
+export const ASSISTANT_CONFIG_ROOT = ".eden/assistant";
 /** Root directory that marks a team monorepo (PRD §7.9): `agents/<member>/agent/...`. */
 export const TEAM_ROOT = "agents";
 

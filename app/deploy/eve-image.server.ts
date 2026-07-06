@@ -130,7 +130,7 @@ WORKDIR /app
 # reachable daemon (the mounted host socket) to give the agent a real sandbox instead of
 # just-bash. Downloaded here; the runtime stage inherits this stage, CLI included. Debian
 # arch → download.docker.com arch: amd64→x86_64, arm64→aarch64; fail loudly otherwise.
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \\
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git \\
   && rm -rf /var/lib/apt/lists/* \\
   && case "$(dpkg --print-architecture)" in \\
        amd64) DOCKER_ARCH=x86_64 ;; \\

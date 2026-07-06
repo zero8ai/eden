@@ -260,6 +260,13 @@ export const loader = (args: LoaderFunctionArgs) =>
       );
       // Deploy guard (§9): required-but-unset names for this member; dismissed never trigger.
       let missingSecrets: GuardMissingSecret[] = [];
+      let hasDiscordSetup =
+        source.paths.includes(`${active.root}/channels/discord.ts`) ||
+        allDrafts.some(
+          (d) =>
+            d.content !== null &&
+            d.path === `${active.root}/channels/discord.ts`,
+        );
       try {
         const lock = overlayLock(
           source.files["eden-lock.json"] ?? null,
@@ -280,6 +287,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           ...m,
           sharedExists: sharedNames.has(m.name),
         }));
+        if (state.all.some(isDiscordSecretRequirement)) {
+          hasDiscordSetup = true;
+        }
       } catch {
         missingSecrets = []; // secrets store unavailable — never block the pipeline view
       }
@@ -298,7 +308,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         members: [],
         missingSecrets,
         discordSetup: {
-          enabled: source.paths.includes(`${active.root}/channels/discord.ts`),
+          enabled: hasDiscordSetup,
           origin: publicOrigin(args.request),
           routePath: DISCORD_INTERACTIONS_ROUTE,
         },
@@ -507,6 +517,15 @@ type ChangeRow = LoaderData["changes"][number];
 
 const IN_FLIGHT = new Set(["queued", "pending", "building"]);
 const DISCORD_INTERACTIONS_ROUTE = "/eve/v1/discord";
+const DISCORD_SECRET_NAMES = new Set([
+  "DISCORD_APPLICATION_ID",
+  "DISCORD_BOT_TOKEN",
+  "DISCORD_PUBLIC_KEY",
+]);
+
+function isDiscordSecretRequirement(secret: { name: string }): boolean {
+  return DISCORD_SECRET_NAMES.has(secret.name);
+}
 
 function publicOrigin(request: Request): string {
   const url = new URL(request.url);

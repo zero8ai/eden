@@ -17,12 +17,13 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
-import { RunTranscript, formatMs, type StepView } from "~/components/run-steps";
+import { RunTranscript, type StepView } from "~/components/run-steps";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { contextPath } from "~/lib/paths";
+import { formatMs } from "~/lib/time";
 import { getRunWithSteps } from "~/observability/store.server";
 import {
   agentFromParams,

@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 
 import { Badge } from "~/components/ui/badge";
+import { formatMs } from "~/lib/time";
 
 /** A run step as it arrives from the loader (drizzle row; `data` is free-form jsonb). */
 export interface StepView {
@@ -38,12 +39,6 @@ export interface StepView {
   isError: boolean;
   approvalGated: boolean;
   data: Record<string, unknown> | null;
-}
-
-export function formatMs(ms: number | null | undefined): string {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function tokensOf(step: StepView): number {

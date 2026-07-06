@@ -1169,7 +1169,7 @@ function IngestSection({
         <Alert className="mb-4">
           <AlertTitle>New token — copy now, shown once</AlertTitle>
           <AlertDescription>
-            <code className="font-mono">{newToken}</code>
+            <code className="font-mono break-all">{newToken}</code>
           </AlertDescription>
         </Alert>
       )}
@@ -1185,12 +1185,12 @@ function IngestSection({
           ))}
         </ul>
       )}
-      <Form method="post" className="flex items-center gap-2">
+      <Form method="post" className="flex flex-wrap items-center gap-2">
         <input type="hidden" name="intent" value="create-token" />
         <Input
           name="name"
           placeholder="production instance"
-          className="max-w-xs"
+          className="w-full sm:max-w-xs"
         />
         <Button type="submit" disabled={busy}>
           Create ingest token

@@ -251,8 +251,8 @@ function Editor({
       />
       <PageHeader
         title={
-          <span className="flex items-center gap-3">
-            <span className="font-mono text-xl">{path}</span>
+          <span className="flex flex-wrap items-center gap-3">
+            <span className="break-all font-mono text-xl">{path}</span>
             {!exists && <Badge variant="secondary">new</Badge>}
           </span>
         }

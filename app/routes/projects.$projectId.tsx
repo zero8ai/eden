@@ -556,7 +556,7 @@ export default function ProjectDetail({
       {view === "team" ? (
         <PageHeader
           title={
-            <span className="flex items-center gap-3">
+            <span className="flex flex-wrap items-center gap-3">
               {project.name}
               <Badge>
                 Team · {roster.length} member{roster.length === 1 ? "" : "s"}

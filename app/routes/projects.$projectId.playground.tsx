@@ -401,7 +401,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
 
   const headerActions = useMemo(
     () => (
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {sessionPicker}
         <NewSessionForm method="post">
           <input type="hidden" name="intent" value="new-session" />
@@ -453,7 +453,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         tail: [{ label: "Playground" }],
       })}
     >
-      <div className="mx-auto w-full max-w-5xl px-6 pt-8">
+      <div className="mx-auto w-full max-w-5xl px-4 pt-8 sm:px-6">
         <AgentNav
           base={base}
           level={isTeam ? "member" : "single"}
@@ -464,7 +464,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       </div>
 
       {targets.length === 0 ? (
-        <div className="mx-auto w-full max-w-5xl px-6 pt-8">
+        <div className="mx-auto w-full max-w-5xl px-4 pt-8 sm:px-6">
           <Alert>
             <AlertTitle>No live deployment to talk to</AlertTitle>
             <AlertDescription>
@@ -518,7 +518,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             )}
           </ChatTranscript>
 
-          <div className="mx-auto w-full max-w-5xl px-6 pb-4 pt-3">
+          <div className="mx-auto w-full max-w-5xl px-4 pb-4 pt-3 sm:px-6">
             <ChatComposer
               placeholder={
                 isTeam

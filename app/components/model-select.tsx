@@ -164,14 +164,14 @@ export function ModelSelect({
             variant="outline"
             disabled={busy}
             aria-label="Model"
-            className="w-72 justify-between font-mono text-sm"
+            className="w-full justify-between font-mono text-sm sm:w-72"
           >
             <span className="truncate">
               {busy ? "Saving…" : (value ?? "Pick a model")}
             </span>
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="w-96 p-0">
+        <PopoverContent align="start" className="w-[calc(100vw-2rem)] p-0 sm:w-96">
           <div className="border-b border-border p-1">
             <Input
               autoFocus
@@ -325,7 +325,7 @@ function FreeTextFallback({
           }
         }}
         placeholder="provider/model-id"
-        className="w-72 font-mono text-sm"
+        className="w-full font-mono text-sm sm:w-72"
         aria-label="Model id"
         disabled={busy}
       />

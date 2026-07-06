@@ -50,7 +50,7 @@ export function FileStateBanner({
     return (
       <Alert className="mb-6">
         <AlertTitle>Staged — not published yet</AlertTitle>
-        <AlertDescription className="flex items-center gap-3">
+        <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>This file has an unpublished draft; the form shows it.</span>
           <Link
             to={`${base}/deployment`}

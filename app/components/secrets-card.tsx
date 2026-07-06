@@ -500,8 +500,8 @@ function AgentSecretRow({
       {replacing && (
         <div className="mt-2 space-y-1.5 pl-6">
           <p className="text-xs text-muted-foreground">{COPY.replaceConfirm}</p>
-          <div className="flex items-center gap-2">
-            <div className="relative">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-full sm:w-auto">
               <Input
                 type={showValue ? "text" : "password"}
                 value={replaceValue}
@@ -509,7 +509,7 @@ function AgentSecretRow({
                 placeholder="new value (write-only)"
                 autoComplete="off"
                 autoFocus
-                className="w-64 pr-8 font-mono"
+                className="w-full pr-8 font-mono sm:w-64"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -692,14 +692,14 @@ function RequiredSecretRow({
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
+            <div className="relative w-full sm:w-auto">
               <Input
                 type={showValue ? "text" : "password"}
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 placeholder="value (write-only)"
                 autoComplete="off"
-                className="w-64 pr-8 font-mono"
+                className="w-full pr-8 font-mono sm:w-64"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -1046,7 +1046,7 @@ function AddSecretForm({
         submit();
       }}
     >
-      <div className="grid gap-1.5">
+      <div className="grid w-full gap-1.5 sm:w-auto">
         <Label htmlFor="secret-add-name">Name</Label>
         <Input
           id="secret-add-name"
@@ -1054,7 +1054,7 @@ function AddSecretForm({
           value={name}
           placeholder="API_KEY"
           autoComplete="off"
-          className="w-52 font-mono"
+          className="w-full font-mono sm:w-52"
           onChange={(e) => {
             setName(normalizeSecretName(e.target.value));
             setNameError(null);
@@ -1066,9 +1066,9 @@ function AddSecretForm({
           }}
         />
       </div>
-      <div className="grid gap-1.5">
+      <div className="grid w-full gap-1.5 sm:w-auto">
         <Label htmlFor="secret-add-value">Value</Label>
-        <div className="relative">
+        <div className="relative w-full sm:w-auto">
           <Input
             id="secret-add-value"
             type={showValue ? "text" : "password"}
@@ -1076,7 +1076,7 @@ function AddSecretForm({
             onChange={(e) => setValue(e.target.value)}
             placeholder="value (write-only)"
             autoComplete="off"
-            className="w-60 pr-8 font-mono"
+            className="w-full pr-8 font-mono sm:w-60"
           />
           <button
             type="button"
@@ -1088,7 +1088,7 @@ function AddSecretForm({
           </button>
         </div>
       </div>
-      <div className="grid gap-1.5">
+      <div className="grid w-full gap-1.5 sm:w-auto">
         <Label>Env</Label>
         <Select
           value={env}
@@ -1097,7 +1097,7 @@ function AddSecretForm({
             setEnv(v);
           }}
         >
-          <SelectTrigger className="h-9 min-w-36" aria-label="Environment">
+          <SelectTrigger className="h-9 w-full min-w-36 sm:w-auto" aria-label="Environment">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1231,7 +1231,11 @@ export function SecretsCard({
         <CardContent className="py-4">
           {/* Header row: env pills + the write-only note with its Why popover. */}
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-1" role="tablist" aria-label="Environment filter">
+            <div
+              className="flex items-center gap-1 overflow-x-auto"
+              role="tablist"
+              aria-label="Environment filter"
+            >
               {[{ id: ALL, name: "All" }, ...envs].map((e) => (
                 <button
                   key={e.id}
@@ -1239,7 +1243,7 @@ export function SecretsCard({
                   role="tab"
                   aria-selected={activeEnv === e.id}
                   className={cn(
-                    "rounded-full px-3 py-1 text-xs transition-colors",
+                    "shrink-0 rounded-full px-3 py-1 text-xs transition-colors",
                     activeEnv === e.id
                       ? "bg-primary text-primary-foreground"
                       : "bg-muted text-muted-foreground hover:text-foreground",

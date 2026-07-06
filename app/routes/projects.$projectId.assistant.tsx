@@ -223,7 +223,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         tail: [{ label: "Assistant" }],
       })}
     >
-      <div className="mx-auto w-full max-w-5xl px-6 pt-8">
+      <div className="mx-auto w-full max-w-5xl px-4 pt-8 sm:px-6">
         <AgentNav
           base={ctx}
           level={isTeam ? "member" : "single"}
@@ -253,7 +253,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         )}
       </ChatTranscript>
 
-      <div className="mx-auto w-full max-w-5xl px-6 pb-4 pt-3">
+      <div className="mx-auto w-full max-w-5xl px-4 pb-4 pt-3 sm:px-6">
         <ChatComposer
           placeholder={
             roster.length > 1

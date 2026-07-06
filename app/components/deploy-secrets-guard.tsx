@@ -86,7 +86,7 @@ function GuardRow({
           onChange={(e) => setValue(e.target.value)}
           placeholder="value (write-only)"
           autoComplete="off"
-          className="w-56 font-mono"
+          className="w-full sm:w-56 font-mono"
         />
         <Button
           type="button"

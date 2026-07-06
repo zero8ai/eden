@@ -57,7 +57,7 @@ export function ChatTranscript({
           el.scrollHeight - el.scrollTop - el.clientHeight < PIN_THRESHOLD;
       }}
     >
-      <div className="mx-auto w-full max-w-5xl px-6 pt-6">
+      <div className="mx-auto w-full max-w-5xl px-4 pt-6 sm:px-6">
         {lead}
         <div className="space-y-4 pb-2">{children}</div>
       </div>

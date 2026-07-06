@@ -7,7 +7,7 @@
  * repo-wide surfaces, member level gets the member-scoped ones, and single-agent repos
  * collapse both levels into one merged row.
  */
-import { LogOut, User, Users } from "lucide-react";
+import { LogOut, Menu, User, Users } from "lucide-react";
 import { useEffect } from "react";
 import {
   Form,
@@ -94,8 +94,8 @@ export function AppShell({
     <div className={fullHeight ? "flex h-dvh flex-col overflow-hidden" : "min-h-screen"}>
       <NavProgress />
       <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-5xl items-center gap-4 px-6">
-          <Link to="/dashboard" className="flex items-baseline gap-2">
+        <div className="mx-auto flex h-14 max-w-5xl items-center gap-2 px-4 sm:gap-4 sm:px-6">
+          <Link to="/dashboard" className="flex shrink-0 items-baseline gap-2">
             <span className="text-base font-semibold tracking-tight">Eden</span>
           </Link>
           {breadcrumbs && breadcrumbs.length > 0 ? (
@@ -107,14 +107,16 @@ export function AppShell({
               </span>
             )
           )}
-          <nav className="ml-auto flex items-center gap-1 text-sm">
+          {/* Desktop: inline primary nav. Mobile: folds into the menu button below. */}
+          <nav className="ml-auto hidden items-center gap-1 text-sm md:flex">
             <HeaderLink to="/dashboard">Repositories</HeaderLink>
             <HeaderLink to="/marketplace">Marketplace</HeaderLink>
             <HeaderLink to="/org/settings">Settings</HeaderLink>
           </nav>
-          <div className="flex items-center gap-1">
+          <div className="ml-auto flex shrink-0 items-center gap-1 md:ml-0">
             <ThemeToggle />
             <AccountMenu userEmail={userEmail} />
+            <MobileNav />
           </div>
         </div>
       </header>
@@ -124,7 +126,7 @@ export function AppShell({
           // the scroll region can span the whole viewport width.
           fullHeight
             ? "flex min-h-0 flex-1 flex-col"
-            : "mx-auto w-full max-w-5xl px-6 py-8"
+            : "mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-8"
         }
       >
         {children}
@@ -241,6 +243,32 @@ function AccountMenu({ userEmail }: { userEmail?: string | null }) {
   );
 }
 
+/** Primary nav folded behind a menu button on small screens (< md). */
+function MobileNav() {
+  return (
+    <div className="md:hidden">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" aria-label="Menu">
+            <Menu className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-48">
+          <DropdownMenuItem asChild>
+            <Link to="/dashboard">Repositories</Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild>
+            <Link to="/marketplace">Marketplace</Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild>
+            <Link to="/org/settings">Settings</Link>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
 function HeaderLink({ to, children }: { to: string; children: React.ReactNode }) {
   return (
     <NavLink
@@ -341,7 +369,9 @@ export function AgentNav({
   return (
     <div className={cn("mb-8", className)}>
       <div className="flex items-center justify-between gap-3">
-        <nav className="flex items-center gap-1 text-sm">
+        {/* Tabs scroll horizontally on narrow screens rather than wrapping/overflowing.
+            Negative margin + padding lets the row bleed to the container edge. */}
+        <nav className="-mx-4 flex items-center gap-1 overflow-x-auto px-4 text-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:mx-0 sm:px-0">
           {TABS[level].map((item) => (
             <NavLink
               key={item.label}
@@ -350,7 +380,7 @@ export function AgentNav({
               prefetch="intent"
               className={({ isActive, isPending }) =>
                 cn(
-                  "rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground",
+                  "shrink-0 rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground",
                   isActive && "bg-accent font-medium text-foreground",
                   // Highlight the destination tab immediately on click (before its loader resolves).
                   isPending && "bg-accent/60 font-medium text-foreground",
@@ -361,7 +391,7 @@ export function AgentNav({
             </NavLink>
           ))}
         </nav>
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-3">
           <StagedChangesPill base={base} />
           {level === "member" && roster && activeAgent && (
             <AgentSwitcher roster={roster} activeAgent={activeAgent} />

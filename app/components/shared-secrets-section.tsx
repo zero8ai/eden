@@ -407,14 +407,14 @@ export function SharedSecretsSection({
               submitAdd();
             }}
           >
-            <div className="grid gap-1.5">
+            <div className="grid w-full gap-1.5 sm:w-auto">
               <Label htmlFor="shared-add-name">Name</Label>
               <Input
                 id="shared-add-name"
                 value={name}
                 placeholder="GITHUB_TOKEN"
                 autoComplete="off"
-                className="w-52 font-mono"
+                className="w-full font-mono sm:w-52"
                 onChange={(e) => {
                   setName(normalizeSecretName(e.target.value));
                   setNameError(null);
@@ -426,9 +426,9 @@ export function SharedSecretsSection({
                 }}
               />
             </div>
-            <div className="grid gap-1.5">
+            <div className="grid w-full gap-1.5 sm:w-auto">
               <Label htmlFor="shared-add-value">Value</Label>
-              <div className="relative">
+              <div className="relative w-full sm:w-auto">
                 <Input
                   id="shared-add-value"
                   type={showValue ? "text" : "password"}
@@ -436,7 +436,7 @@ export function SharedSecretsSection({
                   onChange={(e) => setValue(e.target.value)}
                   placeholder="value (write-only)"
                   autoComplete="off"
-                  className="w-60 pr-8 font-mono"
+                  className="w-full pr-8 font-mono sm:w-60"
                 />
                 <button
                   type="button"

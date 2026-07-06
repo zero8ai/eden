@@ -198,7 +198,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
           </CardHeader>
           <CardContent>
             {hasModelKey ? (
-              <Form method="post" className="flex items-center gap-3">
+              <Form method="post" className="flex flex-wrap items-center gap-3">
                 <input type="hidden" name="intent" value="clear-model-key" />
                 <p className="text-sm">
                   OpenRouter key: <span className="font-medium">configured</span>{" "}

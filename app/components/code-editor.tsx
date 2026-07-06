@@ -74,7 +74,7 @@ export function CodeEditor({
 }) {
   const isDark = useIsDark();
   return (
-    <div className="overflow-hidden rounded-lg border text-sm">
+    <div className="max-w-full overflow-hidden rounded-lg border text-sm">
       <CodeMirror
         value={value}
         onChange={onChange}

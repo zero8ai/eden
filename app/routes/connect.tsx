@@ -395,14 +395,14 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                       aria-label="GitHub organization"
                       defaultValue={github.repos[0]?.owner ?? ""}
                       placeholder="org"
-                      className="w-40"
+                      className="w-full min-w-0 sm:w-40"
                     />
                     <span className="text-muted-foreground">/</span>
                     <Input
                       id="name"
                       name="name"
                       placeholder={layout === "team" ? "my-team" : "my-agent"}
-                      className="w-56 font-mono"
+                      className="w-full min-w-0 font-mono sm:w-56"
                     />
                   </div>
                   <p className="text-xs text-muted-foreground">
@@ -422,7 +422,7 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                     id="agentName"
                     name="agentName"
                     placeholder="product-manager"
-                    className="w-72 font-mono"
+                    className="w-full font-mono sm:w-72"
                   />
                   <p className="text-xs text-muted-foreground">
                     {layout === "team" ? (

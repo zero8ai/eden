@@ -857,7 +857,7 @@ function InstallSecretField({
               type="password"
               autoComplete="off"
               placeholder="value (write-only)"
-              className="ml-6 w-72 font-mono"
+              className="ml-6 w-full font-mono sm:w-72"
               value={value}
               onChange={(e) => setValue(e.target.value)}
             />
@@ -879,7 +879,7 @@ function InstallSecretField({
             type="password"
             autoComplete="off"
             placeholder="value (write-only)"
-            className="w-72 font-mono"
+            className="w-full min-w-0 font-mono sm:w-72"
             value={mode === "skip" ? "" : value}
             disabled={mode === "skip"}
             onChange={(e) => setValue(e.target.value)}

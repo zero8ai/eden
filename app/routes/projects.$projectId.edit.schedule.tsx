@@ -259,7 +259,7 @@ function ScheduleForm({
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Button
             onClick={() => submit({ path, cron, message }, { method: "post" })}
             disabled={saving || !isValidCron(cron) || !message.trim()}

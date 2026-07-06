@@ -700,7 +700,7 @@ function StagedChangesCard({
               <Input
                 name="title"
                 placeholder="Change title (optional)"
-                className="h-9 w-72"
+                className="h-9 w-full sm:w-72"
               />
               <Button type="submit" disabled={busy}>
                 {activeIntent === "publish"
@@ -979,7 +979,7 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                 <Input
                   name="title"
                   placeholder="Change title (optional)"
-                  className="h-9 w-72"
+                  className="h-9 w-full sm:w-72"
                 />
                 <Button type="submit" disabled={busy}>
                   {activeIntent === "publish"

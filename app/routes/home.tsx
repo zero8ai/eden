@@ -67,7 +67,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   return (
     <main className="min-h-screen bg-background text-foreground">
       <header className="border-b">
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
+        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6">
           <span className="text-base font-semibold tracking-tight">Eden</span>
           <div className="flex items-center gap-3">
             {user ? (
@@ -98,7 +98,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         </div>
       </header>
 
-      <section className="mx-auto flex max-w-3xl flex-col items-center px-6 py-24 text-center">
+      <section className="mx-auto flex max-w-3xl flex-col items-center px-4 py-24 text-center sm:px-6">
         <Badge variant="secondary">Build, manage, and deploy eve agents</Badge>
         <h1 className="mt-6 text-4xl font-semibold tracking-tight sm:text-5xl">
           Build, manage, and deploy eve agents from the web.
@@ -139,7 +139,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         </div>
       </section>
 
-      <div className="mx-auto max-w-5xl px-6 pb-24">
+      <div className="mx-auto max-w-5xl px-4 pb-24 sm:px-6">
         <div className="grid gap-4 sm:grid-cols-2">
           {pillars.map((p) => (
             <Card key={p.key}>

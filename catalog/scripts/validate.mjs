@@ -13,6 +13,10 @@
  *   - each template's declared `files` list matches its files/ subtree exactly (both directions)
  *   - every id is unique and equals its directory name
  *   - index.json exists, lists every template exactly once, and every hash matches recomputation
+ *   - composition (`includes`): every reference exists, there are no cycles, and the RESOLVED
+ *     (flattened) file set of every template has no duplicate final paths — mirroring the Eden
+ *     resolver's union rule (app/marketplace/compose.server.ts), so a violation fails BEFORE
+ *     publish rather than at install time.
  *
  * Exit 1 with readable errors on any failure.
  */
@@ -24,7 +28,9 @@ import { buildIndex, loadTemplates } from "./build-index.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-const TYPES = ["tool", "skill", "subagent", "agent"];
+const TYPES = ["tool", "skill", "subagent", "channel", "connection", "agent"];
+/** Types a template may `includes`-reference — everything except `agent`. */
+const INCLUDABLE = TYPES.filter((t) => t !== "agent");
 const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SEMVER = /^\d+\.\d+\.\d+$/;
 const UPPER_SNAKE = /^[A-Z][A-Z0-9_]*$/;
@@ -125,6 +131,28 @@ function validateManifest(where, m) {
   if (m.model !== undefined && typeof m.model !== "string") {
     fail(where, "model must be a string");
   }
+
+  if (m.includes !== undefined) {
+    if (!Array.isArray(m.includes)) {
+      fail(where, "includes must be an array of { type, id }");
+    } else {
+      for (const inc of m.includes) {
+        if (!inc || typeof inc !== "object" || Array.isArray(inc)) {
+          fail(where, "each include must be an object { type, id }");
+          continue;
+        }
+        if (!INCLUDABLE.includes(inc.type)) {
+          fail(
+            where,
+            `include type "${inc.type}" is not one of ${INCLUDABLE.join(", ")}`,
+          );
+        }
+        if (!KEBAB.test(inc.id ?? "")) {
+          fail(where, `include id "${inc.id}" is not a kebab-case slug`);
+        }
+      }
+    }
+  }
 }
 
 /** Every file path (relative to `base`) under `base`, using forward slashes. */
@@ -181,6 +209,58 @@ function main() {
       if (!declared.has(p))
         fail(where, `ships "${p}" under files/ but it is not in the manifest`);
     }
+  }
+
+  // ── Composition: references exist, no cycles, and no duplicate RESOLVED file paths ──
+  // Mirrors app/marketplace/compose.server.ts's union rule: a template's flattened file set is
+  // every include's files (transitively, includes-first) plus its own; a path shipped twice — by
+  // two artifacts or the same artifact reached via two include paths — is an error.
+  const byKey = new Map(); // `${type}/${id}` -> template
+  for (const t of templates) {
+    byKey.set(`${t.manifest.type}/${t.manifest.id}`, t);
+  }
+
+  /** Resolve a template's flattened file owners, reporting cycles / missing refs / duplicates. */
+  function checkResolvedFiles(startKey) {
+    const owner = new Map(); // path -> owning `${type}/${id}`
+    const visit = (key, stack) => {
+      const where = `templates/${key.split("/")[0]}s/${key.split("/")[1]}`;
+      if (stack.includes(key)) {
+        fail(where, `include cycle: ${[...stack, key].join(" → ")}`);
+        return false;
+      }
+      const t = byKey.get(key);
+      if (!t) {
+        // Reported against whoever referenced it (the previous stack frame), or itself if root.
+        const from = stack.length > 0 ? stack[stack.length - 1] : key;
+        fail(
+          `templates/${from.split("/")[0]}s/${from.split("/")[1]}`,
+          `includes "${key}", which is not a template in the catalog`,
+        );
+        return false;
+      }
+      const nextStack = [...stack, key];
+      // Includes first (depth-first, in order), then this template's own files.
+      for (const inc of t.manifest.includes ?? []) {
+        if (!visit(`${inc.type}/${inc.id}`, nextStack)) return false;
+      }
+      for (const p of t.manifest.files ?? []) {
+        if (owner.has(p)) {
+          fail(
+            where,
+            `resolved file path "${p}" is shipped by both ${owner.get(p)} and ${key} — composed artifacts can't materialize the same file`,
+          );
+          return false;
+        }
+        owner.set(p, key);
+      }
+      return true;
+    };
+    visit(startKey, []);
+  }
+
+  for (const t of templates) {
+    checkResolvedFiles(`${t.manifest.type}/${t.manifest.id}`);
   }
 
   // index.json must exist and match a fresh rebuild exactly (presence, one row each, hashes).

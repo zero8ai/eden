@@ -16,13 +16,13 @@
  *    generated package.json).
  * Both always rewrite `eden-lock.json` so provenance is one more reviewable file in the PR.
  */
-import { createHash } from "node:crypto";
-
 import semver from "semver";
 
 import { ZOD_PACKAGE, ZOD_VERSION } from "~/eve/agentModule";
 import type { CatalogTemplate } from "~/seams/types";
 import { isTemplateSlug, type TemplateManifest } from "./manifest";
+import { templateContentHash } from "./hash.server";
+import type { ResolvedInclude } from "./compose.server";
 import {
   findInstall,
   removeInstall,
@@ -137,7 +137,13 @@ export type InstallTarget =
   | { kind: "new-member"; name: string };
 
 export interface PlanContext {
-  template: CatalogTemplate;
+  /**
+   * The template to install. A `ResolvedTemplate` (compose.server.ts) is assignable: its extra
+   * `hash` (the parent's own content hash, matching its index row) is preferred over recomputing,
+   * and its `includes` provenance is recorded in the lock. A plain `CatalogTemplate` (no includes)
+   * still works — the hash is computed and no includes are recorded.
+   */
+  template: CatalogTemplate & { hash?: string; includes?: ResolvedInclude[] };
   /** Locator string recorded in the lock — "fixture" or "github:owner/repo@ref". */
   registry: string;
   /** Every repo-relative path currently on the default branch (conflict detection). */
@@ -181,37 +187,6 @@ export function packageJsonPathForRoot(root: string): string {
   const slash = root.lastIndexOf("/");
   const parent = slash === -1 ? "" : root.slice(0, slash);
   return parent ? `${parent}/package.json` : "package.json";
-}
-
-/**
- * Content hash of a fully-loaded template — sha1(hex) over the canonical manifest plus every
- * file in sorted path order (`path\0content`). Kept in lockstep with the catalog's
- * build-index.mjs / validate.mjs and tests/unit/marketplace.test.ts; recorded in the lock so
- * provenance matches the index row it came from.
- */
-function templateContentHash(template: CatalogTemplate): string {
-  const parts = [stableStringify(template.manifest)];
-  for (const path of Object.keys(template.files).sort()) {
-    parts.push(`${path}\0${template.files[path]}`);
-  }
-  return createHash("sha1").update(parts.join("\n")).digest("hex");
-}
-
-/** Deterministic JSON (object keys sorted recursively) — the hash's canonical form. */
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value as Record<string, unknown>)
-      .sort()
-      .map(
-        (k) =>
-          `${JSON.stringify(k)}:${stableStringify(
-            (value as Record<string, unknown>)[k],
-          )}`,
-      )
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 /** Do two npm ranges share any version? Unparseable ranges are treated as disjoint (→ warn). */
@@ -432,11 +407,17 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     type: manifest.type,
     name: manifest.name,
     version: manifest.version,
-    hash: templateContentHash(template),
+    // A resolved template carries its own (parent) content hash, matching its index row; a plain
+    // template is hashed here. Includes never affect the parent's hash (they flatten, not hash).
+    hash: template.hash ?? templateContentHash(template),
     registry: ctx.registry,
     member,
     files: [...newPaths].filter((p) => !MERGED_FILES.has(p)).sort(),
     ...(manifest.dependencies ? { dependencies: manifest.dependencies } : {}),
+    // Record composition provenance so Settings/uninstall can see what a parent bundled.
+    ...(template.includes && template.includes.length > 0
+      ? { includes: template.includes }
+      : {}),
     // Snapshot required secrets so Settings can render "required by template" forever (§4.5).
     ...(manifest.secrets && manifest.secrets.length > 0
       ? {

@@ -32,6 +32,8 @@ const TYPE_LABELS: Record<TemplateType, string> = {
   tool: "Tools",
   skill: "Skills",
   subagent: "Subagents",
+  channel: "Channels",
+  connection: "Connections",
 };
 
 /** Badge label for a single template's type. */
@@ -40,6 +42,8 @@ const TYPE_BADGE: Record<TemplateType, string> = {
   tool: "Tool",
   skill: "Skill",
   subagent: "Subagent",
+  channel: "Channel",
+  connection: "Connection",
 };
 
 export const loader = (args: LoaderFunctionArgs) =>

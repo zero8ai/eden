@@ -1,0 +1,23 @@
+{
+  "id": "discord",
+  "type": "channel",
+  "name": "Discord",
+  "description": "Talk to this agent from Discord — slash-command interactions with signature verification, threaded replies, and typing indicators via eve's discordChannel.",
+  "version": "0.1.0",
+  "eve": ">=0.20.0",
+  "files": ["channels/discord.ts"],
+  "secrets": [
+    {
+      "name": "DISCORD_APPLICATION_ID",
+      "description": "Discord application id — used to edit and follow up on interaction responses."
+    },
+    {
+      "name": "DISCORD_BOT_TOKEN",
+      "description": "Bot token for channel messages and typing indicators."
+    },
+    {
+      "name": "DISCORD_PUBLIC_KEY",
+      "description": "Ed25519 public key for inbound interaction verification."
+    }
+  ]
+}

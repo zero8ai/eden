@@ -24,6 +24,8 @@ const TYPE_DIRS = {
   tool: "tools",
   skill: "skills",
   subagent: "subagents",
+  channel: "channels",
+  connection: "connections",
   agent: "agents",
 };
 

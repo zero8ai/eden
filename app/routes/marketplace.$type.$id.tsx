@@ -32,6 +32,8 @@ const TYPE_BADGE: Record<TemplateType, string> = {
   tool: "Tool",
   skill: "Skill",
   subagent: "Subagent",
+  channel: "Channel",
+  connection: "Connection",
 };
 
 /** Narrow a URL param to a TemplateType, 404-ing on anything else (unknown type = no such page). */
@@ -51,6 +53,10 @@ export const loader = (args: LoaderFunctionArgs) =>
       if (!isTemplateSlug(id)) throw data("Unknown template", { status: 404 });
       const { org } = await syncTenant(auth);
       try {
+        // Detail deliberately shows the UNRESOLVED template (catalog.template, not
+        // resolveTemplate): the manifest's own `files`/`secrets`/`includes` as authored. The
+        // "Includes" section links out to each referenced template; the flattened, materialized
+        // view (what actually installs) is the install wizard's job.
         const template = await getRuntime().catalog.template(type, id);
         return { org, template };
       } catch (error) {
@@ -121,6 +127,39 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
             )}
           </CardContent>
         </Card>
+
+        {manifest.includes && manifest.includes.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Includes</CardTitle>
+              <CardDescription>
+                Bundled from the catalog. These are materialized into the target
+                agent at install — you don&rsquo;t install them separately.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ul className="space-y-2 text-sm">
+                {manifest.includes.map((inc) => (
+                  <li
+                    key={`${inc.type}/${inc.id}`}
+                    className="flex items-center gap-2"
+                  >
+                    <Link
+                      to={`/marketplace/${inc.type}/${inc.id}`}
+                      prefetch="intent"
+                      className="font-mono text-xs underline-offset-4 hover:underline"
+                    >
+                      {inc.id}
+                    </Link>
+                    <Badge variant="secondary" className="shrink-0">
+                      {TYPE_BADGE[inc.type]}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        )}
 
         <div className="grid gap-6 sm:grid-cols-2">
           <Card>

@@ -1377,6 +1377,40 @@ function DiscordSetupHelp({
             Portal, paste the endpoint for the environment you want Discord to
             reach into General Information → Interactions Endpoint URL.
           </p>
+          <div>
+            <p className="font-medium">Set up the slash command</p>
+            <ol className="mt-2 list-decimal space-y-1 pl-5">
+              <li>
+                Use Discord&rsquo;s guild command API for your application:{" "}
+                <code>
+                  PUT /applications/&lt;applicationId&gt;/guilds/&lt;guildId&gt;/commands
+                </code>
+                .
+              </li>
+              <li>
+                Create a command named <code>ask</code> with one required
+                string option named <code>message</code>.
+              </li>
+              <li>
+                Use the command in Discord as{" "}
+                <code>/ask message:review the latest issue</code>.
+              </li>
+            </ol>
+            <pre className="mt-3 overflow-x-auto rounded-md bg-muted p-3 text-xs">
+              <code>{`{
+  "name": "ask",
+  "description": "Ask the Eden agent",
+  "options": [
+    {
+      "type": 3,
+      "name": "message",
+      "description": "What should the agent do?",
+      "required": true
+    }
+  ]
+}`}</code>
+            </pre>
+          </div>
           {envs.length > 0 ? (
             <ul className="space-y-2">
               {envs.map(({ env }) => (
@@ -1401,9 +1435,11 @@ function DiscordSetupHelp({
             </p>
           )}
           <p>
-            The bot replies in the Discord channel where the slash command is
-            used. To restrict it to one channel, set that channel&rsquo;s
-            permissions for the bot and deny access elsewhere.
+            When someone runs the command, Discord sends the interaction to
+            this endpoint. Eden verifies it, gives the <code>message</code>{" "}
+            text to the agent, and posts the agent&rsquo;s reply back to the
+            same Discord channel. To restrict where it can be used, set that
+            channel&rsquo;s permissions for the bot and deny access elsewhere.
           </p>
         </div>
       </CardContent>
@@ -1418,12 +1454,20 @@ function DiscordSetupTeamHint() {
         <CardTitle className="text-base">Discord setup</CardTitle>
       </CardHeader>
       <CardContent>
-        <p className="text-sm">
-          Discord endpoints are per member and per environment. Open a member
-          below, then use the endpoint shown at the top of that member&rsquo;s
-          Deployment page as the Interactions Endpoint URL in Discord Developer
-          Portal.
-        </p>
+        <div className="space-y-3 text-sm">
+          <p>
+            Discord endpoints are per member and per environment. Open a member
+            below, then use the endpoint shown at the bottom of that
+            member&rsquo;s Deployment page as the Interactions Endpoint URL in
+            Discord Developer Portal.
+          </p>
+          <p>
+            Register a slash command named <code>ask</code> with a required
+            string option named <code>message</code>. When someone runs it, Eden
+            sends the message text to that member&rsquo;s agent and posts the
+            reply back to the Discord channel.
+          </p>
+        </div>
       </CardContent>
     </Card>
   );

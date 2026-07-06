@@ -377,12 +377,14 @@ export async function action(args: ActionFunctionArgs) {
       if (isConversationBranch(branch)) {
         const checkBuild = getRuntime().deployTarget.checkBuild;
         if (checkBuild) {
+          const agentRoot = String(form.get("agentRoot") ?? "") || undefined;
           const check = await checkBuild({
             projectId: project.id,
             repo,
             ref: branch!,
             installationId: project.repoInstallationId,
             overlay: [],
+            agentRoot,
           });
           if (!check.ok) {
             return {
@@ -802,6 +804,22 @@ function ChangeRequests({
   );
 }
 
+/**
+ * The eve build directory for a conversation PR's changed files: a single team member's agent dir
+ * when every non-config path is under one `agents/<member>/`, otherwise undefined (the repo root —
+ * a single-agent repo). `.eden/**` config files don't belong to any build and are ignored.
+ */
+function inferAgentRoot(paths: string[]): string | undefined {
+  const members = new Set<string>();
+  for (const p of paths) {
+    if (p.startsWith(".eden/")) continue;
+    const m = p.match(/^agents\/([^/]+)\//);
+    if (!m) return undefined; // a repo-root / `agent/` file → build the repo root
+    members.add(m[1]);
+  }
+  return members.size === 1 ? `agents/${[...members][0]}/agent` : undefined;
+}
+
 function ChangeCard({
   change,
   busy,
@@ -822,6 +840,9 @@ function ChangeCard({
     ? change.branch.slice("eden/conv-".length)
     : null;
   const isDraftConversation = !!conversationId && change.draft;
+  // Build directory for the pre-merge gate on a conversation branch: a single team member's dir
+  // when every changed file lives under one `agents/<m>/`, else the repo root (single-agent repo).
+  const agentRoot = inferAgentRoot(change.files.map((f) => f.path));
 
   return (
     <Card>
@@ -882,6 +903,9 @@ function ChangeCard({
               <input type="hidden" name="pullNumber" value={change.number} />
               <input type="hidden" name="branch" value={change.branch} />
               <input type="hidden" name="title" value={change.title} />
+              {agentRoot && (
+                <input type="hidden" name="agentRoot" value={agentRoot} />
+              )}
               <Button type="submit" size="sm" disabled={busy || conflicted}>
                 {merging ? "Merging…" : "Merge"}
               </Button>

@@ -32,6 +32,10 @@ export interface TurnAction {
   /** Process exit code when the tool's output carried one (bash-style tools). */
   exitCode?: number;
   isError?: boolean;
+  /** Raw tool input as eve sent it (`actions.requested`), e.g. `{command}` for bash. */
+  input?: unknown;
+  /** Raw tool output as eve returned it (`action.result`), full result payload. */
+  output?: unknown;
 }
 
 export interface TurnStep {
@@ -70,6 +74,13 @@ export interface TurnResult {
   /** eve's per-session turn id (turn_0, turn_1, …); the run's external id component. */
   turnId: string | null;
   steps: TurnStep[];
+  /**
+   * Assistant messages in completion order, each tagged with how many tool/model steps had
+   * completed before it — lets the transcript interleave message bubbles between tool steps
+   * in true order (a turn can emit several messages around its tool activity). `reply` is
+   * these joined; this preserves the ordering `reply` loses.
+   */
+  messages: { afterStepIndex: number; text: string }[];
   error: string | null;
 }
 
@@ -302,6 +313,7 @@ export async function* streamTurn(input: {
       modelId: null,
       turnId: null,
       steps: [],
+      messages: [],
       error,
     },
   });
@@ -356,7 +368,9 @@ export async function* streamTurn(input: {
 
   // 2. Read the event stream until the turn settles.
   const steps: TurnStep[] = [];
-  // A turn can interleave several assistant messages with tool steps — keep them all.
+  // A turn can interleave several assistant messages with tool steps — keep them all, each
+  // tagged with the step count at completion time so the transcript can reconstruct order.
+  const messages: { afterStepIndex: number; text: string }[] = [];
   const completedMessages: string[] = [];
   const inputRequests: ChatInputRequest[] = [];
   let lastTextSent: string | null = null;
@@ -455,7 +469,9 @@ export async function* streamTurn(input: {
               const toolName =
                 typeof a.toolName === "string" ? a.toolName : "tool";
               const summary = summarizeActionInput(a.input);
-              const record: TurnAction = { toolName, summary };
+              // Keep the FULL input (not just the one-line summary) so the transcript can
+              // render the real command/args; caps + redaction are applied at persist time.
+              const record: TurnAction = { toolName, summary, input: a.input };
               seqActions.push(record);
               if (typeof a.callId === "string")
                 actionByCallId.set(a.callId, record);
@@ -474,6 +490,8 @@ export async function* streamTurn(input: {
             const record = callId ? actionByCallId.get(callId) : undefined;
             if (record) {
               const output = result?.output;
+              // Keep the FULL output for the transcript (capped/redacted at persist time).
+              if (output !== undefined) record.output = output;
               if (
                 output &&
                 typeof output === "object" &&
@@ -544,6 +562,9 @@ export async function* streamTurn(input: {
               typeof data.message === "string" ? data.message : textOf(data);
             if (message) {
               completedMessages.push(message);
+              // Tag with the number of steps completed so far, so a downstream mapper can
+              // interleave this message between the tool steps that surround it.
+              messages.push({ afterStepIndex: steps.length, text: message });
               reply = completedMessages.join("\n\n");
               if (reply !== lastTextSent) {
                 lastTextSent = reply;
@@ -631,6 +652,7 @@ export async function* streamTurn(input: {
       modelId,
       turnId: ourTurnId,
       steps,
+      messages,
       error,
     },
   };

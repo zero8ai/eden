@@ -1,15 +1,22 @@
 /**
- * Run list (Observe pillar, M3 — PRD §7.6). Scannable per-run summary metrics, filterable by
- * Release (compare-by-version — the emergent "A/B", D10). Member-scoped (M5.8): team members'
- * runs live at /repos/:id/agents/:name/runs; single-agent repos at /repos/:id/runs. Ingest
- * tokens are minted on the repository's Settings tab.
+ * Run list (Observe pillar, M3 — PRD §7.6). A health-at-a-glance header (success rate, errors,
+ * p50/p95 wall-clock, tokens + an activity sparkline) computed in SQL over the CURRENT filter
+ * window, then a faceted, sortable table that surfaces the interesting run — not just reverse-
+ * chronological noise. Filters (release, status, channel, time range) and sort compose as GET
+ * params and auto-submit. When a release is selected we also show the all-releases baseline so
+ * "is this version better?" is answerable inline (compare-by-version — the emergent A/B, D10).
+ * Member-scoped (M5.8): team members' runs live at /repos/:id/agents/:name/runs.
  */
 import { authkitLoader } from "@workos-inc/authkit-react-router";
-import { Form, Link, redirect, type LoaderFunctionArgs } from "react-router";
+import {
+  Link,
+  redirect,
+  useSearchParams,
+  type LoaderFunctionArgs,
+} from "react-router";
 
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Badge } from "~/components/ui/badge";
-import { Button } from "~/components/ui/button";
 import {
   Card,
   CardContent,
@@ -17,7 +24,6 @@ import {
   CardHeader,
   CardTitle,
 } from "~/components/ui/card";
-import { Label } from "~/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -34,8 +40,15 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { listReleases } from "~/db/queries.server";
-import { listRuns } from "~/observability/store.server";
 import { contextPath } from "~/lib/paths";
+import {
+  listRunChannels,
+  listRuns,
+  runStats,
+  type RunFilter,
+  type RunSort,
+  type RunStats,
+} from "~/observability/store.server";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -43,6 +56,17 @@ import {
 } from "~/project/agent-context.server";
 import { requireProject } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.runs";
+
+/** Time-range facet → lower bound on startedAt (undefined = all time). */
+const RANGES: Record<string, number | undefined> = {
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+  all: undefined,
+};
+
+const SORTS: RunSort[] = ["newest", "slowest", "tokens", "errors"];
+const STATUSES = ["all", "completed", "failed", "running"] as const;
 
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
@@ -67,24 +91,59 @@ export const loader = (args: LoaderFunctionArgs) =>
       );
       // Teams have no repo-level Runs — the tab exists only at the member level.
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
-      const raw = new URL(args.request.url).searchParams.get("release");
+
+      const params = new URL(args.request.url).searchParams;
       // "all" is the picker's explicit no-filter sentinel (Radix items can't be empty).
-      const releaseId = raw && raw !== "all" ? raw : undefined;
-      const [runsList, releasesList] = await Promise.all([
-        // Always the active member's runs (single-agent repos: the only member).
-        listRuns(project.id, { releaseId, agentId: active.id }),
+      const rawRelease = params.get("release");
+      const releaseId =
+        rawRelease && rawRelease !== "all" ? rawRelease : undefined;
+      const rawStatus = params.get("status");
+      const status =
+        rawStatus === "completed" || rawStatus === "failed" || rawStatus === "running"
+          ? rawStatus
+          : undefined;
+      const rawChannel = params.get("channel");
+      const channel = rawChannel && rawChannel !== "all" ? rawChannel : undefined;
+      const range = params.get("range") ?? "7d";
+      const rangeMs = RANGES[range];
+      const since = rangeMs ? new Date(Date.now() - rangeMs) : undefined;
+      const rawSort = params.get("sort");
+      const sort: RunSort = SORTS.includes(rawSort as RunSort)
+        ? (rawSort as RunSort)
+        : "newest";
+
+      const filter: RunFilter = {
+        releaseId,
+        agentId: active.id,
+        status,
+        channel,
+        since,
+        sort,
+      };
+
+      const [runsList, stats, releasesList, channels] = await Promise.all([
+        listRuns(project.id, filter),
+        runStats(project.id, filter),
         listReleases(project.id),
+        listRunChannels(project.id, active.id),
       ]);
+      // Compare-by-version: when a release is selected, the all-releases baseline (same window,
+      // no release filter) answers "is this release better?" inline.
+      const baseline = releaseId
+        ? await runStats(project.id, { ...filter, releaseId: undefined })
+        : null;
+
       return {
-        project,
+        project: { id: project.id, name: project.name },
         roster: roster.map((a) => ({ name: a.name })),
         activeAgent: active.name,
         isTeam,
         runs: runsList,
-        releases: releasesList.filter(
-          (r) => !isTeam || r.agentId === active.id,
-        ),
-        releaseId,
+        stats,
+        baseline,
+        channels,
+        releases: releasesList.filter((r) => !isTeam || r.agentId === active.id),
+        filters: { releaseId, status, channel, range, sort },
       };
     },
     { ensureSignedIn: true },
@@ -98,7 +157,6 @@ function ms(n: number | null) {
   return n == null ? "—" : n < 1000 ? `${n}ms` : `${(n / 1000).toFixed(1)}s`;
 }
 
-/** Map a run status to a shadcn Badge variant: failed→destructive, completed→secondary, else outline. */
 function statusVariant(
   status: string,
 ): "secondary" | "outline" | "destructive" {
@@ -107,17 +165,50 @@ function statusVariant(
   return "outline";
 }
 
+const DOT: Record<string, string> = {
+  completed: "bg-emerald-500",
+  failed: "bg-destructive",
+  running: "bg-primary animate-pulse",
+};
+
+type RunRow = Route.ComponentProps["loaderData"]["runs"][number];
+
 export default function Runs({ loaderData }: Route.ComponentProps) {
-  const { project, roster, activeAgent, isTeam, runs, releases, releaseId } =
-    loaderData;
+  const {
+    project,
+    roster,
+    activeAgent,
+    isTeam,
+    runs,
+    stats,
+    baseline,
+    channels,
+    releases,
+    filters,
+  } = loaderData;
   const ctx = contextPath(project.id, isTeam ? activeAgent : null);
+  const [params, setParams] = useSearchParams();
+
+  // Facets are GET params; changing one navigates (loader re-runs). "all"/default clears it.
+  const setFacet = (key: string, value: string, clearWhen: string) => {
+    setParams(
+      (prev) => {
+        if (value === clearWhen) prev.delete(key);
+        else prev.set(key, value);
+        return prev;
+      },
+      { preventScrollReset: true },
+    );
+  };
+
+  const maxDuration = runs.reduce((m, r) => Math.max(m, r.wallClockMs ?? 0), 0);
 
   return (
     <AppShell
       breadcrumbs={repoCrumbs({
         projectId: project.id,
         repoName: project.name,
-        isTeam: isTeam,
+        isTeam,
         agentName: activeAgent,
         tail: [{ label: "Runs" }],
       })}
@@ -130,38 +221,117 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
       />
       <PageHeader
         title={isTeam ? `Runs — ${activeAgent}` : "Runs"}
-        description="Per-run summary metrics, filterable by release to compare versions."
+        description="Health at a glance, then a faceted, sortable list of every run."
       />
 
-      {/* Compare-by-version filter (the path carries the member context) */}
-      <Form method="get" className="mb-6 flex items-end gap-2">
-        <div className="grid gap-1.5">
-          <Label htmlFor="release">Version</Label>
-          <Select name="release" defaultValue={releaseId ?? "all"}>
-            <SelectTrigger id="release" className="min-w-32">
-              <SelectValue placeholder="All" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              {releases.map((r) => (
-                <SelectItem key={r.id} value={r.id}>
-                  {r.version}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      {/* Health header — over the current filter window */}
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
+        <StatCard
+          label="Success rate"
+          value={
+            stats.successRate == null
+              ? "—"
+              : `${Math.round(stats.successRate * 100)}%`
+          }
+          sub={baseline?.successRate != null ? `all: ${Math.round(baseline.successRate * 100)}%` : undefined}
+        />
+        <StatCard
+          label="Errors"
+          value={String(stats.failed)}
+          tone={stats.failed > 0 ? "bad" : undefined}
+          sub={baseline ? `all: ${baseline.failed}` : undefined}
+        />
+        <StatCard
+          label="p50 wall"
+          value={ms(stats.p50Ms)}
+          sub={baseline?.p50Ms != null ? `all: ${ms(baseline.p50Ms)}` : undefined}
+        />
+        <StatCard
+          label="p95 wall"
+          value={ms(stats.p95Ms)}
+          sub={baseline?.p95Ms != null ? `all: ${ms(baseline.p95Ms)}` : undefined}
+        />
+        <StatCard
+          label="Tokens"
+          value={stats.tokens.toLocaleString()}
+          sub={baseline ? `all: ${baseline.tokens.toLocaleString()}` : undefined}
+        />
+      </div>
+      <Card className="mb-6">
+        <CardContent className="flex items-center justify-between gap-4 py-3">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+              Activity
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {stats.total} run{stats.total === 1 ? "" : "s"} in window
+              {stats.running > 0 ? ` · ${stats.running} running` : ""}
+            </p>
+          </div>
+          <Sparkline runs={runs} />
+        </CardContent>
+      </Card>
+
+      {/* Faceted filters + sort (all GET params; auto-submit on change) */}
+      <div className="mb-6 flex flex-wrap items-end gap-3">
+        <Facet
+          label="Version"
+          value={filters.releaseId ?? "all"}
+          onChange={(v) => setFacet("release", v, "all")}
+          options={[
+            { value: "all", label: "All" },
+            ...releases.map((r) => ({ value: r.id, label: r.version })),
+          ]}
+        />
+        <Facet
+          label="Status"
+          value={filters.status ?? "all"}
+          onChange={(v) => setFacet("status", v, "all")}
+          options={STATUSES.map((s) => ({ value: s, label: s }))}
+        />
+        {channels.length > 0 && (
+          <Facet
+            label="Channel"
+            value={filters.channel ?? "all"}
+            onChange={(v) => setFacet("channel", v, "all")}
+            options={[
+              { value: "all", label: "All" },
+              ...channels.map((c) => ({ value: c, label: c })),
+            ]}
+          />
+        )}
+        <Facet
+          label="Range"
+          value={filters.range}
+          onChange={(v) => setFacet("range", v, "7d")}
+          options={[
+            { value: "24h", label: "24h" },
+            { value: "7d", label: "7d" },
+            { value: "30d", label: "30d" },
+            { value: "all", label: "All" },
+          ]}
+        />
+        <div className="ml-auto">
+          <Facet
+            label="Sort"
+            value={filters.sort}
+            onChange={(v) => setFacet("sort", v, "newest")}
+            options={[
+              { value: "newest", label: "Newest" },
+              { value: "slowest", label: "Slowest" },
+              { value: "tokens", label: "Most tokens" },
+              { value: "errors", label: "Errors first" },
+            ]}
+          />
         </div>
-        <Button type="submit" variant="secondary">
-          Filter
-        </Button>
-      </Form>
+      </div>
 
       {runs.length === 0 ? (
         <Card className="border-dashed">
           <CardHeader className="items-center py-12 text-center">
-            <CardTitle className="text-lg">No runs yet</CardTitle>
+            <CardTitle className="text-lg">No runs match</CardTitle>
             <CardDescription>
-              Point an instance at{" "}
+              Adjust the filters, or point an instance at{" "}
               <span className="font-mono">/api/ingest/runs</span> with an ingest
               token to start recording runs — tokens are created on the
               repository&rsquo;s Settings tab.
@@ -184,42 +354,206 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
               </TableHeader>
               <TableBody>
                 {runs.map((r) => (
-                  <TableRow key={r.id}>
-                    <TableCell>
-                      <Link
-                        to={`${ctx}/runs/${r.id}`}
-                        className="font-mono underline-offset-4 hover:underline"
-                      >
-                        {r.externalRunId?.slice(0, 12) ?? r.id.slice(0, 8)}
-                      </Link>
-                      {r.channel && (
-                        <span className="ml-2 text-muted-foreground">
-                          {r.channel}
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell>{r.version ?? "—"}</TableCell>
-                    <TableCell>
-                      <Badge variant={statusVariant(r.status)}>
-                        {r.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {(r.tokensInput ?? 0) + (r.tokensOutput ?? 0) || "—"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {ms(r.wallClockMs)}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {new Date(r.startedAt).toLocaleString()}
-                    </TableCell>
-                  </TableRow>
+                  <RunTableRow
+                    key={r.id}
+                    run={r}
+                    ctx={ctx}
+                    maxDuration={maxDuration}
+                  />
                 ))}
               </TableBody>
             </Table>
           </CardContent>
         </Card>
       )}
+      {runs.length >= 200 && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Showing the latest 200 runs in this window.
+        </p>
+      )}
     </AppShell>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  tone?: "bad";
+}) {
+  return (
+    <div className="rounded-lg border px-3 py-2">
+      <p className="text-xs uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <p
+        className={`mt-0.5 text-lg font-semibold ${tone === "bad" ? "text-destructive" : ""}`}
+      >
+        {value}
+      </p>
+      {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
+    </div>
+  );
+}
+
+function Facet({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+}) {
+  return (
+    <div className="grid gap-1.5">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className="min-w-28 capitalize">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((o) => (
+            <SelectItem key={o.value} value={o.value} className="capitalize">
+              {o.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+/** Runs-per-bucket over the shown window as inline SVG bars; error runs tinted. No chart lib. */
+function Sparkline({ runs }: { runs: RunRow[] }) {
+  if (runs.length === 0) return null;
+  const times = runs.map((r) => new Date(r.startedAt).getTime());
+  const min = Math.min(...times);
+  const max = Math.max(...times);
+  const N = 24;
+  const total = new Array(N).fill(0);
+  const failed = new Array(N).fill(0);
+  for (const r of runs) {
+    const t = new Date(r.startedAt).getTime();
+    const idx =
+      max === min ? N - 1 : Math.min(N - 1, Math.floor(((t - min) / (max - min)) * (N - 1)));
+    total[idx] += 1;
+    if (r.status === "failed") failed[idx] += 1;
+  }
+  const peak = Math.max(1, ...total);
+  const W = 160;
+  const H = 36;
+  const bw = W / N;
+  return (
+    <svg
+      width={W}
+      height={H}
+      viewBox={`0 0 ${W} ${H}`}
+      className="shrink-0"
+      role="img"
+      aria-label="Run activity over the window"
+    >
+      {total.map((count, i) => {
+        const h = (count / peak) * H;
+        const fh = (failed[i] / peak) * H;
+        return (
+          <g key={i}>
+            <rect
+              x={i * bw + 1}
+              y={H - h}
+              width={Math.max(1, bw - 2)}
+              height={h}
+              className="fill-muted-foreground/40"
+              rx={1}
+            />
+            {fh > 0 && (
+              <rect
+                x={i * bw + 1}
+                y={H - fh}
+                width={Math.max(1, bw - 2)}
+                height={fh}
+                className="fill-destructive"
+                rx={1}
+              />
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function RunTableRow({
+  run,
+  ctx,
+  maxDuration,
+}: {
+  run: RunRow;
+  ctx: string;
+  maxDuration: number;
+}) {
+  const tokens = (run.tokensInput ?? 0) + (run.tokensOutput ?? 0);
+  const durPct =
+    run.wallClockMs != null && maxDuration > 0
+      ? Math.max(3, Math.round((run.wallClockMs / maxDuration) * 100))
+      : 0;
+  return (
+    <TableRow>
+      <TableCell className="align-top">
+        <div className="flex items-center gap-2">
+          <span
+            className={`size-1.5 shrink-0 rounded-full ${DOT[run.status] ?? "bg-muted-foreground"}`}
+            aria-hidden
+          />
+          <Link
+            to={`${ctx}/runs/${run.id}`}
+            className="font-mono underline-offset-4 hover:underline"
+          >
+            {run.externalRunId?.slice(0, 12) ?? run.id.slice(0, 8)}
+          </Link>
+          {run.channel && (
+            <span className="text-muted-foreground">{run.channel}</span>
+          )}
+        </div>
+        {run.status === "failed" && run.error && (
+          <p className="mt-1 max-w-md truncate pl-3.5 text-xs text-destructive/80">
+            {run.error}
+          </p>
+        )}
+      </TableCell>
+      <TableCell className="align-top">{run.version ?? "—"}</TableCell>
+      <TableCell className="align-top">
+        <Badge variant={statusVariant(run.status)}>{run.status}</Badge>
+      </TableCell>
+      <TableCell
+        className="align-top text-muted-foreground"
+        title={`${run.tokensInput ?? 0} in / ${run.tokensOutput ?? 0} out`}
+      >
+        {tokens || "—"}
+      </TableCell>
+      <TableCell className="align-top text-muted-foreground">
+        <div className="flex items-center gap-2">
+          {durPct > 0 && (
+            <span className="hidden h-1 w-12 overflow-hidden rounded-full bg-muted sm:inline-block">
+              <span
+                className="block h-full rounded-full bg-muted-foreground/50"
+                style={{ width: `${durPct}%` }}
+              />
+            </span>
+          )}
+          {ms(run.wallClockMs)}
+        </div>
+      </TableCell>
+      <TableCell className="align-top text-muted-foreground">
+        {new Date(run.startedAt).toLocaleString()}
+      </TableCell>
+    </TableRow>
   );
 }

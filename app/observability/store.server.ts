@@ -7,10 +7,11 @@
  * not snapshot); user input, tool I/O, tokens, and timing are runtime data and are stored.
  */
 import crypto from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, sql, type SQL } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import { agents, ingestTokens, releases, runSteps, runs, sessions } from "~/db/schema";
+import { redactSecrets } from "~/observability/capture.server";
 
 function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -53,6 +54,23 @@ export async function resolveIngestToken(token: string): Promise<string | null> 
   return row.projectId;
 }
 
+/**
+ * One ordered step of a run. This is the additive BYO ingest contract — new `data` fields are
+ * always optional and old runs with thin/absent data must keep rendering.
+ *
+ * Canonical `data` shape per step `type` (all fields optional; every consumer degrades to what
+ * exists). Rich fields are size-capped at ingest and passed through a secret-redaction pass:
+ *   - `tool_call`:   `{ input?, output?, summary?, exitCode?, truncated? }`
+ *                    — `input`/`output` are the FULL tool payloads (any JSON); `summary` is a
+ *                      one-line hint; `exitCode` for bash-style tools; `truncated` when capped.
+ *   - `message`:     `{ role: "user" | "assistant", text, truncated? }`
+ *                    — role:user leads a run (the triggering input); role:assistant is a reply,
+ *                      the final one being the run's answer.
+ *   - `reasoning`:   `{ text, truncated? }` — model thinking as prose (BYO-only; the playground
+ *                      stream carries no reasoning text, so it never emits this).
+ *   - `model_call`:  `{ message?, code?, details? }` — only populated on error (failure detail);
+ *                      no request messages exist in the eve stream to capture.
+ */
 export interface IngestStep {
   seq: number;
   type: "model_call" | "tool_call" | "reasoning" | "message";
@@ -131,6 +149,12 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
     sessionId = s.id;
   }
 
+  // Run-level fields carry sensitive material too — metadata.input is the raw user message
+  // (rendered directly by the transcript) and tool errors can embed tokens. Same chokepoint
+  // as step data, so BOTH producers (playground + BYO) are covered.
+  const error = p.error != null ? (redactSecrets(p.error) as string) : null;
+  const metadata = (redactSecrets(p.metadata ?? {}) as Record<string, unknown>) ?? {};
+
   const [run] = await db
     .insert(runs)
     .values({
@@ -145,8 +169,8 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
       tokensInput: p.tokensInput ?? null,
       tokensOutput: p.tokensOutput ?? null,
       wallClockMs: p.wallClockMs ?? null,
-      error: p.error ?? null,
-      metadata: p.metadata ?? {},
+      error,
+      metadata,
       ...(p.startedAt ? { startedAt: new Date(p.startedAt) } : {}),
       finishedAt: p.finishedAt ? new Date(p.finishedAt) : null,
     })
@@ -161,7 +185,7 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
         tokensInput: p.tokensInput ?? null,
         tokensOutput: p.tokensOutput ?? null,
         wallClockMs: p.wallClockMs ?? null,
-        error: p.error ?? null,
+        error,
         finishedAt: p.finishedAt ? new Date(p.finishedAt) : null,
       },
     })
@@ -182,22 +206,50 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
         durationMs: st.durationMs ?? null,
         isError: st.isError ?? false,
         approvalGated: st.approvalGated ?? false,
-        data: st.data ?? {},
+        // Redact obvious credentials for BOTH producers (playground + BYO) at this chokepoint.
+        data: (redactSecrets(st.data ?? {}) as Record<string, unknown>) ?? {},
         startedAt: st.startedAt ? new Date(st.startedAt) : null,
       })),
     );
   }
 }
 
-/** Run list for a project, optionally filtered by Release and/or roster member (§7.9). */
-export function listRuns(
-  projectId: string,
-  filter: { releaseId?: string; agentId?: string } = {},
-) {
-  const conditions = [eq(runs.projectId, projectId)];
+export type RunSort = "newest" | "slowest" | "tokens" | "errors";
+
+/** Faceted run-list filter — all composable, all optional. Drives list + stats + sparkline. */
+export interface RunFilter {
+  releaseId?: string;
+  agentId?: string;
+  status?: "completed" | "failed" | "running";
+  channel?: string;
+  /** Lower bound on startedAt (the time-range facet: 24h / 7d / 30d). */
+  since?: Date;
+  sort?: RunSort;
+}
+
+/** WHERE conditions shared by the list + the aggregate stats so they see the same window. */
+function runConditions(projectId: string, filter: RunFilter): SQL[] {
+  const conditions: SQL[] = [eq(runs.projectId, projectId)];
   if (filter.releaseId) conditions.push(eq(runs.releaseId, filter.releaseId));
   if (filter.agentId) conditions.push(eq(runs.agentId, filter.agentId));
-  const where = and(...conditions);
+  if (filter.status) conditions.push(eq(runs.status, filter.status));
+  if (filter.channel) conditions.push(eq(runs.channel, filter.channel));
+  if (filter.since) conditions.push(gte(runs.startedAt, filter.since));
+  return conditions;
+}
+
+/** Run list for a project — faceted, sorted, capped. Member-scoped via `filter.agentId`. */
+export function listRuns(projectId: string, filter: RunFilter = {}) {
+  const where = and(...runConditions(projectId, filter));
+  const totalTokens = sql<number>`coalesce(${runs.tokensInput}, 0) + coalesce(${runs.tokensOutput}, 0)`;
+  const orderBy: SQL[] =
+    filter.sort === "slowest"
+      ? [sql`${runs.wallClockMs} desc nulls last`]
+      : filter.sort === "tokens"
+        ? [sql`${totalTokens} desc`]
+        : filter.sort === "errors"
+          ? [sql`(${runs.status} = 'failed') desc`, desc(runs.startedAt)]
+          : [desc(runs.startedAt)];
   return db
     .select({
       id: runs.id,
@@ -208,14 +260,83 @@ export function listRuns(
       tokensOutput: runs.tokensOutput,
       wallClockMs: runs.wallClockMs,
       error: runs.error,
+      metadata: runs.metadata,
       startedAt: runs.startedAt,
       version: releases.version,
     })
     .from(runs)
     .leftJoin(releases, eq(runs.releaseId, releases.id))
     .where(where)
-    .orderBy(desc(runs.startedAt))
+    .orderBy(...orderBy)
     .limit(200);
+}
+
+export interface RunStats {
+  total: number;
+  completed: number;
+  failed: number;
+  running: number;
+  /** Fraction 0..1 of settled runs that completed (null when none settled). */
+  successRate: number | null;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  tokens: number;
+}
+
+/**
+ * Aggregate health for the CURRENT filter window, computed in SQL over ALL matching runs (not
+ * just the listed page): success rate, error count, p50/p95 wall-clock, total tokens. Powers
+ * the list view's health header and the compare-by-version baseline.
+ */
+export async function runStats(
+  projectId: string,
+  filter: RunFilter = {},
+): Promise<RunStats> {
+  const where = and(...runConditions(projectId, filter));
+  const [row] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      completed: sql<number>`count(*) filter (where ${runs.status} = 'completed')::int`,
+      failed: sql<number>`count(*) filter (where ${runs.status} = 'failed')::int`,
+      running: sql<number>`count(*) filter (where ${runs.status} = 'running')::int`,
+      p50: sql<
+        number | null
+      >`percentile_cont(0.5) within group (order by ${runs.wallClockMs})`,
+      p95: sql<
+        number | null
+      >`percentile_cont(0.95) within group (order by ${runs.wallClockMs})`,
+      tokens: sql<number>`(coalesce(sum(${runs.tokensInput}), 0) + coalesce(sum(${runs.tokensOutput}), 0))::int`,
+    })
+    .from(runs)
+    .where(where);
+  const settled = (row?.completed ?? 0) + (row?.failed ?? 0);
+  return {
+    total: row?.total ?? 0,
+    completed: row?.completed ?? 0,
+    failed: row?.failed ?? 0,
+    running: row?.running ?? 0,
+    successRate: settled > 0 ? (row?.completed ?? 0) / settled : null,
+    p50Ms: row?.p50 != null ? Math.round(row.p50) : null,
+    p95Ms: row?.p95 != null ? Math.round(row.p95) : null,
+    tokens: row?.tokens ?? 0,
+  };
+}
+
+/** Distinct channel values for a project's runs (member-scoped) — powers the channel facet. */
+export async function listRunChannels(
+  projectId: string,
+  agentId?: string,
+): Promise<string[]> {
+  const conditions: SQL[] = [eq(runs.projectId, projectId)];
+  if (agentId) conditions.push(eq(runs.agentId, agentId));
+  const rows = await db
+    .selectDistinct({ channel: runs.channel })
+    .from(runs)
+    .where(and(...conditions));
+  return rows
+    .map((r) => r.channel)
+    .filter((c): c is string => c != null && c.length > 0)
+    .sort();
 }
 
 /** One run with its ordered steps (the transcript), scoped to the project. */

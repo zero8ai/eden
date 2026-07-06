@@ -179,6 +179,7 @@ export async function action(args: ActionFunctionArgs) {
                     releaseId: target.releaseId,
                     externalRunId: runId,
                     externalSessionId: sessionId,
+                    userMessage: message,
                   }).catch((e) =>
                     console.error("[playground] recordTurnStart failed", e),
                   );
@@ -265,6 +266,7 @@ export async function action(args: ActionFunctionArgs) {
                   ),
                   externalSessionId: settled.sessionId,
                   result: settled,
+                  userMessage: message,
                   startedAt,
                   wallClockMs: Date.now() - startedAt.getTime(),
                 });

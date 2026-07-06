@@ -15,6 +15,7 @@
  * pure `turnToSteps` mapper is exported separately so the shape is unit-testable without a DB.
  */
 import type { TurnResult } from "~/agent/talk.server";
+import { capField, capString } from "~/observability/capture.server";
 import { ingestRun, type IngestPayload, type IngestStep } from "~/observability/store.server";
 
 /**
@@ -25,15 +26,81 @@ export function externalRunId(sessionId: string, turnId: string): string {
   return `${sessionId}:${turnId}`;
 }
 
+/** Build a capped assistant/user `message` step's data (`{role, text, truncated?}`). */
+function messageData(
+  role: "user" | "assistant",
+  text: string,
+): Record<string, unknown> {
+  const { text: capped, truncated } = capString(text);
+  return truncated
+    ? { role, text: capped, truncated: true }
+    : { role, text: capped };
+}
+
+/** Build a `tool_call` step's data: full input/output (capped) + summary/exitCode markers. */
+function toolData(action: {
+  input?: unknown;
+  output?: unknown;
+  summary?: string;
+  exitCode?: number;
+}): Record<string, unknown> {
+  const input = capField(action.input);
+  const output = capField(action.output);
+  const data: Record<string, unknown> = {};
+  if (action.input !== undefined) data.input = input.value;
+  if (action.output !== undefined) data.output = output.value;
+  if (action.summary != null) data.summary = action.summary;
+  if (action.exitCode != null) data.exitCode = action.exitCode;
+  if (input.truncated || output.truncated) data.truncated = true;
+  return data;
+}
+
 /**
- * Map a settled `TurnResult` into ordered ingest steps: for each agent step, one `model_call`
- * followed by one `tool_call` per action, then a final `message` step carrying a reply excerpt.
- * Pure (no DB) so it can be tested directly. Seq is monotonic from 1.
+ * Map a settled `TurnResult` into ordered ingest steps forming a readable narrative:
+ *   - an optional leading `message` (role:user) carrying the triggering input,
+ *   - for each agent step, one `model_call` then one `tool_call` per action (full I/O), with
+ *   - assistant `message` steps interleaved at their true position (via `messages`), or the
+ *     joined `reply` as a trailing assistant message when no ordering info exists (legacy).
+ * All rich fields are size-capped (see capture.server.ts); redaction happens at ingest. Pure
+ * (no DB) so it can be unit-tested. Seq is monotonic from 1.
  */
-export function turnToSteps(result: TurnResult): IngestStep[] {
+export function turnToSteps(
+  result: TurnResult,
+  opts: { userMessage?: string | null } = {},
+): IngestStep[] {
   const steps: IngestStep[] = [];
   let seq = 1;
-  for (const step of result.steps) {
+
+  if (opts.userMessage && opts.userMessage.trim()) {
+    steps.push({
+      seq: seq++,
+      type: "message",
+      data: messageData("user", opts.userMessage),
+    });
+  }
+
+  // Assistant messages keyed by how many agent steps preceded them. Legacy results (no
+  // `messages`) fall back to the joined reply pinned after the last step.
+  const messages =
+    result.messages && result.messages.length > 0
+      ? result.messages
+      : result.reply
+        ? [{ afterStepIndex: result.steps.length, text: result.reply }]
+        : [];
+  const emitMessagesAt = (stepCount: number) => {
+    for (const m of messages) {
+      if (m.afterStepIndex === stepCount) {
+        steps.push({
+          seq: seq++,
+          type: "message",
+          data: messageData("assistant", m.text),
+        });
+      }
+    }
+  };
+
+  emitMessagesAt(0);
+  result.steps.forEach((step, i) => {
     steps.push({
       seq: seq++,
       type: "model_call",
@@ -52,17 +119,12 @@ export function turnToSteps(result: TurnResult): IngestStep[] {
         type: "tool_call",
         toolName: action.toolName,
         isError: action.isError,
-        data: { summary: action.summary, exitCode: action.exitCode },
+        data: toolData(action),
       });
     }
-  }
-  if (result.reply) {
-    steps.push({
-      seq: seq++,
-      type: "message",
-      data: { text: result.reply.slice(0, 2_000) },
-    });
-  }
+    emitMessagesAt(i + 1);
+  });
+
   return steps;
 }
 
@@ -93,6 +155,8 @@ interface TurnIds {
   releaseId: string;
   externalRunId: string;
   externalSessionId: string;
+  /** Triggering user message — stored on run metadata so in-flight runs show their input. */
+  userMessage?: string | null;
 }
 
 /** A `running` run row so the turn shows in the Runs tab while it's in flight. */
@@ -107,6 +171,9 @@ export async function recordTurnStart(
     channel: "playground",
     status: "running",
     startedAt: now.toISOString(),
+    metadata: ids.userMessage
+      ? { input: capString(ids.userMessage).text }
+      : undefined,
     session: {
       externalSessionId: ids.externalSessionId,
       trigger: "playground",
@@ -124,6 +191,8 @@ export async function recordTurnFinish(input: {
   externalRunId: string;
   externalSessionId: string;
   result: TurnResult;
+  /** Triggering user message — leads the transcript and is kept on run metadata. */
+  userMessage?: string | null;
   startedAt: Date;
   wallClockMs: number;
   finishedAt?: Date;
@@ -139,13 +208,16 @@ export async function recordTurnFinish(input: {
     wallClockMs: input.wallClockMs,
     startedAt: input.startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
+    metadata: input.userMessage
+      ? { input: capString(input.userMessage).text }
+      : undefined,
     session: {
       externalSessionId: input.externalSessionId,
       trigger: "playground",
       channel: "playground",
     },
     ...sumTokens(input.result),
-    steps: turnToSteps(input.result),
+    steps: turnToSteps(input.result, { userMessage: input.userMessage }),
   };
   await ingestRun(input.projectId, payload);
 }

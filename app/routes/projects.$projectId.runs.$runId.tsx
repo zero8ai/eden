@@ -1,12 +1,23 @@
 /**
- * Run transcript (Observe pillar, M3 — PRD §7.6). Progressive-disclosure timeline: the run
- * summary, then each step (model/tool call) with its I/O, tokens, timing, and errors. The
- * exact system prompt is reconstructable from the Release commit shown here (link, not snapshot).
+ * Run transcript (Observe pillar, M3 — PRD §7.6). A narrative, chat-shaped view of one run:
+ * a header band of run health, then the ordered steps rendered as a conversation (user +
+ * assistant bubbles, quiet model beats, foldable reasoning, expandable tool calls with
+ * semantic rendering) instead of a JSON dump. Errors are first-class — a failed run surfaces
+ * the real error with a jump-to-failing-step link. In-flight runs revalidate on an interval
+ * so a live playground turn fills in as it goes. The exact system prompt stays reconstructable
+ * from the Release commit linked here (link, not snapshot).
  */
 import { authkitLoader } from "@workos-inc/authkit-react-router";
-import type { ReactNode } from "react";
-import { Link, data, redirect, type LoaderFunctionArgs } from "react-router";
+import { useEffect, type ReactNode } from "react";
+import {
+  Link,
+  data,
+  redirect,
+  useRevalidator,
+  type LoaderFunctionArgs,
+} from "react-router";
 
+import { RunTranscript, formatMs, type StepView } from "~/components/run-steps";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -46,7 +57,12 @@ export const loader = (args: LoaderFunctionArgs) =>
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
       if (!result) throw data("Run not found", { status: 404 });
       return {
-        project,
+        project: {
+          id: project.id,
+          name: project.name,
+          repoOwner: project.repoOwner,
+          repoName: project.repoName,
+        },
         ...result,
         roster: roster.map((a) => ({ name: a.name })),
         activeAgent: active.name,
@@ -60,7 +76,7 @@ export function meta() {
   return [{ title: "Run · Eden" }];
 }
 
-/** Map a run status to a shadcn Badge variant: failed→destructive, completed→secondary, else outline. */
+/** failed→destructive, completed→secondary, else outline. */
 function statusVariant(
   status: string,
 ): "secondary" | "outline" | "destructive" {
@@ -69,10 +85,41 @@ function statusVariant(
   return "outline";
 }
 
-export default function RunTranscript({ loaderData }: Route.ComponentProps) {
+/** GitHub commit URL when the repo coordinates are known, else null (link, not snapshot). */
+function commitUrl(
+  project: { repoOwner: string | null; repoName: string | null },
+  gitSha: string,
+): string | null {
+  if (!project.repoOwner || !project.repoName) return null;
+  return `https://github.com/${project.repoOwner}/${project.repoName}/commit/${gitSha}`;
+}
+
+export default function RunTranscriptRoute({ loaderData }: Route.ComponentProps) {
   const { project, run, steps, release, roster, activeAgent, isTeam } =
     loaderData;
   const ctx = contextPath(project.id, isTeam ? activeAgent : null);
+  const stepViews = steps as unknown as StepView[];
+
+  // Live runs: revalidate every ~3s until the run settles, so a running turn fills in.
+  const revalidator = useRevalidator();
+  const live = run.status === "running";
+  useEffect(() => {
+    if (!live) return;
+    const timer = setInterval(() => {
+      if (revalidator.state === "idle") revalidator.revalidate();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [live, revalidator]);
+
+  // The triggering input: prefer a captured user-message step; fall back to run metadata (a
+  // running turn has metadata before any steps land).
+  const hasUserStep = stepViews.some(
+    (s) => s.type === "message" && (s.data as { role?: string })?.role === "user",
+  );
+  const metaInput =
+    typeof run.metadata?.input === "string" ? run.metadata.input : null;
+
+  const firstErrorSeq = stepViews.find((s) => s.isError)?.seq ?? null;
 
   return (
     <AppShell
@@ -92,7 +139,7 @@ export default function RunTranscript({ loaderData }: Route.ComponentProps) {
       />
       <PageHeader
         title={run.externalRunId ?? run.id}
-        description="Progressive-disclosure timeline of each model and tool step."
+        description="A readable, chat-shaped transcript of the run."
         actions={
           <Button variant="outline" asChild>
             <Link to={`${ctx}/runs`}>← Runs</Link>
@@ -100,75 +147,93 @@ export default function RunTranscript({ loaderData }: Route.ComponentProps) {
         }
       />
 
-      {/* Summary */}
+      {/* Header band */}
       <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
         <Metric label="Status">
-          <Badge variant={statusVariant(run.status)}>{run.status}</Badge>
+          <span className="flex items-center gap-2">
+            <Badge variant={statusVariant(run.status)}>{run.status}</Badge>
+            {live && (
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+                live
+              </span>
+            )}
+          </span>
         </Metric>
         <Metric label="Tokens">
-          {String((run.tokensInput ?? 0) + (run.tokensOutput ?? 0) || "—")}
+          {(run.tokensInput ?? 0) + (run.tokensOutput ?? 0) === 0 ? (
+            "—"
+          ) : (
+            <span title="input / output">
+              {run.tokensInput ?? 0}
+              <span className="text-muted-foreground"> in</span> /{" "}
+              {run.tokensOutput ?? 0}
+              <span className="text-muted-foreground"> out</span>
+            </span>
+          )}
         </Metric>
-        <Metric label="Wall clock">
-          {run.wallClockMs == null
-            ? "—"
-            : `${(run.wallClockMs / 1000).toFixed(1)}s`}
+        <Metric label="Wall clock">{formatMs(run.wallClockMs)}</Metric>
+        <Metric label="Version">
+          {release ? (
+            <span className="flex items-center gap-2">
+              {release.version}
+              {commitUrl(project, release.gitSha) ? (
+                <a
+                  href={commitUrl(project, release.gitSha)!}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono text-xs text-muted-foreground underline-offset-4 hover:underline"
+                >
+                  {release.gitSha.slice(0, 7)}
+                </a>
+              ) : (
+                <span className="font-mono text-xs text-muted-foreground">
+                  {release.gitSha.slice(0, 7)}
+                </span>
+              )}
+            </span>
+          ) : (
+            "—"
+          )}
         </Metric>
-        <Metric label="Version">{release?.version ?? "—"}</Metric>
       </dl>
-      {release && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Ran against commit{" "}
-          <span className="font-mono">{release.gitSha.slice(0, 12)}</span> — the
-          exact system prompt (instructions, tools, skills) is reconstructable
-          from the repo at this commit.
-        </p>
-      )}
+      <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {run.channel && <span>Channel: {run.channel}</span>}
+        <span>Started: {new Date(run.startedAt).toLocaleString()}</span>
+        {release && (
+          <span>
+            The exact system prompt is reconstructable from the repo at this
+            commit.
+          </span>
+        )}
+      </p>
+
       {run.error && (
-        <Alert variant="destructive" className="mt-3">
+        <Alert variant="destructive" className="mt-4">
           <AlertTitle>Run failed</AlertTitle>
-          <AlertDescription>{run.error}</AlertDescription>
+          <AlertDescription className="space-y-2">
+            <span className="block whitespace-pre-wrap">{run.error}</span>
+            {firstErrorSeq != null && (
+              <a
+                href={`#step-${firstErrorSeq}`}
+                className="inline-block text-sm font-medium underline underline-offset-4"
+              >
+                Jump to the failing step ↓
+              </a>
+            )}
+          </AlertDescription>
         </Alert>
       )}
 
-      {/* Timeline */}
-      <h2 className="mt-8 text-lg font-semibold">Timeline</h2>
-      {steps.length === 0 ? (
-        <p className="mt-2 text-sm text-muted-foreground">
-          No steps recorded for this run.
-        </p>
-      ) : (
-        <ol className="mt-3 space-y-3">
-          {steps.map((s) => (
-            <li
-              key={s.id}
-              className="rounded-xl border bg-card p-4 text-card-foreground"
-            >
-              <div className="flex items-center justify-between text-sm">
-                <span className="flex items-center gap-2 font-medium">
-                  {s.type === "tool_call" && s.toolName
-                    ? `tool: ${s.toolName}`
-                    : s.type === "model_call" && s.model
-                      ? `model: ${s.model}`
-                      : s.type}
-                  {s.isError && <Badge variant="destructive">error</Badge>}
-                  {s.approvalGated && <Badge variant="outline">approval</Badge>}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {s.durationMs != null ? `${s.durationMs}ms` : ""}
-                  {(s.tokensInput ?? s.tokensOutput) != null
-                    ? ` · ${(s.tokensInput ?? 0) + (s.tokensOutput ?? 0)} tok`
-                    : ""}
-                </span>
-              </div>
-              {s.data && Object.keys(s.data).length > 0 && (
-                <pre className="mt-2 max-h-64 overflow-auto rounded-lg border bg-muted/40 p-3 text-xs">
-                  {JSON.stringify(s.data, null, 2)}
-                </pre>
-              )}
-            </li>
-          ))}
-        </ol>
-      )}
+      {/* Narrative transcript */}
+      <div className="mt-6">
+        {!hasUserStep && metaInput && (
+          <div className="mb-3 ml-auto w-fit max-w-[85%] rounded-2xl bg-primary px-4 py-2.5 text-sm text-primary-foreground">
+            <p className="whitespace-pre-wrap">{metaInput}</p>
+          </div>
+        )}
+        <RunTranscript steps={stepViews} />
+      </div>
     </AppShell>
   );
 }

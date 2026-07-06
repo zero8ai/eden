@@ -12,6 +12,8 @@
 import { authkitLoader } from "@workos-inc/authkit-react-router";
 import { data, Link, type LoaderFunctionArgs } from "react-router";
 
+import { MarkdownText } from "~/components/chat";
+import { CodeEditor } from "~/components/code-editor";
 import { AppShell, PageHeader } from "~/components/shell";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -233,9 +235,9 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
                   </span>
                   <span className="font-mono text-xs">{path}</span>
                 </summary>
-                <pre className="max-h-96 overflow-auto border-t bg-muted/30 px-4 py-3 text-xs">
-                  <code>{files[path]}</code>
-                </pre>
+                <div className="border-t bg-muted/30 p-3">
+                  <FileBody path={path} content={files[path] ?? ""} />
+                </div>
               </details>
             ))}
           </div>
@@ -243,6 +245,25 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
       </div>
     </AppShell>
   );
+}
+
+/**
+ * A shipped file's body: Markdown files (instructions, skills, READMEs) render formatted so they
+ * read the way they're meant to; everything else gets CodeMirror syntax highlighting via the same
+ * read-only editor the repo already uses. An empty body is a plain note, not a blank box.
+ */
+function FileBody({ path, content }: { path: string; content: string }) {
+  if (!content.trim()) {
+    return <p className="text-xs text-muted-foreground">Empty file.</p>;
+  }
+  if (/\.(md|markdown)$/i.test(path)) {
+    return (
+      <div className="max-h-96 overflow-auto px-1 text-sm">
+        <MarkdownText text={content} />
+      </div>
+    );
+  }
+  return <CodeEditor path={path} value={content} readOnly />;
 }
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {

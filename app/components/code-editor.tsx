@@ -49,28 +49,34 @@ const syntaxErrors = linter((view) => {
   return diagnostics;
 });
 
-function extensionsFor(path: string): Extension[] {
-  if (/\.[cm]?[jt]sx?$/.test(path)) {
-    return [
-      javascript({ typescript: /tsx?$/.test(path), jsx: /sx$/.test(path) }),
-      syntaxErrors,
-      lintGutter(),
-    ];
-  }
-  if (/\.json$/.test(path)) return [json(), syntaxErrors, lintGutter()];
-  if (/\.(md|markdown)$/.test(path)) return [markdown(), EditorView.lineWrapping];
-  return [EditorView.lineWrapping];
+function extensionsFor(path: string, readOnly: boolean): Extension[] {
+  // Read-only previews (e.g. the marketplace detail page) want highlighting but not the
+  // syntax-error lint gutter — a catalog file isn't something the viewer can fix.
+  const lang = (() => {
+    if (/\.[cm]?[jt]sx?$/.test(path)) {
+      return javascript({ typescript: /tsx?$/.test(path), jsx: /sx$/.test(path) });
+    }
+    if (/\.json$/.test(path)) return json();
+    if (/\.(md|markdown)$/.test(path)) return markdown();
+    return null;
+  })();
+  const lint = lang && !readOnly && !/\.(md|markdown)$/.test(path) ? [syntaxErrors, lintGutter()] : [];
+  return [...(lang ? [lang] : []), EditorView.lineWrapping, ...lint];
 }
 
 export function CodeEditor({
   path,
   value,
   onChange,
+  readOnly = false,
 }: {
   /** Repo-relative path — picks the language mode. */
   path: string;
   value: string;
-  onChange: (next: string) => void;
+  /** Omit (with `readOnly`) for a static, highlighted preview. */
+  onChange?: (next: string) => void;
+  /** Render a non-editable, highlighted view — no lint gutter, no forced min height. */
+  readOnly?: boolean;
 }) {
   const isDark = useIsDark();
   return (
@@ -78,10 +84,17 @@ export function CodeEditor({
       <CodeMirror
         value={value}
         onChange={onChange}
+        editable={!readOnly}
+        readOnly={readOnly}
         theme={isDark ? "dark" : "light"}
-        extensions={extensionsFor(path)}
-        minHeight="28rem"
-        basicSetup={{ foldGutter: true, highlightActiveLine: true }}
+        extensions={extensionsFor(path, readOnly)}
+        minHeight={readOnly ? undefined : "28rem"}
+        maxHeight={readOnly ? "24rem" : undefined}
+        basicSetup={{
+          foldGutter: !readOnly,
+          highlightActiveLine: !readOnly,
+          lineNumbers: true,
+        }}
       />
     </div>
   );

@@ -560,18 +560,12 @@ function formatSessionLabel(title: string, updatedAt: string): string {
 }
 
 /**
- * The live, in-flight assistant turn: the agent's activity streams into a collapsed steps
- * card (spinner + what it's doing right now), and the reply bubble appears alongside once
- * text starts streaming — the work and the answer are separate surfaces.
+ * The live, in-flight assistant turn: the reply streams first, followed by the collapsed
+ * steps card (spinner + what it's doing right now) so activity stays near the scroll bottom.
  */
 function LiveBubble({ live }: { live: LiveTurn }) {
   return (
     <div className="space-y-2">
-      <StepsCard
-        steps={live.steps}
-        idPrefix="live"
-        activity={live.done ? null : live.activity}
-      />
       {(live.text || live.error || live.inputRequests.length > 0) && (
         <AssistantBubble>
           {live.modelId && (
@@ -591,6 +585,11 @@ function LiveBubble({ live }: { live: LiveTurn }) {
           <InputRequestsBlock requests={live.inputRequests} busy />
         </AssistantBubble>
       )}
+      <StepsCard
+        steps={live.steps}
+        idPrefix="live"
+        activity={live.done ? null : live.activity}
+      />
     </div>
   );
 }
@@ -607,7 +606,6 @@ function AgentEntry({
 }) {
   return (
     <div className="space-y-2">
-      <StepsCard steps={entry.steps ?? []} idPrefix={entry.id} />
       <AssistantBubble>
         {entry.version && (
           <span className="mb-1.5 flex items-center gap-1.5">
@@ -638,6 +636,7 @@ function AgentEntry({
           />
         )}
       </AssistantBubble>
+      <StepsCard steps={entry.steps ?? []} idPrefix={entry.id} />
     </div>
   );
 }

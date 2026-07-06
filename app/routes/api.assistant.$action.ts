@@ -1,5 +1,5 @@
 /**
- * The assistant instance's callback API (docs/ASSISTANT.md §6). The built-in assistant's baked-in
+ * The assistant instance's callback API. The built-in assistant's baked-in
  * tools, its boot entrypoint, and its checkout sidecar call `POST|GET /api/assistant/<action>` with
  * a Bearer `EDEN_ASSISTANT_TOKEN`. The token authenticates a DEPLOYMENT; everything else
  * (environment → agent → project) is derived from the DB, and the agent must be kind 'assistant'. A

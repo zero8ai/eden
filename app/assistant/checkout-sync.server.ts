@@ -1,12 +1,12 @@
 /**
- * Assistant coding-agent sync engine (docs/ASSISTANT.md — coding-agent model). The control-plane
+ * Assistant coding-agent sync engine. The control-plane
  * half of the checkout↔GitHub mirror:
  *
  *   ensureConversationCheckout  — before a turn: tell the instance sidecar to clone/fetch the
  *                                 conversation's checkout and report whether the base branch moved.
  *   syncConversationCheckout    — after a turn: pull the checkout's full tree state from the
  *                                 sidecar, apply the path policy, and mirror it onto `eden/conv-<id>`
- *                                 as one snapshot commit (force-updated ref), opening a draft PR on
+ *                                 as one snapshot commit (force-updated ref), opening a PR on
  *                                 the first non-empty sync. Skips when the tree is unchanged.
  *
  * The pure diff→commit mapping + policy live in `checkout-sync.ts` (unit-tested); this module owns
@@ -18,7 +18,7 @@ import { eq } from "drizzle-orm";
 import { db } from "~/db/client.server";
 import { assistantCheckouts } from "~/db/schema";
 import { getInstallationOctokit } from "~/github/client.server";
-import { markPullRequestReady, openPullRequest } from "~/github/write.server";
+import { openPullRequest } from "~/github/write.server";
 import { getRuntime } from "~/seams/index.server";
 import type { DataStore } from "~/data/ports";
 import {
@@ -159,7 +159,7 @@ export interface SyncResult {
 
 /**
  * Pull the conversation checkout's tree state from the instance sidecar and mirror it onto its
- * working branch, opening a draft PR on the first non-empty sync. A no-op (tree unchanged since the
+ * working branch, opening a PR on the first non-empty sync. A no-op (tree unchanged since the
  * last sync, or nothing committable) returns `{ synced: false }` without touching GitHub.
  */
 export async function syncConversationCheckout(input: {
@@ -209,7 +209,7 @@ export async function syncConversationCheckout(input: {
         branch,
         baseBranch: ctx.defaultBranch,
         prNumber: null,
-        prDraft: true,
+        prDraft: false,
         lastSyncedHash: plan.hash,
         warnings,
       });
@@ -224,7 +224,7 @@ export async function syncConversationCheckout(input: {
   await mirrorSnapshot(ctx, branch, tree.baseSha, plan, input.conversationId);
 
   let prNumber = row?.prNumber ?? null;
-  let prDraft = row?.prDraft ?? true;
+  let prDraft = row?.prDraft ?? false;
   if (!prNumber && plan.files.length > 0) {
     const opened = await openPullRequest(
       ctx.installationId,
@@ -234,7 +234,7 @@ export async function syncConversationCheckout(input: {
         branch,
         title: prTitle(input.title, input.conversationId),
         body: prBody(input.title, warnings),
-        draft: true,
+        draft: false,
       },
     );
     prNumber = opened.pullRequestNumber;
@@ -375,7 +375,7 @@ function prBody(title: string | null | undefined, warnings: string[]): string {
   const lines = [
     "Changes proposed by the Eden assistant while working on this conversation.",
     "",
-    "This PR auto-updates after each assistant turn; publish it (mark ready for review) when you're happy, then merge.",
+    "This PR auto-updates after each assistant turn; review and merge it on the Changes tab when you're happy.",
   ];
   if (title) lines.push("", `Conversation: ${title}`);
   if (warnings.length > 0) lines.push("", "**Notes:**", ...warnings.map((w) => `- ${w}`));
@@ -390,23 +390,4 @@ export async function discardConversationCheckoutByBranch(branch: string): Promi
 /** Whether a branch is an assistant conversation branch (so callers can gate conv-only behaviour). */
 export function isConversationBranch(branch: string | undefined | null): boolean {
   return !!branch && branch.startsWith("eden/conv-");
-}
-
-/** Mark a conversation PR ready-for-review (the human "Publish" action). */
-export async function publishConversationPr(input: {
-  projectId: string;
-  conversationId: string;
-  store?: DataStore;
-}): Promise<{ ok: boolean; reason?: string }> {
-  const store = input.store ?? getRuntime().data;
-  const ctx = await repoCtx(input.projectId, store);
-  if (!ctx) return { ok: false, reason: "project has no connected repo" };
-  const row = await getCheckoutRow(input.conversationId);
-  if (!row?.prNumber) return { ok: false, reason: "no open PR for this conversation" };
-  await markPullRequestReady(ctx.installationId, { owner: ctx.owner, repo: ctx.repo }, row.prNumber);
-  await db
-    .update(assistantCheckouts)
-    .set({ prDraft: false, updatedAt: new Date() })
-    .where(eq(assistantCheckouts.conversationId, input.conversationId));
-  return { ok: true };
 }

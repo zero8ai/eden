@@ -1,5 +1,5 @@
 /**
- * The member-level assistant tab was removed (docs/ASSISTANT.md §1/§9): the assistant is a single
+ * The member-level assistant tab was removed: the assistant is a single
  * project-level surface now. Any old /repos/:id/agents/:name/assistant URL 301s to the repo-level
  * Assistant page.
  */

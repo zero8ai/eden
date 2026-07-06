@@ -60,8 +60,8 @@ const exec = promisify(execFile);
 /** Port the eve/Nitro server listens on inside the container. */
 const INSTANCE_PORT = Number(process.env.EDEN_INSTANCE_PORT ?? 3000);
 /**
- * Port the assistant checkout sidecar listens on inside the container (docs/ASSISTANT.md —
- * coding-agent model). Only the assistant image runs a sidecar; regular agent images ignore the
+ * Port the assistant checkout sidecar listens on inside the container. Only
+ * the assistant image runs a sidecar; regular agent images ignore the
  * extra published port. Kept in sync with `EDEN_AUX_PORT` the sidecar reads.
  */
 const AUX_PORT = Number(process.env.EDEN_AUX_PORT ?? 3100);
@@ -382,7 +382,7 @@ export const localDockerTarget: DeployTarget = {
       // Mount the environment's agent-home volume into the INSTANCE too (the eve-docker shim only
       // mounts it into session sandboxes). The assistant sidecar clones per-conversation checkouts
       // under /workspace/home/checkouts so both the instance and the model's sandbox see one shared
-      // tree (docs/ASSISTANT.md). Benign for non-assistant instances (nothing writes there).
+      // tree. Benign for non-assistant instances (nothing writes there).
       "-v",
       `${homeVolumeName(req.worldKey)}:/workspace/home`,
       "-p",

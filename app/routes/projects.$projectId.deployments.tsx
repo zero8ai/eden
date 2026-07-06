@@ -94,7 +94,6 @@ import { closePullRequest, mergePullRequest } from "~/github/write.server";
 import {
   discardConversationCheckoutByBranch,
   isConversationBranch,
-  publishConversationPr,
 } from "~/assistant/checkout-sync.server";
 import { getRuntime } from "~/seams/index.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
@@ -356,14 +355,6 @@ export async function action(args: ActionFunctionArgs) {
       if (isConversationBranch(branch)) await discardConversationCheckoutByBranch(branch!);
       // Closing an unmerged change is the other abandonment path — same sweep (§4.4).
       await sweepPendingSecrets(project.id);
-      throw redirect(back);
-    }
-    if (intent === "ready-change") {
-      // Publish an assistant conversation change: flip its draft/WIP PR to ready-for-review.
-      const conversationId = String(form.get("conversationId") ?? "");
-      if (!conversationId) return { error: "Missing conversation to publish." };
-      const res = await publishConversationPr({ projectId: project.id, conversationId });
-      if (!res.ok) return { error: res.reason ?? "Couldn't publish this change." };
       throw redirect(back);
     }
     if (intent === "merge") {
@@ -834,12 +825,6 @@ function ChangeCard({
   const submit = useSubmit();
   const conflicted = change.mergeable === false;
   const checking = change.mergeable === null;
-  // Assistant conversation PRs branch under `eden/conv-<id>` and open as drafts; a draft one gets a
-  // "Publish" (mark ready-for-review) action before it's merged.
-  const conversationId = change.branch.startsWith("eden/conv-")
-    ? change.branch.slice("eden/conv-".length)
-    : null;
-  const isDraftConversation = !!conversationId && change.draft;
   // Build directory for the pre-merge gate on a conversation branch: a single team member's dir
   // when every changed file lives under one `agents/<m>/`, else the repo root (single-agent repo).
   const agentRoot = inferAgentRoot(change.files.map((f) => f.path));
@@ -889,15 +874,6 @@ function ChangeCard({
                 )
               }
             />
-            {isDraftConversation && (
-              <Form method="post">
-                <input type="hidden" name="intent" value="ready-change" />
-                <input type="hidden" name="conversationId" value={conversationId!} />
-                <Button type="submit" size="sm" variant="secondary" disabled={busy}>
-                  Publish
-                </Button>
-              </Form>
-            )}
             <Form method="post">
               <input type="hidden" name="intent" value="merge" />
               <input type="hidden" name="pullNumber" value={change.number} />

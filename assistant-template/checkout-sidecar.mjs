@@ -1,4 +1,4 @@
-// Assistant checkout sidecar (docs/ASSISTANT.md — coding-agent model).
+// Assistant checkout sidecar.
 //
 // A tiny HTTP listener the assistant INSTANCE runs alongside `eve start`, on a second port
 // (AUX_PORT, default 3100), loopback-bound. It owns the per-conversation git checkouts on the

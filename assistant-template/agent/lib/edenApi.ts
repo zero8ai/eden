@@ -1,4 +1,4 @@
-// Shared client for Eden's assistant callback API (docs/ASSISTANT.md §6). Every eden_* tool is a
+// Shared client for Eden's assistant callback API. Every eden_* tool is a
 // thin wrapper over this. All variability arrives via env: EDEN_API_URL + EDEN_ASSISTANT_TOKEN
 // (injected by Eden's deploy). Never throws — every failure path returns { ok: false, error } so
 // the model reads the text, exactly like the delegation relay.

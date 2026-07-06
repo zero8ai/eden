@@ -110,7 +110,7 @@ export async function action({ request }: ActionFunctionArgs) {
       });
 
       // A merge that touched the assistant's published config restarts its instance so the
-      // entrypoint re-fetches the bundle + rebuilds (docs/ASSISTANT.md §4). Trigger discipline:
+      // entrypoint re-fetches the bundle + rebuilds. Trigger discipline:
       // ONLY from this merge path, never from loader self-heal. Queued so the webhook stays fast.
       const changed = await listCommitFiles(project.repoInstallationId, { owner, repo },
         payload.pull_request.merge_commit_sha);

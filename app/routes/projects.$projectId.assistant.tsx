@@ -1,7 +1,7 @@
 /**
  * Assistant — Eden's built-in, project-level authoring agent as a durable, streaming chat.
  *
- * A real eve instance (see docs/ASSISTANT.md), not an in-process loop: the composer POSTs to the
+ * A real eve instance, not an in-process loop: the composer POSTs to the
  * streaming resource route (api.projects.$projectId.assistant.stream) and this component reads the
  * same NDJSON turn feed the playground uses. Conversation history rebuilds from Eve's durable
  * stream on load (reusing playgroundSessions), so a mid-run reload re-attaches. First use shows a

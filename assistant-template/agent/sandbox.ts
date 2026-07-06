@@ -1,6 +1,6 @@
 import { defaultBackend, defineSandbox } from "eve/sandbox";
 
-// The assistant's sandbox is where the MODEL works (docs/ASSISTANT.md — coding-agent model): it
+// The assistant's sandbox is where the MODEL works: it
 // edits a real per-conversation git checkout on the shared home volume (/workspace/home/checkouts,
 // mounted by Eden's eve-docker shim) with native bash — cat/ls/edit, `git`, `npm ci`, typecheck.
 // That needs git + node + npm in the sandbox image; the default eve sandbox image is not guaranteed

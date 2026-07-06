@@ -488,7 +488,7 @@ async function openOrReusePullRequest(
 
 /**
  * Open (or reuse) a PR for a branch, optionally as a DRAFT — the assistant coding-agent sync
- * engine's entry (docs/ASSISTANT.md). Thin installation-scoped wrapper over the internal
+ * engine's entry. Thin installation-scoped wrapper over the internal
  * open/reuse logic (which already falls back from an unsupported draft to a `[WIP]` regular PR).
  */
 export async function openPullRequest(
@@ -500,28 +500,4 @@ export async function openPullRequest(
   const result = await openOrReusePullRequest(octokit, { owner, repo }, input);
   invalidateRepoChanges(installationId, { owner, repo });
   return result;
-}
-
-/**
- * Mark a draft PR ready-for-review (the assistant "Publish" action). REST `pulls.update` can't
- * flip `draft`, so this uses the GraphQL `markPullRequestReadyForReview` mutation. Idempotent —
- * a already-ready PR is left as-is by GitHub. Returns true when the PR is (now) ready.
- */
-export async function markPullRequestReady(
-  installationId: string | number,
-  { owner, repo }: RepoRef,
-  pullNumber: number,
-): Promise<boolean> {
-  const octokit = await getInstallationOctokit(installationId);
-  const pr = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
-  if (!pr.data.draft) {
-    invalidateRepoChanges(installationId, { owner, repo });
-    return true;
-  }
-  await octokit.graphql(
-    `mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }`,
-    { id: pr.data.node_id },
-  );
-  invalidateRepoChanges(installationId, { owner, repo });
-  return true;
 }

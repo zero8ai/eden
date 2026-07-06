@@ -99,7 +99,7 @@ export async function action(args: ActionFunctionArgs) {
   }
   await markPlaygroundSessionRunning({ id: session.id, target, title });
 
-  // Coding-agent model (docs/ASSISTANT.md): make sure the conversation's git checkout exists on the
+  // Coding-agent model: make sure the conversation's git checkout exists on the
   // instance before the turn runs (clone/fetch, recovering from volume loss), and hand the model its
   // checkout path on the first turn plus a note if the base branch advanced. The checkout is on the
   // shared home volume, so the model's sandbox sees the same tree the sync engine later mirrors.

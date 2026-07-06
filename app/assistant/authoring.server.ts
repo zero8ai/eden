@@ -1,6 +1,6 @@
 /**
  * The assistant's control-plane knowledge service — the business logic behind the read-only
- * `api/assistant/*` callback endpoints (docs/ASSISTANT.md §6).
+ * `api/assistant/*` callback endpoints.
  *
  * Under the coding-agent model the assistant no longer edits files through Eden: it works in a real
  * per-conversation git checkout with native bash, and the control plane mirrors that checkout to a

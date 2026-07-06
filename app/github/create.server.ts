@@ -50,12 +50,13 @@ export interface CreatedRepo {
 
 // Scaffolds ship with a deliberately CHEAP model: the customer never chose one at this
 // point, and a silent default must not be able to run up a real bill. Picking the model
-// they actually want is a Settings-tab decision, not something we guess for them.
-const DEFAULT_MODEL = "moonshotai/kimi-k2.7-code";
+// they actually want is a Settings-tab decision, not something we guess for them. This is
+// the platform-wide default (assistant, scaffolds, marketplace agents all share it).
+const DEFAULT_MODEL = "z-ai/glm-5.2";
 /**
  * The scaffolded first member of a team repo — a placeholder the customer renames/extends.
  * NOT "assistant": that name is reserved for Eden's built-in project-level assistant agent
- * (see docs/ASSISTANT.md), and a roster member sharing it would collide on the unique
+ * and a roster member sharing it would collide on the unique
  * (project, name) index.
  */
 const STARTER_MEMBER = "planner";

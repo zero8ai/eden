@@ -96,7 +96,7 @@ export async function fetchAgentSource(
 
   const agentPrefix = `${AGENT_ROOT}/`;
   const teamPrefix = `${TEAM_ROOT}/`;
-  // The built-in assistant's user-config surface (docs/ASSISTANT.md). It is not a roster member
+  // The built-in assistant's user-config surface. It is not a roster member
   // (detectAgentRoots ignores it), but the config editors and the assistant's own tools need to
   // see and read these files, so include them in the source tree.
   const assistantPrefix = `${ASSISTANT_CONFIG_ROOT}/`;

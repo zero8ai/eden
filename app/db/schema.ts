@@ -714,7 +714,7 @@ export const playgroundSessions = pgTable(
 );
 
 /**
- * Assistant coding-agent checkouts (docs/ASSISTANT.md — coding-agent model). One row per
+ * Assistant coding-agent checkouts. One row per
  * assistant conversation (a `playground_sessions` row on the assistant channel) that has grown a
  * repo checkout. The assistant edits a per-conversation git checkout on the shared home volume;
  * after each turn the control plane mirrors that checkout onto the branch `eden/conv-<id>` and

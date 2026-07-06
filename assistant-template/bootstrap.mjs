@@ -1,7 +1,7 @@
 // Container boot: materialize the user config layer before the agent compiles.
 //
 // eve discovers instructions.md / skills / schedules at BUILD time, not at `eve start`
-// (docs/ASSISTANT.md §2), so the entrypoint fetches the project's PUBLISHED .eden/assistant
+// so the entrypoint fetches the project's PUBLISHED .eden/assistant
 // config from Eden, writes it into this fixed image, and — if any user layer was written —
 // re-runs `eve build` before `eve start`. On persistent fetch failure it starts with the fixed
 // layer only, so a control-plane hiccup never bricks the assistant.

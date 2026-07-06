@@ -129,7 +129,7 @@ export default [
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
   // Teammate delegation relay: a team member's ask-teammate tool POSTs here (Bearer token).
   route("api/team/ask", "routes/api.team.ask.ts"),
-  // Built-in assistant callback API (docs/ASSISTANT.md §6). The assistant instance's baked-in
+  // Built-in assistant callback API. The assistant instance's baked-in
   // tools + boot entrypoint call GET|POST /api/assistant/<action> with a Bearer assistant token.
   route("api/assistant/:action", "routes/api.assistant.$action.ts"),
   route("api/models", "routes/api.models.tsx"),

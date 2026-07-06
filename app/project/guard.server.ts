@@ -39,7 +39,7 @@ export function requireRepo(project: Project): ConnectedProject {
 /**
  * Validate a user-supplied repo path stays within the editable surface — the root `agent/`
  * directory, a team member's `agents/<member>/agent/` (PRD §7.9), or the built-in assistant's
- * user-config surface under `.eden/assistant/` (docs/ASSISTANT.md). Prevents editing files
+ * user-config surface under `.eden/assistant/`. Prevents editing files
  * outside those and path-traversal. Returns the normalized path or null if invalid.
  */
 const ROOT_FILE_ALLOWLIST = new Set(["package.json", "package-lock.json"]);

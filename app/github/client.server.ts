@@ -84,8 +84,8 @@ export function getInstallationOctokit(installationId: string | number) {
 
 /**
  * Mint a short-lived installation token NARROWED to a single repo with read-only `contents`
- * scope — the credential the assistant instance uses to clone/fetch a conversation checkout
- * (docs/ASSISTANT.md — coding-agent model). Unlike `getInstallationOctokit` (full-installation
+ * scope — the credential the assistant instance uses to clone/fetch a conversation checkout.
+ * Unlike `getInstallationOctokit` (full-installation
  * scope), this asks GitHub for the minimal grant so a token that transiently reaches an instance
  * can only READ the one repo it is editing. The token is never a WRITE credential and is never
  * persisted to the shared checkout volume — the caller passes it per git invocation and drops it.

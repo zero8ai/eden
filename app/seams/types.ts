@@ -129,7 +129,7 @@ export interface DeployTarget {
   destroyWorld?(worldKey: string): Promise<void>;
   /**
    * Base URL of an instance's auxiliary HTTP listener — the assistant checkout sidecar
-   * (docs/ASSISTANT.md — coding-agent model), which the control plane drives to ensure/sync a
+   * which the control plane drives to ensure/sync a
    * conversation's git checkout on the shared home volume. Loopback-bound in local-docker (same
    * trust boundary as the session API). Returns null when the target/instance exposes none.
    * Optional — targets without a sidecar simply have no coding-agent sync surface.

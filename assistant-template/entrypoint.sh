@@ -1,5 +1,5 @@
 #!/bin/sh
-# Assistant instance boot (docs/ASSISTANT.md §4). Materialize the published user config layer,
+# Assistant instance boot. Materialize the published user config layer,
 # then — only if a user layer exists — recompile with `eve build` (eve discovers
 # instructions/skills/schedules at build time), then hand off to `eve start` (which also prewarms
 # the sandbox template). A missing/empty user layer takes the fast path: the fixed layer is
@@ -19,7 +19,7 @@ if [ -f .eden-user-layer ]; then
   node_modules/.bin/eve build
 fi
 
-# Checkout sidecar (docs/ASSISTANT.md — coding-agent model): owns the per-conversation git
+# Checkout sidecar: owns the per-conversation git
 # checkouts on the shared home volume and answers the control plane's ensure/tree calls on a second
 # port. Backgrounded before `eve start` takes over PID 1; --init (deploy target) reaps it on stop.
 node checkout-sidecar.mjs &

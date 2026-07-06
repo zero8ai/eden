@@ -1,5 +1,5 @@
 /**
- * Assistant callback tokens (docs/ASSISTANT.md §6). The built-in assistant instance carries an
+ * Assistant callback tokens. The built-in assistant instance carries an
  * `EDEN_ASSISTANT_TOKEN` identifying the DEPLOYMENT it runs as; the callback routes derive
  * everything else (deployment → environment → agent → project) from the DB, so nothing but the
  * deployment id is ever trusted from the client. HMAC-SHA256 over the deployment id keyed by the

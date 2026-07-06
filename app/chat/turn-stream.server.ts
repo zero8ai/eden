@@ -263,7 +263,7 @@ export function streamTurnResponse(input: {
                 console.error(`${tag} recordTurnFinish failed`, e);
               }
             }
-            // Assistant coding-agent sync (docs/ASSISTANT.md): after the turn settles, mirror the
+            // Assistant coding-agent sync: after the turn settles, mirror the
             // conversation's checkout to its PR. Runs regardless of turn success — a failed turn may
             // still have edited files; the sync hashes the tree and no-ops when nothing changed.
             if (channel === "assistant" && target.deploymentId) {

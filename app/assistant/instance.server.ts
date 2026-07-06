@@ -1,5 +1,5 @@
 /**
- * The built-in assistant's instance lifecycle (docs/ASSISTANT.md §4/§5). The assistant deploys
+ * The built-in assistant's instance lifecycle. The assistant deploys
  * on the SAME substrate as any eve agent — an internal environment, a synthesized release per
  * template content-hash, and a Docker deployment via the DeployTarget — but it builds from the
  * bundled local `assistant-template/` (not a GitHub tarball) and is injected with NO user

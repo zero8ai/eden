@@ -170,7 +170,7 @@ const EDEN_DOCKERIGNORE = `node_modules
 `;
 
 /**
- * The built-in assistant's image (docs/ASSISTANT.md §4/§5). Identical to the reference eve image
+ * The built-in assistant's image. Identical to the reference eve image
  * except the CMD: instead of `eve start` directly, it runs the assistant entrypoint, which
  * materializes the project's published user-config layer, rebuilds if that layer is non-empty
  * (eve discovers instructions/skills/schedules at build time), then execs `eve start`.

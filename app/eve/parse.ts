@@ -15,7 +15,7 @@ import {
 /** Root directory that marks an eve agent. */
 export const AGENT_ROOT = "agent";
 /**
- * The built-in assistant's user-config surface (docs/ASSISTANT.md). Not a roster member —
+ * The built-in assistant's user-config surface. Not a roster member —
  * `detectAgentRoots` ignores it — but it is the repo-relative directory the assistant agent
  * row's `root` points at, so drafts under it attribute to the assistant.
  */

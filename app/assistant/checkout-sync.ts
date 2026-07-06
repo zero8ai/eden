@@ -1,6 +1,6 @@
 /**
- * Pure logic for mirroring an assistant conversation's checkout to GitHub (docs/ASSISTANT.md —
- * coding-agent model). The instance-side sidecar reports the checkout's full tree state vs its
+ * Pure logic for mirroring an assistant conversation's checkout to GitHub. The
+ * instance-side sidecar reports the checkout's full tree state vs its
  * base branch (`TreeState`); this module turns that into a commit plan for the Git Data API,
  * applies the server-side path policy, and computes the skip-if-unchanged hash. No I/O — the
  * git/GitHub calls live in `checkout-sync.server.ts`, so the mapping is unit-tested in isolation.

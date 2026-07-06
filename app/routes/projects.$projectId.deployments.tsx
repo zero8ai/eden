@@ -149,6 +149,12 @@ interface DeploymentData {
   }[];
   /** Member view: unmet template-required secrets — powers the deploy guard (§9). */
   missingSecrets: GuardMissingSecret[];
+  /** Member view: Discord setup URL when the agent has the marketplace Discord channel. */
+  discordSetup: {
+    enabled: boolean;
+    origin: string;
+    routePath: string;
+  };
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -231,6 +237,11 @@ export const loader = (args: LoaderFunctionArgs) =>
           releases: [],
           envs: [],
           missingSecrets: [],
+          discordSetup: {
+            enabled: false,
+            origin: publicOrigin(args.request),
+            routePath: DISCORD_INTERACTIONS_ROUTE,
+          },
         };
       }
 
@@ -286,6 +297,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         draftGroups: [],
         members: [],
         missingSecrets,
+        discordSetup: {
+          enabled: source.paths.includes(`${active.root}/channels/discord.ts`),
+          origin: publicOrigin(args.request),
+          routePath: DISCORD_INTERACTIONS_ROUTE,
+        },
       };
     },
     { ensureSignedIn: true },
@@ -490,6 +506,21 @@ type DraftRow = LoaderData["drafts"][number];
 type ChangeRow = LoaderData["changes"][number];
 
 const IN_FLIGHT = new Set(["queued", "pending", "building"]);
+const DISCORD_INTERACTIONS_ROUTE = "/eve/v1/discord";
+
+function publicOrigin(request: Request): string {
+  const url = new URL(request.url);
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const proto = forwardedProto || url.protocol.replace(/:$/, "");
+  const host = forwardedHost || request.headers.get("host") || url.host;
+  return `${proto}://${host}`;
+}
+
+function envIngressUrl(origin: string, environmentId: string, path = ""): string {
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  return `${origin.replace(/\/+$/, "")}/e/${environmentId}${suffix}`;
+}
 
 function PublishStatus({ active }: { active: boolean }) {
   if (!active) return null;
@@ -617,7 +648,11 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
     <>
       <StagedChangesCard drafts={drafts} isTeam={isTeam} />
       <ChangeRequests changes={changes} isTeam={isTeam} />
-      <EnvironmentsCard envs={envs} activeAgent={activeAgent} />
+      <EnvironmentsCard
+        envs={envs}
+        activeAgent={activeAgent}
+        discordSetup={loaderData.discordSetup}
+      />
       <VersionHistory
         releases={releases}
         envs={envs}
@@ -1115,9 +1150,11 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
 function EnvironmentsCard({
   envs,
   activeAgent,
+  discordSetup,
 }: {
   envs: EnvState[];
   activeAgent: string;
+  discordSetup: LoaderData["discordSetup"];
 }) {
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
@@ -1149,6 +1186,9 @@ function EnvironmentsCard({
             <AlertTitle>Couldn&rsquo;t update environments</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
+        )}
+        {discordSetup.enabled && (
+          <DiscordSetupHelp envs={envs} setup={discordSetup} />
         )}
         <ul className="divide-y rounded-lg border text-sm">
           {envs.map(({ env, deployments }) => {
@@ -1295,6 +1335,56 @@ function EnvironmentsCard({
         </ul>
       </CardContent>
     </Card>
+  );
+}
+
+function DiscordSetupHelp({
+  envs,
+  setup,
+}: {
+  envs: EnvState[];
+  setup: LoaderData["discordSetup"];
+}) {
+  const isLocal =
+    setup.origin.includes("localhost") ||
+    setup.origin.includes("127.0.0.1") ||
+    setup.origin.includes("0.0.0.0");
+
+  return (
+    <Alert className="mb-4">
+      <AlertTitle>Discord setup</AlertTitle>
+      <AlertDescription>
+        <div className="space-y-3 text-sm">
+          <p>
+            Add the bot to your server with the <code>bot</code> and{" "}
+            <code>applications.commands</code> scopes. In Discord Developer
+            Portal, paste the endpoint for the environment you want Discord to
+            reach into General Information → Interactions Endpoint URL.
+          </p>
+          <ul className="space-y-2">
+            {envs.map(({ env }) => (
+              <li key={env.id}>
+                <span className="font-medium">{env.name}: </span>
+                <code className="break-all rounded bg-muted px-1.5 py-0.5">
+                  {envIngressUrl(setup.origin, env.id, setup.routePath)}
+                </code>
+              </li>
+            ))}
+          </ul>
+          {isLocal && (
+            <p>
+              Discord cannot call localhost. For local development, expose Eden
+              with a tunnel and use that public tunnel host with the same path.
+            </p>
+          )}
+          <p>
+            The bot replies in the Discord channel where the slash command is
+            used. To restrict it to one channel, set that channel&rsquo;s
+            permissions for the bot and deny access elsewhere.
+          </p>
+        </div>
+      </AlertDescription>
+    </Alert>
   );
 }
 

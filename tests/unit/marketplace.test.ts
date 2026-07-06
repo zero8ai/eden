@@ -153,15 +153,18 @@ describe("composition against the real seed", () => {
       'from "eve/channels/discord"',
     );
 
-    // Discord's three secrets union in alongside the engineer's own GITHUB_* secrets.
+    // Discord's three secrets union in alongside the engineer's own GitHub token.
     const secretNames = (resolved.manifest.secrets ?? []).map((s) => s.name);
     expect(secretNames).toEqual(
       expect.arrayContaining([
+        "GITHUB_TOKEN",
         "DISCORD_APPLICATION_ID",
         "DISCORD_BOT_TOKEN",
         "DISCORD_PUBLIC_KEY",
       ]),
     );
+    expect(secretNames).not.toContain("GITHUB_REPOSITORIES");
+    expect(secretNames).not.toContain("GITHUB_DEFAULT_REPOSITORY");
 
     // Provenance + hash lockstep: the parent's hash is its own index row; the include carries
     // Discord's own index-row hash.

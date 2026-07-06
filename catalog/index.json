@@ -17,6 +17,14 @@
       "hash": "c532b9e225ea23bc8e1b595eeef6ca515505edae"
     },
     {
+      "id": "engineer",
+      "type": "agent",
+      "name": "Engineer",
+      "version": "0.1.0",
+      "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
+      "hash": "a477d4ad561cdf7346d6bccacadf21ad02604353"
+    },
+    {
       "id": "agent-browser",
       "type": "skill",
       "name": "Agent Browser",

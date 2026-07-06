@@ -623,12 +623,16 @@ export async function action(args: ActionFunctionArgs) {
           createdBy: auth.user.id,
         });
       }
-      await stageDraft({
-        projectId: project.id,
-        path: plan.lockWrite.path,
-        content: plan.lockWrite.content,
-        createdBy: auth.user.id,
-      });
+      await Promise.all(
+        plan.writes.map((write) =>
+          stageDraft({
+            projectId: project.id,
+            path: write.path,
+            content: write.content,
+            createdBy: auth.user.id,
+          }),
+        ),
+      );
       throw redirect(`${back}?uninstalled=${encodeURIComponent(id)}`);
     }
 

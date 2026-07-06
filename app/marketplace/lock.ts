@@ -55,6 +55,14 @@ const installEntrySchema = z.object({
       }),
     )
     .optional(),
+  /** Sandbox setup declared by the installed template, used to regenerate sandbox add-ons. */
+  sandbox: z
+    .object({
+      bootstrap: z.array(z.string().min(1)).optional(),
+      env: z.record(z.string().min(1), z.string()).optional(),
+      revalidationKey: z.string().min(1).optional(),
+    })
+    .optional(),
 });
 
 export type InstallEntry = z.infer<typeof installEntrySchema>;
@@ -125,7 +133,9 @@ export function removeInstall(
 ): EdenLock {
   return {
     ...lock,
-    installs: lock.installs.filter((e) => !(e.id === id && e.member === member)),
+    installs: lock.installs.filter(
+      (e) => !(e.id === id && e.member === member),
+    ),
   };
 }
 

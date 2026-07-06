@@ -1,0 +1,23 @@
+{
+  "id": "agent-browser",
+  "type": "skill",
+  "name": "Agent Browser",
+  "description": "Browser automation with the agent-browser CLI: navigate pages, inspect accessibility snapshots, click/fill by refs, capture screenshots, and run web QA from the sandbox shell.",
+  "version": "0.1.0",
+  "eve": ">=0.1.0",
+  "files": ["skills/agent-browser.md"],
+  "sandbox": {
+    "bootstrap": [
+      "command -v node >/dev/null && command -v npm >/dev/null",
+      "command -v agent-browser >/dev/null || npm install -g agent-browser@0.31.1",
+      "agent-browser install --with-deps",
+      "agent-browser doctor"
+    ],
+    "env": {
+      "AGENT_BROWSER_PROFILE": "/workspace/home/agent-browser/profile",
+      "AGENT_BROWSER_SCREENSHOT_DIR": "/workspace/home/agent-browser/screenshots",
+      "AGENT_BROWSER_IDLE_TIMEOUT_MS": "600000"
+    },
+    "revalidationKey": "agent-browser@0.31.1"
+  }
+}

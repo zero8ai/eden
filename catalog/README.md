@@ -40,18 +40,19 @@ Note the plural: a template of `type: "tool"` lives under `templates/tools/`.
    directory name**.
 2. Write `template.json` (the manifest). The contract:
 
-   | field | required | notes |
-   |---|---|---|
-   | `id` | yes | kebab-case slug, matches the directory name |
-   | `type` | yes | `tool` \| `skill` \| `subagent` \| `agent` |
-   | `name`, `description` | yes | non-empty |
-   | `version` | yes | semver `x.y.z` |
-   | `eve` | yes | semver *range* the template targets, e.g. `">=0.1.0"` |
-   | `files` | yes | non-empty list of install-relative paths — **no absolute paths, no `..`, no backslashes** |
-   | `dependencies` | no | npm name → version range; JSON-merged into the target's `package.json` |
-   | `secrets` | no | `[{ name: UPPER_SNAKE, description? }]` — the install wizard makes placeholders |
-   | `connections` | no | declared for future use |
-   | `model` | no | suggested model (agent-type templates) |
+   | field                 | required | notes                                                                                                                |
+   | --------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
+   | `id`                  | yes      | kebab-case slug, matches the directory name                                                                          |
+   | `type`                | yes      | `tool` \| `skill` \| `subagent` \| `agent`                                                                           |
+   | `name`, `description` | yes      | non-empty                                                                                                            |
+   | `version`             | yes      | semver `x.y.z`                                                                                                       |
+   | `eve`                 | yes      | semver _range_ the template targets, e.g. `">=0.1.0"`                                                                |
+   | `files`               | yes      | non-empty list of install-relative paths — **no absolute paths, no `..`, no backslashes**                            |
+   | `dependencies`        | no       | npm name → version range; JSON-merged into the target's `package.json`                                               |
+   | `secrets`             | no       | `[{ name: UPPER_SNAKE, description? }]` — the install wizard makes placeholders                                      |
+   | `sandbox`             | no       | sandbox setup merged into the target agent, e.g. `bootstrap` shell commands, `env` defaults, and a `revalidationKey` |
+   | `connections`         | no       | declared for future use                                                                                              |
+   | `model`               | no       | suggested model (agent-type templates)                                                                               |
 
 3. Put the shipped files under `files/`, mirroring the install-relative paths — a tool at
    `files/tools/<id>.ts` installs to the target agent's `tools/<id>.ts`.

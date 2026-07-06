@@ -6,7 +6,7 @@
       "name": "Cloudflare App Builder",
       "version": "0.3.1",
       "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend — and ships every project to GitHub. It builds; it does not deploy.",
-      "hash": "abf0fe9f844f9147c88f01d4d1e656589949e6a9"
+      "hash": "b4160b11a78d2fb50ee7ebbb8be3a1279df37f1e"
     },
     {
       "id": "cloudflare-deployment-engineer",
@@ -14,7 +14,15 @@
       "name": "Cloudflare CI Engineer",
       "version": "0.2.2",
       "description": "An agent that sets up and operates CI/CD for Cloudflare apps from GitHub — gh + wrangler/API with sandbox-exposed credentials, no bespoke tools.",
-      "hash": "cc09c7acb26d0e36e8bb03736087834e9983c437"
+      "hash": "c532b9e225ea23bc8e1b595eeef6ca515505edae"
+    },
+    {
+      "id": "agent-browser",
+      "type": "skill",
+      "name": "Agent Browser",
+      "version": "0.1.0",
+      "description": "Browser automation with the agent-browser CLI: navigate pages, inspect accessibility snapshots, click/fill by refs, capture screenshots, and run web QA from the sandbox shell.",
+      "hash": "6766737b0674e3e63c09f5e3574ba69cc9beb81b"
     },
     {
       "id": "writing-a-prd",

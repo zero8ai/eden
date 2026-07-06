@@ -38,7 +38,10 @@ const semver = z
 const relativeFilePath = z
   .string()
   .min(1)
-  .refine((p) => !p.startsWith("/"), "must be a relative path (no leading slash)")
+  .refine(
+    (p) => !p.startsWith("/"),
+    "must be a relative path (no leading slash)",
+  )
   .refine((p) => !p.includes("\\"), "must use forward slashes")
   .refine(
     (p) => !p.split("/").includes(".."),
@@ -52,6 +55,18 @@ const secretName = z
 
 /** An npm package name (loose validation — we only merge it into package.json, never resolve it). */
 const npmName = z.string().min(1).max(214);
+
+const sandboxSetupSchema = z.object({
+  /**
+   * Shell commands run once while eve builds the reusable sandbox template. Use this for
+   * CLIs and browser/runtime dependencies the agent should have before a turn starts.
+   */
+  bootstrap: z.array(z.string().min(1)).optional(),
+  /** Extra environment defaults forwarded to the sandbox backend. */
+  env: z.record(z.string().min(1), z.string()).optional(),
+  /** External version/input key that should force eve to rebuild the sandbox template. */
+  revalidationKey: z.string().min(1).optional(),
+});
 
 export const templateManifestSchema = z.object({
   id: slug,
@@ -81,6 +96,8 @@ export const templateManifestSchema = z.object({
     .optional(),
   /** Declared external connections (future use — reserved by the format now). */
   connections: z.array(z.string().min(1)).optional(),
+  /** Sandbox setup installed alongside this template, merged by Eden into the agent sandbox. */
+  sandbox: sandboxSetupSchema.optional(),
   /** Suggested model, for agent-type templates. */
   model: z.string().optional(),
 });

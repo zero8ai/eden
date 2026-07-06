@@ -65,6 +65,29 @@ const agentTpl: CatalogTemplate = {
   },
 };
 
+const browserSkillTpl: CatalogTemplate = {
+  manifest: {
+    id: "agent-browser",
+    type: "skill",
+    name: "Agent Browser",
+    description: "Browser automation.",
+    version: "0.1.0",
+    eve: ">=0.1.0",
+    files: ["skills/agent-browser.md"],
+    sandbox: {
+      bootstrap: [
+        "npm install -g agent-browser@0.31.1",
+        "agent-browser install --with-deps",
+      ],
+      env: {
+        AGENT_BROWSER_PROFILE: "/workspace/home/agent-browser/profile",
+      },
+      revalidationKey: "agent-browser@0.31.1",
+    },
+  },
+  files: { "skills/agent-browser.md": "# Agent Browser\n" },
+};
+
 function pkg(deps: Record<string, string>): string {
   return (
     JSON.stringify(
@@ -233,6 +256,100 @@ describe("planInstall — lock secrets snapshot (§4.5)", () => {
     };
     const lock = parseLock(legacy);
     expect(lock.installs[0].secrets).toBeUndefined();
+  });
+});
+
+describe("planInstall — sandbox setup", () => {
+  it("materializes a marketplace sandbox add-on and managed sandbox module", () => {
+    const plan = planInstall(
+      memberCtx({
+        template: browserSkillTpl,
+        packageJson: null,
+      }),
+    );
+    const paths = plan.writes.map((w) => w.path);
+    expect(paths).toContain("agents/pm/agent/skills/agent-browser.md");
+    expect(paths).toContain("agents/pm/agent/sandbox/addons/agent-browser.ts");
+    expect(paths).toContain("agents/pm/agent/sandbox/sandbox.ts");
+
+    const addon = plan.writes.find(
+      (w) => w.path === "agents/pm/agent/sandbox/addons/agent-browser.ts",
+    )!.content;
+    expect(addon).toContain("npm install -g agent-browser@0.31.1");
+    expect(addon).toContain("agent-browser install --with-deps");
+
+    const sandbox = plan.writes.find(
+      (w) => w.path === "agents/pm/agent/sandbox/sandbox.ts",
+    )!.content;
+    expect(sandbox).toContain(
+      'import * as addon0 from "./addons/agent-browser";',
+    );
+    expect(sandbox).toContain("EDEN_SANDBOX_ENV");
+    expect(sandbox).toContain(
+      "defaultBackend({ docker: { env }, vercel: { env } })",
+    );
+
+    const entry = findInstall(
+      parseLock(
+        JSON.parse(
+          plan.writes.find((w) => w.path === "eden-lock.json")!.content,
+        ),
+      ),
+      "agent-browser",
+      "pm",
+    )!;
+    expect(entry.files).toEqual([
+      "agents/pm/agent/sandbox/addons/agent-browser.ts",
+      "agents/pm/agent/skills/agent-browser.md",
+    ]);
+    expect(entry.sandbox?.revalidationKey).toBe("agent-browser@0.31.1");
+  });
+
+  it("updates the managed sandbox module with all installed add-ons for the member", () => {
+    const priorPlan = planInstall(
+      memberCtx({
+        template: browserSkillTpl,
+        packageJson: null,
+      }),
+    );
+    const priorLock = parseLock(
+      JSON.parse(
+        priorPlan.writes.find((w) => w.path === "eden-lock.json")!.content,
+      ),
+    );
+    const cloudflareSkill: CatalogTemplate = {
+      manifest: {
+        id: "cloudflare-cli",
+        type: "skill",
+        name: "Cloudflare CLI",
+        description: "Cloudflare CLI.",
+        version: "0.1.0",
+        eve: ">=0.1.0",
+        files: ["skills/cloudflare-cli.md"],
+        sandbox: {
+          bootstrap: ["npm install -g wrangler@latest"],
+          revalidationKey: "wrangler@latest",
+        },
+      },
+      files: { "skills/cloudflare-cli.md": "# Cloudflare CLI\n" },
+    };
+    const plan = planInstall(
+      memberCtx({
+        template: cloudflareSkill,
+        packageJson: null,
+        lock: priorLock,
+      }),
+    );
+    const sandbox = plan.writes.find(
+      (w) => w.path === "agents/pm/agent/sandbox/sandbox.ts",
+    )!.content;
+    expect(sandbox).toContain(
+      'import * as addon0 from "./addons/agent-browser";',
+    );
+    expect(sandbox).toContain(
+      'import * as addon1 from "./addons/cloudflare-cli";',
+    );
+    expect(sandbox).toContain("const addons = [addon0, addon1];");
   });
 });
 
@@ -508,5 +625,38 @@ describe("planUninstall", () => {
     });
     expect(plan.notFound).toBe(true);
     expect(plan.deletions).toEqual([]);
+  });
+
+  it("removes sandbox add-ons and regenerates the managed sandbox module", () => {
+    const installPlan = planInstall(
+      memberCtx({
+        template: browserSkillTpl,
+        packageJson: null,
+      }),
+    );
+    const installedLock = parseLock(
+      JSON.parse(
+        installPlan.writes.find((w) => w.path === "eden-lock.json")!.content,
+      ),
+    );
+    const entry = findInstall(installedLock, "agent-browser", "pm")!;
+    const plan = planUninstall({
+      lock: installedLock,
+      id: "agent-browser",
+      memberName: "pm",
+      repoPaths: entry.files,
+    });
+    expect(plan.deletions).toEqual([
+      "agents/pm/agent/sandbox/addons/agent-browser.ts",
+      "agents/pm/agent/skills/agent-browser.md",
+    ]);
+    expect(plan.writes.map((w) => w.path)).toEqual([
+      "eden-lock.json",
+      "agents/pm/agent/sandbox/sandbox.ts",
+    ]);
+    expect(
+      plan.writes.find((w) => w.path === "agents/pm/agent/sandbox/sandbox.ts")!
+        .content,
+    ).toContain("const addons = [];");
   });
 });

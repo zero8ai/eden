@@ -34,7 +34,8 @@ const fail = (where, msg) => errors.push(`${where}: ${msg}`);
 
 /** Mirror of manifest.ts's relative-path rule — no absolute paths, no `..`, no backslashes. */
 function badPath(p) {
-  if (typeof p !== "string" || p.length === 0) return "must be a non-empty string";
+  if (typeof p !== "string" || p.length === 0)
+    return "must be a non-empty string";
   if (p.startsWith("/")) return "must be relative (no leading slash)";
   if (p.includes("\\")) return "must use forward slashes";
   if (p.split("/").includes("..")) return "must not contain '..' segments";
@@ -43,11 +44,14 @@ function badPath(p) {
 
 /** Mirror of manifest.ts's manifest rules. Pushes readable errors under `where`. */
 function validateManifest(where, m) {
-  if (!KEBAB.test(m.id ?? "")) fail(where, `id "${m.id}" is not a kebab-case slug`);
-  if (!TYPES.includes(m.type)) fail(where, `type "${m.type}" is not one of ${TYPES.join(", ")}`);
+  if (!KEBAB.test(m.id ?? ""))
+    fail(where, `id "${m.id}" is not a kebab-case slug`);
+  if (!TYPES.includes(m.type))
+    fail(where, `type "${m.type}" is not one of ${TYPES.join(", ")}`);
   if (!m.name) fail(where, "name is required");
   if (!m.description) fail(where, "description is required");
-  if (!SEMVER.test(m.version ?? "")) fail(where, `version "${m.version}" is not semver x.y.z`);
+  if (!SEMVER.test(m.version ?? ""))
+    fail(where, `version "${m.version}" is not semver x.y.z`);
   if (!m.eve) fail(where, "eve range is required");
 
   if (!Array.isArray(m.files) || m.files.length === 0) {
@@ -80,6 +84,43 @@ function validateManifest(where, m) {
 
   if (m.connections !== undefined && !Array.isArray(m.connections)) {
     fail(where, "connections must be an array of strings");
+  }
+  if (m.sandbox !== undefined) {
+    if (
+      !m.sandbox ||
+      typeof m.sandbox !== "object" ||
+      Array.isArray(m.sandbox)
+    ) {
+      fail(where, "sandbox must be an object");
+    } else {
+      if (
+        m.sandbox.bootstrap !== undefined &&
+        (!Array.isArray(m.sandbox.bootstrap) ||
+          m.sandbox.bootstrap.some(
+            (cmd) => typeof cmd !== "string" || cmd.length === 0,
+          ))
+      ) {
+        fail(where, "sandbox.bootstrap must be an array of non-empty strings");
+      }
+      if (
+        m.sandbox.env !== undefined &&
+        (!m.sandbox.env ||
+          typeof m.sandbox.env !== "object" ||
+          Array.isArray(m.sandbox.env) ||
+          Object.entries(m.sandbox.env).some(
+            ([name, value]) => !name || typeof value !== "string",
+          ))
+      ) {
+        fail(where, "sandbox.env must be an object of string values");
+      }
+      if (
+        m.sandbox.revalidationKey !== undefined &&
+        (typeof m.sandbox.revalidationKey !== "string" ||
+          m.sandbox.revalidationKey.length === 0)
+      ) {
+        fail(where, "sandbox.revalidationKey must be a non-empty string");
+      }
+    }
   }
   if (m.model !== undefined && typeof m.model !== "string") {
     fail(where, "model must be a string");
@@ -114,11 +155,17 @@ function main() {
 
     // id must equal the directory name.
     if (t.manifest.id !== t.id) {
-      fail(where, `manifest id "${t.manifest.id}" does not match directory name "${t.id}"`);
+      fail(
+        where,
+        `manifest id "${t.manifest.id}" does not match directory name "${t.id}"`,
+      );
     }
     // ids unique across the catalog.
     if (seenIds.has(t.manifest.id)) {
-      fail(where, `duplicate id "${t.manifest.id}" (also in ${seenIds.get(t.manifest.id)})`);
+      fail(
+        where,
+        `duplicate id "${t.manifest.id}" (also in ${seenIds.get(t.manifest.id)})`,
+      );
     } else {
       seenIds.set(t.manifest.id, where);
     }
@@ -127,10 +174,12 @@ function main() {
     const declared = new Set(t.manifest.files ?? []);
     const onDisk = new Set(walkFiles(join(t.dir, "files")));
     for (const p of declared) {
-      if (!onDisk.has(p)) fail(where, `declares "${p}" but it is missing under files/`);
+      if (!onDisk.has(p))
+        fail(where, `declares "${p}" but it is missing under files/`);
     }
     for (const p of onDisk) {
-      if (!declared.has(p)) fail(where, `ships "${p}" under files/ but it is not in the manifest`);
+      if (!declared.has(p))
+        fail(where, `ships "${p}" under files/ but it is not in the manifest`);
     }
   }
 
@@ -143,20 +192,27 @@ function main() {
   }
   if (onDisk) {
     const expected = buildIndex(templates);
-    const expectedById = new Map(expected.templates.map((r) => [`${r.type}/${r.id}`, r]));
+    const expectedById = new Map(
+      expected.templates.map((r) => [`${r.type}/${r.id}`, r]),
+    );
     const listed = new Set();
     for (const row of onDisk.templates ?? []) {
       const key = `${row.type}/${row.id}`;
       if (listed.has(key)) fail("index.json", `lists ${key} more than once`);
       listed.add(key);
       const want = expectedById.get(key);
-      if (!want) fail("index.json", `lists ${key}, which is not a template on disk`);
+      if (!want)
+        fail("index.json", `lists ${key}, which is not a template on disk`);
       else if (want.hash !== row.hash) {
-        fail("index.json", `hash for ${key} is stale — run \`npm run catalog:index\``);
+        fail(
+          "index.json",
+          `hash for ${key} is stale — run \`npm run catalog:index\``,
+        );
       }
     }
     for (const key of expectedById.keys()) {
-      if (!listed.has(key)) fail("index.json", `missing ${key} — run \`npm run catalog:index\``);
+      if (!listed.has(key))
+        fail("index.json", `missing ${key} — run \`npm run catalog:index\``);
     }
   }
 
@@ -165,7 +221,9 @@ function main() {
     for (const e of errors) console.error(`  - ${e}`);
     process.exit(1);
   }
-  console.log(`Catalog OK — ${templates.length} template(s) valid and in sync.`);
+  console.log(
+    `Catalog OK — ${templates.length} template(s) valid and in sync.`,
+  );
 }
 
 main();

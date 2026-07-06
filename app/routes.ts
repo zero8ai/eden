@@ -64,6 +64,10 @@ export default [
     "repos/:projectId/assistant",
     "routes/projects.$projectId.assistant.tsx",
   ),
+  route(
+    "repos/:projectId/assistant/config",
+    "routes/projects.$projectId.assistant.config.tsx",
+  ),
   // The assistant is project-level now; the old member-level tab 301s to the repo-level page.
   memberRoute("/assistant", "routes/shims.member-assistant.tsx", "member-assistant"),
   route(

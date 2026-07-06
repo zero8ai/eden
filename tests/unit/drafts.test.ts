@@ -106,6 +106,40 @@ describe("publishDrafts", () => {
     ).rejects.toThrow(/No staged changes selected/);
   });
 
+  it("skips the build gate for an assistant-only (.eden/assistant) changeset", async () => {
+    await stageDraft(
+      { projectId: PROJECT.id, path: ".eden/assistant/instructions.md", content: "hi" },
+      store,
+    );
+    const propose = vi.fn().mockResolvedValue(proposed);
+    const checkBuild = vi.fn().mockResolvedValue({ ok: false, output: "should not run" });
+    await publishDrafts(
+      { project: PROJECT, paths: [".eden/assistant/instructions.md"] },
+      store,
+      propose,
+      checkBuild,
+    );
+    expect(checkBuild).not.toHaveBeenCalled();
+    expect(propose).toHaveBeenCalledOnce();
+  });
+
+  it("still runs the build gate when a member file is in the selection", async () => {
+    await stageDraft(
+      { projectId: PROJECT.id, path: ".eden/assistant/instructions.md", content: "hi" },
+      store,
+    );
+    await stageDraft({ projectId: PROJECT.id, path: "agent/tools/x.ts", content: "X" }, store);
+    const propose = vi.fn().mockResolvedValue(proposed);
+    const checkBuild = vi.fn().mockResolvedValue({ ok: true });
+    await publishDrafts(
+      { project: PROJECT, paths: [".eden/assistant/instructions.md", "agent/tools/x.ts"] },
+      store,
+      propose,
+      checkBuild,
+    );
+    expect(checkBuild).toHaveBeenCalledOnce();
+  });
+
   it("keeps drafts staged when the propose call fails", async () => {
     await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "A" }, store);
     const propose = vi.fn().mockRejectedValue(new Error("github down"));

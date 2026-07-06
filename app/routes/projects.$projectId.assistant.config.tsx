@@ -1,0 +1,454 @@
+/**
+ * Assistant configuration — the user layer over `.eden/assistant/**` (docs/ASSISTANT.md §7).
+ * Editing here STAGES drafts through the normal Changes flow; the fixed Eden-owned layer
+ * (instructions + tools) is shown read-only so the assistant is inspectable. Config takes effect
+ * after the change is published + merged, which restarts the instance (refresh-on-merge).
+ */
+import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import {
+  Link,
+  redirect,
+  useSearchParams,
+  type ActionFunctionArgs,
+  type LoaderFunctionArgs,
+} from "react-router";
+
+import { assistantFixedLayer, ensureAssistantAgent } from "~/assistant/instance.server";
+import { AppShell, PageHeader, repoCrumbs } from "~/components/shell";
+import { Alert, AlertDescription } from "~/components/ui/alert";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
+import { Textarea } from "~/components/ui/textarea";
+import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
+import { ASSISTANT_CONFIG_ROOT } from "~/eve/parse";
+import { buildScheduleFile, parseScheduleFile } from "~/eve/scheduleFile";
+import { slugifyResourceName } from "~/eve/templates";
+import { getAgentSource } from "~/github/cached.server";
+import { requireProject, requireRepo } from "~/project/guard.server";
+import type { Route } from "./+types/projects.$projectId.assistant.config";
+
+const INSTRUCTIONS = `${ASSISTANT_CONFIG_ROOT}/instructions.md`;
+const MODEL_FILE = `${ASSISTANT_CONFIG_ROOT}/assistant.json`;
+
+function skillPath(slug: string) {
+  return `${ASSISTANT_CONFIG_ROOT}/skills/${slug}.md`;
+}
+function schedulePath(slug: string) {
+  return `${ASSISTANT_CONFIG_ROOT}/schedules/${slug}.md`;
+}
+function basenameSlug(path: string) {
+  return path.split("/").pop()?.replace(/\.md$/, "") ?? "";
+}
+
+export const loader = (args: LoaderFunctionArgs) =>
+  authkitLoader(
+    args,
+    async ({ auth }) => {
+      const project = requireRepo(
+        await requireProject(
+          { user: auth.user, organizationId: auth.organizationId, role: auth.role },
+          args.params.projectId,
+        ),
+      );
+      const url = new URL(args.request.url);
+      const editSkill = url.searchParams.get("skill");
+      const editSchedule = url.searchParams.get("schedule");
+
+      const [source, instructionsView, modelView, fixed] = await Promise.all([
+        getAgentSource(project.repoInstallationId, {
+          owner: project.repoOwner,
+          repo: project.repoName,
+        }),
+        resolveFileView(project, INSTRUCTIONS),
+        resolveFileView(project, MODEL_FILE),
+        assistantFixedLayer(),
+      ]);
+
+      const prefix = `${ASSISTANT_CONFIG_ROOT}/`;
+      const skills = source.paths
+        .filter((p) => p.startsWith(`${prefix}skills/`) && p.endsWith(".md"))
+        .map(basenameSlug)
+        .sort();
+      const schedules = source.paths
+        .filter((p) => p.startsWith(`${prefix}schedules/`) && p.endsWith(".md"))
+        .map(basenameSlug)
+        .sort();
+
+      let model: string | null = null;
+      if (modelView.content) {
+        try {
+          model = (JSON.parse(modelView.content) as { model?: string }).model ?? null;
+        } catch {
+          model = null;
+        }
+      }
+
+      const editingSkill =
+        editSkill != null
+          ? {
+              slug: editSkill,
+              content: (await resolveFileView(project, skillPath(editSkill))).content ?? "",
+            }
+          : null;
+      const editingSchedule =
+        editSchedule != null
+          ? parseScheduleFile(
+              (await resolveFileView(project, schedulePath(editSchedule))).content ?? "",
+            )
+          : null;
+
+      return {
+        project,
+        instructions: instructionsView.content ?? "",
+        model,
+        skills,
+        schedules,
+        fixed,
+        editSkillSlug: editSkill,
+        editingSkillContent: editingSkill?.content ?? "",
+        editScheduleSlug: editSchedule,
+        editingSchedule,
+      };
+    },
+    { ensureSignedIn: true },
+  );
+
+export async function action(args: ActionFunctionArgs) {
+  const auth = await withAuth(args);
+  if (!auth.user) throw redirect("/login");
+  const project = requireRepo(
+    await requireProject(
+      {
+        user: auth.user,
+        organizationId: auth.organizationId ?? null,
+        role: auth.role ?? null,
+      },
+      args.params.projectId,
+    ),
+  );
+  // Ensure the assistant agent row exists so these drafts attribute to it (agentForPath).
+  await ensureAssistantAgent(project.id);
+
+  const form = await args.request.formData();
+  const intent = String(form.get("intent"));
+  const createdBy = auth.user.id;
+  const stage = (path: string, content: string | null) =>
+    stageDraft({ projectId: project.id, path, content, createdBy });
+
+  switch (intent) {
+    case "save-instructions": {
+      await stage(INSTRUCTIONS, String(form.get("content") ?? ""));
+      return { ok: true, saved: "instructions" as const };
+    }
+    case "save-model": {
+      const model = String(form.get("model") ?? "").trim();
+      await stage(MODEL_FILE, model ? `${JSON.stringify({ model }, null, 2)}\n` : null);
+      return { ok: true, saved: "model" as const };
+    }
+    case "save-skill": {
+      const slug = slugifyResourceName(String(form.get("name") ?? ""));
+      if (!slug) return { error: "Give the skill a name." };
+      const description = String(form.get("description") ?? "").trim();
+      const body = String(form.get("body") ?? "").trim();
+      const content = `---\ndescription: ${description || "A skill for the assistant."}\n---\n\n${body}\n`;
+      await stage(skillPath(slug), content);
+      throw redirect(`/repos/${project.id}/assistant/config`);
+    }
+    case "delete-skill": {
+      await stage(skillPath(String(form.get("slug"))), null);
+      throw redirect(`/repos/${project.id}/assistant/config`);
+    }
+    case "save-schedule": {
+      const slug = slugifyResourceName(String(form.get("name") ?? ""));
+      if (!slug) return { error: "Give the schedule a name." };
+      const cron = String(form.get("cron") ?? "").trim();
+      const message = String(form.get("message") ?? "").trim();
+      if (!cron) return { error: "A schedule needs a cron expression." };
+      await stage(schedulePath(slug), buildScheduleFile({ cron, message, extraFrontmatter: [] }));
+      throw redirect(`/repos/${project.id}/assistant/config`);
+    }
+    case "delete-schedule": {
+      await stage(schedulePath(String(form.get("slug"))), null);
+      throw redirect(`/repos/${project.id}/assistant/config`);
+    }
+    default:
+      return { error: "Unknown action." };
+  }
+}
+
+export function meta() {
+  return [{ title: "Assistant configuration · Eden" }];
+}
+
+export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
+  const {
+    project,
+    instructions,
+    model,
+    skills,
+    schedules,
+    fixed,
+    editSkillSlug,
+    editingSkillContent,
+    editScheduleSlug,
+    editingSchedule,
+  } = loaderData;
+  const [, setSearchParams] = useSearchParams();
+
+  return (
+    <AppShell
+      breadcrumbs={repoCrumbs({
+        projectId: project.id,
+        repoName: project.name,
+        tail: [{ label: "Assistant", to: `/repos/${project.id}/assistant` }, { label: "Configure" }],
+      })}
+    >
+      <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-8 sm:px-6">
+        <PageHeader
+          title="Configure the assistant"
+          description="Tailor the assistant to this repo. Changes stage as drafts — they take effect after you publish + merge them on the Deployment tab, which restarts the assistant."
+          actions={
+            <Button asChild variant="outline" size="sm">
+              <Link to={`/repos/${project.id}/assistant`}>Back to chat</Link>
+            </Button>
+          }
+        />
+
+        {/* Project instructions */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Project instructions</CardTitle>
+            <CardDescription>
+              Appended to the assistant's built-in instructions under a clear marker. Use it for
+              repo-specific conventions, priorities, and gotchas.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form method="post" className="space-y-3">
+              <input type="hidden" name="intent" value="save-instructions" />
+              <Textarea
+                name="content"
+                defaultValue={instructions}
+                rows={8}
+                placeholder="e.g. This team ships to Cloudflare. Prefer wrangler over bespoke tools…"
+                className="font-mono text-sm"
+              />
+              <Button type="submit" size="sm">Stage instructions</Button>
+            </form>
+          </CardContent>
+        </Card>
+
+        {/* Model override */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Model</CardTitle>
+            <CardDescription>
+              Optional per-project model override (an OpenRouter model id). Leave blank to use the
+              workspace default. Applies without an image rebuild.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form method="post" className="flex flex-wrap items-end gap-3">
+              <input type="hidden" name="intent" value="save-model" />
+              <div className="flex-1 space-y-1.5">
+                <Label htmlFor="model">Model id</Label>
+                <Input
+                  id="model"
+                  name="model"
+                  defaultValue={model ?? ""}
+                  placeholder="anthropic/claude-sonnet-5"
+                  className="font-mono text-sm"
+                />
+              </div>
+              <Button type="submit" size="sm">Stage model</Button>
+            </form>
+          </CardContent>
+        </Card>
+
+        {/* Skills */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Skills</CardTitle>
+            <CardDescription>
+              Progressive-disclosure knowledge the assistant loads on demand.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {skills.length > 0 && (
+              <ul className="space-y-1.5">
+                {skills.map((slug) => (
+                  <li key={slug} className="flex items-center justify-between gap-2 text-sm">
+                    <button
+                      type="button"
+                      className="font-mono underline-offset-4 hover:underline"
+                      onClick={() => setSearchParams({ skill: slug })}
+                    >
+                      {slug}.md
+                    </button>
+                    <form method="post">
+                      <input type="hidden" name="intent" value="delete-skill" />
+                      <input type="hidden" name="slug" value={slug} />
+                      <Button type="submit" variant="ghost" size="sm">
+                        Delete
+                      </Button>
+                    </form>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <form method="post" className="space-y-3 border-t pt-4">
+              <input type="hidden" name="intent" value="save-skill" />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="skill-name">Name</Label>
+                  <Input
+                    id="skill-name"
+                    name="name"
+                    defaultValue={editSkillSlug ?? ""}
+                    placeholder="deploying-to-cloudflare"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="skill-desc">Description</Label>
+                  <Input id="skill-desc" name="description" placeholder="When to use this skill" />
+                </div>
+              </div>
+              <Textarea
+                name="body"
+                rows={6}
+                defaultValue={stripFrontmatter(editingSkillContent)}
+                placeholder="Markdown guidance…"
+                className="font-mono text-sm"
+              />
+              <Button type="submit" size="sm">
+                {editSkillSlug ? "Update skill" : "Add skill"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+
+        {/* Schedules */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Schedules</CardTitle>
+            <CardDescription>
+              Cron-triggered runs. The message is delivered to the assistant when the schedule
+              fires.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {schedules.length > 0 && (
+              <ul className="space-y-1.5">
+                {schedules.map((slug) => (
+                  <li key={slug} className="flex items-center justify-between gap-2 text-sm">
+                    <button
+                      type="button"
+                      className="font-mono underline-offset-4 hover:underline"
+                      onClick={() => setSearchParams({ schedule: slug })}
+                    >
+                      {slug}.md
+                    </button>
+                    <form method="post">
+                      <input type="hidden" name="intent" value="delete-schedule" />
+                      <input type="hidden" name="slug" value={slug} />
+                      <Button type="submit" variant="ghost" size="sm">
+                        Delete
+                      </Button>
+                    </form>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <form method="post" className="space-y-3 border-t pt-4">
+              <input type="hidden" name="intent" value="save-schedule" />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="sched-name">Name</Label>
+                  <Input
+                    id="sched-name"
+                    name="name"
+                    defaultValue={editScheduleSlug ?? ""}
+                    placeholder="daily-digest"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="sched-cron">Cron</Label>
+                  <Input
+                    id="sched-cron"
+                    name="cron"
+                    defaultValue={editingSchedule?.cron ?? ""}
+                    placeholder="0 9 * * *"
+                    className="font-mono text-sm"
+                  />
+                </div>
+              </div>
+              <Textarea
+                name="message"
+                rows={4}
+                defaultValue={editingSchedule?.message ?? ""}
+                placeholder="Message delivered when the schedule fires…"
+                className="text-sm"
+              />
+              <Button type="submit" size="sm">
+                {editScheduleSlug ? "Update schedule" : "Add schedule"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+
+        {/* Fixed layer (read-only) */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Built-in layer (read-only)</CardTitle>
+            <CardDescription>
+              The Eden-owned instructions and tools every assistant has. Your configuration above
+              is layered on top.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <p className="mb-1.5 text-sm font-medium">Tools</p>
+              <div className="flex flex-wrap gap-1.5">
+                {fixed.tools.map((t) => (
+                  <Badge key={t} variant="secondary" className="font-mono text-xs">
+                    {t}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+            <details>
+              <summary className="cursor-pointer text-sm font-medium">
+                Built-in instructions
+              </summary>
+              <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-muted/50 p-3 text-xs whitespace-pre-wrap">
+                {fixed.instructions}
+              </pre>
+            </details>
+          </CardContent>
+        </Card>
+
+        <Alert>
+          <AlertDescription>
+            Staged config appears on the Deployment tab. Publish + merge it to apply — that
+            restarts the assistant with your changes.
+          </AlertDescription>
+        </Alert>
+      </div>
+    </AppShell>
+  );
+}
+
+/** Drop the leading YAML frontmatter so the skill body editor shows just the markdown. */
+function stripFrontmatter(source: string): string {
+  const m = source.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?([\s\S]*)$/);
+  return (m ? m[1] : source).trim();
+}

@@ -31,6 +31,32 @@ export function assistantTemplateDir(): string {
   return process.env.EDEN_ASSISTANT_TEMPLATE_DIR ?? path.join(process.cwd(), "assistant-template");
 }
 
+/** The fixed, Eden-owned layer — rendered read-only on the config page so it's inspectable. */
+export interface AssistantFixedLayer {
+  instructions: string;
+  tools: string[];
+}
+
+let cachedFixedLayer: AssistantFixedLayer | null = null;
+
+export async function assistantFixedLayer(): Promise<AssistantFixedLayer> {
+  if (cachedFixedLayer) return cachedFixedLayer;
+  const dir = assistantTemplateDir();
+  const instructions = await readFile(path.join(dir, "agent", "instructions.md"), "utf8").catch(
+    () => "",
+  );
+  const tools = await readdir(path.join(dir, "agent", "tools"))
+    .then((names) =>
+      names
+        .filter((n) => n.endsWith(".ts"))
+        .map((n) => n.replace(/\.ts$/, ""))
+        .sort(),
+    )
+    .catch(() => []);
+  cachedFixedLayer = { instructions, tools };
+  return cachedFixedLayer;
+}
+
 let cachedHash: string | null = null;
 
 /** Content hash of the bundled template — the assistant's release identity + image tag. */

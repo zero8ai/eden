@@ -20,6 +20,7 @@ import {
   type ProposedChange,
 } from "~/github/write.server";
 import { newId } from "~/lib/id";
+import { isAssistantConfigPath } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
 import type { BuildCheckRequest, BuildCheckResult } from "~/seams/types";
 
@@ -313,14 +314,20 @@ export async function publishDrafts(
     project: input.project,
     files: selected.map((d) => ({ path: d.path, content: d.content })),
   });
-  const check = await checkBuild({
-    projectId: input.project.id,
-    repo: { owner: input.project.repoOwner, repo: input.project.repoName },
-    ref: input.project.defaultBranch,
-    installationId: input.project.repoInstallationId,
-    overlay: files,
-    agentRoot,
-  });
+  // The built-in assistant's config (.eden/assistant/** markdown + JSON) is not part of any eve
+  // build, so a changeset of ONLY those files has nothing to compile — skip the gate. Any member
+  // file in the selection still triggers the normal build check.
+  const assistantConfigOnly = selected.every((d) => isAssistantConfigPath(d.path));
+  const check = assistantConfigOnly
+    ? { ok: true as const, skipped: true }
+    : await checkBuild({
+        projectId: input.project.id,
+        repo: { owner: input.project.repoOwner, repo: input.project.repoName },
+        ref: input.project.defaultBranch,
+        installationId: input.project.repoInstallationId,
+        overlay: files,
+        agentRoot,
+      });
   if (!check.ok) {
     throw new Error(
       `Build check failed — no change request was created. Fix this and publish again:\n\n${check.output}`,

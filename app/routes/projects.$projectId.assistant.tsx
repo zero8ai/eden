@@ -10,6 +10,7 @@
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Link,
   redirect,
   useFetcher,
   useNavigate,
@@ -316,6 +317,9 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
     () => (
       <div className="flex flex-wrap items-center gap-2">
         {sessionPicker}
+        <Button asChild variant="outline" size="sm">
+          <Link to={`${base}/assistant/config`}>Configure</Link>
+        </Button>
         <NewSessionForm method="post">
           <input type="hidden" name="intent" value="new-session" />
           <Button type="submit" variant="outline" size="sm" disabled={busy}>
@@ -324,7 +328,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         </NewSessionForm>
       </div>
     ),
-    [NewSessionForm, busy, sessionPicker],
+    [NewSessionForm, base, busy, sessionPicker],
   );
 
   const transcriptLead = useMemo(

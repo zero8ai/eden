@@ -170,6 +170,17 @@ const EDEN_DOCKERIGNORE = `node_modules
 `;
 
 /**
+ * The built-in assistant's image (docs/ASSISTANT.md §4/§5). Identical to the reference eve image
+ * except the CMD: instead of `eve start` directly, it runs the assistant entrypoint, which
+ * materializes the project's published user-config layer, rebuilds if that layer is non-empty
+ * (eve discovers instructions/skills/schedules at build time), then execs `eve start`.
+ */
+export const EDEN_ASSISTANT_DOCKERFILE = EDEN_EVE_DOCKERFILE.replace(
+  'CMD ["node_modules/.bin/eve", "start"]',
+  'CMD ["sh", "entrypoint.sh"]',
+);
+
+/**
  * Runtime + build-stage tags for a project@commit. Local (unregistried) for dev. Team
  * members build distinct images from the same commit, so the member name joins the tag.
  */
@@ -297,6 +308,57 @@ export async function buildEveImage(
       }
       throw new Error(
         `Agent image build failed:\n${extractBuildError(commandErrorText(error))}`,
+      );
+    }
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Build the shared assistant image from a LOCAL directory (the bundled `assistant-template/`)
+ * instead of a GitHub tarball — the only difference from `buildEveImage` is the source and the
+ * CMD (see `EDEN_ASSISTANT_DOCKERFILE`). Produces the same runtime + `-build` pair so the deploy
+ * target's world-migration path works unchanged. `imageRef` is the caller-chosen tag
+ * (`eden-assistant:<template-hash>`), so the image is reused across projects and rebuilt only
+ * when the template content changes.
+ */
+export async function buildAssistantImage(input: {
+  imageRef: string;
+  templateDir: string;
+}): Promise<BuiltArtifact> {
+  await assertDockerDaemonReady("build the assistant image");
+  const workDir = await mkdtemp(path.join(tmpdir(), "eden-assistant-build-"));
+  try {
+    const buildDir = path.join(workDir, "src");
+    await mkdir(buildDir, { recursive: true });
+    // Copy the bundled template (contents, incl. dotfiles) into a scratch build context.
+    await exec("cp", ["-R", `${input.templateDir}/.`, buildDir]);
+    await writeFile(path.join(buildDir, "Dockerfile"), EDEN_ASSISTANT_DOCKERFILE);
+    await writeFile(path.join(buildDir, ".dockerignore"), EDEN_DOCKERIGNORE);
+
+    const buildStage = buildStageTagFor(input.imageRef);
+    const opts = { maxBuffer: 64 * 1024 * 1024 };
+    try {
+      await exec("docker", ["build", "--target", "build", "-t", buildStage, buildDir], opts);
+      const { stderr: buildLog } = await exec(
+        "docker",
+        ["build", "-t", input.imageRef, buildDir],
+        opts,
+      );
+      const { stdout: digest } = await exec("docker", [
+        "inspect",
+        "--format",
+        "{{.Id}}",
+        input.imageRef,
+      ]);
+      return { imageRef: input.imageRef, digest: digest.trim(), logs: buildLog };
+    } catch (error) {
+      if (isDockerUnavailableError(error)) {
+        throw normalizeDockerCliError(error, "build the assistant image");
+      }
+      throw new Error(
+        `Assistant image build failed:\n${extractBuildError(commandErrorText(error))}`,
       );
     }
   } finally {

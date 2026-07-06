@@ -13,7 +13,11 @@ import { planFailure } from "./policy";
 
 export type { Job } from "~/data/ports";
 
-export type JobKind = "deploy_release" | "rollback_release";
+export type JobKind =
+  | "deploy_release"
+  | "rollback_release"
+  | "assistant_deploy"
+  | "assistant_restart";
 
 export interface DeployReleasePayload {
   environmentId: string;

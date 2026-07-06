@@ -27,6 +27,23 @@ async function execute(job: Job): Promise<void> {
       }
       return;
     }
+    case "assistant_deploy": {
+      const { runAssistantDeploy } = await import("~/assistant/instance.server");
+      const p = job.payload as { projectId: string };
+      const res = await runAssistantDeploy(p);
+      if (res.status === "failed") {
+        throw new Error("assistant deployment failed");
+      }
+      return;
+    }
+    case "assistant_restart": {
+      // Config-change refresh: stop/start so the entrypoint re-fetches the bundle and rebuilds.
+      // Best-effort — a missing instance is a no-op (it provisions on next use), never a retry.
+      const { restartAssistantInstance } = await import("~/assistant/instance.server");
+      const p = job.payload as { projectId: string };
+      await restartAssistantInstance(p.projectId);
+      return;
+    }
     default:
       throw new Error(`Unknown job kind: ${job.kind}`);
   }

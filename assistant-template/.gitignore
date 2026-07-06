@@ -1,0 +1,8 @@
+.eve/
+.output/
+.workflow-data/
+node_modules/
+.eden-user-layer
+.eden-assistant-env
+agent/skills/user/
+agent/schedules/user/

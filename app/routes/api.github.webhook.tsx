@@ -14,13 +14,14 @@ import { data, type ActionFunctionArgs } from "react-router";
 import { listAgents, syncProjectAgents } from "~/db/queries.server";
 import { ensureReleasesForCommit, findProjectByRepo } from "~/deploy/controller.server";
 import { refreshTeammatesForRosterChange } from "~/deploy/teammate-refresh.server";
-import { detectAgentRoots } from "~/eve/parse";
+import { ASSISTANT_CONFIG_ROOT, detectAgentRoots } from "~/eve/parse";
+import { enqueue } from "~/jobs/queue.server";
 import {
   invalidateRepoChanges,
   invalidateRepoSource,
   warmAgentSource,
 } from "~/github/cached.server";
-import { fetchAgentSource } from "~/github/repo.server";
+import { fetchAgentSource, listCommitFiles } from "~/github/repo.server";
 import { verifyGitHubSignature } from "~/github/webhook.server";
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -107,6 +108,15 @@ export async function action({ request }: ActionFunctionArgs) {
         ...source,
         ref: payload.repository.default_branch ?? source.ref,
       });
+
+      // A merge that touched the assistant's published config restarts its instance so the
+      // entrypoint re-fetches the bundle + rebuilds (docs/ASSISTANT.md §4). Trigger discipline:
+      // ONLY from this merge path, never from loader self-heal. Queued so the webhook stays fast.
+      const changed = await listCommitFiles(project.repoInstallationId, { owner, repo },
+        payload.pull_request.merge_commit_sha);
+      if (changed.some((p) => p.startsWith(`${ASSISTANT_CONFIG_ROOT}/`))) {
+        await enqueue("assistant_restart", { projectId: project.id });
+      }
     } catch {
       // roster stays as-is; releases below still cut for the known members
     }

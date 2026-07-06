@@ -204,6 +204,21 @@ export async function readAgentFile(
   return readTextFile(octokit, { owner, repo, ref: branch }, path);
 }
 
+/** The repo-relative paths changed by a commit (e.g. a merge commit), or [] on any error. */
+export async function listCommitFiles(
+  installationId: string | number,
+  { owner, repo }: { owner: string; repo: string },
+  sha: string,
+): Promise<string[]> {
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const res = await octokit.rest.repos.getCommit({ owner, repo, ref: sha });
+    return (res.data.files ?? []).map((f) => f.filename).filter(Boolean) as string[];
+  } catch {
+    return [];
+  }
+}
+
 /** Read a single text file's contents, or null if missing/binary. */
 async function readTextFile(
   octokit: InstallationOctokit,

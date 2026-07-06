@@ -1,0 +1,97 @@
+// Container boot: materialize the user config layer before the agent compiles.
+//
+// eve discovers instructions.md / skills / schedules at BUILD time, not at `eve start`
+// (docs/ASSISTANT.md §2), so the entrypoint fetches the project's PUBLISHED .eden/assistant
+// config from Eden, writes it into this fixed image, and — if any user layer was written —
+// re-runs `eve build` before `eve start`. On persistent fetch failure it starts with the fixed
+// layer only, so a control-plane hiccup never bricks the assistant.
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+
+const API_URL = process.env.EDEN_API_URL;
+const TOKEN = process.env.EDEN_ASSISTANT_TOKEN;
+const APP = process.cwd();
+const INSTRUCTIONS = join(APP, "agent", "instructions.md");
+const USER_MARKER = join(APP, ".eden-user-layer");
+const ENV_FILE = join(APP, ".eden-assistant-env");
+const MARKER = "\n\n## Project instructions (user-configured)\n\n";
+
+async function fetchBundle() {
+  if (!API_URL || !TOKEN) {
+    console.warn("[assistant] EDEN_API_URL / EDEN_ASSISTANT_TOKEN unset — fixed layer only.");
+    return null;
+  }
+  const url = API_URL.replace(/\/+$/, "") + "/api/assistant/bundle";
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: { authorization: "Bearer " + TOKEN },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (res.ok) return await res.json();
+      console.warn(`[assistant] bundle fetch ${res.status} (attempt ${attempt}/5)`);
+    } catch (error) {
+      console.warn(`[assistant] bundle fetch failed (attempt ${attempt}/5): ${error?.message ?? error}`);
+    }
+    await new Promise((r) => setTimeout(r, Math.min(attempt * 1500, 6000)));
+  }
+  console.warn("[assistant] bundle fetch gave up — starting with the fixed layer only.");
+  return null;
+}
+
+async function reset() {
+  // Idempotent across restarts (docker start re-runs this): strip any previously-applied user
+  // layer so appends/dirs never stack. Truncate instructions.md at the marker, and wipe the
+  // materialized user dirs + flag files.
+  try {
+    const current = await readFile(INSTRUCTIONS, "utf8");
+    const cut = current.indexOf(MARKER);
+    if (cut >= 0) await writeFile(INSTRUCTIONS, current.slice(0, cut));
+  } catch {
+    /* instructions.md always exists in the image; ignore */
+  }
+  await rm(join(APP, "agent", "skills", "user"), { recursive: true, force: true });
+  await rm(join(APP, "agent", "schedules", "user"), { recursive: true, force: true });
+  await rm(USER_MARKER, { force: true });
+  await rm(ENV_FILE, { force: true });
+}
+
+async function main() {
+  await reset();
+  const bundle = await fetchBundle();
+  if (!bundle || typeof bundle !== "object") return;
+
+  let wroteUserLayer = false;
+
+  // User skills / schedules → agent/skills/user/… and agent/schedules/user/…
+  const files = bundle.files && typeof bundle.files === "object" ? bundle.files : {};
+  for (const [rel, content] of Object.entries(files)) {
+    if (typeof content !== "string") continue;
+    const dest = join(APP, "agent", rel);
+    await mkdir(dirname(dest), { recursive: true });
+    await writeFile(dest, content);
+    wroteUserLayer = true;
+  }
+
+  // User instructions appended to the fixed instructions.md under a clear marker.
+  if (typeof bundle.instructions === "string" && bundle.instructions.trim()) {
+    const fixed = await readFile(INSTRUCTIONS, "utf8");
+    await writeFile(INSTRUCTIONS, fixed + MARKER + bundle.instructions.trim() + "\n");
+    wroteUserLayer = true;
+  }
+
+  // Per-project model override (published .eden/assistant/assistant.json) wins over the deploy
+  // env default. Written to an env file the entrypoint sources; does NOT require a rebuild.
+  if (typeof bundle.model === "string" && bundle.model.trim()) {
+    await writeFile(ENV_FILE, `EDEN_ASSISTANT_MODEL=${bundle.model.trim()}\n`);
+  }
+
+  if (wroteUserLayer) await writeFile(USER_MARKER, "1");
+  console.log(
+    `[assistant] user layer ${wroteUserLayer ? "materialized (rebuild required)" : "empty (fixed layer)"}.`,
+  );
+}
+
+main().catch((error) => {
+  console.error("[assistant] bootstrap error (starting anyway):", error);
+});

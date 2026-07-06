@@ -247,8 +247,16 @@ export async function runWorldMigrations(
   ]);
 }
 
-/** Poll the instance's HTTP endpoint until it responds or the timeout elapses. */
-async function waitForHealth(url: string, timeoutMs: number): Promise<boolean> {
+/**
+ * Poll the instance's HTTP endpoint until it responds or the timeout elapses.
+ * If Docker reports the container has already exited, stop waiting immediately:
+ * a dead instance cannot become healthy, and the logs now contain the useful error.
+ */
+async function waitForHealth(
+  url: string,
+  timeoutMs: number,
+  stillRunning?: () => Promise<boolean>,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -257,6 +265,7 @@ async function waitForHealth(url: string, timeoutMs: number): Promise<boolean> {
     } catch {
       // not up yet
     }
+    if (stillRunning && !(await stillRunning())) return false;
     await new Promise((r) => setTimeout(r, 750));
   }
   return false;
@@ -374,7 +383,11 @@ export const localDockerTarget: DeployTarget = {
     ]);
     const url = `http://127.0.0.1:${hostPort}`;
 
-    const healthy = await waitForHealth(url, DEPLOY_HEALTH_TIMEOUT_MS);
+    const healthy = await waitForHealth(
+      url,
+      DEPLOY_HEALTH_TIMEOUT_MS,
+      async () => (await inspectRunning(name)) === true,
+    );
     if (healthy) return { status: "live", url };
     return {
       status: "failed",
@@ -406,7 +419,11 @@ export const localDockerTarget: DeployTarget = {
       name,
     ]);
     const url = `http://127.0.0.1:${hostPort}`;
-    const healthy = await waitForHealth(url, WAKE_HEALTH_TIMEOUT_MS);
+    const healthy = await waitForHealth(
+      url,
+      WAKE_HEALTH_TIMEOUT_MS,
+      async () => (await inspectRunning(name)) === true,
+    );
     if (healthy) return { status: "live", url };
     return {
       status: "failed",

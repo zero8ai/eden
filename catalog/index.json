@@ -22,7 +22,7 @@
       "name": "Agent Browser",
       "version": "0.1.0",
       "description": "Browser automation with the agent-browser CLI: navigate pages, inspect accessibility snapshots, click/fill by refs, capture screenshots, and run web QA from the sandbox shell.",
-      "hash": "6766737b0674e3e63c09f5e3574ba69cc9beb81b"
+      "hash": "272c1e47fccc92831c32ce78ef56c8d10a848ae2"
     },
     {
       "id": "writing-a-prd",

@@ -5,15 +5,19 @@
  * after the change is published + merged, which restarts the instance (refresh-on-merge).
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { Lock } from "lucide-react";
 import {
   Link,
   redirect,
+  useFetcher,
   useSearchParams,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
 
 import { assistantFixedLayer, ensureAssistantAgent } from "~/assistant/instance.server";
+import { MarkdownText } from "~/components/chat";
+import { ModelSelect } from "~/components/model-select";
 import { AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -27,6 +31,7 @@ import {
 } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
+import { Separator } from "~/components/ui/separator";
 import { Textarea } from "~/components/ui/textarea";
 import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import { ASSISTANT_CONFIG_ROOT } from "~/eve/parse";
@@ -223,19 +228,59 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
           }
         />
 
-        {/* Project instructions */}
+        {/* Instructions: the fixed built-in layer (read-only) + the editable project layer */}
         <Card>
           <CardHeader>
-            <CardTitle>Project instructions</CardTitle>
+            <CardTitle>Instructions</CardTitle>
             <CardDescription>
-              Appended to the assistant's built-in instructions under a clear marker. Use it for
-              repo-specific conventions, priorities, and gotchas.
+              The assistant always starts with Eden's built-in instructions (shown below,
+              read-only). Anything you add is appended under a “Project instructions” marker — so
+              you don't need to repeat what's already covered here.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-5">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Lock className="size-3.5 text-muted-foreground" aria-hidden />
+                <span className="text-sm font-medium">Built-in instructions</span>
+                <Badge variant="secondary" className="text-xs">
+                  read-only
+                </Badge>
+              </div>
+              <div className="max-h-80 overflow-auto rounded-lg border bg-muted/40 p-4 text-sm">
+                {fixed.instructions ? (
+                  <MarkdownText text={fixed.instructions} />
+                ) : (
+                  <p className="text-muted-foreground">
+                    The built-in instructions could not be loaded.
+                  </p>
+                )}
+              </div>
+              {fixed.tools.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  <span className="text-xs text-muted-foreground">Built-in tools:</span>
+                  {fixed.tools.map((t) => (
+                    <Badge key={t} variant="outline" className="font-mono text-xs">
+                      {t}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <Separator />
+
             <form method="post" className="space-y-3">
               <input type="hidden" name="intent" value="save-instructions" />
+              <div className="space-y-1.5">
+                <Label htmlFor="project-instructions">Your project instructions</Label>
+                <p className="text-xs text-muted-foreground">
+                  Repo-specific conventions, priorities, and gotchas — added on top of the
+                  built-in layer above.
+                </p>
+              </div>
               <Textarea
+                id="project-instructions"
                 name="content"
                 defaultValue={instructions}
                 rows={8}
@@ -252,25 +297,12 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
           <CardHeader>
             <CardTitle>Model</CardTitle>
             <CardDescription>
-              Optional per-project model override (an OpenRouter model id). Leave blank to use the
-              workspace default. Applies without an image rebuild.
+              Optional per-project model override. Search the live catalog and pick one — leave it
+              unset to use the workspace default. Applies without an image rebuild.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form method="post" className="flex flex-wrap items-end gap-3">
-              <input type="hidden" name="intent" value="save-model" />
-              <div className="flex-1 space-y-1.5">
-                <Label htmlFor="model">Model id</Label>
-                <Input
-                  id="model"
-                  name="model"
-                  defaultValue={model ?? ""}
-                  placeholder="anthropic/claude-sonnet-5"
-                  className="font-mono text-sm"
-                />
-              </div>
-              <Button type="submit" size="sm">Stage model</Button>
-            </form>
+            <ModelField projectId={project.id} model={model} />
           </CardContent>
         </Card>
 
@@ -405,37 +437,6 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
           </CardContent>
         </Card>
 
-        {/* Fixed layer (read-only) */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Built-in layer (read-only)</CardTitle>
-            <CardDescription>
-              The Eden-owned instructions and tools every assistant has. Your configuration above
-              is layered on top.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <p className="mb-1.5 text-sm font-medium">Tools</p>
-              <div className="flex flex-wrap gap-1.5">
-                {fixed.tools.map((t) => (
-                  <Badge key={t} variant="secondary" className="font-mono text-xs">
-                    {t}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-            <details>
-              <summary className="cursor-pointer text-sm font-medium">
-                Built-in instructions
-              </summary>
-              <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-muted/50 p-3 text-xs whitespace-pre-wrap">
-                {fixed.instructions}
-              </pre>
-            </details>
-          </CardContent>
-        </Card>
-
         <Alert>
           <AlertDescription>
             Staged config appears on the Deployment tab. Publish + merge it to apply — that
@@ -444,6 +445,44 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
         </Alert>
       </div>
     </AppShell>
+  );
+}
+
+/**
+ * The per-project model override, using the same catalog-backed picker as agent Settings so the
+ * user searches models instead of remembering an id. Committing stages the `assistant.json` draft
+ * (empty value clears it → back to the workspace default).
+ */
+function ModelField({ projectId, model }: { projectId: string; model: string | null }) {
+  const fetcher = useFetcher<{ ok?: boolean; error?: string; saved?: string }>();
+  const busy = fetcher.state !== "idle";
+  const commit = (value: string) =>
+    fetcher.submit({ intent: "save-model", model: value }, { method: "post" });
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <ModelSelect value={model} busy={busy} onCommit={commit} />
+        {model && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => commit("")}
+          >
+            Reset to workspace default
+          </Button>
+        )}
+      </div>
+      {fetcher.data?.error && (
+        <p className="text-sm text-destructive">{fetcher.data.error}</p>
+      )}
+      {fetcher.data?.ok && (
+        <p className="text-sm text-muted-foreground">
+          Staged — publish it on the Deployment tab to apply.
+        </p>
+      )}
+    </div>
   );
 }
 

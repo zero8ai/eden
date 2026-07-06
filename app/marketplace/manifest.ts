@@ -17,9 +17,30 @@
  */
 import { z } from "zod";
 
-/** The four hierarchy levels a template can target (PRD §7.8 — "turtles all the way down"). */
-export const TEMPLATE_TYPES = ["tool", "skill", "subagent", "agent"] as const;
+/**
+ * The hierarchy levels a template can target (PRD §7.8 — "turtles all the way down"). `channel`
+ * and `connection` join the original four as first-class marketplace artifacts (composition): a
+ * channel like Discord is defined ONCE and included by reference into agent templates. Like
+ * tool/skill/subagent they install INTO an existing member; only `agent` installs as a new one.
+ */
+export const TEMPLATE_TYPES = [
+  "tool",
+  "skill",
+  "subagent",
+  "channel",
+  "connection",
+  "agent",
+] as const;
 export type TemplateType = (typeof TEMPLATE_TYPES)[number];
+
+/**
+ * Types a template may `includes`-reference: everything except `agent`. An agent is a whole team
+ * member — it installs as its own root, so it can't be flattened into a parent's file tree.
+ */
+export const INCLUDABLE_TYPES = TEMPLATE_TYPES.filter(
+  (t) => t !== "agent",
+) as Exclude<TemplateType, "agent">[];
+export type IncludableType = (typeof INCLUDABLE_TYPES)[number];
 
 /** kebab-case slug: lowercase, digits, single hyphens; matches the on-disk directory name. */
 const slug = z
@@ -100,6 +121,24 @@ export const templateManifestSchema = z.object({
   sandbox: sandboxSetupSchema.optional(),
   /** Suggested model, for agent-type templates. */
   model: z.string().optional(),
+  /**
+   * Other catalog templates this one bundles by reference (composition). At install/update time
+   * the resolver (compose.server.ts) flattens each include's files/deps/secrets/sandbox into this
+   * template, so installed repos get materialized files — never live references. No version
+   * pinning: includes resolve from the same catalog snapshot the parent came from, and the
+   * parent's own version bump is what delivers newer included artifacts. `agent` is not includable
+   * (a whole team member can't flatten into a parent); cycles and path collisions are CI failures.
+   */
+  includes: z
+    .array(
+      z.object({
+        type: z.enum(
+          INCLUDABLE_TYPES as [IncludableType, ...IncludableType[]],
+        ),
+        id: slug,
+      }),
+    )
+    .optional(),
 });
 
 export type TemplateManifest = z.infer<typeof templateManifestSchema>;

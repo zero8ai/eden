@@ -63,6 +63,23 @@ const installEntrySchema = z.object({
       revalidationKey: z.string().min(1).optional(),
     })
     .optional(),
+  /**
+   * Composition provenance (LOCK_VERSION stays 1 — optional field, old locks parse fine): the
+   * catalog templates this install bundled by reference, each with its OWN version + hash at
+   * install time. The included files themselves are already flattened into `files`; this is the
+   * record of where they came from, so the surface can show "bundled from the catalog".
+   */
+  includes: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        type: z.enum(TEMPLATE_TYPES),
+        name: z.string().min(1),
+        version: z.string().min(1),
+        hash: z.string().min(1),
+      }),
+    )
+    .optional(),
 });
 
 export type InstallEntry = z.infer<typeof installEntrySchema>;

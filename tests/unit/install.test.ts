@@ -538,6 +538,181 @@ describe("planInstall — malformed package.json", () => {
   });
 });
 
+describe("planInstall — resolved (composed) templates", () => {
+  /** A flattened agent template as compose.server.ts hands it to the planner: extra hash + includes. */
+  const resolvedEngineer: CatalogTemplate & {
+    hash?: string;
+    includes?: Array<{
+      id: string;
+      type: "channel";
+      name: string;
+      version: string;
+      hash: string;
+    }>;
+  } = {
+    manifest: {
+      id: "engineer",
+      type: "agent",
+      name: "Engineer",
+      description: "Ships code.",
+      version: "0.2.0",
+      eve: ">=0.1.0",
+      // The channel's file is flattened in alongside the agent's own files.
+      files: ["channels/discord.ts", "agent.ts", "instructions.md"],
+      secrets: [{ name: "DISCORD_BOT_TOKEN", description: "bot token" }],
+    },
+    files: {
+      "channels/discord.ts": "export default {};\n",
+      "agent.ts": "export default {};\n",
+      "instructions.md": "# Engineer\n",
+    },
+    hash: "parent-own-hash",
+    includes: [
+      {
+        id: "discord",
+        type: "channel",
+        name: "Discord",
+        version: "0.1.0",
+        hash: "discord-own-hash",
+      },
+    ],
+  };
+
+  it("records the PROVIDED hash + includes and lands every flattened file under the member dir", () => {
+    const plan = planInstall({
+      template: resolvedEngineer,
+      registry: REGISTRY,
+      repoPaths: [],
+      drafts: [],
+      packageJson: null,
+      lock: emptyLock(),
+      rosterNames: ["pm"],
+      target: { kind: "new-member", name: "eng" },
+    });
+    const paths = plan.writes.map((w) => w.path);
+    expect(paths).toContain("agents/eng/agent/channels/discord.ts");
+    expect(paths).toContain("agents/eng/agent/agent.ts");
+    expect(paths).toContain("agents/eng/agent/instructions.md");
+
+    const entry = findInstall(
+      parseLock(
+        JSON.parse(
+          plan.writes.find((w) => w.path === "eden-lock.json")!.content,
+        ),
+      ),
+      "engineer",
+      "eng",
+    )!;
+    // The resolver-supplied hash is used verbatim (not recomputed over the flattened template).
+    expect(entry.hash).toBe("parent-own-hash");
+    expect(entry.includes).toEqual([
+      {
+        id: "discord",
+        type: "channel",
+        name: "Discord",
+        version: "0.1.0",
+        hash: "discord-own-hash",
+      },
+    ]);
+  });
+
+  it("update dropping an include stages the dropped included file for deletion", () => {
+    const prior: InstallEntry = {
+      id: "engineer",
+      type: "agent",
+      name: "Engineer",
+      version: "0.1.0",
+      hash: "old",
+      registry: REGISTRY,
+      member: "eng",
+      files: [
+        "agents/eng/agent/agent.ts",
+        "agents/eng/agent/channels/discord.ts",
+        "agents/eng/agent/instructions.md",
+      ],
+      includes: [
+        {
+          id: "discord",
+          type: "channel",
+          name: "Discord",
+          version: "0.1.0",
+          hash: "discord-own-hash",
+        },
+      ],
+    };
+    // The new resolved version no longer includes Discord — its file is gone from the flatten.
+    const noDiscord: CatalogTemplate & { hash?: string } = {
+      manifest: {
+        id: "engineer",
+        type: "agent",
+        name: "Engineer",
+        description: "Ships code.",
+        version: "0.2.0",
+        eve: ">=0.1.0",
+        files: ["agent.ts", "instructions.md"],
+      },
+      files: {
+        "agent.ts": "export default {};\n",
+        "instructions.md": "# Engineer\n",
+      },
+      hash: "new-own-hash",
+    };
+    const plan = planInstall({
+      template: noDiscord,
+      registry: REGISTRY,
+      repoPaths: prior.files,
+      drafts: [],
+      packageJson: null,
+      lock: upsertInstall(emptyLock(), prior),
+      target: { kind: "member", memberName: "eng", root: "agents/eng/agent" },
+    });
+    expect(plan.isUpdate).toBe(true);
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.deletions).toEqual(["agents/eng/agent/channels/discord.ts"]);
+  });
+
+  it("a standalone channel install collides with a path an agent-install already owns", () => {
+    // The engineer agent materialized channels/discord.ts under member x (a different lock entry).
+    const agentEntry: InstallEntry = {
+      id: "engineer",
+      type: "agent",
+      name: "Engineer",
+      version: "0.2.0",
+      hash: "h",
+      registry: REGISTRY,
+      member: "x",
+      files: [
+        "agents/x/agent/agent.ts",
+        "agents/x/agent/channels/discord.ts",
+      ],
+    };
+    const discordChannel: CatalogTemplate = {
+      manifest: {
+        id: "discord",
+        type: "channel",
+        name: "Discord",
+        description: "Talk from Discord.",
+        version: "0.1.0",
+        eve: ">=0.20.0",
+        files: ["channels/discord.ts"],
+      },
+      files: { "channels/discord.ts": "export default {};\n" },
+    };
+    const plan = planInstall({
+      template: discordChannel,
+      registry: REGISTRY,
+      repoPaths: agentEntry.files,
+      drafts: [],
+      packageJson: null,
+      lock: upsertInstall(emptyLock(), agentEntry),
+      target: { kind: "member", memberName: "x", root: "agents/x/agent" },
+    });
+    // A DIFFERENT lock entry owns the path, so this is a blocking conflict, not an update.
+    expect(plan.isUpdate).toBe(false);
+    expect(plan.conflicts).toEqual(["agents/x/agent/channels/discord.ts"]);
+  });
+});
+
 describe("lock helpers round-trip", () => {
   const entry: InstallEntry = {
     id: "cloudflare-deploy",

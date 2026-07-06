@@ -18,6 +18,7 @@ import {
   templateManifestSchema,
   type TemplateManifest,
 } from "~/marketplace/manifest";
+import { resolveTemplate } from "~/marketplace/compose.server";
 import { fixtureCatalog } from "~/seams/oss/catalog.fixture.server";
 import type { CatalogTemplate } from "~/seams/types";
 import { fakeCatalog } from "../fakes/catalog";
@@ -136,6 +137,51 @@ describe("fixture catalog (the real in-repo seed)", () => {
         }
       }
     }
+  });
+});
+
+describe("composition against the real seed", () => {
+  it("resolves the engineer agent, materializing the bundled Discord channel", async () => {
+    const resolved = await resolveTemplate(fixtureCatalog, "agent", "engineer");
+
+    // The channel's file is flattened into the agent's file set.
+    expect(new Set(Object.keys(resolved.files))).toEqual(
+      new Set(resolved.manifest.files),
+    );
+    expect(Object.keys(resolved.files)).toContain("channels/discord.ts");
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      'from "eve/channels/discord"',
+    );
+
+    // Discord's three secrets union in alongside the engineer's own GITHUB_* secrets.
+    const secretNames = (resolved.manifest.secrets ?? []).map((s) => s.name);
+    expect(secretNames).toEqual(
+      expect.arrayContaining([
+        "DISCORD_APPLICATION_ID",
+        "DISCORD_BOT_TOKEN",
+        "DISCORD_PUBLIC_KEY",
+      ]),
+    );
+
+    // Provenance + hash lockstep: the parent's hash is its own index row; the include carries
+    // Discord's own index-row hash.
+    const index = await fixtureCatalog.index();
+    const engineerRow = index.templates.find(
+      (t) => t.type === "agent" && t.id === "engineer",
+    )!;
+    const discordRow = index.templates.find(
+      (t) => t.type === "channel" && t.id === "discord",
+    )!;
+    expect(resolved.hash).toBe(engineerRow.hash);
+    expect(resolved.includes).toEqual([
+      {
+        id: "discord",
+        type: "channel",
+        name: "Discord",
+        version: discordRow.version,
+        hash: discordRow.hash,
+      },
+    ]);
   });
 });
 

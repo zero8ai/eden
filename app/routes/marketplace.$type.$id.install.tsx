@@ -63,6 +63,10 @@ import {
 } from "~/marketplace/install.server";
 import { overlayLock } from "~/marketplace/lock";
 import {
+  resolveTemplate,
+  type ResolvedInclude,
+} from "~/marketplace/compose.server";
+import {
   planInstallSecretOps,
   writePendingSecret,
 } from "~/project/secrets.server";
@@ -85,6 +89,8 @@ const TYPE_BADGE: Record<TemplateType, string> = {
   tool: "Tool",
   skill: "Skill",
   subagent: "Subagent",
+  channel: "Channel",
+  connection: "Connection",
 };
 
 /** Narrow a URL param to a TemplateType, 404-ing on anything else. */
@@ -128,6 +134,8 @@ interface PreviewData {
   deps: DependencyDecision[];
   secrets: Array<{ name: string; description?: string; sandbox?: boolean }>;
   isUpdate: boolean;
+  /** Templates bundled by reference (composition) — rendered as a "Bundled from the catalog" card. */
+  includes: ResolvedInclude[];
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -139,9 +147,11 @@ export const loader = (args: LoaderFunctionArgs) =>
       if (!isTemplateSlug(id)) throw data("Unknown template", { status: 404 });
       const { org } = await syncTenant(auth);
 
+      // Resolve composition (includes) up front: the plan, the file preview, the dep/secret
+      // merge — everything downstream operates on the flattened template, exactly as it installs.
       let template;
       try {
-        template = await getRuntime().catalog.template(type, id);
+        template = await resolveTemplate(getRuntime().catalog, type, id);
       } catch (error) {
         console.warn(`[install] template ${type}/${id} failed to load:`, error);
         throw data(`Template ${type}/${id} isn't in the catalog.`, { status: 404 });
@@ -238,6 +248,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           ),
           secrets: plan.secrets,
           isUpdate: plan.isUpdate,
+          includes: template.includes,
         };
         return base;
       }
@@ -286,6 +297,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         deps: describeDependencies(currentDeps, template.manifest.dependencies),
         secrets: plan.secrets,
         isUpdate: plan.isUpdate,
+        includes: template.includes,
       };
       return base;
     },
@@ -317,9 +329,10 @@ export async function action(args: ActionFunctionArgs) {
       ),
     );
     const repo = { owner: project.repoOwner, repo: project.repoName };
-    // ACTIONS read raw — a stale read composed into a write could clobber newer content.
+    // ACTIONS read raw — a stale read composed into a write could clobber newer content. The
+    // resolver re-flattens composition server-side by construction (never trusting the preview).
     const [template, source, drafts] = await Promise.all([
-      getRuntime().catalog.template(type, id),
+      resolveTemplate(getRuntime().catalog, type, id),
       fetchAgentSource(project.repoInstallationId, repo),
       listDrafts(project.id),
     ]);
@@ -655,7 +668,42 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
           </CardContent>
         </Card>
 
-        {/* 2 — What this installs */}
+        {/* 2 — Composition (only when the template bundles others by reference) */}
+        {preview && preview.includes.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">
+                Bundled from the catalog
+              </CardTitle>
+              <CardDescription>
+                These templates are materialized into the target agent as part of
+                this install — you don&rsquo;t install them separately.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ul className="space-y-2 text-sm">
+                {preview.includes.map((inc) => (
+                  <li
+                    key={`${inc.type}/${inc.id}`}
+                    className="flex items-center gap-2"
+                  >
+                    <span className="min-w-0 flex-1 truncate font-medium">
+                      {inc.name}
+                    </span>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      v{inc.version}
+                    </span>
+                    <Badge variant="secondary" className="shrink-0">
+                      {TYPE_BADGE[inc.type]}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* 3 — What this installs */}
         {preview && (
           <Card>
             <CardHeader>
@@ -744,7 +792,7 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
           </Card>
         )}
 
-        {/* 3 — Secrets + submit */}
+        {/* 4 — Secrets + submit */}
         {preview && (
           <Form method="post">
             <input type="hidden" name="intent" value="install" />

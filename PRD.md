@@ -902,17 +902,21 @@ two-source-of-truth reconciliation problem.
   notes-to-self — **survives new sessions, redeploys, and instance restarts, and dies with the
   environment.** Everything outside `/workspace/home` remains per-session scratch.
 
-**Milestone 7 — Teams (peer teams, §7.9)**
-- The `agents/*` monorepo convention: detection, per-member parse, per-member build → image →
-  Release → instance.
-- (Schema split already landed in Milestone 5.5.)
-- Auto-generated teammate delegation tools (peer HTTP channel + route-auth secret injection),
-  kept in sync with the roster.
-- Cross-agent correlation ids → linked traces in observability.
-- (Later, cheap once 6+7 exist:) team templates in the marketplace — a scaffold referencing agent
-  templates plus a wiring spec.
+**Milestone 7 — Teams (peer teams, §7.9) (partially shipped)**
+- ✅ The `agents/*` monorepo convention: detection (`detectAgentRoots`), per-member parse,
+  per-member build → image → Release → instance.
+- ✅ (Schema split already landed in Milestone 5.5.)
+- ✅ Full Teams UX: hierarchy-first IA (team landing, per-member tab rows, member switcher),
+  roster CRUD, per-member environments + secret scope, team-fan-out Ship. (commits `0b8a7be`,
+  `7bb3153`, `55fc29b`, `0397211`; IA in M5.8.)
+- ⬜ **NOT built — the runtime collaboration half:** auto-generated teammate delegation tools
+  (peer HTTP channel + route-auth secret injection), kept in sync with the roster; and
+  cross-agent correlation ids → linked traces in observability. Today members co-exist and ship
+  together but cannot *call each other*. **This is the main open piece of M7.**
+- ⬜ (Later, cheap once 6+7 exist:) team templates in the marketplace — a scaffold referencing
+  agent templates plus a wiring spec.
 
-**Milestone 8 — Self-host: single-VPS deployment (next)**
+**Milestone 8 — Self-host: single-VPS deployment (shipped)**
 - The supported production topology for OSS v1: **one Linux VPS runs everything** — Eden,
   Postgres, agent instances, sandbox containers. Co-residency is a feature of the local-docker
   target (loopback instance URLs), not an accident; multi-host is out of scope.
@@ -979,6 +983,33 @@ two-source-of-truth reconciliation problem.
   install wizard flips its exposure flag as it stores the value (and says so under the field), so
   a terminal-driven agent's first deploy has working credentials without a manual Settings trip.
   Secrets left blank at install get the flag when set later from Settings.
+
+**Milestone 8.3 — Models: OpenRouter end-to-end (shipped)**
+- Model choices write `@openrouter/ai-sdk-provider` wiring into `agent.ts` (imports + factory +
+  `modelContextWindowTokens`) instead of bare AI Gateway slugs; the picker reads OpenRouter's live
+  catalog (`app/models/filter.ts`), ids are OpenRouter-native (`z-ai/glm-5.2`). Workspace settings
+  gain a **default model** inherited by the assistant and model-less agents. Deploys can force a
+  rebuild (rebuild flag through queue → controller). `AI_GATEWAY_API_KEY`/`VERCEL_OIDC_TOKEN` still
+  pass through for legacy repos. Supersedes the Vercel-AI-Gateway model decision recorded earlier
+  in the eden-project memory. (commits `63dd0db`, `2bcc7a8`, `157bc3f`.)
+
+**Milestone 8.4 — Secrets management rework (shipped)**
+- Delivered the `docs/PLAN-SECRETS-REWORK.md` spec: fetcher-based CRUD (no more full-page reload
+  per mutation — `useFetcher`, optimistic), secret **fingerprints** (know what/when a value was
+  set), install-time values for agent templates (no longer disabled "set it later"),
+  **required-by-template** surfacing in Settings (an agent that still needs `CLOUDFLARE_API_TOKEN`
+  is flagged), and **project-level shared secrets** with per-agent opt-in (e.g. one `GITHUB_TOKEN`,
+  not re-entered per member). Sandbox-exposure can be toggled before a secret exists.
+  (commit `7da694e`.)
+
+**Milestone 8.5 — Playground: chat surface + human-in-the-loop (shipped)**
+- Playground sessions are stored as **Eve cursors** (`71a8c5f`) and stream live, recorded as runs
+  in observability (`c8ac0dc`). The playground/assistant became a **ChatGPT-style chat surface**
+  (`61388ac`, `69b8016`): viewport-locked layout, stick-to-bottom transcript, tool activity
+  collapsed into a per-turn StepsCard below the reply. **Human-in-the-loop:** eve's
+  `input.requested` (ask_question, tool approvals — previously silently dropped) is now structured
+  end-to-end (live NDJSON stream, done payload, Eve history replay, runs recording) and rendered as
+  callouts with clickable option buttons.
 
 ---
 

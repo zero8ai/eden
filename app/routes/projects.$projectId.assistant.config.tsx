@@ -15,7 +15,11 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
-import { assistantFixedLayer, ensureAssistantAgent } from "~/assistant/instance.server";
+import {
+  assistantFixedLayer,
+  DEFAULT_MODEL,
+  ensureAssistantAgent,
+} from "~/assistant/instance.server";
 import { MarkdownText } from "~/components/chat";
 import { ModelSelect } from "~/components/model-select";
 import { AppShell, PageHeader, repoCrumbs } from "~/components/shell";
@@ -39,6 +43,7 @@ import { buildScheduleFile, parseScheduleFile } from "~/eve/scheduleFile";
 import { slugifyResourceName } from "~/eve/templates";
 import { getAgentSource } from "~/github/cached.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
+import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import type { Route } from "./+types/projects.$projectId.assistant.config";
 
 const INSTRUCTIONS = `${ASSISTANT_CONFIG_ROOT}/instructions.md`;
@@ -68,7 +73,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       const editSkill = url.searchParams.get("skill");
       const editSchedule = url.searchParams.get("schedule");
 
-      const [source, instructionsView, modelView, fixed] = await Promise.all([
+      const [source, instructionsView, modelView, fixed, workspaceModel] = await Promise.all([
         getAgentSource(project.repoInstallationId, {
           owner: project.repoOwner,
           repo: project.repoName,
@@ -76,7 +81,13 @@ export const loader = (args: LoaderFunctionArgs) =>
         resolveFileView(project, INSTRUCTIONS),
         resolveFileView(project, MODEL_FILE),
         assistantFixedLayer(),
+        auth.organizationId
+          ? getWorkspaceAssistantModel(auth.organizationId).catch(() => null)
+          : Promise.resolve(null),
       ]);
+      // What the assistant falls back to when no per-project override is set: the workspace
+      // default, or Eden's built-in default if the workspace hasn't set one either.
+      const inheritedModel = workspaceModel ?? DEFAULT_MODEL;
 
       const prefix = `${ASSISTANT_CONFIG_ROOT}/`;
       const skills = source.paths
@@ -115,6 +126,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         project,
         instructions: instructionsView.content ?? "",
         model,
+        inheritedModel,
         skills,
         schedules,
         fixed,
@@ -199,6 +211,7 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
     project,
     instructions,
     model,
+    inheritedModel,
     skills,
     schedules,
     fixed,
@@ -302,7 +315,7 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <ModelField projectId={project.id} model={model} />
+            <ModelField projectId={project.id} model={model} inheritedModel={inheritedModel} />
           </CardContent>
         </Card>
 
@@ -453,7 +466,15 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
  * user searches models instead of remembering an id. Committing stages the `assistant.json` draft
  * (empty value clears it → back to the workspace default).
  */
-function ModelField({ projectId, model }: { projectId: string; model: string | null }) {
+function ModelField({
+  projectId,
+  model,
+  inheritedModel,
+}: {
+  projectId: string;
+  model: string | null;
+  inheritedModel: string;
+}) {
   const fetcher = useFetcher<{ ok?: boolean; error?: string; saved?: string }>();
   const busy = fetcher.state !== "idle";
   const commit = (value: string) =>
@@ -474,6 +495,21 @@ function ModelField({ projectId, model }: { projectId: string; model: string | n
           </Button>
         )}
       </div>
+      {/* Always show what an unset override resolves to, so nobody re-pins the same model by
+          hand (as happened before): unset here just inherits this value. */}
+      <p className="text-sm text-muted-foreground">
+        {model ? (
+          <>
+            Overriding the default of{" "}
+            <span className="font-mono text-xs">{inheritedModel}</span>. Reset to inherit it.
+          </>
+        ) : (
+          <>
+            No override — inheriting the workspace default{" "}
+            <span className="font-mono text-xs">{inheritedModel}</span>.
+          </>
+        )}
+      </p>
       {fetcher.data?.error && (
         <p className="text-sm text-destructive">{fetcher.data.error}</p>
       )}

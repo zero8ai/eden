@@ -24,7 +24,9 @@ import { mintAssistantToken } from "./token.server";
 const ASSISTANT_ENV = "assistant";
 const ASSISTANT_NAME = "assistant";
 const ASSISTANT_ROOT = ".eden/assistant";
-const DEFAULT_MODEL = "anthropic/claude-sonnet-5";
+/** Eden's built-in fallback when neither a project override nor a workspace default is set.
+ * Platform-wide default: a cheap, capable model so a silent default never runs up a real bill. */
+export const DEFAULT_MODEL = "z-ai/glm-5.2";
 
 /** Where the bundled template lives (mirrors the CatalogSource fixture reading <cwd>/catalog). */
 export function assistantTemplateDir(): string {

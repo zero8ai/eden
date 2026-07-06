@@ -1,38 +1,21 @@
 ---
-description: How eve agents are structured in an Eden repo — where tools, skills, schedules, sandboxes, and dependencies live, and the conventions to match when authoring them.
+description: Where to find eve's authoring conventions (the official docs) and the Eden-specific rules layered on top when building tools, skills, schedules, sandboxes, and dependencies in a connected repo.
 ---
 
 # Building eve agents in an Eden repo
 
-A member's eve project lives under a root (`agent/` for a single-agent repo, or
-`agents/<member>/agent/` for a team member). The layout by convention:
+eve is filesystem-first: under an agent's root, the directory a file lives in determines what it is, and identity comes from the path (never a `name`/`id` field). A member's root is `agent/` (single-agent repo) or `agents/<member>/agent/` (team member).
 
-- `<root>/agent.ts` — `defineAgent({ model, ... })` from `"eve"`. The entrypoint.
-- `<root>/instructions.md` — the always-on system prompt (Markdown).
-- `<root>/tools/<name>.ts` — one `defineTool` per file, default-exported, from `"eve/tools"`.
-  `inputSchema` is a zod object; describe every field; `execute()` returns JSON-serializable data
-  and handles failure paths (non-2xx responses, missing data) with useful error shapes.
-- `<root>/lib/<name>.ts` — shared helpers imported by tools via a relative path.
-- `<root>/skills/<name>.md` — YAML frontmatter `description:` + Markdown; progressive-disclosure
-  knowledge the model loads on demand.
-- `<root>/schedules/<name>.md` — YAML frontmatter `cron:`; the body is the message delivered to
-  the agent when the schedule fires. Schedules run inside the always-on instance.
-- `<root>/sandbox.ts` — one `defineSandbox` from `"eve/sandbox"`, defining the isolated shell the
-  agent's bash/file tools run in. `bootstrap()` preinstalls CLIs once (snapshotted).
+Consult the eve docs for the framework conventions before authoring — they're the source of truth and stay current with the installed version:
 
-## Rules that keep an agent deployable
+- Project layout & the path-naming rule: https://eve.dev/docs/reference/project-layout
+- Tools: https://eve.dev/docs/tools · Skills: https://eve.dev/docs/skills · Schedules: https://eve.dev/docs/schedules
+- Sandbox: https://eve.dev/docs/sandbox · Connections: https://eve.dev/docs/connections · Subagents: https://eve.dev/docs/subagents · Channels: https://eve.dev/docs/channels/overview
+- `agent.ts`: https://eve.dev/docs/agent-config · `define*` reference: https://eve.dev/docs/reference/typescript-api
 
-- Secrets are `process.env.NAME`, SCREAMING_SNAKE_CASE, never hardcoded. The human sets values
-  on Eden's Secrets page; they're injected at deploy time.
-- Dependencies change ONLY through `eden_add_dependency` (regenerates the lockfile). Prefer
-  `fetch()` + Node built-ins first.
-- The sandbox shell is sealed: it only sees secret names in the `EDEN_SANDBOX_ENV` allowlist.
-  Preserve that block when editing an existing `sandbox.ts`.
-- Keep tools small and single-purpose; the model chooses a tool by reading its `description`, so
-  make descriptions precise.
+## Eden's rules on top of the framework
 
-## The Eden workflow
-
-Everything Eden's assistant writes is a STAGED DRAFT — reviewed on the Changes tab, published as a
-pull request, merged, then deployed as an immutable release. Nothing reaches the running agent
-until it is merged and deployed.
+- Secrets are `process.env.NAME`, `SCREAMING_SNAKE_CASE`, never hardcoded. The human sets values on Eden's Secrets page; Eden injects them at deploy time. The sandbox shell is sealed — it only sees names in the `EDEN_SANDBOX_ENV` allowlist, so preserve that block when editing an existing `sandbox.ts`.
+- Change dependencies only through `eden_add_dependency` (it regenerates the lockfile). Prefer `fetch()` + Node built-ins first — most integrations are one HTTPS call.
+- Keep tools small and single-purpose, and handle failure paths with useful error shapes; the model picks a tool by reading its `description`, so make descriptions precise.
+- Everything the assistant writes is a **staged draft** — reviewed on the Changes tab, published as a pull request, merged, then deployed as an immutable release. Nothing reaches the running agent until merged and deployed. Verify with `eden_run_checks` before finishing.

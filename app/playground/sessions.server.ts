@@ -43,7 +43,10 @@ export async function listPlaygroundSessions(input: {
         eq(playgroundSessions.createdBy, input.userId),
       ),
     )
-    .orderBy(desc(playgroundSessions.updatedAt), desc(playgroundSessions.createdAt));
+    .orderBy(
+      desc(playgroundSessions.updatedAt),
+      desc(playgroundSessions.createdAt),
+    );
 }
 
 export async function getPlaygroundSession(input: {
@@ -109,6 +112,33 @@ export async function markPlaygroundSessionRunning(input: {
       lastVersion: input.target.version,
       title: input.title ?? undefined,
       status: "running",
+      updatedAt: new Date(),
+    })
+    .where(eq(playgroundSessions.id, input.id));
+}
+
+export async function savePlaygroundSessionProgress(input: {
+  id: string;
+  target: Target;
+  externalSessionId: string;
+  continuationToken: string | null;
+  streamIndex: number;
+  title?: string | null;
+}): Promise<void> {
+  await db
+    .update(playgroundSessions)
+    .set({
+      environmentId: input.target.environmentId,
+      worldKey: input.target.environmentId,
+      externalSessionId: input.externalSessionId,
+      continuationToken: input.continuationToken,
+      streamIndex: input.streamIndex,
+      lastDeploymentId: input.target.deploymentId,
+      lastReleaseId: input.target.releaseId,
+      lastVersion: input.target.version,
+      title: input.title ?? undefined,
+      status: "running",
+      lastEventAt: new Date(),
       updatedAt: new Date(),
     })
     .where(eq(playgroundSessions.id, input.id));
@@ -295,7 +325,8 @@ function projectEventsToEntries(
     const turn = turnFor(turnId);
     const at = event.meta?.at ? Date.parse(event.meta.at) : Date.now();
     const stepIndex = typeof data.stepIndex === "number" ? data.stepIndex : 0;
-    const sequence = typeof data.sequence === "number" ? data.sequence : stepIndex;
+    const sequence =
+      typeof data.sequence === "number" ? data.sequence : stepIndex;
 
     switch (event.type) {
       case "session.started": {
@@ -346,10 +377,12 @@ function projectEventsToEntries(
           typeof output === "object" &&
           typeof (output as Record<string, unknown>).exitCode === "number"
         ) {
-          record.exitCode = (output as Record<string, unknown>).exitCode as number;
+          record.exitCode = (output as Record<string, unknown>)
+            .exitCode as number;
         }
         record.isError =
-          data.status === "failed" || (record.exitCode != null && record.exitCode !== 0);
+          data.status === "failed" ||
+          (record.exitCode != null && record.exitCode !== 0);
         break;
       }
       case "message.appended":
@@ -374,7 +407,9 @@ function projectEventsToEntries(
       case "step.failed": {
         if (!turn) break;
         const failure =
-          event.type === "step.failed" ? failureOf(data, "The agent step failed.") : null;
+          event.type === "step.failed"
+            ? failureOf(data, "The agent step failed.")
+            : null;
         if (failure) turn.error = failure.text;
         const usage = data.usage as Record<string, unknown> | undefined;
         const started = turn.stepStarts.get(sequence);
@@ -385,9 +420,13 @@ function projectEventsToEntries(
           name: stringField(data, "name"),
           durationMs: started != null ? Math.max(0, at - started) : null,
           tokensIn:
-            usage && typeof usage.inputTokens === "number" ? usage.inputTokens : null,
+            usage && typeof usage.inputTokens === "number"
+              ? usage.inputTokens
+              : null,
           tokensOut:
-            usage && typeof usage.outputTokens === "number" ? usage.outputTokens : null,
+            usage && typeof usage.outputTokens === "number"
+              ? usage.outputTokens
+              : null,
           isError: event.type === "step.failed",
           code: failure?.code ?? null,
           message: failure?.message ?? null,
@@ -419,7 +458,9 @@ function projectEventsToEntries(
     }
     const reply =
       turn.messages.length > 0
-        ? [...turn.messages, ...(turn.partial ? [turn.partial] : [])].join("\n\n")
+        ? [...turn.messages, ...(turn.partial ? [turn.partial] : [])].join(
+            "\n\n",
+          )
         : turn.partial;
     if (
       reply !== null ||
@@ -462,7 +503,14 @@ function textOf(value: unknown): string | null {
   }
   if (typeof value !== "object" || value === null) return null;
   const object = value as Record<string, unknown>;
-  for (const key of ["text", "content", "message", "output", "result", "reply"]) {
+  for (const key of [
+    "text",
+    "content",
+    "message",
+    "output",
+    "result",
+    "reply",
+  ]) {
     const nested = object[key];
     if (typeof nested === "string" && nested.trim()) return nested;
     if (typeof nested === "object" && nested !== null) {
@@ -487,7 +535,8 @@ function detailsOf(value: unknown): string | null {
     return value.trim() ? compactText(value.trim()) : null;
   }
   if (value === null || value === undefined) return null;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
   try {
     return compactText(JSON.stringify(value, null, 2));
   } catch {
@@ -520,7 +569,11 @@ function summarizeActionInput(input: unknown): string | undefined {
   if (typeof input !== "object" || input === null) return undefined;
   const object = input as Record<string, unknown>;
   const preferred =
-    object.command ?? object.skill ?? object.path ?? object.file_path ?? firstStringValue(object);
+    object.command ??
+    object.skill ??
+    object.path ??
+    object.file_path ??
+    firstStringValue(object);
   if (typeof preferred !== "string") return undefined;
   const trimmed = preferred.trim().replace(/\s+/g, " ");
   if (!trimmed) return undefined;

@@ -9,15 +9,18 @@
   "sandbox": {
     "bootstrap": [
       "command -v node >/dev/null && command -v npm >/dev/null",
+      "if ! command -v chromium >/dev/null; then echo \"deb [arch=$(dpkg --print-architecture) trusted=yes] http://deb.debian.org/debian trixie main\" > /etc/apt/sources.list.d/debian-trixie.list && printf \"Package: *\\nPin: release n=trixie\\nPin-Priority: 100\\n\" > /etc/apt/preferences.d/debian-trixie && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends chromium && rm -rf /var/lib/apt/lists/*; fi",
       "command -v agent-browser >/dev/null || npm install -g agent-browser@0.31.1",
-      "agent-browser install --with-deps",
-      "agent-browser doctor"
+      "AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium agent-browser --version",
+      "AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium agent-browser open https://example.com",
+      "agent-browser close --all"
     ],
     "env": {
+      "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
       "AGENT_BROWSER_PROFILE": "/workspace/home/agent-browser/profile",
       "AGENT_BROWSER_SCREENSHOT_DIR": "/workspace/home/agent-browser/screenshots",
       "AGENT_BROWSER_IDLE_TIMEOUT_MS": "600000"
     },
-    "revalidationKey": "agent-browser@0.31.1"
+    "revalidationKey": "agent-browser@0.31.1-chromium-debian-trixie"
   }
 }

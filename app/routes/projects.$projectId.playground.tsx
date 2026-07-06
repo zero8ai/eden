@@ -11,10 +11,10 @@
  * progress instead of one spinner. On completion it revalidates and replays Eve history.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Form,
   redirect,
+  useFetcher,
   useNavigate,
   useRevalidator,
   useSearchParams,
@@ -29,6 +29,7 @@ import {
   ChatComposer,
   ChatTranscript,
   InputRequestsBlock,
+  MarkdownText,
   StepsCard,
   UserBubble,
 } from "~/components/chat";
@@ -50,6 +51,7 @@ import {
   listPlaygroundSessions,
   summarizePlaygroundSession,
 } from "~/playground/sessions.server";
+import { newPlaygroundSessionPath } from "~/playground/url";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -92,7 +94,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           userId: auth.user!.id,
         }),
       ]);
-      const selectedSessionId = new URL(args.request.url).searchParams.get("session");
+      const selectedSessionId = args.url.searchParams.get("session");
       const currentSession =
         (selectedSessionId
           ? sessions.find((session) => session.id === selectedSessionId)
@@ -100,8 +102,12 @@ export const loader = (args: LoaderFunctionArgs) =>
         sessions[0] ??
         null;
       const historyTarget = currentSession
-        ? (targets.find((target) => target.environmentId === currentSession.environmentId) ??
-          targets.find((target) => target.deploymentId === currentSession.lastDeploymentId) ??
+        ? (targets.find(
+            (target) => target.environmentId === currentSession.environmentId,
+          ) ??
+          targets.find(
+            (target) => target.deploymentId === currentSession.lastDeploymentId,
+          ) ??
           null)
         : null;
       let entries: ChatEntry[] = [];
@@ -127,6 +133,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         sessions: sessions.map(summarizePlaygroundSession),
         currentSessionId: currentSession?.id ?? null,
         currentSessionEnvironmentId: currentSession?.environmentId ?? null,
+        currentSessionStatus: currentSession?.status ?? null,
         entries,
         historyError,
         lastDeploymentId: currentSession?.lastDeploymentId ?? null,
@@ -163,9 +170,7 @@ export async function action(args: ActionFunctionArgs) {
       agentId: active.id,
       userId: auth.user.id,
     });
-    const url = new URL(args.request.url);
-    url.searchParams.set("session", session.id);
-    throw redirect(`${url.pathname}?${url.searchParams.toString()}`);
+    throw redirect(newPlaygroundSessionPath(args.url, session.id));
   }
   return { ok: true as const };
 }
@@ -193,6 +198,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     sessions,
     currentSessionId,
     currentSessionEnvironmentId,
+    currentSessionStatus,
     entries,
     historyError,
     lastDeploymentId,
@@ -203,11 +209,24 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const base = contextPath(project.id, isTeam ? activeAgent : null);
   const navigate = useNavigate();
   const revalidator = useRevalidator();
+  const newSessionFetcher = useFetcher<typeof action>();
+  const NewSessionForm = newSessionFetcher.Form;
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [live, setLive] = useState<LiveTurn | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
-  const busy = live !== null && !live.done;
+  const remoteBusy = currentSessionStatus === "running";
+  const busy = (live !== null && !live.done) || remoteBusy;
+  const creatingSession = newSessionFetcher.state !== "idle";
+  const replayingRunningSession = remoteBusy && !live;
+
+  useEffect(() => {
+    if (!replayingRunningSession) return;
+    const id = window.setInterval(() => {
+      void revalidator.revalidate();
+    }, 2_000);
+    return () => window.clearInterval(id);
+  }, [replayingRunningSession, revalidator]);
 
   const defaultTarget =
     targets.find((t) => t.environmentId === currentSessionEnvironmentId) ??
@@ -272,10 +291,10 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       if (currentSessionId) form.set("playgroundSessionId", currentSessionId);
 
       try {
-        const res = await fetch(
-          `/api/repos/${project.id}/playground/stream`,
-          { method: "POST", body: form },
-        );
+        const res = await fetch(`/api/repos/${project.id}/playground/stream`, {
+          method: "POST",
+          body: form,
+        });
         if (!res.ok || !res.body) {
           const detail = await res.json().catch(() => null);
           throw new Error(
@@ -313,9 +332,12 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         // history through the loader.
         await revalidator.revalidate();
         if (!currentSessionId && nextSessionId) {
-          navigate(`${base}/playground?session=${encodeURIComponent(nextSessionId)}`, {
-            replace: true,
-          });
+          navigate(
+            `${base}/playground?session=${encodeURIComponent(nextSessionId)}`,
+            {
+              replace: true,
+            },
+          );
         }
         setLive(null);
       } catch (error) {
@@ -337,7 +359,15 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         setLive(null);
       }
     },
-    [activeAgent, base, currentSessionId, deploymentId, navigate, project.id, revalidator],
+    [
+      activeAgent,
+      base,
+      currentSessionId,
+      deploymentId,
+      navigate,
+      project.id,
+      revalidator,
+    ],
   );
 
   // Stable element between renders so the composer (and any memoized child) doesn't redraw.
@@ -367,6 +397,49 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       </Select>
     ),
     [deploymentId, searchParams, setSearchParams, targets],
+  );
+
+  const headerActions = useMemo(
+    () => (
+      <div className="flex items-center gap-2">
+        {sessionPicker}
+        <NewSessionForm method="post">
+          <input type="hidden" name="intent" value="new-session" />
+          <Button
+            type="submit"
+            variant="outline"
+            size="sm"
+            disabled={busy || creatingSession}
+          >
+            New conversation
+          </Button>
+        </NewSessionForm>
+      </div>
+    ),
+    [NewSessionForm, busy, creatingSession, sessionPicker],
+  );
+
+  const transcriptLead = useMemo(
+    () => (
+      <>
+        <PageHeader
+          title={isTeam ? `Playground — ${activeAgent}` : "Playground"}
+          description="Talk to a live deployment of this agent. Conversation history reloads from Eve's durable session stream."
+          actions={headerActions}
+        />
+        {historyError && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>{historyError}</AlertDescription>
+          </Alert>
+        )}
+        {sendError && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>{sendError}</AlertDescription>
+          </Alert>
+        )}
+      </>
+    ),
+    [activeAgent, headerActions, historyError, isTeam, sendError],
   );
 
   return (
@@ -403,43 +476,11 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       ) : (
         <>
           <ChatTranscript
-            dep={`${entries.length}:${live ? live.text.length + live.steps.length + live.inputRequests.length : 0}`}
-            lead={
-              <>
-                <PageHeader
-                  title={isTeam ? `Playground — ${activeAgent}` : "Playground"}
-                  description="Talk to a live deployment of this agent. Conversation history reloads from Eve's durable session stream."
-                  actions={
-                    <div className="flex items-center gap-2">
-                      {sessionPicker}
-                      <Form method="post">
-                        <input type="hidden" name="intent" value="new-session" />
-                        <Button
-                          type="submit"
-                          variant="outline"
-                          size="sm"
-                          disabled={busy}
-                        >
-                          New conversation
-                        </Button>
-                      </Form>
-                    </div>
-                  }
-                />
-                {historyError && (
-                  <Alert variant="destructive" className="mb-4">
-                    <AlertDescription>{historyError}</AlertDescription>
-                  </Alert>
-                )}
-                {sendError && (
-                  <Alert variant="destructive" className="mb-4">
-                    <AlertDescription>{sendError}</AlertDescription>
-                  </Alert>
-                )}
-              </>
-            }
+            dep={`${entries.length}:${entries.at(-1)?.text.length ?? 0}:${entries.at(-1)?.steps?.length ?? 0}:${currentSessionStatus ?? ""}:${live ? live.text.length + live.steps.length + live.inputRequests.length : 0}`}
+            forceScrollDep={live?.userText}
+            lead={transcriptLead}
           >
-            {entries.length === 0 && !live && (
+            {entries.length === 0 && !live && !remoteBusy && (
               <p className="py-8 text-center text-sm text-muted-foreground">
                 Say something to the agent — the conversation keeps its context
                 across turns.
@@ -457,9 +498,18 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
                     i === entries.length - 1 && !live ? send : undefined
                   }
                   busy={busy}
+                  running={replayingRunningSession && i === entries.length - 1}
                 />
               ),
             )}
+            {replayingRunningSession &&
+              entries.at(-1)?.role !== "assistant" && (
+                <StepsCard
+                  steps={[]}
+                  idPrefix="running-session"
+                  activity="Still working…"
+                />
+              )}
             {live && (
               <>
                 <UserBubble text={live.userText} />
@@ -578,7 +628,7 @@ function LiveBubble({ live }: { live: LiveTurn }) {
           {live.error ? (
             <p className="whitespace-pre-wrap text-destructive">{live.error}</p>
           ) : live.text ? (
-            <p className="whitespace-pre-wrap">{live.text}</p>
+            <MarkdownText text={live.text} />
           ) : null}
           {/* Static while the stream is open — the buttons go live on the persisted
               entry once the turn settles and history revalidates. */}
@@ -598,11 +648,13 @@ function AgentEntry({
   entry,
   onAnswer,
   busy,
+  running,
 }: {
   entry: ChatEntry;
   /** Set on the newest entry only — answers a pending input request via the send path. */
   onAnswer?: (text: string) => void;
   busy?: boolean;
+  running?: boolean;
 }) {
   return (
     <div className="space-y-2">
@@ -626,7 +678,7 @@ function AgentEntry({
             {entry.text}
           </pre>
         ) : entry.text || !entry.inputRequests?.length ? (
-          <p className="whitespace-pre-wrap">{entry.text || "(empty reply)"}</p>
+          <MarkdownText text={entry.text || "(empty reply)"} />
         ) : null}
         {entry.inputRequests && (
           <InputRequestsBlock
@@ -636,7 +688,11 @@ function AgentEntry({
           />
         )}
       </AssistantBubble>
-      <StepsCard steps={entry.steps ?? []} idPrefix={entry.id} />
+      <StepsCard
+        steps={entry.steps ?? []}
+        idPrefix={entry.id}
+        activity={running ? "Still working…" : undefined}
+      />
     </div>
   );
 }

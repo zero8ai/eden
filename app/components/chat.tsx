@@ -6,7 +6,7 @@
  * for a newline) and clears after send. The routes own the data; this owns the
  * conversational feel.
  */
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { ArrowUp, ChevronRight, Loader2 } from "lucide-react";
 
 import type { ChatInputRequest, ChatStep } from "~/chat/types";
@@ -21,19 +21,30 @@ export function ChatTranscript({
   children,
   lead,
   dep,
+  forceScrollDep,
 }: {
   children: ReactNode;
   /** Page intro (title, alerts, …) that scrolls away with the conversation. */
   lead?: ReactNode;
   /** Changes when new content lands — triggers the scroll-to-bottom. */
   dep: unknown;
+  /** Changes when user intent should force the newest message into view. */
+  forceScrollDep?: unknown;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
-  useEffect(() => {
+  const scrollToBottom = () => {
     const el = ref.current;
-    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+    if (el) el.scrollTop = el.scrollHeight;
+  };
+  useEffect(() => {
+    if (pinnedRef.current) scrollToBottom();
   }, [dep]);
+  useEffect(() => {
+    if (forceScrollDep == null || forceScrollDep === "") return;
+    pinnedRef.current = true;
+    scrollToBottom();
+  }, [forceScrollDep]);
   return (
     // Full-bleed scroll region (content centered inside) so the wheel works anywhere
     // across the viewport, not just over the centered column.
@@ -68,6 +79,346 @@ export function AssistantBubble({ children }: { children: ReactNode }) {
       {children}
     </div>
   );
+}
+
+type MarkdownBlock =
+  | { id: string; type: "paragraph"; text: string }
+  | { id: string; type: "heading"; level: 1 | 2 | 3 | 4; text: string }
+  | { id: string; type: "code"; language: string | null; code: string }
+  | { id: string; type: "list"; ordered: boolean; items: MarkdownListItem[] }
+  | { id: string; type: "quote"; text: string }
+  | { id: string; type: "rule" };
+
+type MarkdownListItem = { id: string; text: string };
+
+type InlineToken =
+  | { id: string; type: "text"; text: string }
+  | { id: string; type: "line-break" }
+  | { id: string; type: "code"; text: string }
+  | { id: string; type: "strong"; text: string }
+  | { id: string; type: "emphasis"; text: string }
+  | { id: string; type: "link"; label: string; href: string | null };
+
+const SAFE_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+
+export function MarkdownText({ text }: { text: string }) {
+  const blocks = useMemo(() => parseMarkdownBlocks(text), [text]);
+  return (
+    <div className="space-y-2 break-words">
+      {blocks.map((block) => (
+        <MarkdownBlockView key={block.id} block={block} />
+      ))}
+    </div>
+  );
+}
+
+function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: MarkdownBlock[] = [];
+  let paragraph: string[] = [];
+  let blockId = 0;
+
+  const nextId = (prefix: string) => `${prefix}-${blockId++}`;
+
+  const flushParagraph = () => {
+    const text = paragraph.join("\n").trim();
+    if (text) blocks.push({ id: nextId("p"), type: "paragraph", text });
+    paragraph = [];
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushParagraph();
+      continue;
+    }
+
+    const fence = trimmed.match(/^```([\w-]+)?\s*$/);
+    if (fence) {
+      flushParagraph();
+      const code: string[] = [];
+      i += 1;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        code.push(lines[i]);
+        i += 1;
+      }
+      blocks.push({
+        id: nextId("code"),
+        type: "code",
+        language: fence[1] ?? null,
+        code: code.join("\n"),
+      });
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      blocks.push({
+        id: nextId("h"),
+        type: "heading",
+        level: heading[1].length as 1 | 2 | 3 | 4,
+        text: heading[2].trim(),
+      });
+      continue;
+    }
+
+    if (/^([-*_])(?:\s*\1){2,}\s*$/.test(trimmed)) {
+      flushParagraph();
+      blocks.push({ id: nextId("rule"), type: "rule" });
+      continue;
+    }
+
+    const unordered = trimmed.match(/^[-*+]\s+(.+)$/);
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (unordered || ordered) {
+      flushParagraph();
+      const isOrdered = ordered !== null;
+      const items: MarkdownListItem[] = [];
+      while (i < lines.length) {
+        const current = lines[i].trim();
+        const item = isOrdered
+          ? current.match(/^\d+[.)]\s+(.+)$/)
+          : current.match(/^[-*+]\s+(.+)$/);
+        if (!item) break;
+        items.push({ id: nextId("li"), text: item[1] });
+        i += 1;
+      }
+      i -= 1;
+      blocks.push({
+        id: nextId(isOrdered ? "ol" : "ul"),
+        type: "list",
+        ordered: isOrdered,
+        items,
+      });
+      continue;
+    }
+
+    if (trimmed.startsWith(">")) {
+      flushParagraph();
+      const quote: string[] = [];
+      while (i < lines.length) {
+        const current = lines[i].trim();
+        if (!current.startsWith(">")) break;
+        quote.push(current.replace(/^>\s?/, ""));
+        i += 1;
+      }
+      i -= 1;
+      blocks.push({
+        id: nextId("quote"),
+        type: "quote",
+        text: quote.join("\n").trim(),
+      });
+      continue;
+    }
+
+    paragraph.push(line);
+  }
+
+  flushParagraph();
+  return blocks;
+}
+
+function MarkdownBlockView({ block }: { block: MarkdownBlock }) {
+  switch (block.type) {
+    case "heading": {
+      const className =
+        block.level <= 2
+          ? "pt-1 text-base font-semibold leading-snug"
+          : "pt-1 text-sm font-semibold leading-snug";
+      if (block.level === 1)
+        return (
+          <h3 className={className}>
+            <InlineMarkdown text={block.text} idPrefix={block.id} />
+          </h3>
+        );
+      if (block.level === 2)
+        return (
+          <h4 className={className}>
+            <InlineMarkdown text={block.text} idPrefix={block.id} />
+          </h4>
+        );
+      return (
+        <h5 className={className}>
+          <InlineMarkdown text={block.text} idPrefix={block.id} />
+        </h5>
+      );
+    }
+    case "code":
+      return (
+        <pre className="max-w-full overflow-x-auto rounded-lg bg-muted/60 p-3 font-mono text-xs leading-relaxed">
+          <code>{block.code}</code>
+        </pre>
+      );
+    case "list": {
+      const Tag = block.ordered ? "ol" : "ul";
+      return (
+        <Tag
+          className={`${block.ordered ? "list-decimal" : "list-disc"} space-y-1 pl-5 leading-relaxed`}
+        >
+          {block.items.map((item) => (
+            <li key={item.id}>
+              <InlineMarkdown text={item.text} idPrefix={item.id} />
+            </li>
+          ))}
+        </Tag>
+      );
+    }
+    case "quote":
+      return (
+        <blockquote className="border-l-2 border-muted-foreground/30 pl-3 text-muted-foreground">
+          <InlineMarkdown text={block.text} idPrefix={block.id} />
+        </blockquote>
+      );
+    case "rule":
+      return <hr className="border-border" />;
+    case "paragraph":
+      return (
+        <p className="whitespace-pre-wrap leading-relaxed">
+          <InlineMarkdown text={block.text} idPrefix={block.id} />
+        </p>
+      );
+  }
+}
+
+function InlineMarkdown({
+  text,
+  idPrefix,
+}: {
+  text: string;
+  idPrefix: string;
+}) {
+  const tokens = useMemo(
+    () => parseInlineMarkdown(text, idPrefix),
+    [idPrefix, text],
+  );
+  return (
+    <>
+      {tokens.map((token) => (
+        <InlineTokenView key={token.id} token={token} />
+      ))}
+    </>
+  );
+}
+
+function parseInlineMarkdown(text: string, keyPrefix: string): InlineToken[] {
+  const pattern =
+    /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\[[^\]]+\]\([^)]+\)|\*[^*\s][^*]*\*|_[^_\s][^_]*_|\n)/g;
+  const tokens: InlineToken[] = [];
+  let cursor = 0;
+  let part = 0;
+
+  const nextId = (prefix: string) => `${keyPrefix}-${prefix}-${part++}`;
+
+  for (const match of text.matchAll(pattern)) {
+    const token = match[0];
+    const start = match.index ?? 0;
+    if (start > cursor) {
+      tokens.push({
+        id: nextId("text"),
+        type: "text",
+        text: text.slice(cursor, start),
+      });
+    }
+
+    if (token === "\n") {
+      tokens.push({ id: nextId("br"), type: "line-break" });
+    } else if (token.startsWith("`")) {
+      tokens.push({
+        id: nextId("code"),
+        type: "code",
+        text: token.slice(1, -1),
+      });
+    } else if (token.startsWith("**") || token.startsWith("__")) {
+      tokens.push({
+        id: nextId("strong"),
+        type: "strong",
+        text: token.slice(2, -2),
+      });
+    } else if (token.startsWith("[")) {
+      tokens.push(parseLinkToken(token, nextId("link")));
+    } else {
+      tokens.push({
+        id: nextId("em"),
+        type: "emphasis",
+        text: token.slice(1, -1),
+      });
+    }
+
+    cursor = start + token.length;
+  }
+
+  if (cursor < text.length) {
+    tokens.push({ id: nextId("text"), type: "text", text: text.slice(cursor) });
+  }
+  return tokens;
+}
+
+function InlineTokenView({ token }: { token: InlineToken }) {
+  switch (token.type) {
+    case "text":
+      return <>{token.text}</>;
+    case "line-break":
+      return <br />;
+    case "code":
+      return (
+        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.88em]">
+          {token.text}
+        </code>
+      );
+    case "strong":
+      return (
+        <strong>
+          <InlineMarkdown text={token.text} idPrefix={token.id} />
+        </strong>
+      );
+    case "emphasis":
+      return (
+        <em>
+          <InlineMarkdown text={token.text} idPrefix={token.id} />
+        </em>
+      );
+    case "link":
+      return <MarkdownLink token={token} />;
+  }
+}
+
+function parseLinkToken(token: string, id: string): InlineToken {
+  const match = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+  if (!match) return { id, type: "text", text: token };
+  const label = match[1];
+  const href = safeHref(match[2].trim());
+  return { id, type: "link", label, href };
+}
+
+function MarkdownLink({
+  token,
+}: {
+  token: Extract<InlineToken, { type: "link" }>;
+}) {
+  if (!token.href) return <>{token.label}</>;
+  return (
+    <a
+      href={token.href}
+      target={token.href.startsWith("/") ? undefined : "_blank"}
+      rel={token.href.startsWith("/") ? undefined : "noreferrer"}
+      className="font-medium underline underline-offset-4"
+    >
+      <InlineMarkdown text={token.label} idPrefix={token.id} />
+    </a>
+  );
+}
+
+function safeHref(value: string): string | null {
+  if (value.startsWith("/")) return value;
+  try {
+    const url = new URL(value);
+    return SAFE_LINK_PROTOCOLS.has(url.protocol) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

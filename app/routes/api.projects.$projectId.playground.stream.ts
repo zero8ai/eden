@@ -12,7 +12,11 @@
 import { withAuth } from "@workos-inc/authkit-react-router";
 import { data, redirect, type ActionFunctionArgs } from "react-router";
 
-import { streamTurn, type TurnResult, type TurnStep } from "~/agent/talk.server";
+import {
+  streamTurn,
+  type TurnResult,
+  type TurnStep,
+} from "~/agent/talk.server";
 import { liveTargets } from "~/chat/playground.server";
 import type { ChatStep } from "~/chat/types";
 import {
@@ -25,10 +29,14 @@ import {
   getPlaygroundSession,
   markPlaygroundSessionRunning,
   savePlaygroundSessionCursor,
+  savePlaygroundSessionProgress,
   titleFromMessage,
   type PlaygroundSession,
 } from "~/playground/sessions.server";
-import { resolveAgentContext, agentFromParams } from "~/project/agent-context.server";
+import {
+  resolveAgentContext,
+  agentFromParams,
+} from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 
 /** eve turns can run for many minutes — give the stream a long leash (30 min). */
@@ -64,7 +72,8 @@ export async function action(args: ActionFunctionArgs) {
     ),
   );
   const form = await args.request.formData();
-  const agentName = agentFromParams(args.params) ?? asString(form.get("agentName"));
+  const agentName =
+    agentFromParams(args.params) ?? asString(form.get("agentName"));
   const { active } = await resolveAgentContext(project.id, agentName);
 
   const deploymentId = asString(form.get("deploymentId"));
@@ -95,7 +104,10 @@ export async function action(args: ActionFunctionArgs) {
       })
     : null;
   if (playgroundSessionId && !playgroundSession) {
-    throw data({ error: "That playground session was not found." }, { status: 404 });
+    throw data(
+      { error: "That playground session was not found." },
+      { status: 404 },
+    );
   }
   if (
     playgroundSession?.externalSessionId &&
@@ -150,11 +162,58 @@ export async function action(args: ActionFunctionArgs) {
       // terminal `done` regardless of whether anyone is still reading.
       void (async () => {
         let sessionId: string | null = activeSession.externalSessionId;
+        let continuationToken: string | null = activeSession.continuationToken;
+        let streamIndex = activeSession.streamIndex;
+        let savedSessionId: string | null = activeSession.externalSessionId;
+        let savedStreamIndex = activeSession.streamIndex;
+        let lastProgressSavedAt = 0;
+        let progressSave: Promise<void> = Promise.resolve();
         let recorded = false;
         // Kept so the finish upsert can await it — a start that resolves late would
         // otherwise overwrite the settled run back to `running`.
         let startRecording: Promise<void> = Promise.resolve();
         let result: TurnResult | null = null;
+
+        const queueProgressSave = (force = false) => {
+          if (!sessionId) return;
+          const nextStreamIndex = Math.max(
+            streamIndex,
+            activeSession.streamIndex,
+          );
+          const now = Date.now();
+          const sessionChanged = sessionId !== savedSessionId;
+          const advanced = nextStreamIndex > savedStreamIndex;
+          if (
+            !force &&
+            !sessionChanged &&
+            (!advanced || now - lastProgressSavedAt < 1_000)
+          ) {
+            return;
+          }
+          const externalSessionId = sessionId;
+          const nextContinuationToken = continuationToken;
+          savedSessionId = externalSessionId;
+          savedStreamIndex = nextStreamIndex;
+          lastProgressSavedAt = now;
+          progressSave = progressSave
+            .catch(() => {})
+            .then(() =>
+              savePlaygroundSessionProgress({
+                id: activeSession.id,
+                target,
+                externalSessionId,
+                continuationToken: nextContinuationToken,
+                streamIndex: nextStreamIndex,
+                title,
+              }).catch((e) =>
+                console.error(
+                  "[playground] persist session progress failed",
+                  e,
+                ),
+              ),
+            );
+        };
+
         try {
           for await (const event of streamTurn({
             baseUrl: target.url,
@@ -167,8 +226,17 @@ export async function action(args: ActionFunctionArgs) {
             switch (event.kind) {
               case "session":
                 sessionId = event.sessionId;
+                continuationToken = event.continuationToken;
+                queueProgressSave(true);
+                break;
+              case "progress":
+                sessionId = event.sessionId;
+                continuationToken = event.continuationToken;
+                streamIndex = event.streamIndex;
+                queueProgressSave();
                 break;
               case "turn":
+                queueProgressSave(true);
                 // Both ids known — publish a `running` row for the Runs tab.
                 if (!recorded && sessionId) {
                   recorded = true;
@@ -224,17 +292,31 @@ export async function action(args: ActionFunctionArgs) {
             }
           }
         } catch (error) {
+          result = {
+            ok: false,
+            sessionId,
+            continuationToken,
+            streamIndex,
+            reply: null,
+            replyIsStructured: false,
+            inputRequests: [],
+            modelId: null,
+            turnId: null,
+            steps: [],
+            error: `The turn stream failed: ${(error as Error).message}`,
+          };
           send({
             type: "done",
             ok: false,
             reply: null,
             structured: false,
             inputRequests: [],
-            error: `The turn stream failed: ${(error as Error).message}`,
+            error: result.error,
             modelId: null,
             version: target.version,
           });
         } finally {
+          await progressSave;
           // Persist the cursor BEFORE closing the stream, so a client that waits for
           // stream-end can revalidate into Eve history that's ready to replay.
           if (result) {
@@ -243,10 +325,14 @@ export async function action(args: ActionFunctionArgs) {
               await savePlaygroundSessionCursor({
                 id: activeSession.id,
                 target,
-                externalSessionId: settled.sessionId ?? activeSession.externalSessionId,
+                externalSessionId:
+                  settled.sessionId ?? activeSession.externalSessionId,
                 continuationToken:
                   settled.continuationToken ?? activeSession.continuationToken,
-                streamIndex: Math.max(settled.streamIndex, activeSession.streamIndex),
+                streamIndex: Math.max(
+                  settled.streamIndex,
+                  activeSession.streamIndex,
+                ),
                 title,
                 status: settled.ok ? "waiting" : "failed",
               });

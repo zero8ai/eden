@@ -11,12 +11,16 @@ Use the `agent-browser` CLI from the sandbox shell for browser automation. It dr
 The Marketplace sandbox setup should already install `agent-browser` and Chrome. If a command says `agent-browser` is missing, repair the sandbox in place:
 
 ```bash
+echo "deb [arch=$(dpkg --print-architecture) trusted=yes] http://deb.debian.org/debian trixie main" > /etc/apt/sources.list.d/debian-trixie.list
+printf "Package: *\nPin: release n=trixie\nPin-Priority: 100\n" > /etc/apt/preferences.d/debian-trixie
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends chromium
 npm install -g agent-browser@0.31.1
-agent-browser install --with-deps
-agent-browser doctor
+AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium agent-browser open https://example.com
+agent-browser close --all
 ```
 
-If `doctor` still fails, report the failing check and stop.
+If the launch check still fails, report the failing command and stop.
 
 ## Core Workflow
 

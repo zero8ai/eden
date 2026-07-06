@@ -90,6 +90,12 @@ export interface TurnResult {
  */
 export type TalkEvent =
   | { kind: "session"; sessionId: string; continuationToken: string | null }
+  | {
+      kind: "progress";
+      sessionId: string;
+      continuationToken: string | null;
+      streamIndex: number;
+    }
   | { kind: "turn"; turnId: string }
   | { kind: "model"; modelId: string }
   | { kind: "thinking" }
@@ -217,8 +223,7 @@ export function inputRequestsOf(
     const options: ChatInputOption[] = [];
     for (const rawOption of rawOptions) {
       if (typeof rawOption === "string") {
-        if (rawOption.trim())
-          options.push({ id: rawOption, label: rawOption });
+        if (rawOption.trim()) options.push({ id: rawOption, label: rawOption });
         continue;
       }
       if (typeof rawOption !== "object" || rawOption === null) continue;
@@ -266,7 +271,10 @@ function normalizeReply(reply: string | null): {
   const t = reply.trim();
   if (t.startsWith("{") || t.startsWith("[")) {
     try {
-      return { reply: JSON.stringify(JSON.parse(t), null, 2), replyIsStructured: true };
+      return {
+        reply: JSON.stringify(JSON.parse(t), null, 2),
+        replyIsStructured: true,
+      };
     } catch {
       // plain prose that happens to start with a brace — leave as-is
     }
@@ -297,10 +305,13 @@ export async function* streamTurn(input: {
   const isFollowUp = !!(input.sessionId && input.continuationToken);
   let streamIndex = Math.max(0, input.streamIndex ?? 0);
 
-  const fail = (error: string, ids?: {
-    sessionId?: string | null;
-    continuationToken?: string | null;
-  }): TalkEvent => ({
+  const fail = (
+    error: string,
+    ids?: {
+      sessionId?: string | null;
+      continuationToken?: string | null;
+    },
+  ): TalkEvent => ({
     kind: "done",
     result: {
       ok: false,
@@ -382,7 +393,8 @@ export async function* streamTurn(input: {
   let turnAnnounced = false;
   try {
     const streamUrl = new URL(`${base}/eve/v1/session/${sessionId}/stream`);
-    if (streamIndex > 0) streamUrl.searchParams.set("startIndex", String(streamIndex));
+    if (streamIndex > 0)
+      streamUrl.searchParams.set("startIndex", String(streamIndex));
     const res = await fetch(streamUrl, {
       signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
     });
@@ -423,6 +435,7 @@ export async function* streamTurn(input: {
           continue; // not a JSON line — skip
         }
         streamIndex += 1;
+        yield { kind: "progress", sessionId, continuationToken, streamIndex };
         const type = String(evt.type ?? "");
         const data = evt.data ?? {};
         const at = evt.meta?.at ? Date.parse(evt.meta.at) : Date.now();
@@ -510,7 +523,9 @@ export async function* streamTurn(input: {
             // messageSoFar is cumulative for the CURRENT message only — prefix the turn's
             // earlier completed messages so the live text never loses them.
             if (ours && typeof data.messageSoFar === "string") {
-              const text = [...completedMessages, data.messageSoFar].join("\n\n");
+              const text = [...completedMessages, data.messageSoFar].join(
+                "\n\n",
+              );
               if (text !== lastTextSent) {
                 lastTextSent = text;
                 yield { kind: "text", text };
@@ -626,7 +641,12 @@ export async function* streamTurn(input: {
     }
     reader.cancel().catch(() => {});
     const asked = inputRequests.length > 0;
-    if (reply === null && !asked && error === null && lastStepFailure !== null) {
+    if (
+      reply === null &&
+      !asked &&
+      error === null &&
+      lastStepFailure !== null
+    ) {
       error = lastStepFailure;
     }
     if (!settled && reply === null && !asked && error === null) {

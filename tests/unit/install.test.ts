@@ -76,13 +76,15 @@ const browserSkillTpl: CatalogTemplate = {
     files: ["skills/agent-browser.md"],
     sandbox: {
       bootstrap: [
+        "if ! command -v chromium >/dev/null; then echo \"deb [arch=$(dpkg --print-architecture) trusted=yes] http://deb.debian.org/debian trixie main\" > /etc/apt/sources.list.d/debian-trixie.list && printf \"Package: *\\nPin: release n=trixie\\nPin-Priority: 100\\n\" > /etc/apt/preferences.d/debian-trixie && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends chromium && rm -rf /var/lib/apt/lists/*; fi",
         "npm install -g agent-browser@0.31.1",
-        "agent-browser install --with-deps",
+        "AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium agent-browser --version",
       ],
       env: {
+        AGENT_BROWSER_EXECUTABLE_PATH: "/usr/bin/chromium",
         AGENT_BROWSER_PROFILE: "/workspace/home/agent-browser/profile",
       },
-      revalidationKey: "agent-browser@0.31.1",
+      revalidationKey: "agent-browser@0.31.1-chromium-debian-trixie",
     },
   },
   files: { "skills/agent-browser.md": "# Agent Browser\n" },
@@ -276,7 +278,8 @@ describe("planInstall — sandbox setup", () => {
       (w) => w.path === "agents/pm/agent/sandbox/addons/agent-browser.ts",
     )!.content;
     expect(addon).toContain("npm install -g agent-browser@0.31.1");
-    expect(addon).toContain("agent-browser install --with-deps");
+    expect(addon).toContain("apt-get install -y --no-install-recommends chromium");
+    expect(addon).toContain("AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium");
 
     const sandbox = plan.writes.find(
       (w) => w.path === "agents/pm/agent/sandbox/sandbox.ts",
@@ -302,7 +305,9 @@ describe("planInstall — sandbox setup", () => {
       "agents/pm/agent/sandbox/addons/agent-browser.ts",
       "agents/pm/agent/skills/agent-browser.md",
     ]);
-    expect(entry.sandbox?.revalidationKey).toBe("agent-browser@0.31.1");
+    expect(entry.sandbox?.revalidationKey).toBe(
+      "agent-browser@0.31.1-chromium-debian-trixie",
+    );
   });
 
   it("updates the managed sandbox module with all installed add-ons for the member", () => {

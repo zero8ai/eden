@@ -47,20 +47,94 @@ afterEach(() => {
 });
 
 describe("loadPlaygroundEntriesFromEve", () => {
+  it("replays a running turn from the saved Eve cursor", async () => {
+    const at = new Date().toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        streamResponse([
+          {
+            type: "session.started",
+            data: { runtime: { modelId: "m/x" } },
+            meta: { at },
+          },
+          { type: "turn.started", data: { turnId: "turn_0" }, meta: { at } },
+          {
+            type: "message.received",
+            data: { turnId: "turn_0", message: "finish the deploy" },
+            meta: { at },
+          },
+          {
+            type: "step.started",
+            data: { turnId: "turn_0", sequence: 1 },
+            meta: { at },
+          },
+          {
+            type: "message.appended",
+            data: { turnId: "turn_0", messageSoFar: "Working on it" },
+            meta: { at },
+          },
+        ]),
+      ),
+    );
+
+    const entries = await loadPlaygroundEntriesFromEve({
+      session: session({ status: "running", streamIndex: 5 }),
+      target,
+    });
+
+    expect(entries).toMatchObject([
+      { role: "user", text: "finish the deploy" },
+      {
+        role: "assistant",
+        text: "Working on it",
+        modelId: "m/x",
+      },
+    ]);
+  });
+
   it("keeps every assistant message of a turn and surfaces ask_question prompts", async () => {
     const at = new Date().toISOString();
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>().mockResolvedValueOnce(
         streamResponse([
-          { type: "session.started", data: { runtime: { modelId: "m/x" } }, meta: { at } },
+          {
+            type: "session.started",
+            data: { runtime: { modelId: "m/x" } },
+            meta: { at },
+          },
           { type: "turn.started", data: { turnId: "turn_0" }, meta: { at } },
-          { type: "message.received", data: { turnId: "turn_0", message: "deploy the landing page" }, meta: { at } },
-          { type: "message.completed", data: { turnId: "turn_0", message: "Checking access." }, meta: { at } },
-          { type: "step.started", data: { turnId: "turn_0", sequence: 1 }, meta: { at } },
-          { type: "step.completed", data: { turnId: "turn_0", sequence: 1 }, meta: { at } },
-          { type: "message.appended", data: { turnId: "turn_0", messageSoFar: "One decision for you:" }, meta: { at } },
-          { type: "message.completed", data: { turnId: "turn_0", message: "One decision for you:" }, meta: { at } },
+          {
+            type: "message.received",
+            data: { turnId: "turn_0", message: "deploy the landing page" },
+            meta: { at },
+          },
+          {
+            type: "message.completed",
+            data: { turnId: "turn_0", message: "Checking access." },
+            meta: { at },
+          },
+          {
+            type: "step.started",
+            data: { turnId: "turn_0", sequence: 1 },
+            meta: { at },
+          },
+          {
+            type: "step.completed",
+            data: { turnId: "turn_0", sequence: 1 },
+            meta: { at },
+          },
+          {
+            type: "message.appended",
+            data: { turnId: "turn_0", messageSoFar: "One decision for you:" },
+            meta: { at },
+          },
+          {
+            type: "message.completed",
+            data: { turnId: "turn_0", message: "One decision for you:" },
+            meta: { at },
+          },
           {
             type: "input.requested",
             data: {

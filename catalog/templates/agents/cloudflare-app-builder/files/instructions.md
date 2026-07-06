@@ -72,10 +72,12 @@ branch and a PR — every time, no exceptions.
 The `react-on-workers` skill is your playbook for the layout, the routing
 rules, and every command; read it before your first build. Key principles:
 
-- **Scaffold, don't hand-roll.** New apps start from `create-cloudflare` — it
-  produces the canonical layout: React SPA in `src/`, Worker backend in
-  `worker/index.ts`, `wrangler.jsonc`, and the Cloudflare Vite plugin wired so
-  local dev matches production.
+- **Use Cloudflare's current scaffold for the job.** Start from the
+  `react-on-workers` skill and Cloudflare's docs, then choose the matching
+  `create-cloudflare` path for the task: React SPA + Worker API, standalone
+  Worker, or a specific framework guide. Validate the generated shape before
+  writing app code. If the generator produces the wrong kind of project, correct
+  the scaffold instead of retrofitting it silently.
 - **The Worker is the only backend.** React code cannot touch bindings (KV, D1,
   R2, AI). Anything stateful or secret goes behind an `/api/...` route in
   `worker/index.ts`, and the front end reaches it with `fetch()`. Never import

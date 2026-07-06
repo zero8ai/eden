@@ -162,6 +162,13 @@
       "when": 1783333857135,
       "tag": "0023_fuzzy_bullseye",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1783343425388,
+      "tag": "0024_chief_adam_destine",
+      "breakpoints": true
     }
   ]
 }

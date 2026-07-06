@@ -714,6 +714,42 @@ export const playgroundSessions = pgTable(
 );
 
 /**
+ * Assistant coding-agent checkouts (docs/ASSISTANT.md — coding-agent model). One row per
+ * assistant conversation (a `playground_sessions` row on the assistant channel) that has grown a
+ * repo checkout. The assistant edits a per-conversation git checkout on the shared home volume;
+ * after each turn the control plane mirrors that checkout onto the branch `eden/conv-<id>` and
+ * (on first non-empty sync) opens a PR. This table is the only durable link from a conversation to
+ * its branch/PR — the checkout itself is ephemeral (volume/instance loss is recovered by re-cloning
+ * the remote branch). `lastSyncedHash` lets the sync engine skip a no-op turn (tree unchanged).
+ */
+export const assistantCheckouts = pgTable(
+  "assistant_checkouts",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    /** The conversation == the assistant `playground_sessions` row (1:1). */
+    conversationId: varchar("conversation_id", { length: 12 })
+      .notNull()
+      .references(() => playgroundSessions.id, { onDelete: "cascade" }),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** Working branch the conversation's checkout is mirrored onto (`eden/conv-<id>`). */
+    branch: text("branch").notNull(),
+    /** Base branch the working branch is cut from (the project default at first sync). */
+    baseBranch: text("base_branch").notNull(),
+    /** Open PR number for the branch, or null before the first non-empty sync. */
+    prNumber: integer("pr_number"),
+    /** Whether the open PR is still a draft/WIP (false once marked ready-for-review). */
+    prDraft: boolean("pr_draft").notNull().default(true),
+    /** Content hash of the last mirrored tree state — a matching hash means "skip, no change". */
+    lastSyncedHash: text("last_synced_hash"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("assistant_checkouts_conversation_uq").on(t.conversationId)],
+);
+
+/**
  * Directed teammate-collaboration overrides (Team delegation, PRD §7.9 runtime half — D4).
  * A row exists ONLY for a (from → to) pair the human has touched; an ABSENT row means the ask
  * is allowed (default-allow). This avoids seeding on roster sync, avoids a backfill migration,

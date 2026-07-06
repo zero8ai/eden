@@ -303,6 +303,7 @@ export async function action(args: ActionFunctionArgs) {
             modelId: null,
             turnId: null,
             steps: [],
+            messages: [],
             error: `The turn stream failed: ${(error as Error).message}`,
           };
           send({

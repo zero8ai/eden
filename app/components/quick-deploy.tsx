@@ -133,12 +133,14 @@ function QuickDeployDialog({
         </DialogHeader>
 
         {/* File breakdown: one block per owning member, a "shared" block last if present. */}
-        <div className="space-y-3">
+        {/* min-w-0 everywhere: DialogContent is a grid, and grid items default to min-width auto,
+            so an unbroken mono path would otherwise push the dialog wider than its max. */}
+        <div className="min-w-0 space-y-3">
           {data.groups.map((group) => {
             const shared = group.member === null;
             const skipped = !shared && mismatch(group.member!);
             return (
-              <div key={group.member ?? "__shared__"} className="text-xs">
+              <div key={group.member ?? "__shared__"} className="min-w-0 text-xs">
                 <div className="flex items-baseline gap-2">
                   {shared ? (
                     <span className="font-medium">Shared — affects all members</span>
@@ -146,9 +148,9 @@ function QuickDeployDialog({
                     <span className="font-mono font-medium">{group.member}</span>
                   )}
                 </div>
-                <ul className="mt-1 space-y-0.5">
+                <ul className="mt-1 min-w-0 space-y-0.5">
                   {group.files.map((file) => (
-                    <li key={file} className="truncate font-mono text-muted-foreground">
+                    <li key={file} className="break-all font-mono text-muted-foreground">
                       {file}
                     </li>
                   ))}
@@ -169,7 +171,7 @@ function QuickDeployDialog({
         </div>
 
         {/* Expanded deploy set — shared drafts fan out to the whole roster. */}
-        <p className="text-xs">
+        <p className="min-w-0 break-words text-xs">
           <span className="font-medium">Will deploy:</span>{" "}
           <span className="font-mono">{affectedNames.join(", ")}</span>
         </p>
@@ -206,7 +208,9 @@ function QuickDeployDialog({
 
         {/* A ship that errors (build gate, missing env) returns { error } instead of redirecting —
             surface it here with room to read it, and keep the dialog open to retry or cancel. */}
-        {error && <p className="text-xs text-destructive">{error}</p>}
+        {error && (
+          <p className="min-w-0 break-words text-xs text-destructive">{error}</p>
+        )}
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)} disabled={deploying}>

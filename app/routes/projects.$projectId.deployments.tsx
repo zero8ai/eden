@@ -29,6 +29,7 @@ import {
 } from "react-router";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
+import { FreshnessBadge, releaseFreshness } from "~/components/deploy-freshness";
 import {
   AgentNav,
   AppShell,
@@ -146,6 +147,12 @@ interface DeploymentData {
   members: {
     name: string;
     latest: { version: string; gitSha: string; createdAt: Date } | null;
+    /**
+     * Rollup of what this member is running vs their latest release: `isLatest`
+     * true when everything live is on the newest version, false when any env is
+     * behind. Null when nothing is deployed in any of the member's environments.
+     */
+    running: { isLatest: boolean } | null;
   }[];
   /** Member view: unmet template-required secrets — powers the deploy guard (§9). */
   missingSecrets: GuardMissingSecret[];
@@ -207,19 +214,39 @@ export const loader = (args: LoaderFunctionArgs) =>
             : (memberFromPath(d.path) ?? "shared");
           groups.set(key, [...(groups.get(key) ?? []), d]);
         }
-        const members = roster.map((a) => {
-          const latest = releaseRows.find((r) => r.agentId === a.id);
-          return {
-            name: a.name,
-            latest: latest
-              ? {
-                  version: latest.version,
-                  gitSha: latest.gitSha,
-                  createdAt: latest.createdAt,
-                }
-              : null,
-          };
-        });
+        const members = await Promise.all(
+          roster.map(async (a) => {
+            const latest = releaseRows.find((r) => r.agentId === a.id);
+            // What's live across this member's envs, so the rollup can flag whether
+            // they're running their latest version or lagging behind it.
+            const envRows = await listAgentEnvironments(a.id);
+            const live = (
+              await Promise.all(
+                envRows.map(async (env) =>
+                  (await listDeployments(env.id)).find(
+                    (d) => d.status === "live",
+                  ),
+                ),
+              )
+            ).filter((d) => d != null);
+            return {
+              name: a.name,
+              latest: latest
+                ? {
+                    version: latest.version,
+                    gitSha: latest.gitSha,
+                    createdAt: latest.createdAt,
+                  }
+                : null,
+              running:
+                live.length > 0
+                  ? {
+                      isLatest: live.every((d) => d.releaseId === latest?.id),
+                    }
+                  : null,
+            };
+          }),
+        );
         return {
           project,
           roster: roster.map((a) => ({ name: a.name })),
@@ -670,7 +697,11 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
     <>
       <StagedChangesCard drafts={drafts} isTeam={isTeam} />
       <ChangeRequests changes={changes} isTeam={isTeam} />
-      <EnvironmentsCard envs={envs} activeAgent={activeAgent} />
+      <EnvironmentsCard
+        envs={envs}
+        releases={releases}
+        activeAgent={activeAgent}
+      />
       <VersionHistory
         releases={releases}
         envs={envs}
@@ -1143,6 +1174,13 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                     <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                       {m.latest.gitSha.slice(0, 7)}
                     </code>
+                    {m.running && (
+                      <FreshnessBadge
+                        isLatest={m.running.isLatest}
+                        latestVersion={m.latest.version}
+                        behindLabel="Behind"
+                      />
+                    )}
                     <span className="text-muted-foreground">
                       {timeAgo(m.latest.createdAt)}
                     </span>
@@ -1168,9 +1206,11 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
  */
 function EnvironmentsCard({
   envs,
+  releases,
   activeAgent,
 }: {
   envs: EnvState[];
+  releases: ReleaseRow[];
   activeAgent: string;
 }) {
   const fetcher = useFetcher<typeof action>();
@@ -1219,6 +1259,15 @@ function EnvironmentsCard({
                   {running ? (
                     <>
                       <span className="font-semibold">{running.version}</span>
+                      {(() => {
+                        const f = releaseFreshness(running.releaseId, releases);
+                        return f ? (
+                          <FreshnessBadge
+                            isLatest={f.isLatest}
+                            latestVersion={f.latestVersion}
+                          />
+                        ) : null;
+                      })()}
                       <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                         {running.gitSha.slice(0, 7)}
                       </code>
@@ -1530,10 +1579,13 @@ function VersionHistory({
           </p>
         ) : (
           <ul className="divide-y rounded-lg border text-sm">
-            {releases.map((r) => (
+            {releases.map((r, i) => (
               <li key={r.id} className="flex items-center gap-2 px-4 py-2">
                 <span className="w-10 shrink-0 font-semibold">{r.version}</span>
                 <span className="flex shrink-0 items-center gap-1">
+                  {i === 0 && (
+                    <Badge variant="success">Latest</Badge>
+                  )}
                   {(runningEnvNames.get(r.id) ?? []).map((name) => (
                     <Badge key={name} variant="secondary">
                       {name}

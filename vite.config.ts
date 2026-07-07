@@ -11,6 +11,22 @@ export default defineConfig(({ mode }) => {
     resolve: {
       tsconfigPaths: true,
     },
+    optimizeDeps: {
+      // Pre-bundle the CodeMirror stack that code-editor.tsx (and the marketplace template
+      // detail route that renders it) pulls in. Otherwise the first client-side navigation to
+      // one of those routes makes Vite discover these deps mid-session, triggering an
+      // "optimized dependencies changed. reloading" pass that aborts the in-flight dynamic
+      // import with "Failed to fetch dynamically imported module" and a hard page reload.
+      include: [
+        "@uiw/react-codemirror",
+        "@codemirror/lang-json",
+        "@codemirror/lang-javascript",
+        "@codemirror/lang-markdown",
+        "@codemirror/language",
+        "@codemirror/lint",
+        "@codemirror/view",
+      ],
+    },
     server: {
       port: Number(env.PORT ?? 5173),
       // Containerized eve instances (the built-in assistant, team-delegation peers) call back

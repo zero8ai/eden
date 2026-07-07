@@ -16,7 +16,10 @@ import {
   rollbackTo,
   setTrafficSplit,
 } from "~/deploy/controller.server";
-import { cleanupDeploymentContainer } from "~/deploy/cleanup.server";
+import {
+  cleanupDeploymentContainer,
+  DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS,
+} from "~/deploy/cleanup.server";
 import type { DeployTarget } from "~/seams/types";
 import { fakeDeployTarget, fakeSecrets } from "../fakes/infra";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
@@ -463,7 +466,7 @@ describe("cutover on deploy", () => {
 
     expect(await store.jobs.claimNext(new Date())).toBeNull();
     const cleanupJob = await store.jobs.claimNext(
-      new Date(Date.now() + 25 * 60 * 60 * 1000),
+      new Date(Date.now() + DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS + 1000),
     );
     expect(cleanupJob?.kind).toBe("cleanup_deployment_container");
     expect(cleanupJob?.payload).toEqual({ deploymentId: depA.id });

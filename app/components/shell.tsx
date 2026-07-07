@@ -76,13 +76,11 @@ export function repoCrumbs(opts: {
 }
 
 export function AppShell({
-  workspaceName,
   userEmail,
   breadcrumbs,
   fullHeight,
   children,
 }: {
-  workspaceName?: string | null;
   userEmail?: string | null;
   /** Hierarchy trail: workspace → repo → member → …; the "up" navigation. */
   breadcrumbs?: Crumb[];
@@ -104,14 +102,8 @@ export function AppShell({
           >
             <EdenWordmark className="h-5" />
           </Link>
-          {breadcrumbs && breadcrumbs.length > 0 ? (
+          {breadcrumbs && breadcrumbs.length > 0 && (
             <Breadcrumbs crumbs={breadcrumbs} />
-          ) : (
-            workspaceName && (
-              <span className="max-w-48 truncate text-sm text-muted-foreground">
-                {workspaceName}
-              </span>
-            )
           )}
           {/* Desktop: inline primary nav. Mobile: folds into the menu button below. */}
           <nav className="ml-auto hidden items-center gap-1 text-sm md:flex">

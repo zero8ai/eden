@@ -134,7 +134,7 @@ export function meta() {
 }
 
 export default function Marketplace({ loaderData }: Route.ComponentProps) {
-  const { user, org, templates, catalogError } = loaderData;
+  const { user, templates, catalogError } = loaderData;
   const [filter, setFilter] = useState<TemplateType | "all">("all");
 
   const counts = TEMPLATE_TYPES.reduce(
@@ -148,7 +148,7 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
     filter === "all" ? templates : templates.filter((t) => t.type === filter);
 
   return (
-    <AppShell workspaceName={org?.name} userEmail={user.email}>
+    <AppShell userEmail={user.email}>
       <PageHeader
         title="Marketplace"
         description="Recruit pre-built tools, skills, and agents — instantiate an expert-authored template instead of writing one from scratch."

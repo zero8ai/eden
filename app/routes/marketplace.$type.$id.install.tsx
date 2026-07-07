@@ -496,7 +496,6 @@ export function meta() {
 export default function InstallWizard({ loaderData, actionData }: Route.ComponentProps) {
   const {
     user,
-    org,
     type,
     manifest,
     projects,
@@ -533,7 +532,7 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
   };
 
   return (
-    <AppShell workspaceName={org?.name} userEmail={user.email}>
+    <AppShell userEmail={user.email}>
       <div className="mb-4">
         <Link
           to={backTo}

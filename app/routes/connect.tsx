@@ -242,7 +242,7 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
   const [layout, setLayout] = useState<"single" | "team">("single");
 
   return (
-    <AppShell workspaceName={org?.name}>
+    <AppShell>
       <PageHeader
         icon={Plug}
         accent="brand"

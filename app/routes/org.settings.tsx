@@ -180,11 +180,11 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
   }
 
   return (
-    <AppShell workspaceName={org.name} userEmail={user?.email}>
+    <AppShell userEmail={user?.email}>
       <PageHeader
         icon={Building2}
         accent="indigo"
-        title={`${org.name} — settings`}
+        title="Settings"
         description={
           <>
             Mode: <span className="font-mono">{mode}</span>. Roles &amp; SSO are

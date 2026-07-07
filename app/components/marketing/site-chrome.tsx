@@ -3,13 +3,18 @@
  * case-study pages so navigation stays consistent. Uses the same `eden-*` tokens
  * and Suisse type as the rest of the landing site, so it themes with the toggle.
  */
-import { Link } from "react-router";
+import { Link, useRouteLoaderData } from "react-router";
 import { ThemeToggle } from "~/components/theme-toggle";
 
 /** The public source repository. Eden is open source; every marketing page links here. */
 export const REPO_URL = "https://github.com/zero8ai/eden";
 
 export function SiteHeader() {
+  // The root loader runs authkitLoader, so the WorkOS session is available app-wide.
+  // When the visitor is already signed in, offer a Dashboard link instead of Sign in.
+  const rootData = useRouteLoaderData("root") as { user?: unknown } | undefined;
+  const isSignedIn = Boolean(rootData?.user);
+
   return (
     <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
       <Link to="/" className="text-xl font-medium tracking-tight">
@@ -30,10 +35,10 @@ export function SiteHeader() {
         </a>
         <ThemeToggle />
         <Link
-          to="/login"
+          to={isSignedIn ? "/dashboard" : "/login"}
           className="rounded-full border border-eden-fg px-4 py-1.5 transition hover:bg-eden-fg hover:text-eden-bg"
         >
-          Sign in
+          {isSignedIn ? "Dashboard" : "Sign in"}
         </Link>
       </nav>
     </header>

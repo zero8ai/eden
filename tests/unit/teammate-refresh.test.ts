@@ -134,6 +134,21 @@ describe("refreshTeammatesForRosterChange", () => {
     expect(queued).toBe(0);
   });
 
+  it("fires for a pure rename (a name swap counts as a membership change)", async () => {
+    // pm renamed → product: the other live member must refresh so EDEN_TEAMMATES reflects it.
+    seedMember("other", "env_other");
+    const liveRelease = await seedLive("other", "env_other");
+
+    const queued = await refreshTeammatesForRosterChange(
+      { projectId: PROJECT, previousNames: ["pm", "other"], currentNames: ["product", "other"] },
+      store,
+    );
+
+    expect(queued).toBe(1);
+    const rows = await store.deployments.listByEnvironment("env_other");
+    expect(rows.find((d) => d.status === "queued")?.releaseId).toBe(liveRelease);
+  });
+
   it("skips a member without a live deployment", async () => {
     seedMember("pm", "env_pm"); // never deployed
     seedMember("deployer", "env_dep");

@@ -67,6 +67,20 @@ export const drizzleDataStore: DataStore = {
           .orderBy(asc(agents.name));
       });
     },
+    async rename(id, patch) {
+      const [row] = await db
+        .update(agents)
+        .set({ name: patch.name, root: patch.root, pendingName: null, updatedAt: new Date() })
+        .where(eq(agents.id, id))
+        .returning();
+      return row;
+    },
+    async setPendingName(id, pendingName) {
+      await db
+        .update(agents)
+        .set({ pendingName, updatedAt: new Date() })
+        .where(eq(agents.id, id));
+    },
     async findAssistant(projectId) {
       const [row] = await db
         .select()

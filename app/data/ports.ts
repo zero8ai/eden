@@ -60,6 +60,14 @@ export interface AgentRepo {
     projectId: string,
     roster: { name: string; root: string }[],
   ): Promise<Agent[]>;
+  /**
+   * Rename a member IN PLACE — updates `name` (and `root`, which moves with the directory) while
+   * preserving the row id, so every FK to it (environments, releases, secrets, drafts) survives.
+   * The one safe primitive for a rename: a prune/recreate would cascade the member's history away.
+   */
+  rename(id: string, patch: { name: string; root: string }): Promise<Agent>;
+  /** Set (or clear, with null) the pending-rename target for a member. */
+  setPendingName(id: string, pendingName: string | null): Promise<void>;
   /** The project's built-in assistant row (`kind === 'assistant'`), or null. */
   findAssistant(projectId: string): Promise<Agent | null>;
   /** Create the built-in assistant row. Caller ensures single-instance via `findAssistant`. */

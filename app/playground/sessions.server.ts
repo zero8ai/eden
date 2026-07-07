@@ -186,7 +186,10 @@ export async function markPlaygroundSessionStopped(input: {
       lastReleaseId: input.target.releaseId,
       lastVersion: input.target.version,
       title: input.title ?? undefined,
-      status: "failed",
+      // Distinct from "failed": a deliberate stop shouldn't get the timed-out
+      // recovery hint in the replay, and shouldn't be reconciled back to "failed"
+      // (the tsx loader only reconciles "running"/"failed" sessions).
+      status: "stopped",
       lastEventAt: new Date(),
       updatedAt: new Date(),
     })

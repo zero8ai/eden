@@ -344,6 +344,11 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             if (evt.type === "done" && evt.playgroundSessionId) {
               nextSessionId = evt.playgroundSessionId;
             }
+            // A user-requested stop cancels the turn server-side, which flushes a
+            // final "done" event carrying a "Turn was stopped." error before the
+            // /stop fetch resolves. Don't fold that into the live view — stopTurn
+            // clears it cleanly, so surfacing it here would only flash an error.
+            if (stopRequestedRef.current && evt.type === "done") continue;
             apply(evt);
           }
         }
@@ -407,10 +412,16 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     form.set("agentName", activeAgent);
     form.set("deploymentId", deploymentId);
 
+    // Mark the stop up-front: cancelling the turn server-side can close the stream
+    // (and flush a "Turn was stopped." error) before this fetch resolves, so the
+    // stream loop needs to know a stop is in flight to treat that as a clean stop.
+    stopRequestedRef.current = true;
     try {
       const res = await fetch(`/api/repos/${project.id}/playground/stop`, {
         method: "POST",
         body: form,
+        // Don't let a slow Eve cancel hang the Stop button indefinitely.
+        signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) {
         const detail = await res.json().catch(() => null);
@@ -421,7 +432,6 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         );
       }
 
-      stopRequestedRef.current = true;
       streamAbortRef.current?.abort();
       setLive((prev) =>
         prev
@@ -436,6 +446,9 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       await revalidator.revalidate();
       setLive(null);
     } catch (error) {
+      // The request itself failed — the turn may still be live, so let the stream
+      // keep flowing normally instead of swallowing its events as a stop.
+      stopRequestedRef.current = false;
       setSendError((error as Error).message);
     }
   }, [

@@ -84,6 +84,15 @@ export async function action(args: ActionFunctionArgs) {
   }
 
   const localCanceled = cancelActiveTurn(session.id);
+  if (!localCanceled && session.externalSessionId) {
+    // The turn's AbortController lives in the process that streamed it. In a
+    // multi-replica deployment the stream may be on another instance, so the
+    // local abort is a no-op here (Eve was still cancelled above). Log it so
+    // ops can spot the cross-instance case when a stop seems not to take.
+    console.warn(
+      `[playground/stop] no local turn controller for session ${session.id} — turn is likely streaming on another replica`,
+    );
+  }
   await markPlaygroundSessionStopped({ id: session.id, target });
 
   return {

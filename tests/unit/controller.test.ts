@@ -16,6 +16,7 @@ import {
   rollbackTo,
   setTrafficSplit,
 } from "~/deploy/controller.server";
+import { cleanupDeploymentContainer } from "~/deploy/cleanup.server";
 import type { DeployTarget } from "~/seams/types";
 import { fakeDeployTarget, fakeSecrets } from "../fakes/infra";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
@@ -459,6 +460,13 @@ describe("cutover on deploy", () => {
     expect(oldRow?.status).toBe("stopped");
     expect(oldRow?.trafficWeight).toBe(0);
     expect(all.filter((d) => d.status === "live")).toHaveLength(1);
+
+    expect(await store.jobs.claimNext(new Date())).toBeNull();
+    const cleanupJob = await store.jobs.claimNext(
+      new Date(Date.now() + 25 * 60 * 60 * 1000),
+    );
+    expect(cleanupJob?.kind).toBe("cleanup_deployment_container");
+    expect(cleanupJob?.payload).toEqual({ deploymentId: depA.id });
   });
 
   it("does not hide a stale old instance when cutover cannot stop it", async () => {
@@ -506,6 +514,87 @@ describe("cutover on deploy", () => {
 
     const all = await listDeployments(ENV, store);
     expect(all.find((d) => d.id === depA.id)?.status).toBe("live");
+  });
+});
+
+describe("cleanupDeploymentContainer", () => {
+  it("destroys a stopped, zero-weight deployment only when a live replacement exists", async () => {
+    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "c".repeat(40) }, store);
+    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "d".repeat(40) }, store);
+    const destroyedIds: string[] = [];
+    const deps = {
+      store,
+      deployTarget: fakeDeployTarget({
+        health: { status: "live", url: "http://a" },
+        destroyedIds,
+      }),
+      secrets: fakeSecrets(),
+    };
+
+    const old = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
+    await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
+
+    const result = await cleanupDeploymentContainer(old.id, deps);
+
+    expect(result).toEqual({ status: "destroyed" });
+    expect(destroyedIds).toContain(old.id);
+  });
+
+  it("skips cleanup for live deployments", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "e".repeat(40) }, store);
+    const destroyedIds: string[] = [];
+    const deps = {
+      store,
+      deployTarget: fakeDeployTarget({ destroyedIds }),
+      secrets: fakeSecrets(),
+    };
+    const dep = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+
+    const result = await cleanupDeploymentContainer(dep.id, deps);
+
+    expect(result).toEqual({ status: "skipped", reason: "deployment is live" });
+    expect(destroyedIds).toEqual([]);
+  });
+
+  it("skips stopped deployments without a live replacement", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "f".repeat(40) }, store);
+    const destroyedIds: string[] = [];
+    const dep = await store.deployments.insert({
+      environmentId: ENV,
+      releaseId: release.id,
+      status: "stopped",
+      trafficWeight: 0,
+    });
+
+    const result = await cleanupDeploymentContainer(dep.id, {
+      store,
+      deployTarget: fakeDeployTarget({ destroyedIds }),
+    });
+
+    expect(result).toEqual({
+      status: "skipped",
+      reason: "no live replacement in environment",
+    });
+    expect(destroyedIds).toEqual([]);
+  });
+
+  it("destroys failed deployments even when no replacement exists", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "0".repeat(40) }, store);
+    const destroyedIds: string[] = [];
+    const dep = await store.deployments.insert({
+      environmentId: ENV,
+      releaseId: release.id,
+      status: "failed",
+      trafficWeight: 100,
+    });
+
+    const result = await cleanupDeploymentContainer(dep.id, {
+      store,
+      deployTarget: fakeDeployTarget({ destroyedIds }),
+    });
+
+    expect(result).toEqual({ status: "destroyed" });
+    expect(destroyedIds).toContain(dep.id);
   });
 });
 

@@ -42,6 +42,7 @@ import {
 import { getRuntime } from "~/seams/index.server";
 import type { auditLog } from "~/db/schema";
 import type { EdenMode } from "~/seams/types";
+import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/org.settings";
 
 interface OrgSettingsView {
@@ -154,7 +155,7 @@ export async function action(args: ActionFunctionArgs) {
 export function meta() {
   return [
     { title: "Org settings · Eden" },
-    { name: "robots", content: "noindex, nofollow" },
+    ...noindexMeta,
   ];
 }
 

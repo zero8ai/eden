@@ -15,6 +15,7 @@ import {
 import { listAgents, listProjects, type Project } from "~/db/queries.server";
 import { syncTenant } from "~/auth/tenant.server";
 import { ensureWorkspace } from "~/auth/workspace.server";
+import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/dashboard";
 
 /** A project annotated with its roster, so the dashboard can split teams from agents. */
@@ -57,7 +58,7 @@ export async function action({ request }: ActionFunctionArgs) {
 export function meta() {
   return [
     { title: "Repositories · Eden" },
-    { name: "robots", content: "noindex, nofollow" },
+    ...noindexMeta,
   ];
 }
 

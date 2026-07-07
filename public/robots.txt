@@ -7,6 +7,7 @@ Disallow: /repos/
 Disallow: /org/
 Disallow: /connect
 Disallow: /login
+Disallow: /signup
 Disallow: /callback
 Disallow: /api/
 Disallow: /marketplace

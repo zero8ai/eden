@@ -102,7 +102,7 @@
       "name": "Slack",
       "version": "0.1.0",
       "description": "Talk to this agent from Slack — app mentions and direct messages with buttons and select menus, credentials brokered by a Vercel Connect connector via eve's slackChannel.",
-      "hash": "02829431505c2d47ae19c27b2a5c85c1f8655809"
+      "hash": "f4120950f1c654504e062512251a7fc09a1058f4"
     },
     {
       "id": "telegram",

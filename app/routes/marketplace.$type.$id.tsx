@@ -133,7 +133,7 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
             <CardHeader>
               <CardTitle className="text-base">Setup</CardTitle>
               <CardDescription>
-                What you&rsquo;ll do on the provider&rsquo;s side to wire this up.
+                One-time setup to complete before this works.
               </CardDescription>
             </CardHeader>
             <CardContent className="text-sm">

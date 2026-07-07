@@ -130,3 +130,9 @@ and the agent instances it deploys.
 `npm run build` emits a standard Node server build under `build/` (client + server); the
 included `Dockerfile` containerizes it with the Docker CLI the deploy target needs. See
 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the managed-service infrastructure.
+
+## License & ownership
+
+Copyright © 2026 Aaron HS. Eden is created and owned by Aaron HS.
+
+Licensed under the [GNU Affero General Public License v3.0](./LICENSE) (AGPL-3.0).

@@ -12,9 +12,9 @@ export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
 
 export function meta({}: Route.MetaArgs) {
   return pageMeta({
-    title: "Case studies — Eden",
+    title: "Case studies — eden",
     description:
-      "How teams give their people better tools instead of fewer people — agencies, law firms, support teams and more building agents with Eden.",
+      "How teams give their people better tools instead of fewer people — agencies, law firms, support teams and more building agents with eden.",
     path: "/case-studies",
   });
 }

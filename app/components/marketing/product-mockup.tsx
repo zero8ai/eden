@@ -17,7 +17,7 @@ export function ProductMockup() {
         <span className="h-3 w-3 rounded-full bg-eden-band-muted/35" />
         <span className="h-3 w-3 rounded-full bg-eden-band-muted/25" />
         <span className="ml-3 text-xs text-eden-band-muted">
-          support-agent — Eden
+          support-agent — eden
         </span>
       </div>
 

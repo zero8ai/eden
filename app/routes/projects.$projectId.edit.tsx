@@ -175,7 +175,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Edit file · Eden" }];
+  return [{ title: "Edit file · eden" }];
 }
 
 export default function EditFile({

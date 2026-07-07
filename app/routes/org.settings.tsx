@@ -154,7 +154,7 @@ export async function action(args: ActionFunctionArgs) {
 
 export function meta() {
   return [
-    { title: "Org settings · Eden" },
+    { title: "Org settings · eden" },
     ...noindexMeta,
   ];
 }
@@ -202,7 +202,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
               Model provider
             </CardTitle>
             <CardDescription>
-              OpenRouter is the default model provider. Eden injects this key as{" "}
+              OpenRouter is the default model provider. eden injects this key as{" "}
               <span className="font-mono">OPENROUTER_API_KEY</span> for deployments,
               and the default model below is used by the authoring assistant and by
               agents that do not have their own model set.
@@ -263,7 +263,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                       )
                     }
                   >
-                    Use Eden default
+                    Use eden default
                   </Button>
                 )}
               </div>
@@ -274,7 +274,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                 </p>
                 {!assistantModel && (
                   <p className="text-xs text-muted-foreground">
-                    No workspace default set; Eden's built-in default is used.
+                    No workspace default set; eden's built-in default is used.
                   </p>
                 )}
               </div>

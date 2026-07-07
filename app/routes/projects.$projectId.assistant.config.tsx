@@ -203,7 +203,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Assistant configuration · Eden" }];
+  return [{ title: "Assistant configuration · eden" }];
 }
 
 export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
@@ -248,7 +248,7 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
           <CardHeader>
             <CardTitle>Instructions</CardTitle>
             <CardDescription>
-              The assistant always starts with Eden's built-in instructions (shown below,
+              The assistant always starts with eden's built-in instructions (shown below,
               read-only). Anything you add is appended under a “Project instructions” marker — so
               you don't need to repeat what's already covered here.
             </CardDescription>

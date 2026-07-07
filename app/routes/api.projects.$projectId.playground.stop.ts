@@ -61,7 +61,7 @@ export async function action(args: ActionFunctionArgs) {
     throw data(
       {
         error:
-          "This session's live deployment is not available, so Eden cannot stop the active Eve turn.",
+          "This session's live deployment is not available, so eden cannot stop the active Eve turn.",
       },
       { status: 400 },
     );
@@ -133,7 +133,7 @@ async function cancelEveTurn(input: {
       ok: false,
       unsupported: true,
       detail:
-        "This Eve deployment does not expose turn cancellation yet. Eden did not detach from the running turn.",
+        "This Eve deployment does not expose turn cancellation yet. eden did not detach from the running turn.",
     };
   }
   const text = await res.text().catch(() => "");

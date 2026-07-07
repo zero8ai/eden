@@ -128,7 +128,7 @@ export const loader = (args: LoaderFunctionArgs) =>
 
 export function meta() {
   return [
-    { title: "Marketplace · Eden" },
+    { title: "Marketplace · eden" },
     ...noindexMeta,
   ];
 }
@@ -159,7 +159,7 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
           <CardHeader className="items-center py-12 text-center">
             <CardTitle className="text-lg">Catalog unavailable</CardTitle>
             <CardDescription className="max-w-lg">
-              Eden couldn&rsquo;t reach the template catalog. In development it reads
+              eden couldn&rsquo;t reach the template catalog. In development it reads
               the in-repo <span className="font-mono">marketplace/</span> seed; in
               production set <span className="font-mono">EDEN_CATALOG_REPO</span> to an
               &ldquo;owner/repo&rdquo; pointer at the catalog.

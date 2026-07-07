@@ -66,7 +66,7 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export function meta() {
-  return [{ title: "Marketplace · Eden" }];
+  return [{ title: "Marketplace · eden" }];
 }
 
 export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
@@ -144,7 +144,7 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
                 scopes.
               </p>
               <p>
-                After you deploy the agent in Eden, open its Deployment tab and
+                After you deploy the agent in eden, open its Deployment tab and
                 copy the Discord endpoint for the environment you want Discord
                 to reach. Paste that value into General Information →
                 Interactions Endpoint URL.
@@ -154,7 +154,7 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
                 <code className="rounded bg-muted px-1.5 py-0.5">
                   /eve/v1/discord
                 </code>
-                . In self-hosted Eden, the full production URL is shown as{" "}
+                . In self-hosted eden, the full production URL is shown as{" "}
                 <code className="rounded bg-muted px-1.5 py-0.5">
                   https://&lt;your-domain&gt;/e/&lt;environmentId&gt;/eve/v1/discord
                 </code>
@@ -162,7 +162,7 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
               </p>
               <p>
                 Discord cannot call localhost. In local development, expose
-                Eden with a tunnel and use the tunnel host with the same path.
+                eden with a tunnel and use the tunnel host with the same path.
               </p>
               <p>
                 The bot replies in the channel where the slash command is used.

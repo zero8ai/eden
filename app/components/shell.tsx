@@ -100,7 +100,7 @@ export function AppShell({
           <Link
             to="/dashboard"
             className="flex shrink-0 items-center"
-            aria-label="Eden dashboard"
+            aria-label="eden dashboard"
           >
             <EdenWordmark className="h-5" />
           </Link>

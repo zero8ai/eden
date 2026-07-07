@@ -57,7 +57,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
 export function meta() {
   return [
-    { title: "Repositories · Eden" },
+    { title: "Repositories · eden" },
     ...noindexMeta,
   ];
 }

@@ -697,7 +697,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Deployment · Eden" }];
+  return [{ title: "Deployment · eden" }];
 }
 
 type LoaderData = Route.ComponentProps["loaderData"];
@@ -2018,7 +2018,7 @@ function DiscordSetupHelp({
             <pre className="mt-3 overflow-x-auto rounded-md bg-muted p-3 text-xs">
               <code>{`{
   "name": "ask",
-  "description": "Ask the Eden agent",
+  "description": "Ask the eden agent",
   "options": [
     {
       "type": 3,
@@ -2049,13 +2049,13 @@ function DiscordSetupHelp({
           )}
           {isLocal && (
             <p>
-              Discord cannot call localhost. For local development, expose Eden
+              Discord cannot call localhost. For local development, expose eden
               with a tunnel and use that public tunnel host with the same path.
             </p>
           )}
           <p>
             When someone runs the command, Discord sends the interaction to
-            this endpoint. Eden verifies it, gives the <code>message</code>{" "}
+            this endpoint. eden verifies it, gives the <code>message</code>{" "}
             text to the agent, and posts the agent&rsquo;s reply back to the
             same Discord channel. To restrict where it can be used, set that
             channel&rsquo;s permissions for the bot and deny access elsewhere.
@@ -2085,7 +2085,7 @@ function DiscordSetupTeamHint() {
           </p>
           <p>
             Register a slash command named <code>ask</code> with a required
-            string option named <code>message</code>. When someone runs it, Eden
+            string option named <code>message</code>. When someone runs it, eden
             sends the message text to that member&rsquo;s agent and posts the
             reply back to the Discord channel.
           </p>

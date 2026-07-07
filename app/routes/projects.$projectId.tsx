@@ -447,7 +447,7 @@ export async function action(args: ActionFunctionArgs) {
       // "assistant" is reserved for Eden's built-in project-level assistant agent.
       if (name === "assistant") {
         return {
-          error: `"assistant" is reserved for Eden's built-in assistant — pick another name.`,
+          error: `"assistant" is reserved for eden's built-in assistant — pick another name.`,
         };
       }
       const { roster } = await resolveAgentContext(project.id, null);
@@ -464,7 +464,7 @@ export async function action(args: ActionFunctionArgs) {
         title: `Add team member: ${name}`,
         body:
           `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, a ` +
-          `default sandbox, an example tool, package.json). Eden picks the member up on merge.`,
+          `default sandbox, an example tool, package.json). eden picks the member up on merge.`,
       });
       return {
         ok: true as const,
@@ -482,7 +482,7 @@ export async function action(args: ActionFunctionArgs) {
 
 export function meta() {
   return [
-    { title: "Project · Eden" },
+    { title: "Project · eden" },
     ...noindexMeta,
   ];
 }

@@ -712,7 +712,8 @@ function StagedChangesCard({
         {drafts.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             Nothing staged. Edits you save — instructions, model, any agent file
-            — collect here until you publish them (or Ship from the Overview).
+            — collect here until you publish them (or ship them with the Quick
+            deploy button in the tab row).
           </p>
         ) : (
           <Form method="post">

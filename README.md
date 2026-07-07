@@ -133,8 +133,6 @@ included `Dockerfile` containerizes it with the Docker CLI the deploy target nee
 
 ## License & ownership
 
-Copyright © 2026 Aaron HS. Eden is created and owned by Aaron HS as an
-individual — it is not owned by any company or organization; the GitHub organization it
-currently lives under is just where it's hosted.
+Copyright © 2026 Aaron HS. Eden is created and owned by Aaron HS.
 
 Licensed under the [GNU Affero General Public License v3.0](./LICENSE) (AGPL-3.0).

@@ -3,7 +3,7 @@
   "type": "agent",
   "name": "Cloudflare CI Engineer",
   "description": "An agent that sets up and operates CI/CD for Cloudflare apps from GitHub — gh + wrangler/API with sandbox-exposed credentials, no bespoke tools.",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "eve": ">=0.1.0",
   "model": "z-ai/glm-5.2",
   "dependencies": {
@@ -22,12 +22,7 @@
   "secrets": [
     {
       "name": "GITHUB_TOKEN",
-      "description": "GitHub token with repo write, workflow, pull request, and Actions secrets access for the organisation's repos — the agent's gh CLI reads it from its shell environment.",
-      "sandbox": true
-    },
-    {
-      "name": "GITHUB_ORG",
-      "description": "The GitHub organisation the deployable repos live in.",
+      "description": "GitHub token with repo write, workflow, pull request, and Actions secrets access for the repos it works in — the agent's gh CLI reads it from its shell environment.",
       "sandbox": true
     },
     {

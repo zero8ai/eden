@@ -3,7 +3,7 @@
   "type": "agent",
   "name": "Cloudflare App Builder",
   "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend — and ships every project to GitHub. It builds; it does not deploy.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "eve": ">=0.1.0",
   "model": "z-ai/glm-5.2",
   "dependencies": {
@@ -27,12 +27,7 @@
   "secrets": [
     {
       "name": "GITHUB_TOKEN",
-      "description": "Personal access token with repo access to the organisation — the agent's gh CLI reads it from its shell environment.",
-      "sandbox": true
-    },
-    {
-      "name": "GITHUB_ORG",
-      "description": "The GitHub organisation the agent creates repos in and works under.",
+      "description": "GitHub token with repo access — the agent's gh CLI reads it from its shell environment and discovers or creates repositories with it.",
       "sandbox": true
     }
   ]

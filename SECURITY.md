@@ -9,7 +9,7 @@ Instead, report it privately using one of:
 
 - **GitHub Security Advisories** — [report a vulnerability](https://github.com/zero8ai/eden/security/advisories/new)
   (preferred; keeps the report private and lets us coordinate a fix).
-- **Email** — security@zero8.ai.
+- **Email** — asiraky@gmail.com.
 
 Please include enough detail to reproduce: affected version or commit, steps, and the
 impact you observed.

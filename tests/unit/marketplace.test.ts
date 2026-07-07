@@ -141,19 +141,25 @@ describe("fixture catalog (the real in-repo seed)", () => {
 });
 
 describe("composition against the real seed", () => {
-  it("resolves the engineer agent, materializing the bundled Discord channel", async () => {
+  it("resolves the engineer agent, materializing the bundled Discord channel and send tool", async () => {
     const resolved = await resolveTemplate(fixtureCatalog, "agent", "engineer");
 
-    // The channel's file is flattened into the agent's file set.
+    // The Discord channel and outbound tool are flattened into the agent's file set.
     expect(new Set(Object.keys(resolved.files))).toEqual(
       new Set(resolved.manifest.files),
     );
     expect(Object.keys(resolved.files)).toContain("channels/discord.ts");
+    expect(Object.keys(resolved.files)).toContain(
+      "tools/discord-send-message.ts",
+    );
     expect(resolved.files["channels/discord.ts"]).toContain(
       'from "eve/channels/discord"',
     );
+    expect(resolved.files["tools/discord-send-message.ts"]).toContain(
+      "sendDiscordChannelMessage",
+    );
 
-    // Discord's three secrets union in alongside the engineer's own GitHub token.
+    // Discord requirements union in alongside the engineer's own GitHub token.
     const secretNames = (resolved.manifest.secrets ?? []).map((s) => s.name);
     expect(secretNames).toEqual(
       expect.arrayContaining([
@@ -175,6 +181,9 @@ describe("composition against the real seed", () => {
     const discordRow = index.templates.find(
       (t) => t.type === "channel" && t.id === "discord",
     )!;
+    const discordToolRow = index.templates.find(
+      (t) => t.type === "tool" && t.id === "discord-send-message",
+    )!;
     expect(resolved.hash).toBe(engineerRow.hash);
     expect(resolved.includes).toEqual([
       {
@@ -183,6 +192,13 @@ describe("composition against the real seed", () => {
         name: "Discord",
         version: discordRow.version,
         hash: discordRow.hash,
+      },
+      {
+        id: "discord-send-message",
+        type: "tool",
+        name: "Discord Send Message",
+        version: discordToolRow.version,
+        hash: discordToolRow.hash,
       },
     ]);
   });

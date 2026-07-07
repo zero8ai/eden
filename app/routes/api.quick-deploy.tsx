@@ -3,23 +3,27 @@
  * button lives in the shared nav without threading ship data/actions through every repo route's
  * loader — the same self-fetch pattern the staged-changes pill uses (PRD §7.3/§7.7).
  *
- * GET returns the button's data for the CURRENT scope: the environments it can ship to and
- * whether anything is staged. `?agent=<name>` scopes to one member (its envs, its drafts +
- * shared); no param is the whole repo (team landing / single-agent repo), where envs are the
- * de-duplicated union across the roster. Any read failure returns an empty env list so the
- * button simply hides — a pill in the shared nav must never crash a page.
+ * Quick deploy short-circuits ONLY the staged-changes path: it never ships the branch head. So its
+ * data is scope-independent — the button ships ALL of the project's staged drafts no matter which
+ * page/level it is clicked from. The GET therefore drops per-member scoping and returns everything
+ * the confirmation dialog needs to be honest before the user commits: the file breakdown grouped
+ * by owner (+ shared), and the expanded "who deploys" set with each affected member's own env
+ * names (for the target union and the per-member "no environment named X" warnings). Any read
+ * failure — or a repo that isn't connected — returns an empty payload so the button simply hides;
+ * a pill in the shared nav must never crash a page.
  *
- * POST runs the whole Ship pipeline (publish staged drafts → merge → cut version → deploy, or
- * ship the branch head when nothing is staged), then redirects to the scope's Overview with the
- * `?shipped=…` params the existing ShipProgress banner reads. Staged-vs-head is decided
- * SERVER-SIDE here (never from the client's possibly-stale draftCount).
+ * POST publishes the staged drafts → merges → cuts a version → deploys the affected members, then
+ * redirects to the scope's Overview with the `?shipped=…` params the existing ShipProgress banner
+ * reads. There is no branch-head fallback: a POST with nothing staged returns a clean error. The
+ * optional `agent` field is used ONLY to build the redirect target, so the user lands back on the
+ * Overview they came from.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { redirect, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
 
 import { listAgentEnvironments } from "~/db/queries.server";
-import { draftsInScope, unionEnvNames } from "~/deploy/quick-deploy";
-import { shipHead, shipStagedChanges } from "~/deploy/ship.server";
+import { affectedMembers, groupDrafts, type DraftGroup } from "~/deploy/quick-deploy";
+import { shipStagedChanges } from "~/deploy/ship.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
@@ -27,12 +31,19 @@ import { resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 
 interface QuickDeployData {
-  /** Environment names the button offers, in ship-priority order (primary first). */
-  envNames: string[];
-  /** Staged drafts in scope — decides the button's label, not the server's staged-vs-head choice. */
+  /** Total staged drafts — the button hides at 0, and titles the dialog. */
   draftCount: number;
-  defaultBranch: string;
+  /** File breakdown for the dialog: one block per owning member, shared (member null) last. */
+  groups: DraftGroup[];
+  /**
+   * The members this ship will deploy (shared drafts expand to the whole roster), each with its
+   * own environment names — drives the target union, the static-vs-Select choice, and the
+   * per-member env-mismatch warnings.
+   */
+  affected: { name: string; envNames: string[] }[];
 }
+
+const EMPTY: QuickDeployData = { draftCount: 0, groups: [], affected: [] };
 
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
@@ -46,42 +57,29 @@ export const loader = (args: LoaderFunctionArgs) =>
         },
         args.params.projectId,
       );
-      const empty: QuickDeployData = {
-        envNames: [],
-        draftCount: 0,
-        defaultBranch: project.defaultBranch,
-      };
       // No connected repo → nothing to ship; hide the button rather than error the whole page.
       if (!project.repoInstallationId || !project.repoOwner || !project.repoName) {
-        return empty;
+        return EMPTY;
       }
       try {
-        const agentName = new URL(args.request.url).searchParams.get("agent");
         const drafts = await listDrafts(project.id);
-        if (agentName) {
-          // Member scope: this member's envs (creation order = primary first) and its own +
-          // shared drafts.
-          const { active } = await resolveAgentContext(project.id, agentName);
-          const envs = await listAgentEnvironments(active.id);
-          return {
-            envNames: envs.map((e) => e.name),
-            draftCount: draftsInScope(drafts, active.id).length,
-            defaultBranch: project.defaultBranch,
-          };
-        }
-        // Repo scope: the ordered de-duplicated union of env names across the whole roster.
+        // Nothing staged → the button hides (Quick deploy only ships the staged path).
+        if (drafts.length === 0) return EMPTY;
         const { roster } = await resolveAgentContext(project.id, null);
-        const perMember = await Promise.all(
-          roster.map(async (a) => (await listAgentEnvironments(a.id)).map((e) => e.name)),
+        const affected = await Promise.all(
+          affectedMembers(drafts, roster).map(async (member) => ({
+            name: member.name,
+            envNames: (await listAgentEnvironments(member.id)).map((e) => e.name),
+          })),
         );
         return {
-          envNames: unionEnvNames(perMember),
           draftCount: drafts.length,
-          defaultBranch: project.defaultBranch,
+          groups: groupDrafts(drafts, roster),
+          affected,
         };
       } catch {
         // A roster/env lookup blew up — hide the button, don't take the page down with it.
-        return empty;
+        return EMPTY;
       }
     },
     { ensureSignedIn: true },
@@ -106,25 +104,23 @@ export async function action(args: ActionFunctionArgs) {
   // surface, not something to paper over with a guessed target.
   const envName = String(form.get("env") ?? "").trim();
   if (!envName) return { error: "Pick an environment to deploy to." };
+  // Redirect-only: the ship always publishes ALL project drafts; `agent` just decides which
+  // Overview (repo landing vs. a member's) the user returns to.
   const agent = String(form.get("agent") ?? "").trim() || null;
 
   try {
     ensureWorkerStarted();
-    // Decide staged-vs-head here, at POST time, from the live drafts — never trust the client's
-    // stale draftCount. The scope filter only chooses the path; shipStagedChanges still publishes
-    // ALL project drafts (matching the old member-level Ship dialog), the filter just answers
-    // "is there anything staged for this scope to ship?".
+    // Quick deploy ships the staged path only — no branch-head fallback. Check explicitly so an
+    // empty stage gets a clean message (shipStagedChanges would also throw, but less specifically).
     const drafts = await listDrafts(project.id);
-    const activeId = agent
-      ? (await resolveAgentContext(project.id, agent)).active.id
-      : null;
-    const staged = draftsInScope(drafts, activeId);
+    if (drafts.length === 0) return { error: "Nothing staged to deploy." };
     // Publish/merge/release run synchronously (same as the Deployment publish button); the build
     // + deploy are queued, and the redirect's ?shipped drives the progress banner on Overview.
-    const result =
-      staged.length > 0
-        ? await shipStagedChanges({ project, envName, createdBy: auth.user.id })
-        : await shipHead({ project, envName, createdBy: auth.user.id });
+    const result = await shipStagedChanges({
+      project,
+      envName,
+      createdBy: auth.user.id,
+    });
 
     const qs = new URLSearchParams();
     qs.set("shipped", result.gitSha);

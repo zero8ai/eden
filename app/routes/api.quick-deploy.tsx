@@ -5,24 +5,23 @@
  *
  * Quick deploy short-circuits ONLY the staged-changes path: it never ships the branch head. So its
  * data is scope-independent — the button ships ALL of the project's staged drafts no matter which
- * page/level it is clicked from. The GET therefore drops per-member scoping and returns everything
- * the confirmation dialog needs to be honest before the user commits: the file breakdown grouped
- * by owner (+ shared), and the expanded "who deploys" set with each affected member's own env
- * names (for the target union and the per-member "no environment named X" warnings). Any read
- * failure — or a repo that isn't connected — returns an empty payload so the button simply hides;
- * a pill in the shared nav must never crash a page.
+ * page/level it is clicked from. And because the TEAM is the deployment unit, a ship always moves
+ * the whole roster: there is no "who deploys" question. The GET returns the file breakdown grouped
+ * by owner (+ shared), the roster (for the "will deploy" list), and the team env names (for the
+ * env picker). Any read failure — or a repo that isn't connected — returns an empty payload so the
+ * button simply hides; a pill in the shared nav must never crash a page.
  *
- * POST publishes the staged drafts → merges → cuts a version → deploys the affected members, then
- * redirects to the scope's Overview with the `?shipped=…` params the existing ShipProgress banner
- * reads. There is no branch-head fallback: a POST with nothing staged returns a clean error. The
- * optional `agent` field is used ONLY to build the redirect target, so the user lands back on the
- * Overview they came from.
+ * POST publishes the staged drafts → merges → cuts a version → deploys the WHOLE team into the
+ * chosen environment, then redirects to the scope's Overview with the `?shipped=…` params the
+ * existing ShipProgress banner reads. There is no branch-head fallback: a POST with nothing staged
+ * returns a clean error. The optional `agent` field is used ONLY to build the redirect target, so
+ * the user lands back on the Overview they came from.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { redirect, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
 
-import { listAgentEnvironments } from "~/db/queries.server";
-import { affectedMembers, groupDrafts, type DraftGroup } from "~/deploy/quick-deploy";
+import { groupDrafts, type DraftGroup } from "~/deploy/quick-deploy";
+import { listTeamEnvNames } from "~/deploy/environments.server";
 import { shipStagedChanges } from "~/deploy/ship.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
@@ -35,15 +34,13 @@ interface QuickDeployData {
   draftCount: number;
   /** File breakdown for the dialog: one block per owning member, shared (member null) last. */
   groups: DraftGroup[];
-  /**
-   * The members this ship will deploy (shared drafts expand to the whole roster), each with its
-   * own environment names — drives the target union, the static-vs-Select choice, and the
-   * per-member env-mismatch warnings.
-   */
-  affected: { name: string; envNames: string[] }[];
+  /** The roster names — the whole team redeploys together, so this is the "will deploy" list. */
+  members: string[];
+  /** The team's environment names — the deploy target picker (team-level, not per member). */
+  envNames: string[];
 }
 
-const EMPTY: QuickDeployData = { draftCount: 0, groups: [], affected: [] };
+const EMPTY: QuickDeployData = { draftCount: 0, groups: [], members: [], envNames: [] };
 
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
@@ -65,17 +62,15 @@ export const loader = (args: LoaderFunctionArgs) =>
         const drafts = await listDrafts(project.id);
         // Nothing staged → the button hides (Quick deploy only ships the staged path).
         if (drafts.length === 0) return EMPTY;
+        // resolveAgentContext's roster is members-only, so the "will deploy" list and the file
+        // breakdown are both roster-scoped for free. Env names are team-level.
         const { roster } = await resolveAgentContext(project.id, null);
-        const affected = await Promise.all(
-          affectedMembers(drafts, roster).map(async (member) => ({
-            name: member.name,
-            envNames: (await listAgentEnvironments(member.id)).map((e) => e.name),
-          })),
-        );
+        const envNames = await listTeamEnvNames(project.id);
         return {
           draftCount: drafts.length,
           groups: groupDrafts(drafts, roster),
-          affected,
+          members: roster.map((m) => m.name),
+          envNames,
         };
       } catch {
         // A roster/env lookup blew up — hide the button, don't take the page down with it.
@@ -116,6 +111,7 @@ export async function action(args: ActionFunctionArgs) {
     if (drafts.length === 0) return { error: "Nothing staged to deploy." };
     // Publish/merge/release run synchronously (same as the Deployment publish button); the build
     // + deploy are queued, and the redirect's ?shipped drives the progress banner on Overview.
+    // shipStagedChanges now deploys the WHOLE team into envName — no member subset.
     const result = await shipStagedChanges({
       project,
       envName,

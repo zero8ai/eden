@@ -88,7 +88,7 @@ interface MemberSummary {
   secretsMissing: number;
 }
 
-/** One affected member's deploy progress after a Ship (drives the progress banner). */
+/** One member's deploy progress after a Ship — a ship moves the whole team (drives the banner). */
 interface ShipStatusRow {
   agentName: string;
   version: string;

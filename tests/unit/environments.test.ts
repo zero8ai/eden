@@ -1,16 +1,19 @@
 /**
- * User-defined environments (M5.7) — lifecycle + seeding against in-memory fakes. Verifies
- * the invariants the feature hangs on: ensureDefault only fires for members with zero envs
- * (so roster self-heals never re-seed), CRUD validates names and reports duplicates
- * readably, delete tears down instance infra and never removes a member's last env, and
- * environment lists are deterministically ordered (createdAt, then id).
+ * Team environments — lifecycle + seeding against in-memory fakes. The TEAM is the deployment
+ * unit: a project owns ONE set of env NAMES and every roster member has a row of every name.
+ * Verifies the invariants that hangs on: seeding fans the team env set across all members, CRUD
+ * fans out (create/rename/delete a NAME touches every member's row), delete refuses the team's
+ * last env and tears down instance infra per member, and ensureTeamEnvironments converges drift
+ * (a member missing a name gets it) and seeds 'default' when a roster has no envs at all.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
-  createEnvironment,
-  deleteEnvironment,
-  renameEnvironment,
+  createTeamEnvironment,
+  deleteTeamEnvironment,
+  ensureTeamEnvironments,
+  listTeamEnvNames,
+  renameTeamEnvironment,
 } from "~/deploy/environments.server";
 import { createProject, syncProjectAgents } from "~/db/queries.server";
 import { createRelease, deployRelease } from "~/deploy/controller.server";
@@ -24,23 +27,22 @@ beforeEach(() => {
   store = makeFakeStore();
 });
 
-describe("seeding (ensureDefault)", () => {
+const TEAM = [
+  { name: "alpha", root: "agents/alpha/agent" },
+  { name: "beta", root: "agents/beta/agent" },
+];
+
+async function memberEnvNames(projectId: string, name: string): Promise<string[]> {
+  const agent = (await store.agents.listByProject(projectId)).find((a) => a.name === name)!;
+  return (await store.environments.listByAgent(agent.id)).map((e) => e.name);
+}
+
+describe("seeding (ensureTeamEnvironments)", () => {
   it("a new project's members each get exactly one environment named default", async () => {
-    const project = await createProject(
-      {
-        orgId: ORG,
-        name: "Team",
-        roster: [
-          { name: "alpha", root: "agents/alpha/agent" },
-          { name: "beta", root: "agents/beta/agent" },
-        ],
-      },
-      store,
-    );
-    for (const agent of await store.agents.listByProject(project.id)) {
-      const envs = await store.environments.listByAgent(agent.id);
-      expect(envs.map((e) => e.name)).toEqual(["default"]);
-    }
+    const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
+    expect(await memberEnvNames(project.id, "alpha")).toEqual(["default"]);
+    expect(await memberEnvNames(project.id, "beta")).toEqual(["default"]);
+    expect(await listTeamEnvNames(project.id, { store })).toEqual(["default"]);
   });
 
   it("a roster re-sync never re-seeds a member that has environments — renames survive", async () => {
@@ -54,89 +56,141 @@ describe("seeding (ensureDefault)", () => {
 
     await syncProjectAgents(project.id, [{ name: "agent", root: "agent" }], store);
 
-    const envs = await store.environments.listByAgent(agent.id);
-    expect(envs.map((e) => e.name)).toEqual(["production"]); // no "default" re-appeared
+    expect((await store.environments.listByAgent(agent.id)).map((e) => e.name)).toEqual([
+      "production",
+    ]);
+  });
+
+  it("a NEW member picked up on roster sync inherits the whole team env set", async () => {
+    const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
+    // The team renames its shared env to "production" and adds "staging".
+    await renameTeamEnvironment(
+      { projectId: project.id, from: "default", to: "production", orgId: ORG },
+      { store, deployTarget: fakeDeployTarget() },
+    );
+    await createTeamEnvironment(
+      { projectId: project.id, name: "staging", orgId: ORG },
+      { store, deployTarget: fakeDeployTarget() },
+    );
+
+    // A third member joins on sync.
+    await syncProjectAgents(
+      project.id,
+      [...TEAM, { name: "gamma", root: "agents/gamma/agent" }],
+      store,
+    );
+
+    expect((await memberEnvNames(project.id, "gamma")).sort()).toEqual([
+      "production",
+      "staging",
+    ]);
+  });
+
+  it("converges a drifted roster: a member missing a team name gets it", async () => {
+    const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
+    // Drift: only alpha gets "staging" (as if a stray per-agent create leaked in).
+    const alpha = (await store.agents.listByProject(project.id)).find((a) => a.name === "alpha")!;
+    await store.environments.create({ projectId: project.id, agentId: alpha.id, name: "staging" });
+
+    await ensureTeamEnvironments(project.id, { store });
+
+    expect((await memberEnvNames(project.id, "beta")).sort()).toEqual(["default", "staging"]);
+  });
+
+  it("seeds 'default' when a roster has no environments at all", async () => {
+    const projectId = "proj_x";
+    store.seedProject({ id: projectId, orgId: ORG, repoOwner: "acme", repoName: "a" });
+    store.seedAgent({ id: "a1", projectId, name: "alpha", root: "agents/alpha/agent" });
+    store.seedAgent({ id: "a2", projectId, name: "beta", root: "agents/beta/agent" });
+
+    await ensureTeamEnvironments(projectId, { store });
+
+    expect(await memberEnvNames(projectId, "alpha")).toEqual(["default"]);
+    expect(await memberEnvNames(projectId, "beta")).toEqual(["default"]);
   });
 });
 
-describe("createEnvironment / renameEnvironment", () => {
+describe("createTeamEnvironment / renameTeamEnvironment", () => {
   let projectId: string;
-  let agentId: string;
 
   beforeEach(async () => {
-    const project = await createProject(
-      { orgId: ORG, name: "Solo", roster: [{ name: "agent", root: "agent" }] },
-      store,
-    );
+    const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
     projectId = project.id;
-    agentId = (await store.agents.listByProject(projectId))[0].id;
   });
 
   const deps = () => ({ store, deployTarget: fakeDeployTarget() });
 
-  it("creates and lists in creation order (the first is the primary)", async () => {
-    await createEnvironment({ projectId, agentId, name: "staging", orgId: ORG }, deps());
-    const envs = await store.environments.listByAgent(agentId);
-    expect(envs.map((e) => e.name)).toEqual(["default", "staging"]);
+  it("creates the name for every member, in creation order (the first is the primary)", async () => {
+    await createTeamEnvironment({ projectId, name: "staging", orgId: ORG }, deps());
+    expect(await memberEnvNames(projectId, "alpha")).toEqual(["default", "staging"]);
+    expect(await memberEnvNames(projectId, "beta")).toEqual(["default", "staging"]);
+    expect(await listTeamEnvNames(projectId, { store })).toEqual(["default", "staging"]);
   });
 
-  it("trims and rejects empty or duplicate names with a readable error", async () => {
+  it("trims and rejects empty names with a readable error", async () => {
     await expect(
-      createEnvironment({ projectId, agentId, name: "   ", orgId: ORG }, deps()),
+      createTeamEnvironment({ projectId, name: "   ", orgId: ORG }, deps()),
     ).rejects.toThrow(/name is required/i);
-    await expect(
-      createEnvironment({ projectId, agentId, name: "default", orgId: ORG }, deps()),
-    ).rejects.toThrow(/already exists/i);
   });
 
-  it("renames in place; deploys and ids stay attached", async () => {
-    const [env] = await store.environments.listByAgent(agentId);
-    await renameEnvironment(
-      { environmentId: env.id, name: "production", orgId: ORG },
+  it("is idempotent drift repair — creating an existing name changes nothing and doesn't throw", async () => {
+    await createTeamEnvironment({ projectId, name: "default", orgId: ORG }, deps());
+    expect(await memberEnvNames(projectId, "alpha")).toEqual(["default"]);
+  });
+
+  it("renames the name across every member", async () => {
+    await renameTeamEnvironment(
+      { projectId, from: "default", to: "production", orgId: ORG },
       deps(),
     );
-    expect((await store.environments.findById(env.id))?.name).toBe("production");
+    expect(await memberEnvNames(projectId, "alpha")).toEqual(["production"]);
+    expect(await memberEnvNames(projectId, "beta")).toEqual(["production"]);
   });
 
   it("rename to an existing sibling name is rejected readably", async () => {
-    await createEnvironment({ projectId, agentId, name: "staging", orgId: ORG }, deps());
-    const [env] = await store.environments.listByAgent(agentId);
+    await createTeamEnvironment({ projectId, name: "staging", orgId: ORG }, deps());
     await expect(
-      renameEnvironment({ environmentId: env.id, name: "staging", orgId: ORG }, deps()),
+      renameTeamEnvironment({ projectId, from: "default", to: "staging", orgId: ORG }, deps()),
     ).rejects.toThrow(/already exists/i);
+  });
+
+  it("rename of a name no member has is rejected", async () => {
+    await expect(
+      renameTeamEnvironment({ projectId, from: "ghost", to: "production", orgId: ORG }, deps()),
+    ).rejects.toThrow(/no environment named/i);
   });
 });
 
-describe("deleteEnvironment", () => {
-  it("destroys the env's instances via the target, then the row (cascade takes deployments)", async () => {
-    const project = await createProject(
-      { orgId: ORG, name: "Solo", roster: [{ name: "agent", root: "agent" }] },
+describe("deleteTeamEnvironment", () => {
+  it("tears down each member's instances via the target, then the rows (cascade takes deployments)", async () => {
+    const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
+    store.seedProject({ id: project.id, orgId: ORG, repoOwner: "acme", repoName: "a" });
+    const target = fakeDeployTarget({ health: { status: "live", url: "http://x" } });
+    await createTeamEnvironment(
+      { projectId: project.id, name: "staging", orgId: ORG },
+      { store, deployTarget: target },
+    );
+
+    // Deploy something live into alpha's staging so there's infra to tear down.
+    const alpha = (await store.agents.listByProject(project.id)).find((a) => a.name === "alpha")!;
+    const alphaStaging = (await store.environments.listByAgent(alpha.id)).find(
+      (e) => e.name === "staging",
+    )!;
+    const release = await createRelease(
+      { projectId: project.id, agentId: alpha.id, gitSha: "a".repeat(40) },
       store,
     );
-    store.seedProject({ id: project.id, orgId: ORG, repoOwner: "acme", repoName: "a" });
-    const agentId = (await store.agents.listByProject(project.id))[0].id;
-    const [defaultEnv] = await store.environments.listByAgent(agentId);
-    const staging = await store.environments.create({
-      projectId: project.id,
-      agentId,
-      name: "staging",
-    });
+    // A deployment row exists to tear down (its health is irrelevant to delete — the row is
+    // destroyed regardless of status).
+    const dep = await deployRelease(
+      { environmentId: alphaStaging.id, releaseId: release.id },
+      { store, deployTarget: target, secrets: fakeSecrets() },
+    );
 
     const destroyed: string[] = [];
     const destroyedWorlds: string[] = [];
-    const target = fakeDeployTarget({ health: { status: "live", url: "http://x" } });
-    const release = await createRelease(
-      { projectId: project.id, agentId, gitSha: "a".repeat(40) },
-      store,
-    );
-    const dep = await deployRelease(
-      { environmentId: staging.id, releaseId: release.id },
-      { store, deployTarget: target, secrets: fakeSecrets() },
-    );
-    expect(dep.status).toBe("live");
-
-    await deleteEnvironment(
-      { environmentId: staging.id, orgId: ORG },
+    await deleteTeamEnvironment(
+      { projectId: project.id, name: "staging", orgId: ORG },
       {
         store,
         deployTarget: {
@@ -151,62 +205,59 @@ describe("deleteEnvironment", () => {
       },
     );
 
-    expect(destroyed).toEqual([dep.id]); // live instance was torn down, not orphaned
-    // The env's shared world (sessions + sandboxes) is dropped once, keyed by the env id.
-    expect(destroyedWorlds).toEqual([staging.id]);
-    expect(await store.environments.findById(staging.id)).toBeNull();
-    expect(await store.deployments.listByEnvironment(staging.id)).toHaveLength(0);
-    expect(await store.environments.findById(defaultEnv.id)).not.toBeNull();
+    // The live instance was torn down; the world dropped once per member's staging row.
+    expect(destroyed).toEqual([dep.id]);
+    expect(destroyedWorlds).toContain(alphaStaging.id);
+    // "staging" is gone for the whole team; "default" survives.
+    expect(await memberEnvNames(project.id, "alpha")).toEqual(["default"]);
+    expect(await memberEnvNames(project.id, "beta")).toEqual(["default"]);
+    expect(await store.environments.findById(alphaStaging.id)).toBeNull();
   });
 
-  it("refuses to delete a member's last environment", async () => {
-    const project = await createProject(
-      { orgId: ORG, name: "Solo", roster: [{ name: "agent", root: "agent" }] },
-      store,
-    );
-    const agentId = (await store.agents.listByProject(project.id))[0].id;
-    const [only] = await store.environments.listByAgent(agentId);
+  it("refuses to delete the team's only environment", async () => {
+    const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
     await expect(
-      deleteEnvironment(
-        { environmentId: only.id, orgId: ORG },
+      deleteTeamEnvironment(
+        { projectId: project.id, name: "default", orgId: ORG },
         { store, deployTarget: fakeDeployTarget() },
       ),
-    ).rejects.toThrow(/at least one/i);
-    expect(await store.environments.findById(only.id)).not.toBeNull();
+    ).rejects.toThrow(/only environment/i);
+    expect(await memberEnvNames(project.id, "alpha")).toEqual(["default"]);
   });
 
   it("falls back to stop() when the target has no destroy()", async () => {
-    const project = await createProject(
-      { orgId: ORG, name: "Solo", roster: [{ name: "agent", root: "agent" }] },
-      store,
-    );
-    const agentId = (await store.agents.listByProject(project.id))[0].id;
-    const staging = await store.environments.create({
-      projectId: project.id,
-      agentId,
-      name: "staging",
-    });
-    const release = await createRelease(
-      { projectId: project.id, agentId, gitSha: "b".repeat(40) },
-      store,
-    );
-    const stopped: string[] = [];
+    const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
     const target = fakeDeployTarget({ health: { status: "live", url: "http://x" } });
+    await createTeamEnvironment(
+      { projectId: project.id, name: "staging", orgId: ORG },
+      { store, deployTarget: target },
+    );
+    const alpha = (await store.agents.listByProject(project.id)).find((a) => a.name === "alpha")!;
+    const alphaStaging = (await store.environments.listByAgent(alpha.id)).find(
+      (e) => e.name === "staging",
+    )!;
+    const release = await createRelease(
+      { projectId: project.id, agentId: alpha.id, gitSha: "b".repeat(40) },
+      store,
+    );
     const dep = await deployRelease(
-      { environmentId: staging.id, releaseId: release.id },
+      { environmentId: alphaStaging.id, releaseId: release.id },
       { store, deployTarget: target, secrets: fakeSecrets() },
     );
 
-    const noDestroy = {
-      ...target,
-      destroy: undefined,
-      stop: async (id: string) => {
-        stopped.push(id);
+    const stopped: string[] = [];
+    await deleteTeamEnvironment(
+      { projectId: project.id, name: "staging", orgId: ORG },
+      {
+        store,
+        deployTarget: {
+          ...target,
+          destroy: undefined,
+          stop: async (id: string) => {
+            stopped.push(id);
+          },
+        },
       },
-    };
-    await deleteEnvironment(
-      { environmentId: staging.id, orgId: ORG },
-      { store, deployTarget: noDestroy },
     );
     expect(stopped).toContain(dep.id);
   });

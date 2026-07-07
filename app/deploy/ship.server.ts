@@ -1,20 +1,24 @@
 /**
  * Ship — the one-click deploy pipeline (quick path over the existing rails, PRD §7.3/§7.7).
  *
- * shipStagedChanges chains what the Changes + Deployments pages do manually: publish ALL
- * staged drafts as one change request, merge it immediately, cut Releases at the merge commit
- * (one per roster member, via the same idempotent path the GitHub webhook uses), and queue a
- * deploy into each AFFECTED member's chosen environment. The publish build-gate still applies:
- * a change-set that doesn't compile creates nothing and the drafts stay staged.
+ * The TEAM is the deployment unit: a ship always moves the WHOLE roster into one environment,
+ * never a subset. Cross-agent coupling makes partial deploys unsafe — the ask-a-teammate tool
+ * references sibling names/coordinates, renames ripple across members, and shared files rebuild
+ * everyone — so "which agent" is never a question a user answers; only "which environment" is.
  *
- * shipHead covers the no-drafts case ("Ship latest from main"): cut-or-reuse a Release at the
- * branch head and deploy it for every roster member — absorbing the old "Cut release" button.
+ * shipStagedChanges chains what the Changes + Deployments pages do manually: publish ALL staged
+ * drafts as one change request, merge it immediately, cut Releases at the merge commit (one per
+ * roster member, via the same idempotent path the GitHub webhook uses), and queue a deploy into
+ * every member's env of the chosen name. The publish build-gate still applies: a change-set that
+ * doesn't compile creates nothing and the drafts stay staged.
+ *
+ * deployTeamVersion is the version-history counterpart: move the whole team to an existing
+ * version (by git sha) in an environment — the rollback/redeploy path, direction-neutral.
  *
  * Everything is deps-injectable in the publishDrafts style so unit tests run with zero I/O.
  */
 import type { Agent, DataStore, Release } from "~/data/ports";
 import { publishDrafts, type CheckBuildFn, type ProposeFn } from "~/drafts/drafts.server";
-import { getBranchHead } from "~/github/repo.server";
 import { mergePullRequest } from "~/github/write.server";
 import { getRuntime } from "~/seams/index.server";
 import { ensureReleasesForCommit, queueDeploy } from "./controller.server";
@@ -36,22 +40,20 @@ export interface ShipResult {
   /** One entry per member whose environment got a queued deploy. */
   deployed: { agentName: string; environmentId: string; deploymentId: string }[];
   /**
-   * Target members that have NO environment named `envName` (environments are per-agent and
-   * user-defined, so names can diverge across a roster). Surfaced so a team ship never
-   * silently half-lands.
+   * Defensive drift surface: members with NO environment named `envName`. Environments are now
+   * team-level — every member has a row of every name — so this is EXPECTED EMPTY. It survives
+   * only to make a broken invariant (a member missing an env row) visible instead of silent.
    */
   skipped: { agentName: string }[];
 }
 
 export type MergeFn = typeof mergePullRequest;
-export type BranchHeadFn = typeof getBranchHead;
 
 export interface ShipDeps {
   store?: DataStore;
   propose?: ProposeFn;
   checkBuild?: CheckBuildFn;
   merge?: MergeFn;
-  branchHead?: BranchHeadFn;
 }
 
 /**
@@ -73,10 +75,6 @@ export async function shipStagedChanges(
 
   const drafts = await store.drafts.listByProject(project.id);
   if (drafts.length === 0) throw new Error("Nothing staged to ship.");
-  // Capture who the drafts belong to BEFORE publishing deletes them. A shared draft
-  // (agentId null — e.g. root package.json) affects every member.
-  const affectsAll = drafts.some((d) => d.agentId === null);
-  const affectedIds = new Set(drafts.map((d) => d.agentId).filter((a): a is string => !!a));
 
   const title =
     drafts.length === 1
@@ -104,11 +102,14 @@ export async function shipStagedChanges(
     store,
   );
 
-  const roster = await store.agents.listByProject(project.id);
-  const targets = affectsAll ? roster : roster.filter((a) => affectedIds.has(a.id));
+  // Targets = the WHOLE member roster, always (the team is the deployment unit). The assistant
+  // (kind !== 'member') is never a ship target.
+  const roster = (await store.agents.listByProject(project.id)).filter(
+    (a) => a.kind === "member",
+  );
   return deployToMembers({
     store,
-    targets,
+    targets: roster,
     releases: releases.map((r) => r.release),
     gitSha: mergeSha,
     envName,
@@ -117,43 +118,63 @@ export async function shipStagedChanges(
 }
 
 /**
- * Ship whatever is at the default branch head to `envName` for the whole roster. Idempotent
- * with prior ships of the same commit (release + image are reused — no rebuild).
+ * Move the WHOLE team to an existing version (identified by its git sha) in one environment —
+ * the version-history deploy/rollback/redeploy path. For each member that has a release at
+ * `gitSha` and an env row named `envName`, queue a deploy of that release. Direction-neutral:
+ * deploying an older version IS the rollback. Throws if nothing was deployed (bad sha/env).
  */
-export async function shipHead(
+export async function deployTeamVersion(
   input: {
-    project: ShipProject;
+    project?: { id: string };
+    projectId?: string;
+    gitSha: string;
     envName: string;
+    rollback?: boolean;
+    rebuild?: boolean;
     createdBy?: string | null;
   },
   deps: ShipDeps = {},
-): Promise<ShipResult> {
+): Promise<Pick<ShipResult, "deployed" | "skipped">> {
   const store = deps.store ?? getRuntime().data;
-  const branchHead = deps.branchHead ?? getBranchHead;
-  const { project, envName } = input;
+  const projectId = input.projectId ?? input.project?.id;
+  if (!projectId) throw new Error("A project is required to deploy a version.");
+  const { gitSha, envName } = input;
 
-  const head = await branchHead(project.repoInstallationId, {
-    owner: project.repoOwner,
-    repo: project.repoName,
-  });
-  const releases = await ensureReleasesForCommit(
-    {
-      projectId: project.id,
-      gitSha: head.sha,
-      changelog: `Ship from ${head.branch} @ ${head.sha.slice(0, 7)}`,
-      createdBy: input.createdBy,
-    },
-    store,
+  const roster = (await store.agents.listByProject(projectId)).filter(
+    (a) => a.kind === "member",
   );
-  const roster = await store.agents.listByProject(project.id);
-  return deployToMembers({
-    store,
-    targets: roster,
-    releases: releases.map((r) => r.release),
-    gitSha: head.sha,
-    envName,
-    createdBy: input.createdBy,
-  });
+  const deployed: ShipResult["deployed"] = [];
+  const skipped: ShipResult["skipped"] = [];
+  for (const agent of roster) {
+    const release = await store.releases.findByCommit(agent.id, gitSha);
+    if (!release) {
+      skipped.push({ agentName: agent.name });
+      continue;
+    }
+    const envs = await store.environments.listByAgent(agent.id);
+    const env = envs.find((e) => e.name === envName);
+    if (!env) {
+      skipped.push({ agentName: agent.name });
+      continue;
+    }
+    const dep = await queueDeploy(
+      {
+        environmentId: env.id,
+        releaseId: release.id,
+        rollback: input.rollback,
+        rebuild: input.rebuild,
+        createdBy: input.createdBy,
+      },
+      store,
+    );
+    deployed.push({ agentName: agent.name, environmentId: env.id, deploymentId: dep.id });
+  }
+  if (deployed.length === 0) {
+    throw new Error(
+      `Nothing to deploy: no member has version ${gitSha.slice(0, 7)} in "${envName}".`,
+    );
+  }
+  return { deployed, skipped };
 }
 
 /** Queue one deploy per target member into its environment named `envName` (if it has one). */

@@ -4,14 +4,22 @@
  * SHIP makes versions (Overview); this tab is everything after an edit exists:
  *   staged changes → change request → merge (cuts a version) → environments running versions.
  *
- * Two views over one module (route ids `deployment` + `member-deployment`):
- *  - MEMBER pipeline (single-agent repos at /repos/:id/deployment; team members at
- *    /repos/:id/agents/:name/deployment): the member's staged drafts (+ shared ones, which
- *    affect every member), repo-wide change requests, then the member's environments and
- *    version history with direction-neutral Deploy.
- *  - REPO rollup (team repos at /repos/:id/deployment): all staged drafts grouped by member,
- *    change requests + Merge (a merge cuts a version for every member), and a per-member
- *    latest-version table linking into each member's pipeline.
+ * The TEAM is the deployment unit. Deploys ACT on an ENVIRONMENT and move the whole roster; the
+ * only question a user answers is "which environment", never "which agent". Env CRUD and
+ * deploy-a-version are therefore team-level. Skew across environments is fine (staging ahead of
+ * prod); skew WITHIN an environment is eliminated.
+ *
+ * Two layouts over one module (route ids `deployment` + `member-deployment`), gated by a `canAct`
+ * flag = the team-level acting surface:
+ *  - REPO / TEAM view (team repos at /repos/:id/deployment): the acting surface — staged drafts
+ *    grouped by member, change requests + Merge, an Environments card (one row per team env NAME
+ *    with each member's running version) with team CRUD, and a Version history of TEAM versions
+ *    (grouped by commit) with a per-environment Deploy that moves the whole team.
+ *  - MEMBER view (team members at /repos/:id/agents/:name/deployment): OBSERVE-only for deploy
+ *    concerns — the member's running versions and version history, no deploy/CRUD buttons (staged
+ *    changes + change requests stay actionable everywhere; they're edit flow, not deploy flow).
+ *  - SINGLE (single-agent repos at /repos/:id/deployment, level 'single'): a team of one, so it
+ *    renders the member layout with canAct=true — the same team-scoped intents, roster of one.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { useEffect, useRef, useState } from "react";
@@ -70,10 +78,12 @@ import {
   queueDeploy,
 } from "~/deploy/controller.server";
 import {
-  createEnvironment,
-  deleteEnvironment,
-  renameEnvironment,
+  createTeamEnvironment,
+  deleteTeamEnvironment,
+  listTeamEnvNames,
+  renameTeamEnvironment,
 } from "~/deploy/environments.server";
+import { deployTeamVersion } from "~/deploy/ship.server";
 import {
   listAgentEnvironments,
   listEnvironments,
@@ -116,7 +126,6 @@ import {
   agentFromParams,
   agentParamRedirect,
   memberFromPath,
-  resolveAgentContext,
   resolveSyncedAgentContext,
 } from "~/project/agent-context.server";
 import { detectAgentRoots } from "~/eve/parse";
@@ -132,7 +141,29 @@ import type { OpenChange } from "~/github/write.server";
 import { DiffView } from "~/components/diff-view";
 import type { Route } from "./+types/projects.$projectId.deployments";
 
-/** One shape for both views so the loader's branches unify (member fields empty on repo). */
+/** One member's cell inside a team environment row: its env id + what's running there. */
+interface TeamEnvMember {
+  name: string;
+  envId: string | null;
+  deployments: DeploymentWithRelease[];
+}
+/** A team environment: one NAME, every member's row of that name. */
+interface TeamEnvRow {
+  name: string;
+  members: TeamEnvMember[];
+}
+/** A team version: releases at one commit, across members (newest first). */
+interface TeamVersionRow {
+  gitSha: string;
+  /** The first member's release version in the group (labels can differ per member). */
+  version: string;
+  changelog: string | null;
+  createdAt: Date;
+  /** Team env names currently running this version (any member's live deploy). */
+  runningEnvNames: string[];
+}
+
+/** One shape for both layouts so the loader's branches unify (unused fields empty per branch). */
 interface DeploymentData {
   project: ConnectedProject;
   roster: { name: string }[];
@@ -140,6 +171,8 @@ interface DeploymentData {
   isTeam: boolean;
   level: NavLevel;
   view: "repo" | "member";
+  /** True where deploys/CRUD are acted on: the team (repo) view and single-agent repos. */
+  canAct: boolean;
   drafts: (DraftChange & { shared: boolean })[];
   changes: OpenChange[];
   releases: Release[];
@@ -148,16 +181,19 @@ interface DeploymentData {
   members: {
     name: string;
     latest: { version: string; gitSha: string; createdAt: Date } | null;
-    /**
-     * Rollup of what this member is running vs their latest release: `isLatest`
-     * true when everything live is on the newest version, false when any env is
-     * behind. Null when nothing is deployed in any of the member's environments.
-     */
-    running: { isLatest: boolean } | null;
   }[];
-  /** Member view: unmet template-required secrets — powers the deploy guard (§9). */
+  /** Team (repo) view: the team's env names, oldest first (the first is the primary). */
+  teamEnvNames: string[];
+  /** Team (repo) view: one row per env name, each member's running status. */
+  teamEnvs: TeamEnvRow[];
+  /** Team (repo) view: version history grouped by commit, newest first. */
+  teamVersions: TeamVersionRow[];
+  /** Deploy guard (§9): unmet template-required secrets (member-tagged in the team aggregate). */
   missingSecrets: GuardMissingSecret[];
-  /** Member view: Discord setup URL when the agent has the marketplace Discord channel. */
+  /** Deploy guard: the member whose settings the guard links to fix secrets on. */
+  guardAgent: string;
+  guardSettingsAction: string;
+  /** Member/single view: Discord setup URL when the agent has the marketplace Discord channel. */
   discordSetup: {
     enabled: boolean;
     origin: string;
@@ -203,10 +239,12 @@ export const loader = (args: LoaderFunctionArgs) =>
       );
       const level: NavLevel = agentName ? "member" : isTeam ? "repo" : "single";
       const view = level === "repo" ? ("repo" as const) : ("member" as const);
+      // The acting surface: the team (repo) view, and single-agent repos (a team of one).
+      const canAct = level !== "member";
 
       if (view === "repo") {
-        // Team rollup: drafts grouped by owning member (null = shared), latest version per
-        // member linking into their pipeline.
+        // Team acting surface: staged drafts grouped by member, plus the team's environments
+        // (one NAME, every member's running status) and version history (grouped by commit).
         const nameById = new Map(roster.map((a) => [a.id, a.name]));
         const groups = new Map<string, typeof allDrafts>();
         for (const d of allDrafts) {
@@ -215,9 +253,24 @@ export const loader = (args: LoaderFunctionArgs) =>
             : (memberFromPath(d.path) ?? "shared");
           groups.set(key, [...(groups.get(key) ?? []), d]);
         }
-        // One env query for the whole roster (grouped by agent) instead of one per member —
-        // the per-env live-deployment lookups below still fan out, but this avoids N extra
-        // round-trips that grow with team size.
+        const members = roster.map((a) => {
+          const latest = releaseRows.find((r) => r.agentId === a.id);
+          return {
+            name: a.name,
+            latest: latest
+              ? {
+                  version: latest.version,
+                  gitSha: latest.gitSha,
+                  createdAt: latest.createdAt,
+                }
+              : null,
+          };
+        });
+
+        // Per member: its env rows joined to their deployments (reuse listDeployments).
+        const teamEnvNames = await listTeamEnvNames(project.id);
+        // One env query for the whole roster (grouped by agent) instead of one per
+        // member — avoids N extra round-trips that grow with team size.
         const projectEnvs = await listEnvironments(project.id);
         const envsByAgent = new Map<string, typeof projectEnvs>();
         for (const env of projectEnvs) {
@@ -226,39 +279,86 @@ export const loader = (args: LoaderFunctionArgs) =>
             env,
           ]);
         }
-        const members = await Promise.all(
+        const perMember = await Promise.all(
           roster.map(async (a) => {
-            const latest = releaseRows.find((r) => r.agentId === a.id);
-            // What's live across this member's envs, so the rollup can flag whether
-            // they're running their latest version or lagging behind it.
             const envRows = envsByAgent.get(a.id) ?? [];
-            const live = (
-              await Promise.all(
-                envRows.map(async (env) =>
-                  (await listDeployments(env.id)).find(
-                    (d) => d.status === "live",
-                  ),
-                ),
-              )
-            ).filter((d) => d != null);
-            return {
-              name: a.name,
-              latest: latest
-                ? {
-                    version: latest.version,
-                    gitSha: latest.gitSha,
-                    createdAt: latest.createdAt,
-                  }
-                : null,
-              running:
-                live.length > 0
-                  ? {
-                      isLatest: live.every((d) => d.releaseId === latest?.id),
-                    }
-                  : null,
-            };
+            const envs = await Promise.all(
+              envRows.map(async (env) => ({
+                env,
+                deployments: await listDeployments(env.id),
+              })),
+            );
+            return { name: a.name, envs };
           }),
         );
+        const teamEnvs: TeamEnvRow[] = teamEnvNames.map((name) => ({
+          name,
+          members: perMember.map((m) => {
+            const match = m.envs.find((e) => e.env.name === name);
+            return {
+              name: m.name,
+              envId: match?.env.id ?? null,
+              deployments: match?.deployments ?? [],
+            };
+          }),
+        }));
+        // Which version each env is running (any member's live deploy), for version badges.
+        const envRunningSha = new Map<string, string>();
+        for (const te of teamEnvs) {
+          for (const m of te.members) {
+            const live = m.deployments.find((d) => d.status === "live");
+            if (live) {
+              envRunningSha.set(te.name, live.gitSha);
+              break;
+            }
+          }
+        }
+        // Version history grouped by commit (releaseRows are newest-first; first per sha wins).
+        const versionByCommit = new Map<string, TeamVersionRow>();
+        for (const r of releaseRows) {
+          if (versionByCommit.has(r.gitSha)) continue;
+          versionByCommit.set(r.gitSha, {
+            gitSha: r.gitSha,
+            version: r.version,
+            changelog: r.changelog,
+            createdAt: r.createdAt,
+            runningEnvNames: teamEnvNames.filter(
+              (n) => envRunningSha.get(n) === r.gitSha,
+            ),
+          });
+        }
+        const teamVersions = [...versionByCommit.values()];
+
+        // Deploy guard (§9), aggregated across members and member-tagged.
+        let missingSecrets: GuardMissingSecret[] = [];
+        try {
+          const shared = await listSharedSecrets(project.id);
+          const sharedNames = new Set(shared.map((s) => s.key));
+          const lock = overlayLock(
+            source.files["eden-lock.json"] ?? null,
+            allDrafts.map((d) => ({ path: d.path, content: d.content })),
+          );
+          const perMemberMissing = await Promise.all(
+            roster.map(async (a) => {
+              const state = await agentRequiredSecretState({
+                projectId: project.id,
+                agentId: a.id,
+                memberName: a.name,
+                isTeam,
+                lock,
+              });
+              return state.missing.map((m) => ({
+                ...m,
+                sharedExists: sharedNames.has(m.name),
+                member: a.name,
+              }));
+            }),
+          );
+          missingSecrets = perMemberMissing.flat();
+        } catch {
+          missingSecrets = []; // secrets store unavailable — never block the pipeline view
+        }
+        const guardAgent = missingSecrets[0]?.member ?? roster[0]?.name ?? active.name;
         return {
           project,
           roster: roster.map((a) => ({ name: a.name })),
@@ -266,6 +366,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           isTeam,
           level,
           view,
+          canAct,
           draftGroups: [...groups.entries()].map(([owner, drafts]) => ({
             owner,
             drafts,
@@ -275,7 +376,12 @@ export const loader = (args: LoaderFunctionArgs) =>
           drafts: [],
           releases: [],
           envs: [],
-          missingSecrets: [],
+          teamEnvNames,
+          teamEnvs,
+          teamVersions,
+          missingSecrets,
+          guardAgent,
+          guardSettingsAction: `${contextPath(project.id, guardAgent)}/settings`,
           discordSetup: {
             enabled: false,
             origin: publicOrigin(args.request),
@@ -339,13 +445,22 @@ export const loader = (args: LoaderFunctionArgs) =>
         isTeam,
         level,
         view,
+        canAct,
         drafts,
         changes,
         releases: releaseRows.filter((r) => r.agentId === active.id),
         envs,
         draftGroups: [],
         members: [],
+        teamEnvNames: [],
+        teamEnvs: [],
+        teamVersions: [],
         missingSecrets,
+        guardAgent: active.name,
+        guardSettingsAction: `${contextPath(
+          project.id,
+          level === "member" ? active.name : null,
+        )}/settings`,
         discordSetup: {
           enabled: hasDiscordSetup,
           origin: publicOrigin(args.request),
@@ -482,15 +597,10 @@ export async function action(args: ActionFunctionArgs) {
       throw redirect(`${back}?released=${encodeURIComponent(version)}`);
     }
 
-    // ── Environment CRUD (M5.7: user-defined, per member) ──
+    // ── Environment CRUD (team-level: create/rename/delete a NAME across the whole roster) ──
     if (intent === "env-create") {
-      const { active } = await resolveAgentContext(
-        project.id,
-        String(form.get("agent") ?? "") || null,
-      );
-      await createEnvironment({
+      await createTeamEnvironment({
         projectId: project.id,
-        agentId: active.id,
         name: String(form.get("name") ?? ""),
         orgId: project.orgId,
         createdBy: auth.user.id,
@@ -498,17 +608,19 @@ export async function action(args: ActionFunctionArgs) {
       return { ok: true as const };
     }
     if (intent === "env-rename") {
-      await renameEnvironment({
-        environmentId: String(form.get("environmentId")),
-        name: String(form.get("name") ?? ""),
+      await renameTeamEnvironment({
+        projectId: project.id,
+        from: String(form.get("from") ?? ""),
+        to: String(form.get("to") ?? form.get("name") ?? ""),
         orgId: project.orgId,
         createdBy: auth.user.id,
       });
       return { ok: true as const };
     }
     if (intent === "env-delete") {
-      await deleteEnvironment({
-        environmentId: String(form.get("environmentId")),
+      await deleteTeamEnvironment({
+        projectId: project.id,
+        name: String(form.get("name") ?? ""),
         orgId: project.orgId,
         createdBy: auth.user.id,
       });
@@ -516,17 +628,32 @@ export async function action(args: ActionFunctionArgs) {
     }
 
     // ── Deploys ──
-    if (
-      intent === "deploy-version" ||
-      intent === "retry" ||
-      intent === "redeploy-version"
-    ) {
+    // deploy-team-version moves the WHOLE team to a version (by commit) in one environment —
+    // the single code path for the team view, single-agent repos, and rollback (deploying an
+    // older commit reuses its image; a rebuild forces a fresh build).
+    if (intent === "deploy-team-version") {
+      ensureWorkerStarted();
+      const rebuild = String(form.get("rebuild") ?? "") === "1";
+      // A member with no release at this commit (e.g. added after this historical version)
+      // can't move — surface those names so a partial roll never silently skews versions.
+      const { skipped } = await deployTeamVersion({
+        projectId: project.id,
+        gitSha: String(form.get("gitSha") ?? ""),
+        envName: String(form.get("env") ?? ""),
+        rollback: !rebuild,
+        rebuild,
+        createdBy: auth.user.id,
+      });
+      return { ok: true as const, skipped: skipped.map((s) => s.agentName) };
+    }
+    // retry re-queues a single member env's failed deploy (keyed by environmentId — an
+    // operational fix that stays harmless in every view).
+    if (intent === "retry") {
       ensureWorkerStarted();
       await queueDeploy({
         environmentId: String(form.get("environmentId")),
         releaseId: String(form.get("releaseId")),
-        rollback: intent === "deploy-version",
-        rebuild: intent === "redeploy-version",
+        rollback: true,
         createdBy: auth.user.id,
       });
       return { ok: true as const };
@@ -698,29 +825,21 @@ export default function Deployment({
 /* ────────────────────────────── member pipeline ────────────────────────────── */
 
 function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
-  const { drafts, changes, releases, envs, activeAgent, isTeam, level, project } =
-    loaderData;
-  const settingsAction = `${contextPath(
-    project.id,
-    level === "member" ? activeAgent : null,
-  )}/settings`;
+  const { drafts, changes, releases, envs, activeAgent, isTeam, canAct } = loaderData;
 
   return (
     <>
       <StagedChangesCard drafts={drafts} isTeam={isTeam} />
       <ChangeRequests changes={changes} isTeam={isTeam} />
-      <EnvironmentsCard
-        envs={envs}
-        releases={releases}
-        activeAgent={activeAgent}
-      />
+      <EnvironmentsCard envs={envs} canAct={canAct} releases={releases} />
       <VersionHistory
         releases={releases}
         envs={envs}
+        canAct={canAct}
         guard={{
           missing: loaderData.missingSecrets,
-          activeAgent,
-          settingsAction,
+          activeAgent: loaderData.guardAgent,
+          settingsAction: loaderData.guardSettingsAction,
         }}
       />
       <DiscordSetupHelp envs={envs} setup={loaderData.discordSetup} />
@@ -1052,7 +1171,8 @@ function MergeabilityBadge({
 /* ────────────────────────────── team rollup ────────────────────────────── */
 
 function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
-  const { project, draftGroups, changes, members } = loaderData;
+  const { project, draftGroups, changes, members, teamEnvs, teamVersions } =
+    loaderData;
   const navigation = useNavigation();
   const totalDrafts = draftGroups.reduce((n, g) => n + g.drafts.length, 0);
   const memberNames = new Set(members.map((m) => m.name));
@@ -1164,67 +1284,33 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
 
       <ChangeRequests changes={changes} isTeam />
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Members</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ul className="divide-y rounded-lg border text-sm">
-            {members.map((m) => (
-              <li
-                key={m.name}
-                className="flex flex-wrap items-center gap-3 px-4 py-2"
-              >
-                <Link
-                  to={`${contextPath(project.id, m.name)}/deployment`}
-                  className="min-w-32 font-medium underline-offset-4 hover:underline"
-                >
-                  {m.name}
-                </Link>
-                {m.latest ? (
-                  <>
-                    <span className="font-semibold">{m.latest.version}</span>
-                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                      {m.latest.gitSha.slice(0, 7)}
-                    </code>
-                    {m.running && (
-                      <FreshnessBadge
-                        isLatest={m.running.isLatest}
-                        latestVersion={m.latest.version}
-                        behindLabel="Behind"
-                      />
-                    )}
-                    <span className="text-muted-foreground">
-                      {timeAgo(m.latest.createdAt)}
-                    </span>
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">no versions yet</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </CardContent>
-      </Card>
+      <TeamEnvironmentsCard teamEnvs={teamEnvs} project={project} />
+      <TeamVersionHistory
+        teamVersions={teamVersions}
+        teamEnvNames={loaderData.teamEnvNames}
+        guard={{
+          missing: loaderData.missingSecrets,
+          activeAgent: loaderData.guardAgent,
+          settingsAction: loaderData.guardSettingsAction,
+        }}
+      />
     </>
   );
 }
 
-/* ─────────────────────── environments + versions (member) ─────────────────────── */
+/* ─────────────────────── team environments + versions ─────────────────────── */
 
 /**
- * The environments — independent peers, one identical row each: what's running, in-flight
- * progress, the latest failure (retry/dismiss), and rename/delete. Superseded/stopped
- * deployment rows are deliberately absent — the version history is the durable record.
+ * The team's environments: one row per env NAME, and under it each member's running version /
+ * in-flight / failed state. Team CRUD (create/rename/delete a NAME) fans out across the roster —
+ * the dialogs say so. retry/clear-failed stay keyed by the member's environmentId.
  */
-function EnvironmentsCard({
-  envs,
-  releases,
-  activeAgent,
+function TeamEnvironmentsCard({
+  teamEnvs,
+  project,
 }: {
-  envs: EnvState[];
-  releases: ReleaseRow[];
-  activeAgent: string;
+  teamEnvs: TeamEnvRow[];
+  project: ConnectedProject;
 }) {
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
@@ -1238,16 +1324,405 @@ function EnvironmentsCard({
           <CardTitle className="text-base">Environments</CardTitle>
           <EnvNameDialog
             intent="env-create"
-            agent={activeAgent}
             trigger={
               <Button size="sm" variant="outline" disabled={busy}>
                 New environment
               </Button>
             }
             title="New environment"
-            description="A separate place to run this agent — its own running version and its own environment-scoped secrets. Deploy into it from the version history."
+            description="A separate place to run the team — every member gets a matching environment, with its own running version and environment-scoped secrets. Deploy into it from the version history."
             confirmLabel="Create"
           />
+        </div>
+      </CardHeader>
+      <CardContent>
+        {error && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertTitle>Couldn&rsquo;t update environments</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        {teamEnvs.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No environments yet.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            {teamEnvs.map((te) => (
+              <div key={te.name} className="rounded-lg border">
+                <div className="flex items-center justify-between gap-2 border-b px-4 py-2">
+                  <span className="font-medium">{te.name}</span>
+                  <span className="flex items-center gap-1">
+                    <EnvNameDialog
+                      intent="env-rename"
+                      from={te.name}
+                      initialName={te.name}
+                      trigger={
+                        <Button size="sm" variant="ghost" disabled={busy}>
+                          Rename
+                        </Button>
+                      }
+                      title={`Rename ${te.name}?`}
+                      description="Renames this environment for every member — deploys, secrets, and history stay attached, only the name changes. Applies across the whole team."
+                      confirmLabel="Rename"
+                    />
+                    <ConfirmDialog
+                      trigger={
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-destructive hover:text-destructive"
+                          disabled={busy}
+                        >
+                          Delete
+                        </Button>
+                      }
+                      title={`Delete environment "${te.name}"?`}
+                      description={`Deletes "${te.name}" for EVERY member — stops anything running there and permanently removes its deployment history and environment-scoped secrets. Agent-wide secrets and versions are untouched.`}
+                      confirmLabel="Delete"
+                      onConfirm={() =>
+                        fetcher.submit(
+                          { intent: "env-delete", name: te.name },
+                          { method: "post" },
+                        )
+                      }
+                    />
+                  </span>
+                </div>
+                <ul className="divide-y text-sm">
+                  {te.members.map((m) => (
+                    <TeamEnvMemberRow
+                      key={m.name}
+                      member={m}
+                      fetcher={fetcher}
+                      busy={busy}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** One member's status inside a team environment row: running version, in-flight, failed. */
+function TeamEnvMemberRow({
+  member,
+  fetcher,
+  busy,
+}: {
+  member: TeamEnvMember;
+  fetcher: ReturnType<typeof useFetcher<typeof action>>;
+  busy: boolean;
+}) {
+  const running = runningOf(member.deployments);
+  const pending = member.deployments.find((d) => IN_FLIGHT.has(d.status));
+  const failed = member.deployments.find((d) => d.status === "failed");
+  const failedCount = member.deployments.filter((d) => d.status === "failed").length;
+
+  return (
+    <li className="px-4 py-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="min-w-32 font-mono text-xs">{member.name}</span>
+        {running ? (
+          <>
+            <span className="font-semibold">{running.version}</span>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+              {running.gitSha.slice(0, 7)}
+            </code>
+            <span className="text-muted-foreground">
+              deployed {timeAgo(running.createdAt)}
+            </span>
+            {running.url && (
+              <a href={running.url} className="underline underline-offset-4">
+                open
+              </a>
+            )}
+          </>
+        ) : (
+          <span className="text-muted-foreground">Nothing deployed</span>
+        )}
+      </div>
+      {pending && (
+        <p className="mt-1 text-sm text-muted-foreground">
+          {pending.version}{" "}
+          {pending.status === "building" ? "building" : "queued"}… switches over
+          once healthy{running ? `; ${running.version} keeps serving` : ""}.
+        </p>
+      )}
+      {failed && member.envId && (
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-destructive">
+          <span>
+            {failed.version} failed to deploy
+            {running ? ` — ${running.version} still running` : ""}
+          </span>
+          {failed.errorDetail && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="cursor-help text-xs underline underline-offset-2">
+                  why?
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-sm">
+                {failed.errorDetail}
+              </TooltipContent>
+            </Tooltip>
+          )}
+          <fetcher.Form method="post">
+            <input type="hidden" name="intent" value="retry" />
+            <input type="hidden" name="environmentId" value={member.envId} />
+            <input type="hidden" name="releaseId" value={failed.releaseId} />
+            <Button type="submit" size="sm" variant="ghost" disabled={busy}>
+              Retry
+            </Button>
+          </fetcher.Form>
+          <fetcher.Form method="post">
+            <input type="hidden" name="intent" value="clear-failed" />
+            <input type="hidden" name="environmentId" value={member.envId} />
+            <Button type="submit" size="sm" variant="ghost" disabled={busy}>
+              Dismiss{failedCount > 1 ? ` ${failedCount} failures` : ""}
+            </Button>
+          </fetcher.Form>
+        </div>
+      )}
+    </li>
+  );
+}
+
+/**
+ * The team's version history: versions grouped by commit, newest first, badged with the
+ * environments running them. "Deploy" per environment moves the WHOLE team to that version —
+ * direction-neutral (deploying an older version IS the rollback). The deploy guard triggers when
+ * ANY member has missing required secrets.
+ */
+function TeamVersionHistory({
+  teamVersions,
+  teamEnvNames,
+  guard,
+}: {
+  teamVersions: TeamVersionRow[];
+  teamEnvNames: string[];
+  guard: DeployGuard;
+}) {
+  const fetcher = useFetcher<typeof action>();
+  const busy = fetcher.state !== "idle";
+  const skipped =
+    (fetcher.data && "skipped" in fetcher.data ? fetcher.data.skipped : []) ??
+    [];
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Version history</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {skipped.length > 0 && (
+          <Alert className="mb-4">
+            <AlertTitle>Some members stayed on their current version</AlertTitle>
+            <AlertDescription>
+              {skipped.join(", ")} had no build at this commit, so they were
+              left behind. Ship them a version to bring the team back in sync.
+            </AlertDescription>
+          </Alert>
+        )}
+        {teamVersions.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No versions yet. Ship from the Overview, or merge a change request
+            above.
+          </p>
+        ) : (
+          <ul className="divide-y rounded-lg border text-sm">
+            {teamVersions.map((v) => (
+              <li key={v.gitSha} className="flex items-center gap-2 px-4 py-2">
+                <span className="w-10 shrink-0 font-semibold">{v.version}</span>
+                <span className="flex shrink-0 items-center gap-1">
+                  {v.runningEnvNames.map((name) => (
+                    <Badge key={name} variant="secondary">
+                      {name}
+                    </Badge>
+                  ))}
+                </span>
+                <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                  {v.gitSha.slice(0, 7)}
+                </code>
+                <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                  {v.changelog}
+                </span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {timeAgo(v.createdAt)}
+                </span>
+                <TeamDeployControl
+                  version={v}
+                  teamEnvNames={teamEnvNames}
+                  busy={busy}
+                  guard={guard}
+                  onDeploy={(env, gitSha, rebuild) =>
+                    fetcher.submit(
+                      {
+                        intent: "deploy-team-version",
+                        env,
+                        gitSha,
+                        ...(rebuild ? { rebuild: "1" } : {}),
+                      },
+                      { method: "post" },
+                    )
+                  }
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The per-version team deploy affordance: pick an environment (a menu when >1) and move the whole
+ * team there. Confirm copy says "moves the whole team to <version> in <env>". Redeploy (fresh
+ * build) when the version already runs in that env; deploy otherwise — both are the same move.
+ */
+function TeamDeployControl({
+  version,
+  teamEnvNames,
+  busy,
+  guard,
+  onDeploy,
+}: {
+  version: TeamVersionRow;
+  teamEnvNames: string[];
+  busy: boolean;
+  guard: DeployGuard;
+  onDeploy: (envName: string, gitSha: string, rebuild: boolean) => void;
+}) {
+  const [target, setTarget] = useState<string | null>(null);
+  const [guardEnv, setGuardEnv] = useState<string | null>(null);
+  const guarded = guard.missing.length > 0;
+  const runningHere = (name: string) => version.runningEnvNames.includes(name);
+  const run = (name: string) => onDeploy(name, version.gitSha, runningHere(name));
+
+  const confirmFor = (name: string) =>
+    runningHere(name)
+      ? {
+          title: `Redeploy ${version.version} to ${name}?`,
+          description: `Rebuilds a fresh image from this version's commit and moves the whole team's ${name} over once healthy. The current instances keep serving until then.`,
+        }
+      : {
+          title: `Deploy ${version.version} to ${name}?`,
+          description: `Moves the whole team to ${version.version} in ${name}. Each member's ${name} switches over once healthy; the current version keeps serving until then. To switch back, deploy the previous version again.`,
+        };
+
+  const pick = (name: string) =>
+    guarded ? setGuardEnv(name) : setTarget(name);
+
+  if (teamEnvNames.length === 0) return null;
+  const single = teamEnvNames.length === 1 ? teamEnvNames[0] : null;
+
+  return (
+    <>
+      {single ? (
+        <Button
+          size="sm"
+          variant={runningHere(single) ? "outline" : "secondary"}
+          disabled={busy}
+          onClick={() => pick(single)}
+        >
+          {runningHere(single) ? "Redeploy" : "Deploy"}
+        </Button>
+      ) : (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="secondary" disabled={busy}>
+              Deploy ▾
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {teamEnvNames.map((name) => (
+              <DropdownMenuItem key={name} onSelect={() => pick(name)}>
+                {runningHere(name) ? `Redeploy in ${name}` : `Deploy to ${name}`}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      {target && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setTarget(null);
+          }}
+          title={confirmFor(target).title}
+          description={confirmFor(target).description}
+          confirmLabel={runningHere(target) ? "Redeploy" : "Deploy"}
+          variant="default"
+          onConfirm={() => {
+            run(target);
+            setTarget(null);
+          }}
+        />
+      )}
+      {guardEnv && (
+        <DeploySecretsGuardDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setGuardEnv(null);
+          }}
+          missing={guard.missing}
+          activeAgent={guard.activeAgent}
+          settingsAction={guard.settingsAction}
+          deployLabel={runningHere(guardEnv) ? "Redeploy" : "Deploy"}
+          onDeploy={() => {
+            run(guardEnv);
+            setGuardEnv(null);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+/* ─────────────────────── environments + versions (member) ─────────────────────── */
+
+/**
+ * The environments — independent peers, one identical row each: what's running, in-flight
+ * progress, the latest failure (retry/dismiss), and rename/delete. Superseded/stopped
+ * deployment rows are deliberately absent — the version history is the durable record.
+ */
+function EnvironmentsCard({
+  envs,
+  canAct,
+  releases,
+}: {
+  envs: EnvState[];
+  canAct: boolean;
+  releases: ReleaseRow[];
+}) {
+  const fetcher = useFetcher<typeof action>();
+  const busy = fetcher.state !== "idle";
+  const error =
+    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+
+  return (
+    <Card className="mb-6">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base">Environments</CardTitle>
+          {canAct && (
+            <EnvNameDialog
+              intent="env-create"
+              trigger={
+                <Button size="sm" variant="outline" disabled={busy}>
+                  New environment
+                </Button>
+              }
+              title="New environment"
+              description="A separate place to run the team — every member gets a matching environment, with its own running version and its own environment-scoped secrets. Deploy into it from the version history."
+              confirmLabel="Create"
+            />
+          )}
         </div>
       </CardHeader>
       <CardContent>
@@ -1302,42 +1777,44 @@ function EnvironmentsCard({
                       version below.
                     </span>
                   )}
-                  <span className="ml-auto flex items-center gap-1">
-                    <EnvNameDialog
-                      intent="env-rename"
-                      environmentId={env.id}
-                      initialName={env.name}
-                      trigger={
-                        <Button size="sm" variant="ghost" disabled={busy}>
-                          Rename
-                        </Button>
-                      }
-                      title={`Rename ${env.name}?`}
-                      description="Deploys, secrets, and history stay attached — only the name changes. On a team, Ship targets members' environments by name."
-                      confirmLabel="Rename"
-                    />
-                    <ConfirmDialog
-                      trigger={
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="text-destructive hover:text-destructive"
-                          disabled={busy}
-                        >
-                          Delete
-                        </Button>
-                      }
-                      title={`Delete environment "${env.name}"?`}
-                      description={`Stops anything running here and permanently deletes this environment's deployment history and environment-scoped secrets. Agent-wide secrets and versions are untouched.${running ? ` ${running.version} is running here and will be taken down.` : ""}`}
-                      confirmLabel="Delete"
-                      onConfirm={() =>
-                        fetcher.submit(
-                          { intent: "env-delete", environmentId: env.id },
-                          { method: "post" },
-                        )
-                      }
-                    />
-                  </span>
+                  {canAct && (
+                    <span className="ml-auto flex items-center gap-1">
+                      <EnvNameDialog
+                        intent="env-rename"
+                        from={env.name}
+                        initialName={env.name}
+                        trigger={
+                          <Button size="sm" variant="ghost" disabled={busy}>
+                            Rename
+                          </Button>
+                        }
+                        title={`Rename ${env.name}?`}
+                        description="Renames this environment for every member — deploys, secrets, and history stay attached, only the name changes. Applies across the whole team."
+                        confirmLabel="Rename"
+                      />
+                      <ConfirmDialog
+                        trigger={
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive hover:text-destructive"
+                            disabled={busy}
+                          >
+                            Delete
+                          </Button>
+                        }
+                        title={`Delete environment "${env.name}"?`}
+                        description={`Deletes "${env.name}" for EVERY member — stops anything running there and permanently removes its deployment history and environment-scoped secrets. Agent-wide secrets and versions are untouched.${running ? ` ${running.version} is running here and will be taken down.` : ""}`}
+                        confirmLabel="Delete"
+                        onConfirm={() =>
+                          fetcher.submit(
+                            { intent: "env-delete", name: env.name },
+                            { method: "post" },
+                          )
+                        }
+                      />
+                    </span>
+                  )}
                 </div>
                 {pending && (
                   <p className="mt-1 text-sm text-muted-foreground">
@@ -1550,22 +2027,25 @@ interface DeployGuard {
 function VersionHistory({
   releases,
   envs,
+  canAct,
   guard,
 }: {
   releases: ReleaseRow[];
   envs: EnvState[];
+  canAct: boolean;
   guard: DeployGuard;
 }) {
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
-  const deploy = (environmentId: string, releaseId: string) =>
+  // A team of one still deploys through the TEAM path: address the target by env NAME + commit.
+  const deploy = (envName: string, gitSha: string) =>
     fetcher.submit(
-      { intent: "deploy-version", environmentId, releaseId },
+      { intent: "deploy-team-version", env: envName, gitSha },
       { method: "post" },
     );
-  const redeploy = (environmentId: string, releaseId: string) =>
+  const redeploy = (envName: string, gitSha: string) =>
     fetcher.submit(
-      { intent: "redeploy-version", environmentId, releaseId },
+      { intent: "deploy-team-version", env: envName, gitSha, rebuild: "1" },
       { method: "post" },
     );
   // Which environments each release is running on, for the rows' badges.
@@ -1585,6 +2065,11 @@ function VersionHistory({
         <CardTitle className="text-base">Version history</CardTitle>
       </CardHeader>
       <CardContent>
+        {!canAct && (
+          <p className="mb-3 text-sm text-muted-foreground">
+            Deploys happen at the team level — use the team Deployment tab.
+          </p>
+        )}
         {releases.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No versions yet. Ship from the Overview, or merge a change request
@@ -1614,14 +2099,16 @@ function VersionHistory({
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {timeAgo(r.createdAt)}
                 </span>
-                <DeployControl
-                  release={r}
-                  envs={envs}
-                  busy={busy}
-                  guard={guard}
-                  onDeploy={deploy}
-                  onRedeploy={redeploy}
-                />
+                {canAct && (
+                  <DeployControl
+                    release={r}
+                    envs={envs}
+                    busy={busy}
+                    guard={guard}
+                    onDeploy={deploy}
+                    onRedeploy={redeploy}
+                  />
+                )}
               </li>
             ))}
           </ul>
@@ -1649,8 +2136,8 @@ function DeployControl({
   envs: EnvState[];
   busy: boolean;
   guard: DeployGuard;
-  onDeploy: (environmentId: string, releaseId: string) => void;
-  onRedeploy: (environmentId: string, releaseId: string) => void;
+  onDeploy: (envName: string, gitSha: string) => void;
+  onRedeploy: (envName: string, gitSha: string) => void;
 }) {
   type DeployMode = "deploy" | "redeploy";
   const [target, setTarget] = useState<{
@@ -1667,7 +2154,9 @@ function DeployControl({
   const runningHere = (s: EnvState) =>
     runningOf(s.deployments)?.releaseId === release.id;
   const run = (s: EnvState, mode: DeployMode) =>
-    mode === "redeploy" ? onRedeploy(s.env.id, release.id) : onDeploy(s.env.id, release.id);
+    mode === "redeploy"
+      ? onRedeploy(s.env.name, release.gitSha)
+      : onDeploy(s.env.name, release.gitSha);
 
   const confirmFor = (s: EnvState, mode: DeployMode) => {
     const current = runningOf(s.deployments);
@@ -1804,25 +2293,27 @@ function DeployControl({
   );
 }
 
-/** Shared name dialog for env create/rename — one text field, posts `intent` + `name`. */
+/**
+ * Shared name dialog for team env create/rename — one text field. Create posts `name`; rename
+ * posts `from` (the current name) + `to`. Both apply across every member (team-level CRUD).
+ */
 function EnvNameDialog({
   intent,
   trigger,
   title,
   description,
   confirmLabel,
-  environmentId,
+  from,
   initialName,
-  agent,
 }: {
   intent: "env-create" | "env-rename";
   trigger: React.ReactNode;
   title: string;
   description: string;
   confirmLabel: string;
-  environmentId?: string;
+  /** The current name being renamed (rename only). */
+  from?: string;
   initialName?: string;
-  agent?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(initialName ?? "");
@@ -1844,12 +2335,9 @@ function EnvNameDialog({
   const submit = () => {
     if (!name.trim()) return;
     fetcher.submit(
-      {
-        intent,
-        name: name.trim(),
-        ...(environmentId ? { environmentId } : {}),
-        ...(agent ? { agent } : {}),
-      },
+      intent === "env-rename"
+        ? { intent, from: from ?? "", to: name.trim() }
+        : { intent, name: name.trim() },
       { method: "post" },
     );
   };
@@ -1868,11 +2356,11 @@ function EnvNameDialog({
           </Alert>
         )}
         <div className="space-y-1.5">
-          <Label htmlFor={`env-name-${intent}-${environmentId ?? "new"}`}>
+          <Label htmlFor={`env-name-${intent}-${from ?? "new"}`}>
             Name
           </Label>
           <Input
-            id={`env-name-${intent}-${environmentId ?? "new"}`}
+            id={`env-name-${intent}-${from ?? "new"}`}
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {

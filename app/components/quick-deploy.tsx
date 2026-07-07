@@ -3,9 +3,9 @@
  * every tab, so a PM never has to navigate to a specific page to ship (PRD §7.3/§7.7).
  *
  * Its ONE job is the staged-changes short-circuit: publish the project's staged drafts → merge →
- * cut a version → deploy the AFFECTED members. It never ships the branch head and never redeploys
- * the whole roster to "latest", so it renders nothing when nothing is staged. The click ALWAYS
- * opens a confirmation dialog (no instant deploy, no env-dropdown-as-button) — a ship is
+ * cut a version → deploy the WHOLE team into one environment. It never ships the branch head and
+ * never redeploys a subset of the roster, so it renders nothing when nothing is staged. The click
+ * ALWAYS opens a confirmation dialog (no instant deploy, no env-dropdown-as-button) — a ship is
  * irreversible enough to warrant a look at what it will do first. The current version keeps
  * serving until the new one is healthy, so shipping is never a step backwards.
  *
@@ -17,10 +17,9 @@
  * banner takes over (and this dialog unmounts); on error it returns { error }, which we show inside
  * the dialog and keep the dialog OPEN so the user can retry or cancel.
  *
- * The dialog is fully transparent about scope: a file breakdown grouped by owning member (+ a
- * "shared — affects everyone" block), the expanded "Will deploy" roster, and — for the selected
- * environment — an inline warning on any affected member that has no environment by that name, so
- * a skip is known BEFORE confirming rather than only in the after-banner.
+ * The dialog is transparent about scope: a file breakdown grouped by owning member (+ a "shared —
+ * affects everyone" block), the "Will deploy" roster (the whole team redeploys together so no
+ * member is left on an older version), and a team-level environment picker.
  */
 import { Rocket } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -43,13 +42,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
-import { unionEnvNames } from "~/deploy/quick-deploy";
 
 // Local mirror of the resource route's GET payload (kept in sync with api.quick-deploy.tsx).
 interface QuickDeployData {
   draftCount: number;
   groups: { member: string | null; files: string[] }[];
-  affected: { name: string; envNames: string[] }[];
+  members: string[];
+  envNames: string[];
 }
 
 export function QuickDeploy({ base }: { base: string }) {
@@ -89,25 +88,15 @@ function QuickDeployDialog({
   const deploying = ship.state !== "idle";
   const error = ship.data?.error;
 
-  // Target environments: the union over AFFECTED members only (primary-first). One env → static
-  // text; more than one → a Select. Preselect the first, and re-pin if the option set shifts.
-  const envOptions = unionEnvNames(data.affected.map((a) => a.envNames));
+  // Target environments: the team's env names (primary-first). One env → static text; more than
+  // one → a Select. Preselect the first, and re-pin if the option set shifts.
+  const envOptions = data.envNames;
   const [env, setEnv] = useState(envOptions[0] ?? "");
   useEffect(() => {
     if (envOptions.length > 0 && !envOptions.includes(env)) setEnv(envOptions[0]);
   }, [envOptions, env]);
 
   const count = data.draftCount;
-  const affectedNames = data.affected.map((a) => a.name);
-  // Members that will be skipped for the CURRENT target — known before confirming, not just after.
-  const ownerNames = new Set(
-    data.groups.filter((g) => g.member !== null).map((g) => g.member),
-  );
-  const mismatch = (name: string) =>
-    !(data.affected.find((a) => a.name === name)?.envNames ?? []).includes(env);
-  const extraSkipped = data.affected
-    .map((a) => a.name)
-    .filter((name) => mismatch(name) && !ownerNames.has(name));
 
   const submit = () => {
     ship.submit(agent ? { env, agent } : { env }, { method: "post", action });
@@ -128,7 +117,7 @@ function QuickDeployDialog({
           </DialogTitle>
           <DialogDescription>
             Publishes the changes as a change request, merges it, cuts a new version, and deploys
-            every affected member. The current version keeps serving until the new one is healthy.
+            the whole team. The current version keeps serving until the new one is healthy.
           </DialogDescription>
         </DialogHeader>
 
@@ -138,7 +127,6 @@ function QuickDeployDialog({
         <div className="min-w-0 space-y-3">
           {data.groups.map((group) => {
             const shared = group.member === null;
-            const skipped = !shared && mismatch(group.member!);
             return (
               <div key={group.member ?? "__shared__"} className="min-w-0 text-xs">
                 <div className="flex items-baseline gap-2">
@@ -155,35 +143,23 @@ function QuickDeployDialog({
                     </li>
                   ))}
                 </ul>
-                {shared && (
-                  <p className="mt-1 text-muted-foreground">
-                    Every member will be rebuilt and redeployed because of the shared change.
-                  </p>
-                )}
-                {skipped && (
-                  <p className="mt-1 text-destructive">
-                    won&apos;t deploy — no environment named {env}
-                  </p>
-                )}
               </div>
             );
           })}
         </div>
 
-        {/* Expanded deploy set — shared drafts fan out to the whole roster. */}
-        <p className="min-w-0 break-words text-xs">
-          <span className="font-medium">Will deploy:</span>{" "}
-          <span className="font-mono">{affectedNames.join(", ")}</span>
-        </p>
-        {/* Any affected member without the target env that has NO breakdown block of its own
-            (i.e. pulled in by a shared change) — warn here so no skip is a surprise. */}
-        {extraSkipped.map((name) => (
-          <p key={name} className="text-xs text-destructive">
-            <span className="font-mono">{name}</span> won&apos;t deploy — no environment named {env}
+        {/* The whole team always redeploys together — no member is left on an older version. */}
+        <div className="min-w-0 break-words text-xs">
+          <p>
+            <span className="font-medium">Will deploy:</span>{" "}
+            <span className="font-mono">{data.members.join(", ")}</span>
           </p>
-        ))}
+          <p className="mt-1 text-muted-foreground">
+            The whole team redeploys together so no member is left on an older version.
+          </p>
+        </div>
 
-        {/* Environment target: Select when affected members expose >1 distinct name, else static. */}
+        {/* Environment target: Select when the team has >1 env name, else static. */}
         <div className="space-y-1.5">
           <span className="text-xs font-medium">Environment</span>
           {envOptions.length > 1 ? (

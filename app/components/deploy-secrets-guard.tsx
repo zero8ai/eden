@@ -27,6 +27,8 @@ export interface GuardMissingSecret {
   sandbox?: boolean;
   sources: string[];
   sharedExists: boolean;
+  /** Team deploys aggregate across members — the owning member, shown as a prefix. */
+  member?: string;
 }
 
 function GuardRow({
@@ -70,6 +72,9 @@ function GuardRow({
         <span className="text-amber-600" aria-hidden>
           ⚠
         </span>
+        {secret.member && (
+          <span className="font-mono text-xs text-muted-foreground">{secret.member}:</span>
+        )}
         <span className="font-mono">{secret.name}</span>
         <span className="ml-auto text-xs text-muted-foreground">
           required · {secret.sources[0]}

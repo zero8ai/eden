@@ -126,7 +126,10 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export function meta() {
-  return [{ title: "Marketplace · Eden" }];
+  return [
+    { title: "Marketplace · Eden" },
+    { name: "robots", content: "noindex, nofollow" },
+  ];
 }
 
 export default function Marketplace({ loaderData }: Route.ComponentProps) {

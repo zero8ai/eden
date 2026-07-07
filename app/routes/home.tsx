@@ -7,18 +7,17 @@ import { Reveal, Parallax } from "~/components/landing-motion";
 import { SiteHeader, SiteFooter } from "~/components/marketing/site-chrome";
 import { ProductMockup } from "~/components/marketing/product-mockup";
 import { caseStudies } from "~/lib/case-studies";
+import { pageMeta } from "~/lib/seo";
 
 export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
 
 export function meta({}: Route.MetaArgs) {
-  return [
-    { title: "Eden" },
-    {
-      name: "description",
-      content:
-        "Turn the work you keep repeating into agents that do it for you. No engineer, no backlog, no code required.",
-    },
-  ];
+  return pageMeta({
+    title: "Eden — agents for the work you keep repeating",
+    description:
+      "Turn the work you keep repeating into agents that do it for you. No engineer, no backlog, no code required.",
+    path: "/",
+  });
 }
 
 /**

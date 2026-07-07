@@ -6,6 +6,7 @@
 import { Link, useRouteLoaderData } from "react-router";
 import type { loader as rootLoader } from "~/root";
 import { ThemeToggle } from "~/components/theme-toggle";
+import { Logo, EdenMark } from "~/components/marketing/logo";
 
 /** The public source repository. Eden is open source; every marketing page links here. */
 export const REPO_URL = "https://github.com/zero8ai/eden";
@@ -18,8 +19,8 @@ export function SiteHeader() {
 
   return (
     <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
-      <Link to="/" className="text-xl font-medium tracking-tight">
-        Eden
+      <Link to="/" aria-label="Eden home">
+        <Logo />
       </Link>
       <nav className="flex items-center gap-5 text-sm">
         <Link
@@ -49,7 +50,10 @@ export function SiteHeader() {
 export function SiteFooter() {
   return (
     <footer className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-10 text-sm text-eden-faint">
-      <span>Eden · open source · self-host or let us run it</span>
+      <span className="inline-flex items-center gap-2">
+        <EdenMark className="h-4 w-4 text-primary" />
+        Eden · open source · self-host or let us run it
+      </span>
       <div className="flex items-center gap-5">
         <Link to="/case-studies" className="underline-offset-4 hover:underline">
           Case studies

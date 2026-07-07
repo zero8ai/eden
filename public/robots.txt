@@ -1,0 +1,14 @@
+# Eden — https://eden.zero8.ai
+# Marketing pages are open to all crawlers; the authed app is kept out of the index.
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /repos/
+Disallow: /org/
+Disallow: /connect
+Disallow: /login
+Disallow: /callback
+Disallow: /api/
+Disallow: /marketplace
+
+Sitemap: https://eden.zero8.ai/sitemap.xml

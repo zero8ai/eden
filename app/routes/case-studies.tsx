@@ -6,18 +6,17 @@ import type { LoaderFunctionArgs } from "react-router";
 import { SiteHeader, SiteFooter } from "~/components/marketing/site-chrome";
 import { Reveal, Parallax } from "~/components/landing-motion";
 import { caseStudies } from "~/lib/case-studies";
+import { pageMeta } from "~/lib/seo";
 
 export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
 
 export function meta({}: Route.MetaArgs) {
-  return [
-    { title: "Case studies — Eden" },
-    {
-      name: "description",
-      content:
-        "How teams give their people better tools instead of fewer people — agencies, law firms, support teams and more building agents with Eden.",
-    },
-  ];
+  return pageMeta({
+    title: "Case studies — Eden",
+    description:
+      "How teams give their people better tools instead of fewer people — agencies, law firms, support teams and more building agents with Eden.",
+    path: "/case-studies",
+  });
 }
 
 /**

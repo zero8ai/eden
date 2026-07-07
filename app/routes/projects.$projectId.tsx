@@ -480,7 +480,10 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Project · Eden" }];
+  return [
+    { title: "Project · Eden" },
+    { name: "robots", content: "noindex, nofollow" },
+  ];
 }
 
 export default function ProjectDetail({

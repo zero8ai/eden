@@ -223,7 +223,10 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "New repository · Eden" }];
+  return [
+    { title: "New repository · Eden" },
+    { name: "robots", content: "noindex, nofollow" },
+  ];
 }
 
 export default function Connect({ loaderData, actionData }: Route.ComponentProps) {

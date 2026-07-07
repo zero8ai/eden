@@ -122,6 +122,77 @@ export function withPreservedNames(
 }
 
 /**
+ * Decide how a pending member rename maps onto a freshly-detected roster. A rename is "in flight"
+ * when a member row carries `pendingName` (its `eden/rename-member-*` PR is open). We map the row
+ * IN PLACE — preserving its id and all FKs — only when the merge is unambiguous:
+ *
+ *  - `apply`: the pending target directory is now detected AND the old directory is gone → the
+ *    rename PR merged. Rename the row to the target name/root and clear `pendingName`.
+ *  - `clear`: BOTH the old and the new directory are detected as separate members → the pending
+ *    name is stale (e.g. the PR was closed and a genuinely new member later took that name). Drop
+ *    the pending mark so it can never hijack that unrelated member.
+ *  - otherwise (old present, new absent): the PR hasn't merged — leave the pending mark untouched.
+ *
+ * Pure over its inputs (the store does the writes), so the mapping rule is unit-testable.
+ */
+export function planPendingRenames(
+  existing: Agent[],
+  detected: { name: string; root: string }[],
+): {
+  apply: { id: string; oldName: string; newName: string; root: string }[];
+  clear: string[];
+} {
+  const detectedByName = new Map(detected.map((d) => [d.name, d]));
+  const apply: { id: string; oldName: string; newName: string; root: string }[] = [];
+  const clear: string[] = [];
+  for (const row of existing) {
+    if (row.kind !== "member" || !row.pendingName) continue;
+    const target = detectedByName.get(row.pendingName);
+    if (!target) continue; // new directory not present yet — PR unmerged, or row being pruned.
+    if (detectedByName.has(row.name)) {
+      clear.push(row.id); // old dir still present too → stale pending mark.
+    } else {
+      apply.push({
+        id: row.id,
+        oldName: row.name,
+        newName: row.pendingName,
+        root: target.root,
+      });
+    }
+  }
+  return { apply, clear };
+}
+
+/** Restage a renamed member's staged drafts under the new `agents/<new>/…` path prefix. */
+async function rewriteMemberDraftPaths(
+  projectId: string,
+  oldName: string,
+  newName: string,
+  agentId: string,
+  store: DataStore,
+): Promise<void> {
+  const prefix = `agents/${oldName}/`;
+  const affected = (await store.drafts.listByProject(projectId)).filter((d) =>
+    d.path.startsWith(prefix),
+  );
+  if (affected.length === 0) return;
+  for (const d of affected) {
+    await store.drafts.upsert({
+      projectId,
+      agentId,
+      path: `agents/${newName}/${d.path.slice(prefix.length)}`,
+      content: d.content,
+      baseSha: d.baseSha,
+      createdBy: d.createdBy,
+    });
+  }
+  await store.drafts.deleteByPaths(
+    projectId,
+    affected.map((d) => d.path),
+  );
+}
+
+/**
  * Reconcile the roster with the repo's detected layout (connect revisit, webhook). Environments
  * are team-level, so a converge (`ensureTeamEnvironments`) fans the team env set across the
  * roster: a NEW member automatically inherits EVERY team env name — that's the mechanism that
@@ -142,6 +213,29 @@ export async function syncProjectAgents(
 ): Promise<Agent[]> {
   const existing = await store.agents.listByProject(projectId);
   const existingNames = new Set(existing.map((a) => a.name));
+
+  // A pending rename (open eden/rename-member-* PR) whose merge just landed must be mapped IN
+  // PLACE — otherwise syncRoster would prune the old-named row (cascading its environments,
+  // releases, secrets and drafts away) and insert a bare new row. Apply the in-place renames
+  // BEFORE syncRoster so its upsert matches the row by its new name and the prune leaves it be.
+  const { apply: renames, clear: staleRenames } = planPendingRenames(existing, roster);
+  for (const id of staleRenames) await store.agents.setPendingName(id, null);
+  for (const r of renames) {
+    await store.agents.rename(r.id, { name: r.newName, root: r.root });
+    // The row's id is unchanged, so agent-keyed rows (secrets, releases, envs) already follow.
+    // The two name-keyed carries need moving: staged drafts under the old member directory, and
+    // any still-held pending install secrets → the now-existing agent's real secrets.
+    await rewriteMemberDraftPaths(projectId, r.oldName, r.newName, r.id, store);
+    try {
+      const { migratePendingSecrets } = await import("~/project/secrets.server");
+      await migratePendingSecrets({ projectId, memberName: r.oldName, agentId: r.id });
+    } catch (error) {
+      console.warn(`[secrets] rename migration failed for ${r.oldName}→${r.newName}:`, error);
+    }
+    // The renamed member is not "created" — its held secrets were handled above.
+    existingNames.add(r.newName);
+  }
+
   const agents = await store.agents.syncRoster(
     projectId,
     withPreservedNames(existing, roster),

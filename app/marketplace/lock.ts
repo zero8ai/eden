@@ -157,6 +157,35 @@ export function removeInstall(
 }
 
 /**
+ * Rewrite every install owned by member `oldName` to `newName` when a team member is renamed:
+ * retag `member`, and remap the FINAL `files` paths from `agents/<old>/…` to `agents/<new>/…`
+ * (the lock records final paths precisely so uninstall/update survive a rename — §7.8). Entries
+ * for other members and the root agent (`member === null`) pass through untouched. Pure; returns
+ * a new lock and a flag for whether anything changed (so callers can skip an empty rewrite).
+ */
+export function renameMember(
+  lock: EdenLock,
+  oldName: string,
+  newName: string,
+): { lock: EdenLock; changed: boolean } {
+  let changed = false;
+  const oldPrefix = `agents/${oldName}/`;
+  const newPrefix = `agents/${newName}/`;
+  const installs = lock.installs.map((entry) => {
+    if (entry.member !== oldName) return entry;
+    changed = true;
+    return {
+      ...entry,
+      member: newName,
+      files: entry.files.map((f) =>
+        f.startsWith(oldPrefix) ? newPrefix + f.slice(oldPrefix.length) : f,
+      ),
+    };
+  });
+  return { lock: { ...lock, installs }, changed };
+}
+
+/**
  * Serialize to stable, review-friendly JSON: installs sorted by (id, member) so a diff is
  * driven by content not insertion order, 2-space indent, trailing newline (the repo's file
  * convention — everything else in a change-set looks like this).

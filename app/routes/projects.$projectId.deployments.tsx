@@ -37,6 +37,7 @@ import {
 } from "react-router";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
+import { FreshnessBadge, releaseFreshness } from "~/components/deploy-freshness";
 import {
   AgentNav,
   AppShell,
@@ -85,6 +86,7 @@ import {
 import { deployTeamVersion } from "~/deploy/ship.server";
 import {
   listAgentEnvironments,
+  listEnvironments,
   listReleases,
   syncProjectAgents,
 } from "~/db/queries.server";
@@ -267,9 +269,19 @@ export const loader = (args: LoaderFunctionArgs) =>
 
         // Per member: its env rows joined to their deployments (reuse listDeployments).
         const teamEnvNames = await listTeamEnvNames(project.id);
+        // One env query for the whole roster (grouped by agent) instead of one per
+        // member — avoids N extra round-trips that grow with team size.
+        const projectEnvs = await listEnvironments(project.id);
+        const envsByAgent = new Map<string, typeof projectEnvs>();
+        for (const env of projectEnvs) {
+          envsByAgent.set(env.agentId, [
+            ...(envsByAgent.get(env.agentId) ?? []),
+            env,
+          ]);
+        }
         const perMember = await Promise.all(
           roster.map(async (a) => {
-            const envRows = await listAgentEnvironments(a.id);
+            const envRows = envsByAgent.get(a.id) ?? [];
             const envs = await Promise.all(
               envRows.map(async (env) => ({
                 env,
@@ -622,7 +634,9 @@ export async function action(args: ActionFunctionArgs) {
     if (intent === "deploy-team-version") {
       ensureWorkerStarted();
       const rebuild = String(form.get("rebuild") ?? "") === "1";
-      await deployTeamVersion({
+      // A member with no release at this commit (e.g. added after this historical version)
+      // can't move — surface those names so a partial roll never silently skews versions.
+      const { skipped } = await deployTeamVersion({
         projectId: project.id,
         gitSha: String(form.get("gitSha") ?? ""),
         envName: String(form.get("env") ?? ""),
@@ -630,7 +644,7 @@ export async function action(args: ActionFunctionArgs) {
         rebuild,
         createdBy: auth.user.id,
       });
-      return { ok: true as const };
+      return { ok: true as const, skipped: skipped.map((s) => s.agentName) };
     }
     // retry re-queues a single member env's failed deploy (keyed by environmentId — an
     // operational fix that stays harmless in every view).
@@ -817,7 +831,7 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
     <>
       <StagedChangesCard drafts={drafts} isTeam={isTeam} />
       <ChangeRequests changes={changes} isTeam={isTeam} />
-      <EnvironmentsCard envs={envs} canAct={canAct} />
+      <EnvironmentsCard envs={envs} canAct={canAct} releases={releases} />
       <VersionHistory
         releases={releases}
         envs={envs}
@@ -1495,6 +1509,9 @@ function TeamVersionHistory({
 }) {
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
+  const skipped =
+    (fetcher.data && "skipped" in fetcher.data ? fetcher.data.skipped : []) ??
+    [];
 
   return (
     <Card>
@@ -1502,6 +1519,15 @@ function TeamVersionHistory({
         <CardTitle className="text-base">Version history</CardTitle>
       </CardHeader>
       <CardContent>
+        {skipped.length > 0 && (
+          <Alert className="mb-4">
+            <AlertTitle>Some members stayed on their current version</AlertTitle>
+            <AlertDescription>
+              {skipped.join(", ")} had no build at this commit, so they were
+              left behind. Ship them a version to bring the team back in sync.
+            </AlertDescription>
+          </Alert>
+        )}
         {teamVersions.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No versions yet. Ship from the Overview, or merge a change request
@@ -1668,9 +1694,11 @@ function TeamDeployControl({
 function EnvironmentsCard({
   envs,
   canAct,
+  releases,
 }: {
   envs: EnvState[];
   canAct: boolean;
+  releases: ReleaseRow[];
 }) {
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
@@ -1719,6 +1747,15 @@ function EnvironmentsCard({
                   {running ? (
                     <>
                       <span className="font-semibold">{running.version}</span>
+                      {(() => {
+                        const f = releaseFreshness(running.releaseId, releases);
+                        return f ? (
+                          <FreshnessBadge
+                            isLatest={f.isLatest}
+                            latestVersion={f.latestVersion}
+                          />
+                        ) : null;
+                      })()}
                       <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                         {running.gitSha.slice(0, 7)}
                       </code>
@@ -2040,10 +2077,13 @@ function VersionHistory({
           </p>
         ) : (
           <ul className="divide-y rounded-lg border text-sm">
-            {releases.map((r) => (
+            {releases.map((r, i) => (
               <li key={r.id} className="flex items-center gap-2 px-4 py-2">
                 <span className="w-10 shrink-0 font-semibold">{r.version}</span>
                 <span className="flex shrink-0 items-center gap-1">
+                  {i === 0 && (
+                    <Badge variant="success">Latest</Badge>
+                  )}
                   {(runningEnvNames.get(r.id) ?? []).map((name) => (
                     <Badge key={name} variant="secondary">
                       {name}

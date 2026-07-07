@@ -1,8 +1,11 @@
 /**
- * Search the web with Firecrawl.
+ * Search the web.
  *
- * Calls Firecrawl's v2 Search API directly. Set FIRECRAWL_API_KEY as an Eden secret; the
- * value is read from the tool process environment and is never accepted as model input.
+ * The agent's general-purpose search and research tool. It routes through Firecrawl's v2 Search
+ * API, which fetches pages through infrastructure that bypasses the bot protection and blocks
+ * that would stop a plain fetch/curl — so prefer it over fetching pages directly. Set
+ * FIRECRAWL_API_KEY as an Eden secret; the value is read from the tool process environment and
+ * is never accepted as model input.
  */
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -76,8 +79,10 @@ function trimMarkdown(
 
 export default defineTool({
   description:
-    "Search the live web with Firecrawl. Use for current information, domain-limited " +
-    "research, news, images, GitHub, research, or PDF discovery. Can also request " +
+    "Search and research the live web. Use this whenever you need to search or read web " +
+    "pages — for current information, domain-limited research, news, images, or GitHub and " +
+    "PDF discovery. It fetches through a service that bypasses the bot protection and blocks " +
+    "that stop a plain fetch, so prefer it over fetching URLs yourself. Can also return " +
     "scraped markdown for each web/news result.",
   inputSchema: z
     .object({

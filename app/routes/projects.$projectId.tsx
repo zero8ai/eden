@@ -46,10 +46,12 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import {
   listAgentEnvironments,
+  listReleases,
   syncProjectAgents,
   withPreservedNames,
   type Agent,
 } from "~/db/queries.server";
+import { FreshnessBadge, releaseFreshness } from "~/components/deploy-freshness";
 import { listDeployments, queueDeploy } from "~/deploy/controller.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { readModel } from "~/eve/agentModule";
@@ -124,6 +126,10 @@ interface ProjectView {
     version: string;
     url: string | null;
     at: string;
+    /** Whether this running version is the newest release for the member. */
+    isLatest: boolean;
+    /** The newest release's version label, shown when the running one is behind. */
+    latestVersion: string;
   }[];
   /** Deploy progress for a just-shipped commit (?shipped=<sha>&env=<name>&skipped=a,b). */
   ship: { env: string; rows: ShipStatusRow[]; skipped: string[] } | null;
@@ -284,20 +290,27 @@ export const loader = (args: LoaderFunctionArgs) =>
         const activeEnvs =
           view === "member" ? await listAgentEnvironments(active.id) : [];
         if (view === "member") {
+          // Newest-first releases for this member, so we can flag whether each
+          // env is running the latest version (matches the deployment pipeline).
+          const memberReleases = (await listReleases(project.id)).filter(
+            (r) => r.agentId === active.id,
+          );
           running = (
             await Promise.all(
               activeEnvs.map(async (env) => {
                 const current = (await listDeployments(env.id)).find(
                   (d) => d.status === "live",
                 );
-                return current
-                  ? {
-                      envName: env.name,
-                      version: current.version,
-                      url: current.url,
-                      at: current.createdAt.toISOString(),
-                    }
-                  : null;
+                if (!current) return null;
+                const f = releaseFreshness(current.releaseId, memberReleases);
+                return {
+                  envName: env.name,
+                  version: current.version,
+                  url: current.url,
+                  at: current.createdAt.toISOString(),
+                  isLatest: f?.isLatest ?? true,
+                  latestVersion: f?.latestVersion ?? current.version,
+                };
               }),
             )
           ).filter((r) => r !== null);
@@ -564,6 +577,11 @@ export default function ProjectDetail({
               <span className="font-semibold text-foreground">
                 {running[0].version}
               </span>{" "}
+              <FreshnessBadge
+                isLatest={running[0].isLatest}
+                latestVersion={running[0].latestVersion}
+                className="align-middle"
+              />{" "}
               on {running[0].envName}
               {" · "}updated {timeAgo(running[0].at)}
               {running[0].url && (
@@ -587,7 +605,12 @@ export default function ProjectDetail({
                   {r.envName}:{" "}
                   <span className="font-semibold text-foreground">
                     {r.version}
-                  </span>
+                  </span>{" "}
+                  <FreshnessBadge
+                    isLatest={r.isLatest}
+                    latestVersion={r.latestVersion}
+                    className="align-middle"
+                  />
                 </span>
               ))}
             </>

@@ -27,8 +27,17 @@ import {
 } from "~/playground/sessions.server";
 import { syncConversationCheckout } from "~/assistant/checkout-sync.server";
 
-/** eve turns can run for many minutes — give the stream a long leash (30 min). */
-export const TURN_TIMEOUT_MS = 30 * 60_000;
+/** Eve turns can run for hours; fail only after this much silence on the event stream. */
+export const TURN_IDLE_TIMEOUT_MS = 5 * 60_000;
+
+const activeTurnControllers = new Map<string, AbortController>();
+
+export function cancelActiveTurn(playgroundSessionId: string): boolean {
+  const controller = activeTurnControllers.get(playgroundSessionId);
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}
 
 /** Lean step projection sent to the browser (full actions go only to the recorder). */
 export function toChatStep(step: TurnStep): ChatStep {
@@ -102,6 +111,8 @@ export function streamTurnResponse(input: {
         let recorded = false;
         let startRecording: Promise<void> = Promise.resolve();
         let result: TurnResult | null = null;
+        const turnController = new AbortController();
+        activeTurnControllers.set(activeSession.id, turnController);
 
         const queueProgressSave = (force = false) => {
           if (!sessionId) return;
@@ -138,13 +149,18 @@ export function streamTurnResponse(input: {
             sessionId,
             continuationToken: activeSession.continuationToken,
             streamIndex: activeSession.streamIndex,
-            timeoutMs: TURN_TIMEOUT_MS,
+            signal: turnController.signal,
+            timeoutMs: TURN_IDLE_TIMEOUT_MS,
           })) {
             switch (event.kind) {
               case "session":
                 sessionId = event.sessionId;
                 continuationToken = event.continuationToken;
                 queueProgressSave(true);
+                send({
+                  type: "session",
+                  playgroundSessionId: activeSession.id,
+                });
                 break;
               case "progress":
                 sessionId = event.sessionId;
@@ -228,6 +244,9 @@ export function streamTurnResponse(input: {
             version: target.version,
           });
         } finally {
+          if (activeTurnControllers.get(activeSession.id) === turnController) {
+            activeTurnControllers.delete(activeSession.id);
+          }
           await progressSave;
           if (result) {
             const settled: TurnResult = result;

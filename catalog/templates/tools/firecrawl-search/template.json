@@ -1,9 +1,9 @@
 {
   "id": "firecrawl-search",
   "type": "tool",
-  "name": "Firecrawl Search",
-  "description": "Search the live web with Firecrawl and optionally return scraped page content.",
-  "version": "0.1.0",
+  "name": "Web Search",
+  "description": "Search and research the live web, returning results and optional page content. Routes through a service that bypasses the bot protection blocking plain fetches, so use it whenever the agent needs to search or read the web.",
+  "version": "0.2.0",
   "eve": ">=0.1.0",
   "files": ["tools/firecrawl-search.ts"],
   "dependencies": {
@@ -12,7 +12,7 @@
   "secrets": [
     {
       "name": "FIRECRAWL_API_KEY",
-      "description": "Firecrawl API key used as a Bearer token for the v2 Search API."
+      "description": "API key for the search backend (Firecrawl), used as a Bearer token for its v2 Search API."
     }
   ]
 }

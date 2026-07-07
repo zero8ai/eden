@@ -11,6 +11,9 @@ const memberRoute = (tail: string, file: string, id: string) =>
 
 export default [
   index("routes/home.tsx"),
+  // Marketing case studies — index + one page per vertical.
+  route("case-studies", "routes/case-studies.tsx"),
+  route("case-studies/:slug", "routes/case-studies.$slug.tsx"),
   route("dashboard", "routes/dashboard.tsx"),
   // Recruit — the marketplace (PRD §7.8, M6). Browse (index.json) + a template detail page.
   route("marketplace", "routes/marketplace.tsx"),

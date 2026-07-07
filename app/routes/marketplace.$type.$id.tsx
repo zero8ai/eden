@@ -10,20 +10,15 @@
  * wizard + change-set materialization). Wiring it up is the next milestone phase, not this one.
  */
 import { authkitLoader } from "@workos-inc/authkit-react-router";
-import {
-  Bot,
-  Hash,
-  Plug,
-  Sparkles,
-  Workflow,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react";
 import { data, Link, type LoaderFunctionArgs } from "react-router";
 
 import { MarkdownText } from "~/components/chat";
 import { CodeEditor } from "~/components/code-editor";
-import { AppShell, PageHeader, accentChip, type Accent } from "~/components/shell";
+import {
+  TYPE_META,
+  TypeBadge,
+} from "~/components/marketplace-type-badge";
+import { AppShell, PageHeader } from "~/components/shell";
 import { Button } from "~/components/ui/button";
 import {
   Card,
@@ -36,33 +31,6 @@ import { TEMPLATE_TYPES, isTemplateSlug, type TemplateType } from "~/marketplace
 import { getRuntime } from "~/seams/index.server";
 import { syncTenant } from "~/auth/tenant.server";
 import type { Route } from "./+types/marketplace.$type.$id";
-
-/**
- * Per-type presentation, kept in lockstep with the catalog list (marketplace.tsx TYPE_META): a
- * template's kind reads by the same icon + accent colour here as on its browse card.
- */
-const TYPE_META: Record<TemplateType, { label: string; icon: LucideIcon; accent: Accent }> = {
-  agent: { label: "Agent", icon: Bot, accent: "violet" },
-  tool: { label: "Tool", icon: Wrench, accent: "blue" },
-  skill: { label: "Skill", icon: Sparkles, accent: "amber" },
-  subagent: { label: "Subagent", icon: Workflow, accent: "fuchsia" },
-  channel: { label: "Channel", icon: Hash, accent: "emerald" },
-  connection: { label: "Connection", icon: Plug, accent: "cyan" },
-};
-
-/** A coloured icon + label chip marking a template's type (matches the catalog cards). */
-function TypeBadge({ type }: { type: TemplateType }) {
-  const meta = TYPE_META[type];
-  const Icon = meta.icon;
-  return (
-    <span
-      className={`inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${accentChip[meta.accent]}`}
-    >
-      <Icon className="size-3" />
-      {meta.label}
-    </span>
-  );
-}
 
 /** Narrow a URL param to a TemplateType, 404-ing on anything else (unknown type = no such page). */
 function parseType(param: string | undefined): TemplateType {

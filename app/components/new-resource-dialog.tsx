@@ -3,19 +3,11 @@
  * derives the file path (agent/<category>/<slug>.<ext>), and opens the editor, which starts
  * from that category's starter template. Nothing is staged until the user saves.
  */
-import {
-  CalendarClock,
-  Hash,
-  Plug,
-  Sparkles,
-  Workflow,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
-import { accentChip, type Accent } from "~/components/shell";
+import { categoryMeta } from "~/components/resource-category";
+import { accentChip } from "~/components/shell";
 import { Button } from "~/components/ui/button";
 import {
   Dialog,
@@ -35,20 +27,6 @@ import {
 } from "~/eve/templates";
 import { cn } from "~/lib/utils";
 
-/**
- * Per-resource-kind signature glyph + accent, mirroring the marketplace type colours so a
- * "New tool/skill/…" dialog is recognisable at a glance (tool=blue, skill=amber, subagent=
- * fuchsia, channel=emerald, connection=cyan, schedule=amber — the schedule identity).
- */
-const KIND_META: Record<ResourceKind["key"], { icon: LucideIcon; accent: Accent }> = {
-  tools: { icon: Wrench, accent: "blue" },
-  skills: { icon: Sparkles, accent: "amber" },
-  subagents: { icon: Workflow, accent: "fuchsia" },
-  channels: { icon: Hash, accent: "emerald" },
-  schedules: { icon: CalendarClock, accent: "amber" },
-  connections: { icon: Plug, accent: "cyan" },
-};
-
 export function NewResourceDialog({
   kind,
   base,
@@ -64,7 +42,7 @@ export function NewResourceDialog({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const slug = slugifyResourceName(name);
-  const meta = KIND_META[kind.key];
+  const meta = categoryMeta(kind.key);
   const Icon = meta.icon;
 
   const create = () => {

@@ -444,7 +444,7 @@ function ModelCall({
     <span className="flex min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground">
       <Cpu
         className={`size-3.5 shrink-0 ${
-          step.isError ? "text-rose-600 dark:text-rose-400" : "text-blue-600 dark:text-blue-400"
+          step.isError ? "text-rose-600 dark:text-rose-400" : "text-primary"
         }`}
       />
       <span className="truncate font-mono">{step.model ?? "model call"}</span>

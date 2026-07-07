@@ -13,19 +13,7 @@
  * standalone repo, and agent → subagent of an existing agent.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import {
-  Bot,
-  Boxes,
-  Download,
-  Hash,
-  KeyRound,
-  Layers,
-  Plug,
-  Sparkles,
-  Workflow,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react";
+import { Boxes, Download, KeyRound, Layers } from "lucide-react";
 import { useState } from "react";
 import {
   Form,
@@ -40,12 +28,10 @@ import {
 import { COPY } from "~/components/secrets-card";
 
 import {
-  AppShell,
-  PageHeader,
-  accentChip,
-  accentText,
-  type Accent,
-} from "~/components/shell";
+  TYPE_META,
+  TypeBadge,
+} from "~/components/marketplace-type-badge";
+import { AppShell, PageHeader, accentText } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -102,30 +88,6 @@ import { resolveSyncedAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
 import type { Route } from "./+types/marketplace.$type.$id.install";
-
-/** Per-type presentation, kept in lockstep with the catalog + detail page (marketplace TYPE_META). */
-const TYPE_META: Record<TemplateType, { label: string; icon: LucideIcon; accent: Accent }> = {
-  agent: { label: "Agent", icon: Bot, accent: "violet" },
-  tool: { label: "Tool", icon: Wrench, accent: "blue" },
-  skill: { label: "Skill", icon: Sparkles, accent: "amber" },
-  subagent: { label: "Subagent", icon: Workflow, accent: "fuchsia" },
-  channel: { label: "Channel", icon: Hash, accent: "emerald" },
-  connection: { label: "Connection", icon: Plug, accent: "cyan" },
-};
-
-/** A coloured icon + label chip marking a template's type (matches the catalog + detail page). */
-function TypeBadge({ type }: { type: TemplateType }) {
-  const meta = TYPE_META[type];
-  const Icon = meta.icon;
-  return (
-    <span
-      className={`inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${accentChip[meta.accent]}`}
-    >
-      <Icon className="size-3" />
-      {meta.label}
-    </span>
-  );
-}
 
 /** Narrow a URL param to a TemplateType, 404-ing on anything else. */
 function parseType(param: string | undefined): TemplateType {

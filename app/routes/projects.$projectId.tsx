@@ -10,17 +10,10 @@ import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import {
   Bot,
   Boxes,
-  CalendarClock,
   FileText,
-  Hash,
-  Plug,
-  Sparkles,
   Terminal,
   Users,
-  Workflow,
-  Wrench,
   X,
-  type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -43,8 +36,8 @@ import {
   SectionHeader,
   accentChip,
   repoCrumbs,
-  type Accent,
 } from "~/components/shell";
+import { CATEGORY_META } from "~/components/resource-category";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -1021,19 +1014,6 @@ const CATEGORY_HINTS: Record<string, string> = {
   channels: "Entry points — HTTP, Slack, web chat",
   schedules: "Recurring cron-triggered runs",
   connections: "Typed external integrations",
-};
-
-/**
- * Per-category glyph + accent, matching the marketplace's colour language so a resource kind is
- * scannable at a glance across the app (agent surfaces here, cards in Recruit).
- */
-const CATEGORY_META: Record<string, { icon: LucideIcon; accent: Accent }> = {
-  tools: { icon: Wrench, accent: "blue" },
-  skills: { icon: Sparkles, accent: "amber" },
-  subagents: { icon: Workflow, accent: "fuchsia" },
-  channels: { icon: Hash, accent: "emerald" },
-  schedules: { icon: CalendarClock, accent: "amber" },
-  connections: { icon: Plug, accent: "cyan" },
 };
 
 /** How many items a category card previews before deferring to its list page. */

@@ -7,17 +7,7 @@
  * /repos/:id/agents/:name/resources/:category; single-agent repos at the repo level.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import {
-  Boxes,
-  CalendarClock,
-  Hash,
-  MoreHorizontal,
-  Plug,
-  Sparkles,
-  Workflow,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react";
+import { MoreHorizontal } from "lucide-react";
 import {
   Link,
   data,
@@ -30,13 +20,13 @@ import {
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
 import { NewResourceDialog } from "~/components/new-resource-dialog";
+import { categoryMeta } from "~/components/resource-category";
 import {
   AgentNav,
   AppShell,
   PageHeader,
   accentChip,
   repoCrumbs,
-  type Accent,
 } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -302,23 +292,6 @@ const CATEGORY_HINTS: Record<string, string> = {
   schedules: "Recurring cron-triggered runs",
   connections: "Typed external integrations",
 };
-
-/**
- * Per-category signature glyph + accent, mirroring the marketplace's per-type colours so a
- * resource kind is scannable at a glance. Falls back to the neutral Resources mark (Boxes/cyan).
- */
-const CATEGORY_META: Record<string, { icon: LucideIcon; accent: Accent }> = {
-  tools: { icon: Wrench, accent: "blue" },
-  skills: { icon: Sparkles, accent: "amber" },
-  subagents: { icon: Workflow, accent: "fuchsia" },
-  channels: { icon: Hash, accent: "emerald" },
-  schedules: { icon: CalendarClock, accent: "amber" },
-  connections: { icon: Plug, accent: "cyan" },
-};
-
-function categoryMeta(key: string): { icon: LucideIcon; accent: Accent } {
-  return CATEGORY_META[key] ?? { icon: Boxes, accent: "cyan" };
-}
 
 export default function ResourceCategory({
   loaderData,

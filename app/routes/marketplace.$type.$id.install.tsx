@@ -490,7 +490,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Install · Marketplace · Eden" }];
+  return [{ title: "Install · Marketplace · eden" }];
 }
 
 export default function InstallWizard({ loaderData, actionData }: Route.ComponentProps) {

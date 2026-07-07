@@ -158,7 +158,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Assistant · Eden" }];
+  return [{ title: "Assistant · eden" }];
 }
 
 interface LiveTurn {
@@ -353,7 +353,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           <Alert className="mb-4">
             <AlertTitle>Setting up your assistant…</AlertTitle>
             <AlertDescription>
-              Eden is building and starting your assistant instance. This takes a minute the
+              eden is building and starting your assistant instance. This takes a minute the
               first time — the page updates automatically.
             </AlertDescription>
           </Alert>

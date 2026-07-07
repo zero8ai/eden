@@ -158,7 +158,7 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export function meta() {
-  return [{ title: "Runs · Eden" }];
+  return [{ title: "Runs · eden" }];
 }
 
 function ms(n: number | null) {

@@ -16,9 +16,9 @@ export async function loader(args: LoaderFunctionArgs) {
 
 export function meta({ params }: Route.MetaArgs) {
   const study = getCaseStudy(params.slug ?? "");
-  if (!study) return [{ title: "Case study — Eden" }];
+  if (!study) return [{ title: "Case study — eden" }];
   return pageMeta({
-    title: `${study.company} — Eden case study`,
+    title: `${study.company} — eden case study`,
     description: study.dek,
     path: `/case-studies/${study.slug}`,
   });

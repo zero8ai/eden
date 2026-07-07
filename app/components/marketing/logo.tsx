@@ -29,7 +29,7 @@ export function EdenMark({ className }: { className?: string }) {
  */
 export function EdenWordmark({
   className,
-  label = "Eden",
+  label = "eden",
 }: {
   className?: string;
   label?: string;
@@ -51,5 +51,5 @@ export function EdenWordmark({
 }
 
 export function Logo({ className }: { className?: string }) {
-  return <EdenWordmark className={cn("h-6", className)} label="Eden" />;
+  return <EdenWordmark className={cn("h-6", className)} label="eden" />;
 }

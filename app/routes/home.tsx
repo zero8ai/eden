@@ -13,7 +13,7 @@ export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
 
 export function meta({}: Route.MetaArgs) {
   return pageMeta({
-    title: "Eden — agents for the work you keep repeating",
+    title: "eden — agents for the work you keep repeating",
     description:
       "Turn the work you keep repeating into agents that do it for you. No engineer, no backlog, no code required.",
     path: "/",
@@ -53,7 +53,7 @@ export default function Home({}: Route.ComponentProps) {
             <p className="max-w-xl text-lg leading-relaxed text-eden-muted">
               Pick something your team does over and over — triaging tickets,
               chasing invoices, prepping the weekly report. Describe how it
-              should work in plain words, and Eden builds an agent that runs it.
+              should work in plain words, and eden builds an agent that runs it.
               Stack a few together and you&rsquo;ve got a small team working
               while you do something else.
             </p>
@@ -106,7 +106,7 @@ export default function Home({}: Route.ComponentProps) {
               time it ships, the process has already moved on.
             </p>
             <p className="mt-4 text-lg leading-relaxed text-eden-muted">
-              Eden takes out the hand-off. The person who actually knows the
+              eden takes out the hand-off. The person who actually knows the
               work builds the agent, and changes it the moment the work changes.
             </p>
           </Reveal>
@@ -129,7 +129,7 @@ export default function Home({}: Route.ComponentProps) {
               n: "01",
               title: "Describe",
               blurb:
-                "Tell Eden what the job is, in plain words — the steps, the rules, the exceptions. Its assistant turns that into a working agent while you watch.",
+                "Tell eden what the job is, in plain words — the steps, the rules, the exceptions. Its assistant turns that into a working agent while you watch.",
             },
             {
               n: "02",
@@ -256,7 +256,7 @@ export default function Home({}: Route.ComponentProps) {
             {
               title: "Yours to keep",
               blurb:
-                "Eden is open source and free to run on your own servers, or let us host it. Every version is saved, so you can roll back or walk away anytime.",
+                "eden is open source and free to run on your own servers, or let us host it. Every version is saved, so you can roll back or walk away anytime.",
             },
           ].map((f, i) => (
             <Reveal
@@ -282,7 +282,7 @@ export default function Home({}: Route.ComponentProps) {
               who&rsquo;s already answered a thousand support tickets.&rdquo;
             </p>
             <p className="mt-8 text-sm uppercase tracking-[0.25em] text-eden-faint">
-              The idea behind Eden
+              The idea behind eden
             </p>
           </Reveal>
         </Parallax>
@@ -402,7 +402,7 @@ export default function Home({}: Route.ComponentProps) {
               <span className="italic"> Own the whole thing.</span>
             </h2>
             <p className="mt-6 max-w-lg text-lg leading-relaxed text-eden-muted">
-              Eden is open source. Clone the repo, run it on your own servers,
+              eden is open source. Clone the repo, run it on your own servers,
               and keep your agents and your data on machines you control.
               There&rsquo;s no vendor holding the keys — read every line, change
               what you want, and never worry about being locked in or shut off.

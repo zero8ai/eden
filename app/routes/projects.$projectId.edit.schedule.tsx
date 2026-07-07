@@ -155,7 +155,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Edit schedule · Eden" }];
+  return [{ title: "Edit schedule · eden" }];
 }
 
 export default function EditSchedule({

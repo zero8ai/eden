@@ -1,7 +1,7 @@
 import type { Route } from "./+types/home";
 import { Link } from "react-router";
-import { signOut, authkitLoader } from "@workos-inc/authkit-react-router";
-import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
+import { authkitLoader } from "@workos-inc/authkit-react-router";
+import type { LoaderFunctionArgs } from "react-router";
 
 import { Reveal, Parallax } from "~/components/landing-motion";
 import { SiteHeader, SiteFooter } from "~/components/marketing/site-chrome";
@@ -9,10 +9,6 @@ import { ProductMockup } from "~/components/marketing/product-mockup";
 import { caseStudies } from "~/lib/case-studies";
 
 export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
-
-export async function action({ request }: ActionFunctionArgs) {
-  return await signOut(request);
-}
 
 export function meta({}: Route.MetaArgs) {
   return [

@@ -255,6 +255,7 @@ export default function CaseStudyDetail({ params }: Route.ComponentProps) {
         <a
           href={study.creditUrl}
           className="underline-offset-2 hover:underline"
+          target="_blank"
           rel="noopener noreferrer"
         >
           {study.credit}

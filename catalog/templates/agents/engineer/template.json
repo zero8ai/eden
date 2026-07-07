@@ -3,10 +3,13 @@
   "type": "agent",
   "name": "Engineer",
   "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "eve": ">=0.1.0",
   "model": "z-ai/glm-5.2",
-  "includes": [{ "type": "channel", "id": "discord" }],
+  "includes": [
+    { "type": "channel", "id": "discord" },
+    { "type": "tool", "id": "discord-send-message" }
+  ],
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.5",
     "zod": "^4.4.3"

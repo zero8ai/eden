@@ -1,0 +1,18 @@
+{
+  "id": "discord-send-message",
+  "type": "tool",
+  "name": "Discord Send Message",
+  "description": "Send a bot-authenticated message to a Discord channel by channel id.",
+  "version": "0.1.0",
+  "eve": ">=0.20.0",
+  "files": ["tools/discord-send-message.ts"],
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "secrets": [
+    {
+      "name": "DISCORD_BOT_TOKEN",
+      "description": "Bot token with access to the Discord channels this tool may message."
+    }
+  ]
+}

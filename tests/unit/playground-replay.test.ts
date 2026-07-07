@@ -192,4 +192,47 @@ describe("loadPlaygroundEntriesFromEve", () => {
     });
     expect(entries[1].steps).toHaveLength(1);
   });
+
+  it("surfaces a stopped or timed-out turn instead of an empty assistant reply", async () => {
+    const at = new Date().toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        streamResponse([
+          {
+            type: "turn.started",
+            data: { turnId: "turn_0" },
+            meta: { at },
+          },
+          {
+            type: "message.received",
+            data: { turnId: "turn_0", message: "work for a long time" },
+            meta: { at },
+          },
+          {
+            type: "step.started",
+            data: { turnId: "turn_0", sequence: 1 },
+            meta: { at },
+          },
+          {
+            type: "step.completed",
+            data: { turnId: "turn_0", sequence: 1 },
+            meta: { at },
+          },
+        ]),
+      ),
+    );
+
+    const entries = await loadPlaygroundEntriesFromEve({
+      session: session({ status: "failed", streamIndex: 4 }),
+      target,
+    });
+
+    expect(entries).toHaveLength(2);
+    expect(entries[1]).toMatchObject({
+      role: "assistant",
+      text: "",
+      error: expect.stringContaining("stopped before Eden recorded"),
+    });
+  });
 });

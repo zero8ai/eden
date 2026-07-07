@@ -123,6 +123,10 @@ export default [
     "api/repos/:projectId/playground/stream",
     "routes/api.projects.$projectId.playground.stream.ts",
   ),
+  route(
+    "api/repos/:projectId/playground/stop",
+    "routes/api.projects.$projectId.playground.stop.ts",
+  ),
   // Assistant streaming turn (project-level sibling of the playground stream).
   route(
     "api/repos/:projectId/assistant/stream",

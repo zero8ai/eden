@@ -295,11 +295,16 @@ export async function* streamTurn(input: {
   continuationToken?: string | null;
   /** Remote event cursor from the last consumed session stream event. */
   streamIndex?: number | null;
+  /** Abort the local stream consumer, e.g. when the user presses Stop. */
+  signal?: AbortSignal | null;
+  /**
+   * Idle timeout, not an absolute wall-clock timeout. Long-running turns may be active for
+   * hours as long as Eve keeps producing events.
+   */
   timeoutMs?: number;
 }): AsyncGenerator<TalkEvent> {
   const base = input.baseUrl.replace(/\/+$/, "");
   const timeoutMs = input.timeoutMs ?? 90_000;
-  const deadline = Date.now() + timeoutMs;
   // Events older than this are history replay, not our turn (same-box clocks; generous skew).
   const postedAt = Date.now() - 30_000;
   const isFollowUp = !!(input.sessionId && input.continuationToken);
@@ -329,10 +334,48 @@ export async function* streamTurn(input: {
     },
   });
 
+  const throwIfAborted = () => {
+    if (input.signal?.aborted) {
+      throw new Error("Turn was stopped.");
+    }
+  };
+
+  const readWithIdleTimeout = async (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+  ) => {
+    throwIfAborted();
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let abortHandler: (() => void) | null = null;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          idleTimer = setTimeout(() => {
+            reject(
+              new Error(
+                `Timed out after ${Math.round(timeoutMs / 1000)}s with no Eve stream events.`,
+              ),
+            );
+          }, timeoutMs);
+          if (input.signal) {
+            abortHandler = () => reject(new Error("Turn was stopped."));
+            input.signal.addEventListener("abort", abortHandler, { once: true });
+          }
+        }),
+      ]);
+    } finally {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (input.signal && abortHandler) {
+        input.signal.removeEventListener("abort", abortHandler);
+      }
+    }
+  };
+
   // 1. Start a session with the message — or continue the existing one.
   let sessionId: string | null = null;
   let continuationToken: string | null = null;
   try {
+    throwIfAborted();
     const res = await fetch(
       isFollowUp
         ? `${base}/eve/v1/session/${input.sessionId}`
@@ -396,7 +439,7 @@ export async function* streamTurn(input: {
     if (streamIndex > 0)
       streamUrl.searchParams.set("startIndex", String(streamIndex));
     const res = await fetch(streamUrl, {
-      signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
+      signal: input.signal ?? undefined,
     });
     if (!res.ok || !res.body) {
       throw new Error(`stream returned ${res.status}`);
@@ -413,8 +456,8 @@ export async function* streamTurn(input: {
     const actionsBySeq = new Map<number, TurnAction[]>();
     const actionByCallId = new Map<string, TurnAction>();
 
-    while (!settled && Date.now() < deadline) {
-      const { done, value } = await reader.read();
+    while (!settled) {
+      const { done, value } = await readWithIdleTimeout(reader);
       if (done) break;
       buf += decoder.decode(value, { stream: true });
 
@@ -650,12 +693,10 @@ export async function* streamTurn(input: {
       error = lastStepFailure;
     }
     if (!settled && reply === null && !asked && error === null) {
-      error = `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for the turn to complete.`;
+      error = `The Eve stream ended before the turn completed.`;
     }
   } catch (streamError) {
-    if (reply === null) {
-      error = `Couldn't read the reply stream: ${(streamError as Error).message}`;
-    }
+    error = `Couldn't read the reply stream: ${(streamError as Error).message}`;
   }
 
   const normalized = normalizeReply(reply);

@@ -1,0 +1,144 @@
+import { withAuth } from "@workos-inc/authkit-react-router";
+import { data, redirect, type ActionFunctionArgs } from "react-router";
+
+import { liveTargets } from "~/chat/playground.server";
+import {
+  asString,
+  cancelActiveTurn,
+} from "~/chat/turn-stream.server";
+import {
+  getPlaygroundSession,
+  markPlaygroundSessionStopped,
+} from "~/playground/sessions.server";
+import {
+  agentFromParams,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
+import { requireProject, requireRepo } from "~/project/guard.server";
+
+export async function action(args: ActionFunctionArgs) {
+  const auth = await withAuth(args);
+  if (!auth.user) throw redirect("/login");
+  const project = requireRepo(
+    await requireProject(
+      {
+        user: auth.user,
+        organizationId: auth.organizationId ?? null,
+        role: auth.role ?? null,
+      },
+      args.params.projectId,
+    ),
+  );
+
+  const form = await args.request.formData();
+  const agentName =
+    agentFromParams(args.params) ?? asString(form.get("agentName"));
+  const { active } = await resolveAgentContext(project.id, agentName);
+  const playgroundSessionId = asString(form.get("playgroundSessionId"));
+  if (!playgroundSessionId) {
+    throw data({ error: "No playground session to stop." }, { status: 400 });
+  }
+
+  const session = await getPlaygroundSession({
+    id: playgroundSessionId,
+    projectId: project.id,
+    agentId: active.id,
+    userId: auth.user.id,
+  });
+  if (!session) {
+    throw data(
+      { error: "That playground session was not found." },
+      { status: 404 },
+    );
+  }
+
+  const targets = await liveTargets(active.id);
+  const target =
+    targets.find((t) => t.environmentId === session.environmentId) ??
+    targets.find((t) => t.deploymentId === session.lastDeploymentId) ??
+    null;
+  if (!target) {
+    throw data(
+      {
+        error:
+          "This session's live deployment is not available, so Eden cannot stop the active Eve turn.",
+      },
+      { status: 400 },
+    );
+  }
+
+  const eveCancel = session.externalSessionId
+    ? await cancelEveTurn({
+        baseUrl: target.url,
+        sessionId: session.externalSessionId,
+      })
+    : { ok: true as const, detail: "No Eve session id was recorded yet." };
+
+  if (!eveCancel.ok) {
+    throw data(
+      {
+        error: eveCancel.detail,
+      },
+      { status: eveCancel.unsupported ? 501 : 502 },
+    );
+  }
+
+  const localCanceled = cancelActiveTurn(session.id);
+  if (!localCanceled && session.externalSessionId) {
+    // The turn's AbortController lives in the process that streamed it. In a
+    // multi-replica deployment the stream may be on another instance, so the
+    // local abort is a no-op here (Eve was still cancelled above). Log it so
+    // ops can spot the cross-instance case when a stop seems not to take.
+    console.warn(
+      `[playground/stop] no local turn controller for session ${session.id} — turn is likely streaming on another replica`,
+    );
+  }
+  await markPlaygroundSessionStopped({ id: session.id, target });
+
+  return {
+    ok: true as const,
+    localCanceled,
+    detail: eveCancel.detail,
+  };
+}
+
+async function cancelEveTurn(input: {
+  baseUrl: string;
+  sessionId: string;
+}): Promise<
+  | { ok: true; detail: string }
+  | { ok: false; detail: string; unsupported?: boolean }
+> {
+  const base = input.baseUrl.replace(/\/+$/, "");
+  let res: Response;
+  try {
+    res = await fetch(`${base}/eve/v1/session/${input.sessionId}/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "turn" }),
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      detail: `Couldn't reach Eve to stop the turn: ${(error as Error).message}`,
+    };
+  }
+
+  if (res.ok) {
+    return { ok: true, detail: "Eve accepted the stop request." };
+  }
+  if (res.status === 404 || res.status === 405) {
+    return {
+      ok: false,
+      unsupported: true,
+      detail:
+        "This Eve deployment does not expose turn cancellation yet. Eden did not detach from the running turn.",
+    };
+  }
+  const text = await res.text().catch(() => "");
+  return {
+    ok: false,
+    detail: `Eve rejected the stop request (${res.status}).${text ? ` ${text}` : ""}`,
+  };
+}

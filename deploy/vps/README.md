@@ -15,8 +15,11 @@ instances over loopback), so don't split these across machines; scale the box in
                         └─────────────────────────────────────────────────────────────────┘
 ```
 
-No installer script — the steps below are the deployment. Budget ~1 hour the first time,
-most of it in the GitHub App and WorkOS dashboards.
+No installer script — the steps below *are* the deployment: an ordered sequence meant to be run
+top to bottom exactly as written, whether you follow it yourself or hand it to a coding agent
+you've given SSH access to the box. Everything an install needs is in this directory (this
+runbook plus the compose, nginx, and env templates). Budget ~1 hour the first time, most of it in
+the GitHub App and WorkOS dashboards.
 
 ## 0. What you need before starting
 

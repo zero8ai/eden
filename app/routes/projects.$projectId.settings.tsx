@@ -914,19 +914,30 @@ export async function action(args: ActionFunctionArgs) {
         }
       }
 
-      const change = await proposeChange(project.repoInstallationId, repo, {
-        base: project.defaultBranch,
-        branch: `eden/rename-member-${oldName}-${newName}`,
-        files,
-        title: `Rename team member: ${oldName} → ${newName}`,
-        body:
-          `Moves \`agents/${oldName}/\` to \`agents/${newName}/\` (${memberPaths.length} files) ` +
-          `and retargets its package.json and marketplace installs. Eden renames the member in ` +
-          `place on merge — its environments, versions, secrets and run history are preserved.\n\n` +
-          `Note: mentions of \`${oldName}\` in other members' instructions or tools are not ` +
-          `rewritten automatically — update those separately if needed.`,
-      });
+      // Mark the rename in-flight BEFORE opening the PR. If we opened the PR first and this DB
+      // write then failed, the PR could still merge with no pending mark — planPendingRenames would
+      // skip the row and syncRoster would cascade-delete its environments/releases/secrets/drafts.
+      // Marking first is safe: a stale mark left by a failed proposeChange (below) is rolled back.
       await getRuntime().data.agents.setPendingName(active.id, newName);
+      let change;
+      try {
+        change = await proposeChange(project.repoInstallationId, repo, {
+          base: project.defaultBranch,
+          branch: `eden/rename-member-${oldName}-${newName}`,
+          files,
+          title: `Rename team member: ${oldName} → ${newName}`,
+          body:
+            `Moves \`agents/${oldName}/\` to \`agents/${newName}/\` (${memberPaths.length} files) ` +
+            `and retargets its package.json and marketplace installs. Eden renames the member in ` +
+            `place on merge — its environments, versions, secrets and run history are preserved.\n\n` +
+            `Note: mentions of \`${oldName}\` in other members' instructions or tools are not ` +
+            `rewritten automatically — update those separately if needed.`,
+        });
+      } catch (err) {
+        // No PR was opened, so drop the pending mark to avoid soft-locking future renames.
+        await getRuntime().data.agents.setPendingName(active.id, null);
+        throw err;
+      }
       return {
         ok: true as const,
         changeUrl: change.pullRequestUrl,

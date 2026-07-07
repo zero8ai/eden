@@ -4,6 +4,7 @@
  * and Suisse type as the rest of the landing site, so it themes with the toggle.
  */
 import { Link, useRouteLoaderData } from "react-router";
+import type { loader as rootLoader } from "~/root";
 import { ThemeToggle } from "~/components/theme-toggle";
 
 /** The public source repository. Eden is open source; every marketing page links here. */
@@ -12,7 +13,7 @@ export const REPO_URL = "https://github.com/zero8ai/eden";
 export function SiteHeader() {
   // The root loader runs authkitLoader, so the WorkOS session is available app-wide.
   // When the visitor is already signed in, offer a Dashboard link instead of Sign in.
-  const rootData = useRouteLoaderData("root") as { user?: unknown } | undefined;
+  const rootData = useRouteLoaderData<typeof rootLoader>("root");
   const isSignedIn = Boolean(rootData?.user);
 
   return (

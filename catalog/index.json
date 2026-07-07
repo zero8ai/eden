@@ -4,17 +4,17 @@
       "id": "cloudflare-app-builder",
       "type": "agent",
       "name": "Cloudflare App Builder",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend — and ships every project to GitHub. It builds; it does not deploy.",
-      "hash": "e03ec92efe0ff46351ac4d9e555de7e5580e8694"
+      "hash": "67e94808b987724d3b0ca84070eeee7695934b5c"
     },
     {
       "id": "cloudflare-deployment-engineer",
       "type": "agent",
       "name": "Cloudflare CI Engineer",
-      "version": "0.2.2",
+      "version": "0.3.0",
       "description": "An agent that sets up and operates CI/CD for Cloudflare apps from GitHub — gh + wrangler/API with sandbox-exposed credentials, no bespoke tools.",
-      "hash": "e9ac836334593e197b09cf7c3181b4e3d3e1b89b"
+      "hash": "3bcd794f23f05a15f84ca48c80d6d748f9889493"
     },
     {
       "id": "engineer",
@@ -49,14 +49,6 @@
       "hash": "cb89a337281c3122d3bb67d9f7e835d742f38b47"
     },
     {
-      "id": "cloudflare-deploy",
-      "type": "tool",
-      "name": "Cloudflare Deploy",
-      "version": "0.1.1",
-      "description": "Deploy a Cloudflare Worker with wrangler, using credentials from the environment.",
-      "hash": "edfdb8c74978cdcd2b24ded53a81aace4d9e30a7"
-    },
-    {
       "id": "discord-send-message",
       "type": "tool",
       "name": "Discord Send Message",
@@ -67,10 +59,10 @@
     {
       "id": "firecrawl-search",
       "type": "tool",
-      "name": "Firecrawl Search",
-      "version": "0.1.0",
-      "description": "Search the live web with Firecrawl and optionally return scraped page content.",
-      "hash": "95ada5cf643e28c222469ea74767c9c3700b96ce"
+      "name": "Web Search",
+      "version": "0.2.0",
+      "description": "Search and research the live web, returning results and optional page content. Routes through a service that bypasses the bot protection blocking plain fetches, so use it whenever the agent needs to search or read the web.",
+      "hash": "85fa6da857e848cacbc2d878ca3d414f12171d5d"
     }
   ]
 }

@@ -70,12 +70,12 @@ export function meta() {
 }
 
 export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
-  const { user, org, template } = loaderData;
+  const { user, template } = loaderData;
   const { manifest, files } = template;
   const deps = Object.entries(manifest.dependencies ?? {});
 
   return (
-    <AppShell workspaceName={org?.name} userEmail={user.email}>
+    <AppShell userEmail={user.email}>
       <div className="mb-4">
         <Link
           to="/marketplace"

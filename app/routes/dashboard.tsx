@@ -63,12 +63,12 @@ export function meta() {
 }
 
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
-  const { user, org, cards } = loaderData;
+  const { user, cards } = loaderData;
   const teams = cards.filter((c) => c.isTeam);
   const singles = cards.filter((c) => !c.isTeam);
 
   return (
-    <AppShell workspaceName={org?.name} userEmail={user.email}>
+    <AppShell userEmail={user.email}>
       <PageHeader
         icon={FolderGit2}
         accent="brand"

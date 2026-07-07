@@ -6,6 +6,7 @@
  * against an in-memory fake.
  */
 import type { Agent, DataStore, Environment, Project } from "~/data/ports";
+import { ensureTeamEnvironments } from "~/deploy/environments.server";
 import { getRuntime } from "~/seams/index.server";
 
 export type { Agent, Project, Environment } from "~/data/ports";
@@ -41,9 +42,9 @@ export async function resolveUniqueSlug(
 
 /**
  * Create a project (a connected eve repo) for a tenant, creating its agent roster (single =
- * team of one, PRD §7.9). Each member starts with ONE environment ("default" — renamable;
- * environments are user-defined, M5.7). `slug` is unique per org; on collision we suffix so
- * connecting similarly-named repos doesn't fail.
+ * team of one, PRD §7.9). Environments are team-level: `ensureTeamEnvironments` seeds the team
+ * env set (here, just "default") across every member, so every member has a row of every name.
+ * `slug` is unique per org; on collision we suffix so connecting similarly-named repos doesn't fail.
  */
 export async function createProject(
   input: {
@@ -65,10 +66,10 @@ export async function createProject(
   const { slug: _ignore, roster: rosterInput, ...rest } = input;
   const project = await store.projects.create({ ...rest, slug });
   const roster = rosterInput?.length ? rosterInput : [...SINGLE_AGENT_ROSTER];
-  const agents = await store.agents.syncRoster(project.id, roster);
-  await Promise.all(
-    agents.map((a) => store.environments.ensureDefault(project.id, a.id)),
-  );
+  await store.agents.syncRoster(project.id, roster);
+  // Team-level env seeding: one converge fans the team env set (just "default" on a fresh
+  // project) across every member, instead of per-agent ensureDefault loops.
+  await ensureTeamEnvironments(project.id, { store });
   return project;
 }
 
@@ -121,10 +122,12 @@ export function withPreservedNames(
 }
 
 /**
- * Reconcile the roster with the repo's detected layout (connect revisit, webhook). New
- * members get their one "default" environment; members that already have environments —
- * whatever the user renamed or created — are left strictly alone, so the self-heal that
- * runs on every Overview load can never re-seed. Removed members cascade away; the root
+ * Reconcile the roster with the repo's detected layout (connect revisit, webhook). Environments
+ * are team-level, so a converge (`ensureTeamEnvironments`) fans the team env set across the
+ * roster: a NEW member automatically inherits EVERY team env name — that's the mechanism that
+ * keeps a member from existing in one environment but not another. Members that already have all
+ * the team names are left untouched (create swallows the drift dup), so the self-heal that runs
+ * on every Overview load never disturbs user CRUD. Removed members cascade away; the root
  * member's human-given name survives detection.
  *
  * This is also the SHIP POINT for pending install secrets (PLAN-SECRETS-REWORK §4.4): a
@@ -143,9 +146,9 @@ export async function syncProjectAgents(
     projectId,
     withPreservedNames(existing, roster),
   );
-  await Promise.all(
-    agents.map((a) => store.environments.ensureDefault(projectId, a.id)),
-  );
+  // A new member inherits the team's full env set here — this converge is what guarantees no
+  // member is left existing in one environment but not another.
+  await ensureTeamEnvironments(projectId, { store });
   const created = agents.filter((a) => !existingNames.has(a.name));
   if (created.length > 0) {
     const { migratePendingSecrets } = await import("~/project/secrets.server");

@@ -1,12 +1,18 @@
 /**
  * Ship orchestration — the one-click pipeline against in-memory fakes (no GitHub, no docker).
- * Verifies the chaining ship owns: publish → merge → release-per-member → queued deploy per
- * AFFECTED member, the shared-draft (agentId null) fan-out to everyone, the build-gate leaving
- * drafts staged on failure, and the head-ship variant reusing an existing release.
+ * The TEAM is the deployment unit: verifies the chaining ship owns (publish → merge →
+ * release-per-member → queued deploy for the WHOLE roster into one environment, even when the
+ * drafts touch a single member), the build-gate leaving drafts staged on failure, and
+ * deployTeamVersion moving the whole team to an existing version by git sha.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { shipHead, shipStagedChanges, type ShipDeps, type ShipProject } from "~/deploy/ship.server";
+import {
+  deployTeamVersion,
+  shipStagedChanges,
+  type ShipDeps,
+  type ShipProject,
+} from "~/deploy/ship.server";
 import type { CheckBuildFn, ProposeFn } from "~/drafts/drafts.server";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
 
@@ -39,9 +45,11 @@ beforeEach(() => {
   store.seedProject({ id: PROJECT.id, orgId: "org_1", repoOwner: "acme", repoName: "agents" });
   store.seedAgent({ id: "agent_a", projectId: PROJECT.id, name: "alpha", root: "agents/alpha/agent" });
   store.seedAgent({ id: "agent_b", projectId: PROJECT.id, name: "beta", root: "agents/beta/agent" });
+  // Team-level env invariant: every member has a row of every name.
   store.seedEnvironment({ id: "env_a_prod", projectId: PROJECT.id, agentId: "agent_a", name: "production" });
   store.seedEnvironment({ id: "env_a_prev", projectId: PROJECT.id, agentId: "agent_a", name: "preview" });
   store.seedEnvironment({ id: "env_b_prod", projectId: PROJECT.id, agentId: "agent_b", name: "production" });
+  store.seedEnvironment({ id: "env_b_prev", projectId: PROJECT.id, agentId: "agent_b", name: "preview" });
 });
 
 async function stage(path: string, agentId: string | null) {
@@ -49,7 +57,8 @@ async function stage(path: string, agentId: string | null) {
 }
 
 describe("shipStagedChanges", () => {
-  it("publishes, merges, cuts a release per member, and queues a deploy for the affected member only", async () => {
+  it("deploys the WHOLE member roster even when the drafts touch a single member", async () => {
+    // Only alpha owns a draft, but the team is the deployment unit → both members deploy.
     await stage("agents/alpha/agent/instructions.md", "agent_a");
 
     const result = await shipStagedChanges(
@@ -57,14 +66,14 @@ describe("shipStagedChanges", () => {
       deps(),
     );
 
-    // Only alpha's production got a deploy; beta's release exists but stays undeployed.
-    expect(result.deployed.map((d) => d.agentName)).toEqual(["alpha"]);
-    expect(result.deployed[0].environmentId).toBe("env_a_prod");
-    const queued = await store.deployments.listByEnvironment("env_a_prod");
-    expect(queued).toHaveLength(1);
-    expect(queued[0].status).toBe("queued");
-    expect(await store.deployments.listByEnvironment("env_b_prod")).toHaveLength(0);
-    // A release was still cut for EVERY roster member at the merge commit (atomic team merge).
+    expect(result.deployed.map((d) => d.agentName).sort()).toEqual(["alpha", "beta"]);
+    expect(result.skipped).toEqual([]);
+    const queuedA = await store.deployments.listByEnvironment("env_a_prod");
+    const queuedB = await store.deployments.listByEnvironment("env_b_prod");
+    expect(queuedA).toHaveLength(1);
+    expect(queuedB).toHaveLength(1);
+    expect(queuedA[0].status).toBe("queued");
+    // A release was cut for EVERY roster member at the merge commit (atomic team merge).
     expect(await store.releases.findByCommit("agent_a", MERGE_SHA)).not.toBeNull();
     expect(await store.releases.findByCommit("agent_b", MERGE_SHA)).not.toBeNull();
     // The published drafts were consumed.
@@ -73,30 +82,16 @@ describe("shipStagedChanges", () => {
     expect((await store.jobs.claimNext(new Date()))?.kind).toBe("deploy_release");
   });
 
-  it("ships to the chosen environment, not just production", async () => {
+  it("ships the whole team to the chosen environment, not just production", async () => {
     await stage("agents/alpha/agent/instructions.md", "agent_a");
     const result = await shipStagedChanges(
       { project: PROJECT, envName: "preview" },
       deps(),
     );
-    expect(result.deployed[0].environmentId).toBe("env_a_prev");
-  });
-
-  it("a shared draft (agentId null) fans out to every roster member", async () => {
-    await stage("package.json", null);
-    await stage("agents/alpha/agent/instructions.md", "agent_a");
-
-    const result = await shipStagedChanges({ project: PROJECT, envName: "production" }, deps());
-    expect(result.deployed.map((d) => d.agentName).sort()).toEqual(["alpha", "beta"]);
-    expect(result.skipped).toEqual([]);
-  });
-
-  it("reports members that have no environment of the target name (user-defined envs diverge)", async () => {
-    await stage("package.json", null); // affects both members
-    // alpha has "preview"; beta does not.
-    const result = await shipStagedChanges({ project: PROJECT, envName: "preview" }, deps());
-    expect(result.deployed.map((d) => d.agentName)).toEqual(["alpha"]);
-    expect(result.skipped).toEqual([{ agentName: "beta" }]);
+    expect(result.deployed.map((d) => d.environmentId).sort()).toEqual([
+      "env_a_prev",
+      "env_b_prev",
+    ]);
   });
 
   it("throws when nothing is staged", async () => {
@@ -126,23 +121,53 @@ describe("shipStagedChanges", () => {
   });
 });
 
-describe("shipHead", () => {
-  const branchHead = async () => ({ sha: "a1b2".repeat(10), branch: "main" });
+describe("deployTeamVersion", () => {
+  const SHA = "cafe".repeat(10);
 
-  it("cuts a release at the branch head and deploys it for every member", async () => {
-    const result = await shipHead(
-      { project: PROJECT, envName: "production" },
-      deps({ branchHead }),
+  async function seedRelease(agentId: string, gitSha = SHA) {
+    return store.releases.insert({
+      projectId: PROJECT.id,
+      agentId,
+      version: "v1",
+      gitSha,
+    });
+  }
+
+  it("moves the whole team to a version by git sha, into each member's env of that name", async () => {
+    await seedRelease("agent_a");
+    await seedRelease("agent_b");
+
+    const result = await deployTeamVersion(
+      { projectId: PROJECT.id, gitSha: SHA, envName: "production", createdBy: "user_1" },
+      { store },
     );
+
     expect(result.deployed.map((d) => d.agentName).sort()).toEqual(["alpha", "beta"]);
+    expect(result.skipped).toEqual([]);
     expect((await store.deployments.listByEnvironment("env_a_prod"))[0]?.status).toBe("queued");
+    expect((await store.deployments.listByEnvironment("env_b_prod"))[0]?.status).toBe("queued");
   });
 
-  it("is idempotent per commit: a second ship reuses the same release", async () => {
-    const first = await shipHead({ project: PROJECT, envName: "production" }, deps({ branchHead }));
-    const second = await shipHead({ project: PROJECT, envName: "production" }, deps({ branchHead }));
-    expect(second.version).toBe(first.version);
-    const releases = await store.releases.listByProject(PROJECT.id);
-    expect(releases).toHaveLength(2); // one per member, not per ship
+  it("skips a member that has no release at that sha, deploys the rest", async () => {
+    await seedRelease("agent_a"); // only alpha has a release at SHA
+
+    const result = await deployTeamVersion(
+      { projectId: PROJECT.id, gitSha: SHA, envName: "production" },
+      { store },
+    );
+
+    expect(result.deployed.map((d) => d.agentName)).toEqual(["alpha"]);
+    expect(result.skipped).toEqual([{ agentName: "beta" }]);
+  });
+
+  it("throws when no member has that version in that environment", async () => {
+    await seedRelease("agent_a");
+    await seedRelease("agent_b");
+    await expect(
+      deployTeamVersion(
+        { projectId: PROJECT.id, gitSha: SHA, envName: "staging" },
+        { store },
+      ),
+    ).rejects.toThrow(/nothing to deploy/i);
   });
 });

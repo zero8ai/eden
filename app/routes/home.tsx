@@ -1,223 +1,479 @@
 import type { Route } from "./+types/home";
-import { Link, Form } from "react-router";
-import { signOut, authkitLoader } from "@workos-inc/authkit-react-router";
-import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import {
-  GitPullRequest,
-  Plug,
-  Rocket,
-  Sparkles,
-  Sprout,
-  type LucideIcon,
-} from "lucide-react";
+import { Link } from "react-router";
+import { authkitLoader } from "@workos-inc/authkit-react-router";
+import type { LoaderFunctionArgs } from "react-router";
 
-import { accentChip, type Accent } from "~/components/shell";
-import { Badge } from "~/components/ui/badge";
-import { Button } from "~/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "~/components/ui/card";
-import { cn } from "~/lib/utils";
+import { Reveal, Parallax } from "~/components/landing-motion";
+import { SiteHeader, SiteFooter } from "~/components/marketing/site-chrome";
+import { ProductMockup } from "~/components/marketing/product-mockup";
+import { caseStudies } from "~/lib/case-studies";
 
 export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
-
-export async function action({ request }: ActionFunctionArgs) {
-  return await signOut(request);
-}
 
 export function meta({}: Route.MetaArgs) {
   return [
     { title: "Eden" },
     {
       name: "description",
-      content: "Build, manage, and deploy eve agents from the web.",
+      content:
+        "Turn the work you keep repeating into agents that do it for you. No engineer, no backlog, no code required.",
     },
   ];
 }
 
-// The four product pillars from PRD.md §6. These are placeholders for M0 —
-// each will become its own route/section as the milestones land. Each carries a
-// distinct signature icon + accent so the pillars read as a colored set.
-const pillars: {
-  key: string;
-  title: string;
-  blurb: string;
-  milestone: string;
-  icon: LucideIcon;
-  accent: Accent;
-}[] = [
-  {
-    key: "connect",
-    title: "Connect",
-    blurb:
-      "GitHub App: create a new eve repo or connect an existing one, run init, parse the agent.",
-    milestone: "M0–M1",
-    icon: Plug,
-    accent: "brand",
-  },
-  {
-    key: "author",
-    title: "Author",
-    blurb:
-      "Visual editors for every eve concept, plus a Pi-based assistant that writes tool code for you.",
-    milestone: "M1",
-    icon: Sparkles,
-    accent: "sky",
-  },
-  {
-    key: "review",
-    title: "Review & version",
-    blurb:
-      "Git-native: every change is a branch → pull request → merge. The repo stays the source of truth.",
-    milestone: "M1",
-    icon: GitPullRequest,
-    accent: "amber",
-  },
-  {
-    key: "deploy",
-    title: "Deploy & operate",
-    blurb:
-      "One-click deploy via the DeployTarget seam. Managed hosting, metering, and billing on top.",
-    milestone: "M2–M3",
-    icon: Rocket,
-    accent: "emerald",
-  },
-];
-
-export default function Home({ loaderData }: Route.ComponentProps) {
-  const { user } = loaderData;
-
+/**
+ * Editorial landing page. Swiss/grotesque type (Suisse Intl), cream-paper light
+ * theme and warm-charcoal dark theme — both driven by the `eden-*` color tokens
+ * in app.css, so the whole page follows the ThemeToggle (defaults to system).
+ * Motion (scroll-reveal + parallax) comes from ~/components/landing-motion and
+ * is disabled for prefers-reduced-motion.
+ */
+export default function Home({}: Route.ComponentProps) {
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      <header className="border-b">
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6">
-          <span className="flex items-center gap-1.5">
-            <span className="flex size-6 items-center justify-center rounded-md bg-primary/10 text-primary ring-1 ring-primary/20">
-              <Sprout className="size-3.5" aria-hidden />
-            </span>
-            <span className="text-base font-semibold tracking-tight">Eden</span>
-          </span>
-          <div className="flex items-center gap-3">
-            {user ? (
-              <>
-                <span className="hidden text-sm text-muted-foreground sm:inline">
-                  {user.email}
-                </span>
-                <Button asChild size="sm">
-                  <Link to="/dashboard">Dashboard</Link>
-                </Button>
-                <Form method="post">
-                  <Button variant="ghost" size="sm" type="submit">
-                    Sign out
-                  </Button>
-                </Form>
-              </>
-            ) : (
-              <>
-                <Button variant="ghost" size="sm" asChild>
-                  <Link to="/login">Sign in</Link>
-                </Button>
-                <Button size="sm" asChild>
-                  <Link to="/signup">Sign up</Link>
-                </Button>
-              </>
-            )}
-          </div>
-        </div>
-      </header>
+    <main className="min-h-screen bg-eden-bg font-suisse text-eden-fg">
+      <SiteHeader />
 
-      <section className="mx-auto flex max-w-3xl flex-col items-center px-4 py-24 text-center sm:px-6">
-        <Badge
-          variant="secondary"
-          className="gap-1.5 border-primary/20 bg-primary/10 text-primary"
-        >
-          <Sprout className="size-3.5" aria-hidden />
-          Build, manage, and deploy eve agents
-        </Badge>
-        <h1 className="mt-6 text-4xl font-semibold tracking-tight sm:text-5xl">
-          Build, manage, and deploy eve agents from the web.
-        </h1>
-        <p className="mt-6 max-w-2xl text-lg text-muted-foreground">
-          Eden is a web app over Vercel&rsquo;s{" "}
-          <a
-            className="underline underline-offset-4"
-            href="https://github.com/vercel/eve"
+      {/* ————— Hero ————— */}
+      <section className="mx-auto max-w-6xl px-6 pb-20 pt-20">
+        <Parallax speed={0.1}>
+          <Reveal as="p" className="text-sm uppercase tracking-[0.25em] text-eden-faint">
+            Built on Vercel&rsquo;s eve
+          </Reveal>
+          <Reveal
+            as="h1"
+            delay={90}
+            className="mt-6 text-6xl font-medium leading-[1.02] tracking-[-0.02em] sm:text-8xl"
           >
-            eve
-          </a>{" "}
-          framework, so product managers can create agents — instructions,
-          tools, skills, schedules, channels — and ship them without writing
-          code by hand.
-        </p>
+            You know how the work gets done.
+            <span className="italic"> Build the agents that do it.</span>
+          </Reveal>
+          <Reveal
+            delay={180}
+            className="mt-12 grid gap-10 sm:grid-cols-[1fr_auto] sm:items-end"
+          >
+            <p className="max-w-xl text-lg leading-relaxed text-eden-muted">
+              Pick something your team does over and over — triaging tickets,
+              chasing invoices, prepping the weekly report. Describe how it
+              should work in plain words, and Eden builds an agent that runs it.
+              Stack a few together and you&rsquo;ve got a small team working
+              while you do something else.
+            </p>
+            <Link
+              to="/signup"
+              className="inline-flex items-center gap-2 text-lg font-medium underline underline-offset-8 hover:opacity-70"
+            >
+              Begin →
+            </Link>
+          </Reveal>
+        </Parallax>
+      </section>
 
-        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-          {user ? (
-            <>
-              <Button asChild size="lg">
-                <Link to="/dashboard">Open dashboard</Link>
-              </Button>
-              <Button asChild size="lg" variant="outline">
-                <Link to="/connect">Connect a repo</Link>
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button asChild size="lg">
-                <Link to="/signup">Get started</Link>
-              </Button>
-              <Button asChild size="lg" variant="outline">
-                <Link to="/login">Sign in</Link>
-              </Button>
-            </>
-          )}
+      {/* ————— Product shot ————— */}
+      <section className="mx-auto max-w-6xl px-6 pb-20">
+        <Reveal>
+          <Parallax speed={0.05}>
+            <ProductMockup />
+          </Parallax>
+        </Reveal>
+        <Reveal
+          as="p"
+          delay={120}
+          className="mt-5 text-sm text-eden-faint"
+        >
+          Describe the job in plain words. The assistant writes the code and
+          opens it for your review.
+        </Reveal>
+      </section>
+
+      <hr className="mx-auto max-w-6xl border-eden-line" />
+
+      {/* ————— The problem ————— */}
+      <section className="mx-auto max-w-6xl px-6 py-20">
+        <div className="grid gap-12 sm:grid-cols-[auto_1fr] sm:gap-20">
+          <Reveal
+            as="span"
+            className="text-sm uppercase tracking-[0.25em] text-eden-faint"
+          >
+            The problem
+          </Reveal>
+          <Reveal delay={100} className="max-w-2xl">
+            <h2 className="text-4xl font-medium leading-tight tracking-[-0.01em] sm:text-5xl">
+              The best ideas sit in a queue.
+            </h2>
+            <p className="mt-6 text-lg leading-relaxed text-eden-muted">
+              You can see exactly where an agent would save your team hours
+              every week. But making it real means writing a spec, handing it to
+              engineering, and waiting for a slot that might never open. By the
+              time it ships, the process has already moved on.
+            </p>
+            <p className="mt-4 text-lg leading-relaxed text-eden-muted">
+              Eden takes out the hand-off. The person who actually knows the
+              work builds the agent, and changes it the moment the work changes.
+            </p>
+          </Reveal>
         </div>
       </section>
 
-      <div className="mx-auto max-w-5xl px-4 pb-24 sm:px-6">
-        <div className="grid gap-4 sm:grid-cols-2">
-          {pillars.map((p) => {
-            const Icon = p.icon;
-            return (
-              <Card key={p.key} className="transition-colors hover:border-ring/60">
-                <CardHeader>
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2.5">
-                      <span
-                        className={cn(
-                          "flex size-9 shrink-0 items-center justify-center rounded-xl",
-                          accentChip[p.accent],
-                        )}
-                      >
-                        <Icon className="size-5" aria-hidden />
-                      </span>
-                      <CardTitle className="text-lg">{p.title}</CardTitle>
-                    </div>
-                    <span className="text-xs font-medium text-muted-foreground">
-                      {p.milestone}
-                    </span>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-sm text-muted-foreground">{p.blurb}</p>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+      <hr className="mx-auto max-w-6xl border-eden-line" />
 
-        <p className="mt-12 text-sm text-muted-foreground">
-          M0 skeleton · React Router 7 + Vite. Next: WorkOS AuthKit
-          (<code>npx workos@latest install</code>) and the org/project model.
-          See{" "}
-          <Link className="underline underline-offset-4" to="/">
-            PRD.md
-          </Link>{" "}
-          and ARCHITECTURE.md.
-        </p>
-      </div>
+      {/* ————— How it works ————— */}
+      <section className="mx-auto max-w-6xl px-6 py-20">
+        <Reveal
+          as="span"
+          className="text-sm uppercase tracking-[0.25em] text-eden-faint"
+        >
+          How it works
+        </Reveal>
+        <ol className="mt-12 grid gap-12 sm:grid-cols-3">
+          {[
+            {
+              n: "01",
+              title: "Describe",
+              blurb:
+                "Tell Eden what the job is, in plain words — the steps, the rules, the exceptions. Its assistant turns that into a working agent while you watch.",
+            },
+            {
+              n: "02",
+              title: "Check",
+              blurb:
+                "See exactly what the agent will do before it does anything. Approve it, tweak it, or ask for a change. Nothing goes live behind your back.",
+            },
+            {
+              n: "03",
+              title: "Put it to work",
+              blurb:
+                "Sign off, and the agent starts — in Slack, over email, on your site, or on a schedule you set. Change your mind tomorrow and update it in minutes.",
+            },
+          ].map((s, i) => (
+            <Reveal as="li" key={s.n} delay={i * 110}>
+              <Parallax as="span" speed={0.06 + i * 0.06} className="inline-block text-3xl italic text-eden-numeral">
+                {s.n}
+              </Parallax>
+              <h3 className="mt-3 text-xl font-medium">{s.title}</h3>
+              <p className="mt-3 leading-relaxed text-eden-muted">{s.blurb}</p>
+            </Reveal>
+          ))}
+        </ol>
+      </section>
+
+      {/* ————— Anatomy (inverted band) ————— */}
+      <section className="overflow-hidden bg-eden-band-bg text-eden-band-fg">
+        <div className="mx-auto max-w-6xl px-6 py-20">
+          <Reveal
+            as="span"
+            className="text-sm uppercase tracking-[0.25em] text-eden-band-muted"
+          >
+            What&rsquo;s inside an agent
+          </Reveal>
+          <div className="mt-12 grid gap-12 lg:grid-cols-2 lg:items-center">
+            <Reveal>
+              <h2 className="text-4xl font-medium leading-tight tracking-[-0.01em] sm:text-5xl">
+                No black box.
+                <span className="italic"> Just a few plain parts.</span>
+              </h2>
+              <p className="mt-6 max-w-lg text-lg leading-relaxed text-eden-band-muted">
+                An agent is made of pieces you can open and understand: what it
+                does, the actions it can take, when it runs, and where it shows
+                up. Change any of them yourself. When something needs real code,
+                the assistant writes it for you.
+              </p>
+            </Reveal>
+            <Reveal delay={120}>
+              <Parallax speed={0.12}>
+                <div className="rounded-lg border border-eden-panel-line bg-eden-panel-bg p-6 font-mono text-sm leading-loose">
+                  <p className="text-eden-band-muted"># support-agent/</p>
+                  <p>
+                    ├── instructions.md{"  "}
+                    <span className="text-eden-band-muted">
+                      — what it should do
+                    </span>
+                  </p>
+                  <p>
+                    ├── tools/refund.ts{"  "}
+                    <span className="text-eden-band-muted">
+                      — an action it can take
+                    </span>
+                  </p>
+                  <p>
+                    ├── skills/triage/{"  "}
+                    <span className="text-eden-band-muted">
+                      — know-how it reuses
+                    </span>
+                  </p>
+                  <p>
+                    ├── schedules/daily.ts{"  "}
+                    <span className="text-eden-band-muted">
+                      — runs every morning
+                    </span>
+                  </p>
+                  <p>
+                    └── channels/slack.ts{"  "}
+                    <span className="text-eden-band-muted">
+                      — where it works
+                    </span>
+                  </p>
+                </div>
+              </Parallax>
+            </Reveal>
+          </div>
+        </div>
+      </section>
+
+      {/* ————— What you get ————— */}
+      <section className="mx-auto max-w-6xl px-6 py-20">
+        <Reveal
+          as="span"
+          className="text-sm uppercase tracking-[0.25em] text-eden-faint"
+        >
+          What you get
+        </Reveal>
+        <div className="mt-12 grid gap-x-16 gap-y-14 sm:grid-cols-2">
+          {[
+            {
+              title: "Change it yourself",
+              blurb:
+                "Adjust how an agent behaves without opening a ticket. The person closest to the work makes the call and ships it the same day.",
+            },
+            {
+              title: "Nothing goes live by surprise",
+              blurb:
+                "Every change waits for your sign-off, and the agent stops for you on anything that matters. No unexpected refunds, no rogue emails.",
+            },
+            {
+              title: "It keeps its place",
+              blurb:
+                "Agents don't lose track when something crashes or a task takes hours. They pick up where they left off and finish the job.",
+            },
+            {
+              title: "Wherever your team works",
+              blurb:
+                "One agent answers in Slack, replies to email, chats on your site, and wakes up on a schedule. Build it once, use it everywhere.",
+            },
+            {
+              title: "It writes the hard parts",
+              blurb:
+                'Ask for what you want — "look up the order and refund it" — and the built-in assistant handles the technical side for you.',
+            },
+            {
+              title: "Yours to keep",
+              blurb:
+                "Eden is open source and free to run on your own servers, or let us host it. Every version is saved, so you can roll back or walk away anytime.",
+            },
+          ].map((f, i) => (
+            <Reveal
+              key={f.title}
+              delay={(i % 2) * 90}
+              className="border-t border-eden-line pt-6"
+            >
+              <h3 className="text-xl font-medium">{f.title}</h3>
+              <p className="mt-3 leading-relaxed text-eden-muted">{f.blurb}</p>
+            </Reveal>
+          ))}
+        </div>
+      </section>
+
+      <hr className="mx-auto max-w-6xl border-eden-line" />
+
+      {/* ————— Pull quote ————— */}
+      <section className="mx-auto max-w-6xl overflow-hidden px-6 py-24">
+        <Parallax speed={0.08}>
+          <Reveal as="blockquote" className="mx-auto max-w-4xl text-center">
+            <p className="text-4xl font-medium italic leading-snug tracking-[-0.01em] sm:text-5xl">
+              &ldquo;The best person to build the support agent is the one
+              who&rsquo;s already answered a thousand support tickets.&rdquo;
+            </p>
+            <p className="mt-8 text-sm uppercase tracking-[0.25em] text-eden-faint">
+              The idea behind Eden
+            </p>
+          </Reveal>
+        </Parallax>
+      </section>
+
+      <hr className="mx-auto max-w-6xl border-eden-line" />
+
+      {/* ————— Who it's for ————— */}
+      <section className="mx-auto max-w-6xl px-6 py-20">
+        <Reveal
+          as="span"
+          className="text-sm uppercase tracking-[0.25em] text-eden-faint"
+        >
+          Who it&rsquo;s for
+        </Reveal>
+        <div className="mt-12 grid gap-12 sm:grid-cols-3">
+          {[
+            {
+              title: "Product & ops",
+              blurb:
+                "Turn the process you run every week into an agent that runs it for you. Change how it works the same afternoon you think of it.",
+            },
+            {
+              title: "Support teams",
+              blurb:
+                "Hand the playbook you know by heart to an agent that follows it exactly, and checks in with you on the calls that actually matter.",
+            },
+            {
+              title: "Engineers",
+              blurb:
+                "Let the team build the first draft themselves. Spend your time reviewing the work instead of turning specs into boilerplate.",
+            },
+          ].map((p, i) => (
+            <Reveal key={p.title} delay={i * 110}>
+              <h3 className="text-2xl italic">{p.title}</h3>
+              <p className="mt-4 leading-relaxed text-eden-muted">{p.blurb}</p>
+            </Reveal>
+          ))}
+        </div>
+      </section>
+
+      <hr className="mx-auto max-w-6xl border-eden-line" />
+
+      {/* ————— In the wild (case studies teaser) ————— */}
+      <section className="mx-auto max-w-6xl px-6 py-20">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <Reveal
+            as="span"
+            className="text-sm uppercase tracking-[0.25em] text-eden-faint"
+          >
+            In the wild
+          </Reveal>
+          <Reveal delay={60}>
+            <Link
+              to="/case-studies"
+              className="text-sm font-medium underline underline-offset-8 hover:opacity-70"
+            >
+              All case studies →
+            </Link>
+          </Reveal>
+        </div>
+        <Reveal
+          as="h2"
+          delay={90}
+          className="mt-8 max-w-3xl text-4xl font-medium leading-tight tracking-[-0.01em] sm:text-5xl"
+        >
+          Same teams.
+          <span className="italic"> Far more done.</span>
+        </Reveal>
+        <div className="mt-12 grid gap-8 sm:grid-cols-3">
+          {caseStudies.slice(0, 3).map((cs, i) => (
+            <Reveal key={cs.slug} delay={i * 100}>
+              <Link
+                to={`/case-studies/${cs.slug}`}
+                className="group block"
+              >
+                <div className="overflow-hidden rounded-xl border border-eden-line">
+                  <img
+                    src={cs.image}
+                    alt={cs.imageAlt}
+                    loading="lazy"
+                    className="marketing-photo aspect-[4/3] w-full object-cover transition duration-700 group-hover:scale-[1.04]"
+                  />
+                </div>
+                <p className="mt-4 text-xs uppercase tracking-[0.2em] text-eden-faint">
+                  {cs.industry}
+                </p>
+                <p className="mt-2 text-lg font-medium leading-snug group-hover:opacity-70">
+                  {cs.headline}
+                </p>
+                <p className="mt-3 flex items-baseline gap-2 text-sm text-eden-muted">
+                  <span className="font-medium text-eden-fg">
+                    {cs.highlight.value}
+                  </span>
+                  {cs.highlight.label}
+                </p>
+              </Link>
+            </Reveal>
+          ))}
+        </div>
+      </section>
+
+      <hr className="mx-auto max-w-6xl border-eden-line" />
+
+      {/* ————— Open source / self-host ————— */}
+      <section className="mx-auto max-w-6xl overflow-hidden px-6 py-20">
+        <Reveal
+          as="span"
+          className="text-sm uppercase tracking-[0.25em] text-eden-faint"
+        >
+          Open source
+        </Reveal>
+        <div className="mt-12 grid gap-12 lg:grid-cols-2 lg:items-center">
+          <Reveal>
+            <h2 className="text-4xl font-medium leading-tight tracking-[-0.01em] sm:text-5xl">
+              Run it on your own hardware.
+              <span className="italic"> Own the whole thing.</span>
+            </h2>
+            <p className="mt-6 max-w-lg text-lg leading-relaxed text-eden-muted">
+              Eden is open source. Clone the repo, run it on your own servers,
+              and keep your agents and your data on machines you control.
+              There&rsquo;s no vendor holding the keys — read every line, change
+              what you want, and never worry about being locked in or shut off.
+            </p>
+            <p className="mt-4 max-w-lg text-lg leading-relaxed text-eden-muted">
+              Don&rsquo;t want to run it yourself? We&rsquo;ll host it for you.
+              Same software either way.
+            </p>
+            <a
+              href="https://github.com/zero8ai/eden"
+              className="mt-8 inline-flex items-center gap-2 text-lg font-medium underline underline-offset-8 hover:opacity-70"
+            >
+              View the source on GitHub →
+            </a>
+          </Reveal>
+          <Reveal delay={120}>
+            <Parallax speed={0.1}>
+              <div className="rounded-lg border border-eden-panel-line bg-eden-panel-bg p-6 font-mono text-sm leading-loose text-eden-band-fg">
+                <p className="text-eden-band-muted"># your server, your rules</p>
+                <p>
+                  <span className="text-eden-band-muted">$ </span>
+                  git clone github.com/zero8ai/eden
+                </p>
+                <p>
+                  <span className="text-eden-band-muted">$ </span>
+                  npm install
+                </p>
+                <p>
+                  <span className="text-eden-band-muted">$ </span>
+                  npm run start
+                </p>
+                <p className="text-eden-band-muted">
+                  → running at localhost, on your box
+                </p>
+              </div>
+            </Parallax>
+          </Reveal>
+        </div>
+      </section>
+
+      {/* ————— Final CTA ————— */}
+      <section className="bg-eden-band-bg text-eden-band-fg">
+        <div className="mx-auto max-w-6xl px-6 py-24 text-center">
+          <Reveal
+            as="h2"
+            className="mx-auto max-w-3xl text-5xl font-medium leading-tight tracking-[-0.02em] sm:text-6xl"
+          >
+            Your first agent,
+            <span className="italic"> before the meeting ends.</span>
+          </Reveal>
+          <Reveal
+            as="p"
+            delay={90}
+            className="mx-auto mt-6 max-w-xl text-lg leading-relaxed text-eden-band-muted"
+          >
+            Start from a template or a blank slate. Describe the job, check the
+            work, put it live. That&rsquo;s the whole loop.
+          </Reveal>
+          <Reveal delay={180} className="mt-10">
+            <Link
+              to="/signup"
+              className="rounded-full bg-eden-band-fg px-8 py-3 text-lg font-medium text-eden-band-bg transition hover:opacity-85"
+            >
+              Sign up
+            </Link>
+          </Reveal>
+        </div>
+      </section>
+
+      <SiteFooter />
     </main>
   );
 }

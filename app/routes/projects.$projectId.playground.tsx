@@ -11,7 +11,8 @@
  * progress instead of one spinner. On completion it revalidates and replays Eve history.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Square } from "lucide-react";
 import {
   redirect,
   useFetcher,
@@ -49,6 +50,7 @@ import {
   createPlaygroundSession,
   loadPlaygroundEntriesFromEve,
   listPlaygroundSessions,
+  reconcilePlaygroundSessionFromEve,
   summarizePlaygroundSession,
 } from "~/playground/sessions.server";
 import { newPlaygroundSessionPath } from "~/playground/url";
@@ -95,7 +97,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         }),
       ]);
       const selectedSessionId = args.url.searchParams.get("session");
-      const currentSession =
+      let currentSession =
         (selectedSessionId
           ? sessions.find((session) => session.id === selectedSessionId)
           : null) ??
@@ -115,6 +117,15 @@ export const loader = (args: LoaderFunctionArgs) =>
       if (currentSession?.externalSessionId) {
         if (historyTarget) {
           try {
+            if (
+              currentSession.status === "running" ||
+              currentSession.status === "failed"
+            ) {
+              currentSession = await reconcilePlaygroundSessionFromEve({
+                session: currentSession,
+                target: historyTarget,
+              });
+            }
             entries = await loadPlaygroundEntriesFromEve({
               session: currentSession,
               target: historyTarget,
@@ -181,6 +192,7 @@ export function meta() {
 
 /** Local mirror of an in-flight turn, driven by the NDJSON stream. */
 interface LiveTurn {
+  playgroundSessionId: string | null;
   userText: string;
   text: string;
   steps: ChatStep[];
@@ -215,6 +227,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
 
   const [live, setLive] = useState<LiveTurn | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const stopRequestedRef = useRef(false);
   const remoteBusy = currentSessionStatus === "running";
   const busy = (live !== null && !live.done) || remoteBusy;
   const creatingSession = newSessionFetcher.state !== "idle";
@@ -271,7 +285,9 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const send = useCallback(
     async (message: string) => {
       setSendError(null);
+      stopRequestedRef.current = false;
       setLive({
+        playgroundSessionId: currentSessionId,
         userText: message,
         text: "",
         steps: [],
@@ -291,9 +307,12 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       if (currentSessionId) form.set("playgroundSessionId", currentSessionId);
 
       try {
+        const controller = new AbortController();
+        streamAbortRef.current = controller;
         const res = await fetch(`/api/repos/${project.id}/playground/stream`, {
           method: "POST",
           body: form,
+          signal: controller.signal,
         });
         if (!res.ok || !res.body) {
           const detail = await res.json().catch(() => null);
@@ -339,8 +358,16 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             },
           );
         }
+        streamAbortRef.current = null;
         setLive(null);
       } catch (error) {
+        streamAbortRef.current = null;
+        if (stopRequestedRef.current) {
+          await revalidator.revalidate();
+          setLive(null);
+          stopRequestedRef.current = false;
+          return;
+        }
         // The server still persists in the background — revalidate so the reply isn't lost.
         setLive((prev) =>
           prev
@@ -370,33 +397,98 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     ],
   );
 
+  const stopTurn = useCallback(async () => {
+    const playgroundSessionId = live?.playgroundSessionId ?? currentSessionId;
+    if (!playgroundSessionId || !deploymentId) return;
+    setSendError(null);
+
+    const form = new FormData();
+    form.set("playgroundSessionId", playgroundSessionId);
+    form.set("agentName", activeAgent);
+    form.set("deploymentId", deploymentId);
+
+    try {
+      const res = await fetch(`/api/repos/${project.id}/playground/stop`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        throw new Error(
+          (detail && typeof detail === "object" && "error" in detail
+            ? String((detail as { error: unknown }).error)
+            : null) ?? `Stop failed (${res.status}).`,
+        );
+      }
+
+      stopRequestedRef.current = true;
+      streamAbortRef.current?.abort();
+      setLive((prev) =>
+        prev
+          ? {
+              ...prev,
+              error: "Stopped by user.",
+              activity: null,
+              done: true,
+            }
+          : prev,
+      );
+      await revalidator.revalidate();
+      setLive(null);
+    } catch (error) {
+      setSendError((error as Error).message);
+    }
+  }, [
+    activeAgent,
+    currentSessionId,
+    deploymentId,
+    live?.playgroundSessionId,
+    project.id,
+    revalidator,
+  ]);
+
   // Stable element between renders so the composer (and any memoized child) doesn't redraw.
   const targetPicker = useMemo(
     () => (
-      <Select
-        value={deploymentId}
-        onValueChange={(nextDeploymentId) => {
-          const next = new URLSearchParams(searchParams);
-          next.set("deployment", nextDeploymentId);
-          setSearchParams(next, { replace: true });
-        }}
-      >
-        <SelectTrigger
-          className="h-9 min-w-44 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
-          aria-label="Deployment to talk to"
+      <>
+        <Select
+          value={deploymentId}
+          onValueChange={(nextDeploymentId) => {
+            const next = new URLSearchParams(searchParams);
+            next.set("deployment", nextDeploymentId);
+            setSearchParams(next, { replace: true });
+          }}
+          disabled={busy}
         >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {targets.map((t: Target) => (
-            <SelectItem key={t.deploymentId} value={t.deploymentId}>
-              {t.version} · {t.environmentName}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+          <SelectTrigger
+            className="h-9 min-w-44 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
+            aria-label="Deployment to talk to"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {targets.map((t: Target) => (
+              <SelectItem key={t.deploymentId} value={t.deploymentId}>
+                {t.version} · {t.environmentName}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {busy && (
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            className="h-9 gap-1.5"
+            onClick={stopTurn}
+          >
+            <Square className="size-3.5" />
+            Stop
+          </Button>
+        )}
+      </>
     ),
-    [deploymentId, searchParams, setSearchParams, targets],
+    [busy, deploymentId, searchParams, setSearchParams, stopTurn, targets],
   );
 
   const headerActions = useMemo(
@@ -537,6 +629,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
 }
 
 type StreamEvent =
+  | { type: "session"; playgroundSessionId: string }
   | { type: "model"; modelId: string }
   | { type: "thinking" }
   | { type: "action"; toolName: string; summary: string | null }
@@ -558,6 +651,8 @@ type StreamEvent =
 /** Fold one stream event into the live turn state (pure — safe inside a functional setState). */
 function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
   switch (evt.type) {
+    case "session":
+      return { ...prev, playgroundSessionId: evt.playgroundSessionId };
     case "model":
       return { ...prev, modelId: evt.modelId };
     case "thinking":

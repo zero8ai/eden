@@ -151,7 +151,7 @@ export async function savePlaygroundSessionCursor(input: {
   continuationToken: string | null;
   streamIndex: number;
   title?: string | null;
-  status: "waiting" | "completed" | "failed";
+  status: "running" | "waiting" | "completed" | "failed";
 }): Promise<void> {
   await db
     .update(playgroundSessions)
@@ -166,6 +166,27 @@ export async function savePlaygroundSessionCursor(input: {
       lastVersion: input.target.version,
       title: input.title ?? undefined,
       status: input.status,
+      lastEventAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(playgroundSessions.id, input.id));
+}
+
+export async function markPlaygroundSessionStopped(input: {
+  id: string;
+  target: Target;
+  title?: string | null;
+}): Promise<void> {
+  await db
+    .update(playgroundSessions)
+    .set({
+      environmentId: input.target.environmentId,
+      worldKey: input.target.environmentId,
+      lastDeploymentId: input.target.deploymentId,
+      lastReleaseId: input.target.releaseId,
+      lastVersion: input.target.version,
+      title: input.title ?? undefined,
+      status: "failed",
       lastEventAt: new Date(),
       updatedAt: new Date(),
     })
@@ -193,6 +214,47 @@ export async function loadPlaygroundEntriesFromEve(input: {
     timeoutMs: input.timeoutMs,
   });
   return projectEventsToEntries(events, input.session);
+}
+
+export async function reconcilePlaygroundSessionFromEve(input: {
+  session: PlaygroundSession;
+  target: Target;
+  timeoutMs?: number;
+}): Promise<PlaygroundSession> {
+  if (!input.session.externalSessionId) return input.session;
+  const tail = await readEveSessionTail({
+    baseUrl: input.target.url,
+    sessionId: input.session.externalSessionId,
+    startIndex: input.session.streamIndex,
+    timeoutMs: input.timeoutMs ?? 1_500,
+  });
+  if (tail.events.length === 0) return input.session;
+
+  const nextStreamIndex = input.session.streamIndex + tail.events.length;
+  const nextStatus =
+    statusFromTail(tail.events) ?? sessionStatus(input.session.status);
+  await savePlaygroundSessionCursor({
+    id: input.session.id,
+    target: input.target,
+    externalSessionId: input.session.externalSessionId,
+    continuationToken: input.session.continuationToken,
+    streamIndex: nextStreamIndex,
+    title: null,
+    status: nextStatus,
+  });
+
+  return {
+    ...input.session,
+    environmentId: input.target.environmentId,
+    worldKey: input.target.environmentId,
+    lastDeploymentId: input.target.deploymentId,
+    lastReleaseId: input.target.releaseId,
+    lastVersion: input.target.version,
+    streamIndex: nextStreamIndex,
+    status: nextStatus,
+    lastEventAt: new Date(),
+    updatedAt: new Date(),
+  };
 }
 
 interface EveStreamEvent {
@@ -238,6 +300,122 @@ async function readEveSessionEvents(input: {
     reader.cancel().catch(() => {});
   }
   return events;
+}
+
+async function readEveSessionTail(input: {
+  baseUrl: string;
+  sessionId: string;
+  startIndex: number;
+  timeoutMs: number;
+}): Promise<{ events: EveStreamEvent[] }> {
+  const base = input.baseUrl.replace(/\/+$/, "");
+  const fetchController = new AbortController();
+  const fetchTimer = setTimeout(() => fetchController.abort(), 15_000);
+  let res: Response;
+  try {
+    res = await fetch(
+      `${base}/eve/v1/session/${input.sessionId}/stream?startIndex=${input.startIndex}`,
+      { signal: fetchController.signal },
+    );
+  } finally {
+    clearTimeout(fetchTimer);
+  }
+  if (!res.ok || !res.body) {
+    throw new Error(`Eve stream returned ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const events: EveStreamEvent[] = [];
+  let buf = "";
+  let terminal = false;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const read = async () =>
+    Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => {
+        idleTimer = setTimeout(
+          () => reject(new Error("idle")),
+          input.timeoutMs,
+        );
+      }),
+    ]).finally(() => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = null;
+    });
+
+  try {
+    while (!terminal) {
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await read();
+      } catch (error) {
+        if ((error as Error).message === "idle") break;
+        throw error;
+      }
+      if (chunk.done) break;
+      buf += decoder.decode(chunk.value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const raw of lines) {
+        const event = parseEveLine(raw);
+        if (!event) continue;
+        events.push(event);
+        if (isTerminalEvent(event)) {
+          terminal = true;
+          break;
+        }
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  return { events };
+}
+
+function isTerminalEvent(event: EveStreamEvent): boolean {
+  return (
+    event.type === "session.waiting" ||
+    event.type === "session.failed" ||
+    event.type === "turn.failed"
+  );
+}
+
+function statusFromTail(
+  events: EveStreamEvent[],
+): "waiting" | "completed" | "failed" | "running" | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event.type === "session.waiting" || event.type === "turn.completed") {
+      return "waiting";
+    }
+    if (event.type === "turn.failed" || event.type === "session.failed") {
+      return "failed";
+    }
+    if (
+      event.type === "message.appended" ||
+      event.type === "actions.requested" ||
+      event.type === "step.started" ||
+      event.type === "reasoning.appended"
+    ) {
+      return "running";
+    }
+  }
+  return null;
+}
+
+function sessionStatus(
+  value: string,
+): "running" | "waiting" | "completed" | "failed" {
+  if (
+    value === "running" ||
+    value === "waiting" ||
+    value === "completed" ||
+    value === "failed"
+  ) {
+    return value;
+  }
+  return "waiting";
 }
 
 function parseEveLine(raw: string): EveStreamEvent | null {
@@ -469,6 +647,11 @@ function projectEventsToEntries(
       turn.steps.length > 0
     ) {
       const normalized = normalizeReply(reply);
+      const replayError =
+        turn.error ??
+        (session.status === "failed" && !normalized.reply
+          ? "The turn stopped before Eden recorded a final reply. Reloading may recover it if Eve finished after the last saved cursor."
+          : null);
       entries.push({
         id: `${turn.turnId}:assistant`,
         role: "assistant",
@@ -479,7 +662,7 @@ function projectEventsToEntries(
         steps: turn.steps,
         inputRequests:
           turn.inputRequests.length > 0 ? turn.inputRequests : undefined,
-        error: turn.error,
+        error: replayError,
       });
     }
   }

@@ -53,8 +53,8 @@ export function QuickDeploy({ base }: { base: string }) {
     : null;
   const postAction = projectId ? `/repos/${projectId}/quick-deploy` : null;
 
-  const data = useFetcher<QuickDeployData>();
-  const { load } = data;
+  const fetcher = useFetcher<QuickDeployData>();
+  const { load } = fetcher;
   useEffect(() => {
     if (loadUrl) load(loadUrl);
   }, [loadUrl, load]);
@@ -64,7 +64,7 @@ export function QuickDeploy({ base }: { base: string }) {
   const ship = useFetcher<{ error?: string }>();
   const deploying = ship.state !== "idle";
 
-  const envNames = data.data?.envNames ?? [];
+  const envNames = fetcher.data?.envNames ?? [];
   // Render nothing until data arrives, or when the scope has no environment to ship to (no repo,
   // read error, or genuinely none) — a hidden button beats a broken one in the shared nav.
   if (!postAction || envNames.length === 0) return null;
@@ -77,7 +77,7 @@ export function QuickDeploy({ base }: { base: string }) {
   };
 
   const label = deploying ? "Deploying…" : "Quick deploy";
-  const title = hint(data.data?.draftCount ?? 0, data.data?.defaultBranch ?? "main");
+  const title = hint(fetcher.data?.draftCount ?? 0, fetcher.data?.defaultBranch ?? "main");
   const error = ship.data?.error;
 
   return (

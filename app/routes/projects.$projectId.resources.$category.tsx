@@ -20,7 +20,14 @@ import {
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
 import { NewResourceDialog } from "~/components/new-resource-dialog";
-import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
+import { categoryMeta } from "~/components/resource-category";
+import {
+  AgentNav,
+  AppShell,
+  PageHeader,
+  accentChip,
+  repoCrumbs,
+} from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -55,6 +62,7 @@ import { AGENT_CATEGORIES } from "~/eve/types";
 import { getAgentSource, getLastCommitForPaths } from "~/github/cached.server";
 import { fetchAgentSource, type LastCommitInfo } from "~/github/repo.server";
 import { contextPath } from "~/lib/paths";
+import { cn } from "~/lib/utils";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -296,6 +304,8 @@ export default function ResourceCategory({
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
   const kind = RESOURCE_KINDS[category.key];
+  const meta = categoryMeta(category.key);
+  const CategoryIcon = meta.icon;
 
   return (
     <AppShell
@@ -314,6 +324,8 @@ export default function ResourceCategory({
         activeAgent={isTeam ? activeAgent : undefined}
       />
       <PageHeader
+        icon={meta.icon}
+        accent={meta.accent}
         title={category.label}
         description={CATEGORY_HINTS[category.key]}
         actions={<NewResourceDialog kind={kind} base={ctx} root={activeRoot} />}
@@ -364,6 +376,14 @@ export default function ResourceCategory({
       {rows.length === 0 ? (
         <Card className="border-dashed">
           <CardHeader className="items-center py-12 text-center">
+            <span
+              className={cn(
+                "mx-auto mb-1 flex size-12 items-center justify-center rounded-full",
+                accentChip[meta.accent],
+              )}
+            >
+              <CategoryIcon className="size-6" aria-hidden />
+            </span>
             <CardTitle className="text-lg">
               No {category.label.toLowerCase()} yet
             </CardTitle>
@@ -403,14 +423,11 @@ export default function ResourceCategory({
                     </TableCell>
                     <TableCell>
                       {row.stagedDelete ? (
-                        <Badge
-                          variant="outline"
-                          className="text-xs text-destructive border-destructive/40"
-                        >
+                        <Badge variant="destructive" className="text-xs">
                           staged — delete
                         </Badge>
                       ) : row.staged ? (
-                        <Badge variant="outline" className="text-xs">
+                        <Badge variant="warning" className="text-xs">
                           {row.inRepo ? "staged edit" : "staged — new"}
                         </Badge>
                       ) : null}

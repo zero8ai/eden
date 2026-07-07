@@ -5,7 +5,7 @@
  * after the change is published + merged, which restarts the instance (refresh-on-merge).
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { Lock } from "lucide-react";
+import { Lock, Sparkles } from "lucide-react";
 import {
   Link,
   redirect,
@@ -232,6 +232,8 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
     >
       <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-8 sm:px-6">
         <PageHeader
+          icon={Sparkles}
+          accent="brand"
           title="Configure the assistant"
           description="Tailor the assistant to this repo. Changes stage as drafts — they take effect after you publish + merge them on the Deployment tab, which restarts the assistant."
           actions={

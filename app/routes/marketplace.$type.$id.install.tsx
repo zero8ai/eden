@@ -13,6 +13,7 @@
  * standalone repo, and agent → subagent of an existing agent.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { Boxes, Download, KeyRound, Layers } from "lucide-react";
 import { useState } from "react";
 import {
   Form,
@@ -26,7 +27,11 @@ import {
 
 import { COPY } from "~/components/secrets-card";
 
-import { AppShell, PageHeader } from "~/components/shell";
+import {
+  TYPE_META,
+  TypeBadge,
+} from "~/components/marketplace-type-badge";
+import { AppShell, PageHeader, accentText } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -83,15 +88,6 @@ import { resolveSyncedAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
 import type { Route } from "./+types/marketplace.$type.$id.install";
-
-const TYPE_BADGE: Record<TemplateType, string> = {
-  agent: "Agent",
-  tool: "Tool",
-  skill: "Skill",
-  subagent: "Subagent",
-  channel: "Channel",
-  connection: "Connection",
-};
 
 /** Narrow a URL param to a TemplateType, 404-ing on anything else. */
 function parseType(param: string | undefined): TemplateType {
@@ -549,10 +545,12 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
       </div>
 
       <PageHeader
+        icon={TYPE_META[manifest.type].icon}
+        accent={TYPE_META[manifest.type].accent}
         title={
           <span className="flex items-center gap-3">
             Install {manifest.name}
-            <Badge variant="secondary">{TYPE_BADGE[manifest.type]}</Badge>
+            <TypeBadge type={manifest.type} />
           </span>
         }
         description={manifest.description}
@@ -571,7 +569,10 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
         {/* 1 — Target */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Target</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Boxes className={`size-4 ${accentText.cyan}`} aria-hidden />
+              Target
+            </CardTitle>
             <CardDescription>
               Where this {type} lands. Selecting keeps the choice in the URL.
             </CardDescription>
@@ -672,7 +673,8 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
         {preview && preview.includes.length > 0 && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Layers className={`size-4 ${accentText.indigo}`} aria-hidden />
                 Bundled from the catalog
               </CardTitle>
               <CardDescription>
@@ -693,9 +695,7 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                     <span className="font-mono text-xs text-muted-foreground">
                       v{inc.version}
                     </span>
-                    <Badge variant="secondary" className="shrink-0">
-                      {TYPE_BADGE[inc.type]}
-                    </Badge>
+                    <TypeBadge type={inc.type} />
                   </li>
                 ))}
               </ul>
@@ -708,8 +708,11 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
           <Card>
             <CardHeader>
               <div className="flex items-center gap-2">
-                <CardTitle className="text-base">What this installs</CardTitle>
-                {preview.isUpdate && <Badge variant="outline">update</Badge>}
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Download className={`size-4 ${accentText.emerald}`} aria-hidden />
+                  What this installs
+                </CardTitle>
+                {preview.isUpdate && <Badge variant="warning">update</Badge>}
               </div>
             </CardHeader>
             <CardContent className="space-y-5">
@@ -734,7 +737,16 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                 <h3 className="mb-2 text-sm font-medium">Files</h3>
                 <ul className="divide-y rounded-lg border text-sm">
                   {preview.files.map((f) => (
-                    <li key={f} className="px-3 py-1.5 font-mono text-xs">
+                    <li
+                      key={f}
+                      className="flex items-center gap-2 px-3 py-1.5 font-mono text-xs"
+                    >
+                      <span
+                        className="text-emerald-600 dark:text-emerald-400"
+                        aria-hidden
+                      >
+                        +
+                      </span>
                       {f}
                     </li>
                   ))}
@@ -750,9 +762,14 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                     {preview.deletions.map((f) => (
                       <li
                         key={f}
-                        className="px-3 py-1.5 font-mono text-xs line-through decoration-destructive/60"
+                        className="flex items-center gap-2 px-3 py-1.5 font-mono text-xs"
                       >
-                        {f}
+                        <span className="text-rose-600 dark:text-rose-400" aria-hidden>
+                          −
+                        </span>
+                        <span className="line-through decoration-destructive/60">
+                          {f}
+                        </span>
                       </li>
                     ))}
                   </ul>
@@ -806,7 +823,10 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
             {preview.secrets.length > 0 && (
               <Card className="mb-6">
                 <CardHeader>
-                  <CardTitle className="text-base">Secrets</CardTitle>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <KeyRound className={`size-4 ${accentText.amber}`} aria-hidden />
+                    Secrets
+                  </CardTitle>
                   <CardDescription>
                     {newMemberTemplate
                       ? `This agent needs ${preview.secrets.length} secret${preview.secrets.length === 1 ? "" : "s"}. Enter them now — they'll be attached when the member ships. Values are encrypted write-only.`
@@ -958,11 +978,7 @@ function InstallSecretField({
 }
 
 function DepBadge({ status }: { status: DependencyDecision["status"] }) {
-  if (status === "add") return <Badge variant="secondary">add</Badge>;
+  if (status === "add") return <Badge variant="success">add</Badge>;
   if (status === "keep") return <Badge variant="outline">already present</Badge>;
-  return (
-    <Badge variant="outline" className="border-destructive/40 text-destructive">
-      range conflict
-    </Badge>
-  );
+  return <Badge variant="destructive">range conflict</Badge>;
 }

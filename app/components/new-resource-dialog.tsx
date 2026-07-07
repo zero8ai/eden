@@ -6,6 +6,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
+import { categoryMeta } from "~/components/resource-category";
+import { accentChip } from "~/components/shell";
 import { Button } from "~/components/ui/button";
 import {
   Dialog,
@@ -23,6 +25,7 @@ import {
   slugifyResourceName,
   type ResourceKind,
 } from "~/eve/templates";
+import { cn } from "~/lib/utils";
 
 export function NewResourceDialog({
   kind,
@@ -39,6 +42,8 @@ export function NewResourceDialog({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const slug = slugifyResourceName(name);
+  const meta = categoryMeta(kind.key);
+  const Icon = meta.icon;
 
   const create = () => {
     if (!slug) return;
@@ -56,7 +61,17 @@ export function NewResourceDialog({
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>New {kind.label}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <span
+              className={cn(
+                "flex size-7 items-center justify-center rounded-lg",
+                accentChip[meta.accent],
+              )}
+            >
+              <Icon className="size-4" aria-hidden />
+            </span>
+            New {kind.label}
+          </DialogTitle>
           <DialogDescription>{kind.hint}</DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">

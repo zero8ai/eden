@@ -8,7 +8,7 @@
  * from the Release commit linked here (link, not snapshot).
  */
 import { authkitLoader } from "@workos-inc/authkit-react-router";
-import { Users } from "lucide-react";
+import { Activity, Users } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import {
   Link,
@@ -78,12 +78,14 @@ export function meta() {
   return [{ title: "Run · Eden" }];
 }
 
-/** failed→destructive, completed→secondary, else outline. */
+/** failed→destructive, completed→success (emerald), running→default (violet), else outline. */
 function statusVariant(
   status: string,
-): "secondary" | "outline" | "destructive" {
+): "default" | "outline" | "destructive" | "success" | "warning" {
   if (status === "failed") return "destructive";
-  if (status === "completed" || status === "success") return "secondary";
+  if (status === "completed" || status === "success") return "success";
+  if (status === "running") return "default";
+  if (status === "queued" || status === "pending") return "warning";
   return "outline";
 }
 
@@ -148,6 +150,8 @@ export default function RunTranscriptRoute({ loaderData }: Route.ComponentProps)
         activeAgent={isTeam ? activeAgent : undefined}
       />
       <PageHeader
+        icon={Activity}
+        accent="indigo"
         title={run.externalRunId ?? run.id}
         description="A readable, chat-shaped transcript of the run."
         actions={

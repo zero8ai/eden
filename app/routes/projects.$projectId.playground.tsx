@@ -12,7 +12,7 @@
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Square } from "lucide-react";
+import { FlaskConical, Square } from "lucide-react";
 import {
   redirect,
   useFetcher,
@@ -528,6 +528,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     () => (
       <>
         <PageHeader
+          icon={FlaskConical}
+          accent="blue"
           title={isTeam ? `Playground — ${activeAgent}` : "Playground"}
           description="Talk to a live deployment of this agent. Conversation history reloads from Eve's durable session stream."
           actions={headerActions}
@@ -728,6 +730,12 @@ function LiveBubble({ live }: { live: LiveTurn }) {
         <AssistantBubble>
           {live.modelId && (
             <span className="mb-1.5 flex items-center gap-1.5">
+              {!live.done && (
+                <span
+                  className="size-1.5 animate-pulse rounded-full bg-blue-500"
+                  aria-hidden
+                />
+              )}
               <span className="font-mono text-xs text-muted-foreground">
                 {live.modelId}
               </span>

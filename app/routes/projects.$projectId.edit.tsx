@@ -8,6 +8,7 @@
  * (PRD §7.3).
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { Pencil } from "lucide-react";
 import { useState } from "react";
 import {
   Link,
@@ -250,6 +251,8 @@ function Editor({
         activeAgent={isTeam ? activeAgent : undefined}
       />
       <PageHeader
+        icon={Pencil}
+        accent="brand"
         title={
           <span className="flex flex-wrap items-center gap-3">
             <span className="break-all font-mono text-xl">{path}</span>

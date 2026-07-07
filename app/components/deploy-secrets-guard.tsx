@@ -6,6 +6,7 @@
  * `Deploy` enables only when every row is resolved; `Deploy anyway` never blocks; dismissed
  * requirements never trigger the guard (excluded upstream in computeRequiredSecrets).
  */
+import { Check, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useFetcher } from "react-router";
 
@@ -56,12 +57,10 @@ function GuardRow({
 
   if (resolved) {
     return (
-      <li className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
-        <span className="text-emerald-600" aria-hidden>
-          ✓
-        </span>
+      <li className="flex items-center gap-2 rounded-md border border-emerald-500/40 px-3 py-2 text-sm">
+        <Check className="size-4 text-emerald-600 dark:text-emerald-400" aria-hidden />
         <span className="font-mono">{secret.name}</span>
-        <span className="text-xs text-muted-foreground">resolved</span>
+        <span className="text-xs text-emerald-600 dark:text-emerald-400">resolved</span>
       </li>
     );
   }
@@ -69,9 +68,10 @@ function GuardRow({
   return (
     <li className="space-y-1.5 rounded-md border border-amber-500/50 px-3 py-2">
       <div className="flex items-center gap-2 text-sm">
-        <span className="text-amber-600" aria-hidden>
-          ⚠
-        </span>
+        <TriangleAlert
+          className="size-4 shrink-0 text-amber-600 dark:text-amber-400"
+          aria-hidden
+        />
         {secret.member && (
           <span className="font-mono text-xs text-muted-foreground">{secret.member}:</span>
         )}

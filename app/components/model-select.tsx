@@ -9,6 +9,7 @@
  * is never blocked. Committing a value calls onCommit — the caller stages the agent.ts draft
  * like every other edit.
  */
+import { Check, TriangleAlert } from "lucide-react";
 import * as React from "react";
 import { useMemo, useState } from "react";
 import { useFetcher } from "react-router";
@@ -247,6 +248,12 @@ export function ModelSelect({
                     {ctx && <div>{ctx}</div>}
                     {price && <div>{price}</div>}
                   </div>
+                  {model.id === value && (
+                    <Check
+                      className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400"
+                      aria-hidden
+                    />
+                  )}
                 </Option>
               );
             })}
@@ -254,9 +261,12 @@ export function ModelSelect({
         </PopoverContent>
       </Popover>
       {offCatalog && (
-        <p className="mt-2 max-w-md text-xs text-amber-600 dark:text-amber-500">
-          <span className="font-mono">{value}</span> is not in the OpenRouter
-          catalog. It will be saved as a custom model id.
+        <p className="mt-2 flex max-w-md items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          <span>
+            <span className="font-mono">{value}</span> is not in the OpenRouter
+            catalog. It will be saved as a custom model id.
+          </span>
         </p>
       )}
     </div>

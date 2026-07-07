@@ -6,6 +6,7 @@
  * the PR). The loader overlays any staged draft over the repo content.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { FileText } from "lucide-react";
 import { useState } from "react";
 import {
   Link,
@@ -171,6 +172,8 @@ export default function EditInstructions({
         activeAgent={isTeam ? activeAgent : undefined}
       />
       <PageHeader
+        icon={FileText}
+        accent="blue"
         title={
           isTeam ? `Edit instructions — ${activeAgent}` : "Edit instructions"
         }

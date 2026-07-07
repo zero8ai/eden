@@ -5,6 +5,7 @@
  * from an open change request, or the merged repo content. This banner says WHICH of those the
  * form is showing, so "why does this show X?" is always answerable on the page itself.
  */
+import { GitPullRequest, PencilLine, Trash2 } from "lucide-react";
 import { Link } from "react-router";
 
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
@@ -28,8 +29,11 @@ export function FileStateBanner({
 }) {
   if (stagedDeletion && !saved) {
     return (
-      <Alert className="mb-6">
-        <AlertTitle>Staged for deletion</AlertTitle>
+      <Alert className="mb-6 border-amber-500/40">
+        <AlertTitle className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
+          <Trash2 className="size-4" aria-hidden />
+          Staged for deletion
+        </AlertTitle>
         <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>
             This file is marked for deletion in your staged changes; the form shows the
@@ -48,8 +52,11 @@ export function FileStateBanner({
 
   if (saved || source === "draft") {
     return (
-      <Alert className="mb-6">
-        <AlertTitle>Staged — not published yet</AlertTitle>
+      <Alert className="mb-6 border-amber-500/40">
+        <AlertTitle className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
+          <PencilLine className="size-4" aria-hidden />
+          Staged — not published yet
+        </AlertTitle>
         <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>This file has an unpublished draft; the form shows it.</span>
           <Link
@@ -65,8 +72,11 @@ export function FileStateBanner({
 
   if (source === "change-request" && change) {
     return (
-      <Alert className="mb-6">
-        <AlertTitle>Pending — in change request #{change.number}</AlertTitle>
+      <Alert className="mb-6 border-amber-500/40">
+        <AlertTitle className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
+          <GitPullRequest className="size-4" aria-hidden />
+          Pending — in change request #{change.number}
+        </AlertTitle>
         <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>
             Showing the unmerged value from &ldquo;{change.title}&rdquo;. Saving here stages

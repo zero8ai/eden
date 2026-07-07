@@ -14,8 +14,11 @@ import { data, Link, type LoaderFunctionArgs } from "react-router";
 
 import { MarkdownText } from "~/components/chat";
 import { CodeEditor } from "~/components/code-editor";
+import {
+  TYPE_META,
+  TypeBadge,
+} from "~/components/marketplace-type-badge";
 import { AppShell, PageHeader } from "~/components/shell";
-import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
   Card,
@@ -28,15 +31,6 @@ import { TEMPLATE_TYPES, isTemplateSlug, type TemplateType } from "~/marketplace
 import { getRuntime } from "~/seams/index.server";
 import { syncTenant } from "~/auth/tenant.server";
 import type { Route } from "./+types/marketplace.$type.$id";
-
-const TYPE_BADGE: Record<TemplateType, string> = {
-  agent: "Agent",
-  tool: "Tool",
-  skill: "Skill",
-  subagent: "Subagent",
-  channel: "Channel",
-  connection: "Connection",
-};
 
 /** Narrow a URL param to a TemplateType, 404-ing on anything else (unknown type = no such page). */
 function parseType(param: string | undefined): TemplateType {
@@ -93,10 +87,12 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
       </div>
 
       <PageHeader
+        icon={TYPE_META[manifest.type].icon}
+        accent={TYPE_META[manifest.type].accent}
         title={
           <span className="flex items-center gap-3">
             {manifest.name}
-            <Badge variant="secondary">{TYPE_BADGE[manifest.type]}</Badge>
+            <TypeBadge type={manifest.type} />
           </span>
         }
         description={manifest.description}
@@ -121,7 +117,9 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
             <Fact label="eve range">
               <span className="font-mono">{manifest.eve}</span>
             </Fact>
-            <Fact label="Type">{TYPE_BADGE[manifest.type]}</Fact>
+            <Fact label="Type">
+              <TypeBadge type={manifest.type} />
+            </Fact>
             {manifest.model && (
               <Fact label="Suggested model">
                 <span className="font-mono">{manifest.model}</span>
@@ -198,9 +196,7 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
                     >
                       {inc.id}
                     </Link>
-                    <Badge variant="secondary" className="shrink-0">
-                      {TYPE_BADGE[inc.type]}
-                    </Badge>
+                    <TypeBadge type={inc.type} />
                   </li>
                 ))}
               </ul>

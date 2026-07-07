@@ -9,6 +9,7 @@
  * code editor. Save stages a draft like every other editor.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { CalendarClock } from "lucide-react";
 import { useState } from "react";
 import {
   Link,
@@ -21,7 +22,13 @@ import {
 
 import { CronField } from "~/components/cron-field";
 import { FileStateBanner } from "~/components/file-state-banner";
-import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
+import {
+  AgentNav,
+  AppShell,
+  PageHeader,
+  accentText,
+  repoCrumbs,
+} from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -215,6 +222,8 @@ function ScheduleForm({
         activeAgent={isTeam ? activeAgent : undefined}
       />
       <PageHeader
+        icon={CalendarClock}
+        accent="amber"
         title={
           <span className="flex items-center gap-3">
             Schedule: {name}
@@ -240,7 +249,10 @@ function ScheduleForm({
 
       <div className="max-w-2xl space-y-6">
         <div className="space-y-1.5">
-          <Label>Runs</Label>
+          <Label className="flex items-center gap-1.5">
+            <CalendarClock className={`size-3.5 ${accentText.amber}`} aria-hidden />
+            Runs
+          </Label>
           <CronField value={cron} onChange={setCron} />
         </div>
 

@@ -12,6 +12,15 @@
  *    destroyed, every row cascaded). The GitHub repository itself is never touched.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import {
+  AlertTriangle,
+  Boxes,
+  Cpu,
+  FolderGit2,
+  KeyRound,
+  Pencil,
+  Settings2,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import {
   Form,
@@ -1035,6 +1044,8 @@ export default function Settings({
         activeAgent={level === "member" ? activeAgent : undefined}
       />
       <PageHeader
+        icon={Settings2}
+        accent="brand"
         title={level === "member" ? `Settings — ${activeAgent}` : "Settings"}
         description={
           level === "repo"
@@ -1192,7 +1203,7 @@ function ModelSection({
   );
   return (
     <section>
-      <SectionHeader title="Model" badges={modelBadges} />
+      <SectionHeader icon={Cpu} accent="blue" title="Model" badges={modelBadges} />
       <ModelSelect
         value={model}
         busy={fetcher.state !== "idle"}
@@ -1236,7 +1247,12 @@ function MarketplaceInstallsSection({
 
   return (
     <section>
-      <SectionHeader title="Marketplace installs" badges={installsBadge} />
+      <SectionHeader
+        icon={Boxes}
+        accent="cyan"
+        title="Marketplace installs"
+        badges={installsBadge}
+      />
       <Card>
         <CardContent className="py-4">
           {installs.length === 0 ? (
@@ -1374,7 +1390,7 @@ function GeneralSection({
 }) {
   return (
     <section>
-      <SectionHeader title="General" />
+      <SectionHeader icon={FolderGit2} accent="indigo" title="General" />
       <Card>
         <CardContent className="space-y-1 py-4 text-sm">
           <p>
@@ -1411,7 +1427,7 @@ function IngestSection({
   const busy = navigation.state === "submitting";
   return (
     <section>
-      <SectionHeader title="Run ingestion" />
+      <SectionHeader icon={KeyRound} accent="amber" title="Run ingestion" />
       <p className="mb-3 text-sm text-muted-foreground">
         BYO instances ship telemetry to{" "}
         <span className="font-mono">/api/ingest/runs</span> with one of these
@@ -1472,7 +1488,7 @@ function RenameSection({
     navigation.formData?.get("intent") === "rename-member";
   return (
     <section>
-      <SectionHeader title="Name" />
+      <SectionHeader icon={Pencil} accent="brand" title="Name" />
       {pendingName ? (
         <Card>
           <CardContent className="py-4 text-sm">
@@ -1535,7 +1551,7 @@ function DangerSection({
 
   return (
     <section>
-      <SectionHeader title="Danger zone" />
+      <SectionHeader icon={AlertTriangle} accent="rose" title="Danger zone" />
       <Card className="border-destructive/40">
         <CardContent className="divide-y py-0">
           {canRemoveMember && (

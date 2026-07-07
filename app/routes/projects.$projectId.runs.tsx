@@ -8,6 +8,7 @@
  * Member-scoped (M5.8): team members' runs live at /repos/:id/agents/:name/runs.
  */
 import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { Activity, Inbox } from "lucide-react";
 import {
   Link,
   redirect,
@@ -15,7 +16,14 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
-import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
+import {
+  AgentNav,
+  AppShell,
+  PageHeader,
+  accentText,
+  repoCrumbs,
+  type Accent,
+} from "~/components/shell";
 import { Badge } from "~/components/ui/badge";
 import {
   Card,
@@ -159,16 +167,21 @@ function ms(n: number | null) {
 
 function statusVariant(
   status: string,
-): "secondary" | "outline" | "destructive" {
+): "default" | "outline" | "destructive" | "success" | "warning" {
   if (status === "failed") return "destructive";
-  if (status === "completed" || status === "success") return "secondary";
+  if (status === "completed" || status === "success") return "success";
+  if (status === "running") return "default";
+  if (status === "queued" || status === "pending") return "warning";
   return "outline";
 }
 
 const DOT: Record<string, string> = {
   completed: "bg-emerald-500",
+  success: "bg-emerald-500",
   failed: "bg-destructive",
   running: "bg-primary animate-pulse",
+  queued: "bg-amber-500",
+  pending: "bg-amber-500",
 };
 
 type RunRow = Route.ComponentProps["loaderData"]["runs"][number];
@@ -220,6 +233,8 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
         activeAgent={isTeam ? activeAgent : undefined}
       />
       <PageHeader
+        icon={Activity}
+        accent="indigo"
         title={isTeam ? `Runs — ${activeAgent}` : "Runs"}
         description="Health at a glance, then a faceted, sortable list of every run."
       />
@@ -233,6 +248,7 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
               ? "—"
               : `${Math.round(stats.successRate * 100)}%`
           }
+          accent={stats.successRate != null ? "emerald" : undefined}
           sub={baseline?.successRate != null ? `all: ${Math.round(baseline.successRate * 100)}%` : undefined}
         />
         <StatCard
@@ -244,16 +260,19 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
         <StatCard
           label="p50 wall"
           value={ms(stats.p50Ms)}
+          accent="indigo"
           sub={baseline?.p50Ms != null ? `all: ${ms(baseline.p50Ms)}` : undefined}
         />
         <StatCard
           label="p95 wall"
           value={ms(stats.p95Ms)}
+          accent="indigo"
           sub={baseline?.p95Ms != null ? `all: ${ms(baseline.p95Ms)}` : undefined}
         />
         <StatCard
           label="Tokens"
           value={stats.tokens.toLocaleString()}
+          accent="brand"
           sub={baseline ? `all: ${baseline.tokens.toLocaleString()}` : undefined}
         />
       </div>
@@ -329,6 +348,9 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
       {runs.length === 0 ? (
         <Card className="border-dashed">
           <CardHeader className="items-center py-12 text-center">
+            <div className="mx-auto mb-1 flex size-12 items-center justify-center rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+              <Inbox className="size-6" aria-hidden />
+            </div>
             <CardTitle className="text-lg">No runs match</CardTitle>
             <CardDescription>
               Adjust the filters, or point an instance at{" "}
@@ -380,22 +402,27 @@ function StatCard({
   value,
   sub,
   tone,
+  accent,
 }: {
   label: string;
   value: string;
   sub?: string;
   tone?: "bad";
+  /** Tints the metric number for a categorical/semantic accent (ignored when tone==="bad"). */
+  accent?: Accent;
 }) {
+  const numberColor =
+    tone === "bad"
+      ? "text-destructive"
+      : accent
+        ? accentText[accent]
+        : "";
   return (
     <div className="rounded-lg border px-3 py-2">
       <p className="text-xs uppercase tracking-wide text-muted-foreground">
         {label}
       </p>
-      <p
-        className={`mt-0.5 text-lg font-semibold ${tone === "bad" ? "text-destructive" : ""}`}
-      >
-        {value}
-      </p>
+      <p className={`mt-0.5 text-lg font-semibold ${numberColor}`}>{value}</p>
       {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
     </div>
   );
@@ -470,7 +497,7 @@ function Sparkline({ runs }: { runs: RunRow[] }) {
               y={H - h}
               width={Math.max(1, bw - 2)}
               height={h}
-              className="fill-muted-foreground/40"
+              className="fill-indigo-500/40"
               rx={1}
             />
             {fh > 0 && (

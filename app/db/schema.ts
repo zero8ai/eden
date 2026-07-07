@@ -1,7 +1,7 @@
 /**
  * Eden control-plane schema (Drizzle + Postgres).
  *
- * Scope rules (see HANDOFF.md §2 / PRD):
+ * Scope rules (see docs/PRD.md §9 cross-cutting concerns):
  *  - D2: a WorkOS Organization == an Eden tenant. `orgs`/`users` are keyed by WorkOS IDs
  *    (text), and we delegate roles/SSO/directory-sync to WorkOS. We keep only a thin mirror
  *    so we can foreign-key our own rows and cache display fields.
@@ -267,7 +267,7 @@ export const draftChanges = pgTable(
 );
 
 /**
- * Secret METADATA only (D3 + SecretsProvider seam, HANDOFF §8): names/scope/audit, never
+ * Secret METADATA only (D3 + SecretsProvider seam): names/scope/audit, never
  * values. Values live in the SecretsProvider (local no-op for OSS, KMS/Vault for managed).
  */
 export const secretsMetadata = pgTable(

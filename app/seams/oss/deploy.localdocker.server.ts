@@ -6,7 +6,7 @@
  * It's the honest, minimal version of the managed Nomad/gVisor substrate: same DeployTarget
  * seam, plain `docker run` instead of an orchestrator.
  *
- * Pipeline (contract validated in docs/SPIKE-EVE.md):
+ * Pipeline (contract validated end-to-end against eve):
  *   build   fetch repo tarball @ commit (GitHub App) → docker multi-stage build (npm ci +
  *           `eve build` run inside linux) → runtime image booting `eve start` (which prewarms
  *           sandbox templates — see eve-image.server.ts) + a build-stage image that keeps
@@ -16,7 +16,7 @@
  *           env, the host Docker socket mounted, on a mapped 127.0.0.1 port → health-check
  *   stop/start  docker stop/start (scale-to-zero)
  *
- * Two runtime facts this target now honors (both eve semantics — see docs/SPIKE-EVE.md):
+ * Two runtime facts this target now honors (both eve semantics):
  *   - Real sandboxes. eve's `defaultBackend()` gives an agent a real Docker sandbox only when
  *     a docker CLI + reachable daemon are present, else it silently degrades to `just-bash`
  *     (a pure-JS bash that can't run git/node/npm). We ship the client binary in the image
@@ -30,7 +30,7 @@
  *
  * The repo must be deployable off-Vercel: `@workflow/world-postgres` (at the beta line
  * matching its eve version) as a dependency, and agent.ts declaring
- * `experimental.workflow.world` + `build.externalDependencies` for it. See SPIKE-EVE.
+ * `experimental.workflow.world` + `build.externalDependencies` for it.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -205,7 +205,7 @@ async function inspectRunning(name: string): Promise<boolean | null> {
 
 /**
  * Run the Workflow World's schema migrations against the instance DB, using the build-stage
- * image (the migration CLI + SQL files are not traced into the runtime .output — SPIKE-EVE).
+ * image (the migration CLI + SQL files are not traced into the runtime .output).
  * Skipped when no build-stage image exists (e.g. a plain test image), since such an image
  * cannot be an eve agent needing a World.
  */

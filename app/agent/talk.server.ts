@@ -1,6 +1,6 @@
 /**
  * Talk to a deployed eve instance over its HTTP session API (contract verified live 2026-07-03
- * against a running instance; see docs/SPIKE-EVE.md):
+ * against a running instance):
  *
  *   First turn:  POST /eve/v1/session              {message}
  *                → 202 + x-eve-session-id + {sessionId, continuationToken}

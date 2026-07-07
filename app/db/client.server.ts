@@ -2,7 +2,7 @@
  * Server-only Drizzle client. The `.server.ts` suffix guarantees Vite never bundles the
  * Postgres driver into the browser build.
  *
- * We standardize on Postgres (D7 / HANDOFF §2): the same engine backs the Workflow World,
+ * We standardize on Postgres (D7): the same engine backs the Workflow World,
  * so the control plane reuses it. A single lazily-initialized connection pool is cached on
  * `globalThis` to survive dev HMR without leaking connections.
  */

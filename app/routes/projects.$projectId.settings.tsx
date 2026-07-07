@@ -89,6 +89,10 @@ import {
   planUninstall,
 } from "~/marketplace/install.server";
 import { overlayLock } from "~/marketplace/lock";
+import {
+  resolveTemplate,
+  type ResolvedTemplate,
+} from "~/marketplace/compose.server";
 import type { TemplateType } from "~/marketplace/manifest";
 import { findModel } from "~/models/catalog.server";
 import { getWorkspaceAssistantModel } from "~/org/workspace.server";
@@ -221,6 +225,8 @@ interface InstallDisplay {
   depsLeft: string[];
   /** The newer catalog version when an update is available, else null. */
   update: string | null;
+  /** Current catalog version matches, but the installed lock is missing flattened catalog content. */
+  repair: boolean;
 }
 
 /** Resolve the `?env=` param to an environmentId (null == agent-wide), validated. */
@@ -243,17 +249,40 @@ function resolveScope(
 function buildInstalls(
   lock: ReturnType<typeof overlayLock>,
   index: { id: string; type: TemplateType; version: string }[],
+  resolved: Map<string, ResolvedTemplate>,
   keep: (member: string | null) => boolean,
 ): InstallDisplay[] {
   return lock.installs.reduce<InstallDisplay[]>((rows, entry) => {
     if (!keep(entry.member)) return rows;
     const row = index.find((r) => r.id === entry.id && r.type === entry.type);
+    const template = resolved.get(`${entry.type}/${entry.id}`);
     let update: string | null = null;
     try {
       if (row && semver.gt(row.version, entry.version)) update = row.version;
     } catch {
       update = null;
     }
+    const root = entry.member ? `agents/${entry.member}/agent` : "agent";
+    const expectedFiles = new Set(
+      (template?.manifest.files ?? []).map((file) => `${root}/${file}`),
+    );
+    const installedFiles = new Set(entry.files);
+    const missingFiles =
+      expectedFiles.size > 0 &&
+      [...expectedFiles].some((file) => !installedFiles.has(file));
+    const expectedIncludes = template?.includes ?? [];
+    const installedIncludes = entry.includes ?? [];
+    const missingIncludes =
+      expectedIncludes.length > 0 &&
+      expectedIncludes.some(
+        (include) =>
+          !installedIncludes.some(
+            (installed) =>
+              installed.type === include.type &&
+              installed.id === include.id &&
+              installed.hash === include.hash,
+          ),
+      );
     rows.push({
       id: entry.id,
       type: entry.type,
@@ -263,6 +292,7 @@ function buildInstalls(
       files: entry.files,
       depsLeft: Object.keys(entry.dependencies ?? {}),
       update,
+      repair: !update && (missingFiles || missingIncludes),
     });
     return rows;
   }, []);
@@ -309,9 +339,28 @@ export const loader = (args: LoaderFunctionArgs) =>
         draftPaths,
       );
       let index: { id: string; type: TemplateType; version: string }[] = [];
+      const resolvedTemplates = new Map<string, ResolvedTemplate>();
       if (lock.installs.length > 0) {
         try {
-          index = (await getRuntime().catalog.index()).templates;
+          const catalog = getRuntime().catalog;
+          index = (await catalog.index()).templates;
+          await Promise.all(
+            lock.installs.map(async (entry) => {
+              try {
+                const template = await resolveTemplate(
+                  catalog,
+                  entry.type,
+                  entry.id,
+                );
+                resolvedTemplates.set(`${entry.type}/${entry.id}`, template);
+              } catch (error) {
+                console.warn(
+                  `[settings] catalog template ${entry.type}/${entry.id} unavailable:`,
+                  error,
+                );
+              }
+            }),
+          );
         } catch (error) {
           console.warn("[settings] catalog index unavailable:", error);
         }
@@ -344,6 +393,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         installs: buildInstalls(
           lock,
           index,
+          resolvedTemplates,
           level === "repo"
             ? () => true
             : (member) =>
@@ -380,12 +430,13 @@ export const loader = (args: LoaderFunctionArgs) =>
         try {
           // Every row across all envs — the card filters client-side by env pill (§6/§7) —
           // plus the shared/attachment/dismissal state the four card groups render from.
-          const [secrets, shared, attachments, dismissedNames] = await Promise.all([
-            listAgentSecretRows(project.id, active.id),
-            listSharedSecrets(project.id),
-            listAttachments(active.id),
-            listDismissedRequirements(active.id),
-          ]);
+          const [secrets, shared, attachments, dismissedNames] =
+            await Promise.all([
+              listAgentSecretRows(project.id, active.id),
+              listSharedSecrets(project.id),
+              listAttachments(active.id),
+              listDismissedRequirements(active.id),
+            ]);
           base.secrets = secrets;
           base.sharedSecrets = shared.map((s) => ({
             key: s.key,
@@ -437,14 +488,20 @@ export const loader = (args: LoaderFunctionArgs) =>
             fingerprint: s.fingerprint,
             updatedAt: s.updatedAt,
             sandboxExposed: s.sandboxExposed,
-            usedBy: attachmentRows
-              .filter((a) => a.key === s.key)
-              .map((a) => ({
-                agentName: a.agentName,
-                sandboxExposed: a.sandboxExposed,
-                requiredByTemplate:
-                  requiredByMember.get(a.agentName)?.has(s.key) ?? false,
-              })),
+            usedBy: attachmentRows.reduce<RepoSharedSecret["usedBy"]>(
+              (used, a) => {
+                if (a.key === s.key) {
+                  used.push({
+                    agentName: a.agentName,
+                    sandboxExposed: a.sandboxExposed,
+                    requiredByTemplate:
+                      requiredByMember.get(a.agentName)?.has(s.key) ?? false,
+                  });
+                }
+                return used;
+              },
+              [],
+            ),
           }));
         } catch (error) {
           console.warn("[settings] shared secrets unavailable:", error);
@@ -461,7 +518,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         // Team collaboration matrix (D4): only meaningful with more than one member.
         if (isTeam && roster.length > 1) {
           base.teamMembers = roster.map((a) => ({ id: a.id, name: a.name }));
-          const links = await getRuntime().data.agentLinks.listByProject(project.id);
+          const links = await getRuntime().data.agentLinks.listByProject(
+            project.id,
+          );
           base.teamLinks = links.map((l) => ({
             fromAgentId: l.fromAgentId,
             toAgentId: l.toAgentId,
@@ -518,7 +577,9 @@ export async function action(args: ActionFunctionArgs) {
       try {
         packageJson = ensureOpenRouterDependency(pkgView.content);
       } catch {
-        return { error: `${pkgPath} is not valid JSON — fix it before setting the model.` };
+        return {
+          error: `${pkgPath} is not valid JSON — fix it before setting the model.`,
+        };
       }
 
       await Promise.all([
@@ -545,10 +606,12 @@ export async function action(args: ActionFunctionArgs) {
       const type = String(form.get("type") ?? "") as TemplateType;
       const id = String(form.get("id") ?? "");
       const member = String(form.get("member") ?? "") || null;
+      const mode =
+        String(form.get("mode") ?? "") === "repair" ? "repaired" : "updated";
       if (!type || !id) return { error: "Missing install to update." };
       // Actions read raw — a stale read merged into a write could clobber newer content.
       const [template, source, drafts] = await Promise.all([
-        getRuntime().catalog.template(type, id),
+        resolveTemplate(getRuntime().catalog, type, id),
         fetchAgentSource(project.repoInstallationId, repo),
         listDrafts(project.id),
       ]);
@@ -605,7 +668,7 @@ export async function action(args: ActionFunctionArgs) {
           createdBy: auth.user.id,
         });
       }
-      throw redirect(`${back}?updated=${encodeURIComponent(id)}`);
+      throw redirect(`${back}?${mode}=${encodeURIComponent(id)}`);
     }
     if (intent === "uninstall") {
       const id = String(form.get("id") ?? "");
@@ -667,7 +730,10 @@ export async function action(args: ActionFunctionArgs) {
         );
         const envs = await listAgentEnvironments(active.id);
         agentId = active.id;
-        environmentId = resolveScope(String(form.get("env") ?? ALL), envs).environmentId;
+        environmentId = resolveScope(
+          String(form.get("env") ?? ALL),
+          envs,
+        ).environmentId;
       }
       return handleSecretIntent(
         {
@@ -678,8 +744,12 @@ export async function action(args: ActionFunctionArgs) {
           key: String(form.get("key") ?? ""),
           value: form.has("value") ? String(form.get("value")) : undefined,
           // `exposed` present → set atomically at creation (gripe #3); absent → untouched.
-          exposed: form.has("exposed") ? form.get("exposed") === "1" : undefined,
-          dismissed: form.has("dismissed") ? form.get("dismissed") === "1" : undefined,
+          exposed: form.has("exposed")
+            ? form.get("exposed") === "1"
+            : undefined,
+          dismissed: form.has("dismissed")
+            ? form.get("dismissed") === "1"
+            : undefined,
           userId: auth.user.id,
         },
         { secrets: getRuntime().secrets },
@@ -796,6 +866,7 @@ export default function Settings({
   const base = contextPath(project.id, level === "member" ? activeAgent : null);
   const [params] = useSearchParams();
   const justUpdated = params.get("updated");
+  const justRepaired = params.get("repaired");
   const justUninstalled = params.get("uninstalled");
   const newToken =
     actionData && "token" in actionData
@@ -863,12 +934,14 @@ export default function Settings({
           </AlertDescription>
         </Alert>
       )}
-      {(justUpdated || justUninstalled) && (
+      {(justUpdated || justRepaired || justUninstalled) && (
         <Alert className="mb-6">
           <AlertTitle>
             {justUpdated
               ? `${justUpdated} update staged`
-              : `${justUninstalled} uninstall staged`}
+              : justRepaired
+                ? `${justRepaired} repair staged`
+                : `${justUninstalled} uninstall staged`}
           </AlertTitle>
           <AlertDescription>
             Review and publish it from the Deployment tab.
@@ -889,7 +962,9 @@ export default function Settings({
             secretsError={loaderData.secretsError}
             required={loaderData.requiredSecrets.map((r) => ({
               ...r,
-              sharedExists: loaderData.sharedSecrets.some((s) => s.key === r.name),
+              sharedExists: loaderData.sharedSecrets.some(
+                (s) => s.key === r.name,
+              ),
             }))}
             dismissed={loaderData.dismissedSecrets.map((d) => ({
               name: d.name,
@@ -1064,6 +1139,31 @@ function MarketplaceInstallsSection({
                         disabled={busy}
                       >
                         Update to {install.update}
+                      </Button>
+                    </Form>
+                  )}
+                  {install.repair && (
+                    <Form method="post">
+                      <input
+                        type="hidden"
+                        name="intent"
+                        value="update-install"
+                      />
+                      <input type="hidden" name="mode" value="repair" />
+                      <input type="hidden" name="type" value={install.type} />
+                      <input type="hidden" name="id" value={install.id} />
+                      <input
+                        type="hidden"
+                        name="member"
+                        value={install.member ?? ""}
+                      />
+                      <Button
+                        type="submit"
+                        size="sm"
+                        variant="secondary"
+                        disabled={busy}
+                      >
+                        Repair install
                       </Button>
                     </Form>
                   )}

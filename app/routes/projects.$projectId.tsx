@@ -8,9 +8,8 @@
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  Form,
   Link,
   data,
   redirect,
@@ -46,20 +45,12 @@ import {
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "~/components/ui/select";
-import {
   listAgentEnvironments,
   syncProjectAgents,
   withPreservedNames,
   type Agent,
 } from "~/db/queries.server";
 import { listDeployments, queueDeploy } from "~/deploy/controller.server";
-import { shipHead, shipStagedChanges } from "~/deploy/ship.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { readModel } from "~/eve/agentModule";
 import { buildAgentConfig, detectAgentRoots } from "~/eve/parse";
@@ -127,8 +118,6 @@ interface ProjectView {
   error: string | null;
   /** Paths with staged (unpublished) drafts, so the config surface can flag them. */
   draftPaths: string[];
-  /** Member view: this member's environment names, for the Ship dialog's target picker. */
-  envNames: string[];
   /** Member view: what's running per environment, for the header status line. */
   running: {
     envName: string;
@@ -176,7 +165,6 @@ export const loader = (args: LoaderFunctionArgs) =>
           config: null,
           error: "This project has no connected repo.",
           draftPaths: [],
-          envNames: [],
           running: [],
           ship: null,
         };
@@ -285,19 +273,20 @@ export const loader = (args: LoaderFunctionArgs) =>
           config.model = config.model ?? orgDefaultModel;
         }
 
-        // Deploy status for the member surface: what's running per environment (header
-        // line), the member's environment names (Ship dialog), and — after a Ship —
-        // per-member deploy progress for the shipped commit, so the banner survives
-        // refreshes (state lives in the DB).
-        let envNames: string[] = [];
+        // Deploy status: what's running per environment (member header line) and — after a
+        // Ship — per-member deploy progress for the shipped commit, so the banner survives
+        // refreshes (state lives in the DB). The "running" line is member-scoped; the ?shipped
+        // banner runs at BOTH levels, because Quick deploy ships from the team landing too and
+        // redirects back to whichever Overview it fired from.
         let running: ProjectView["running"] = [];
         let ship: ProjectView["ship"] = null;
+        // Cache the active member's envs so the member-scope shipped-row lookup reuses them.
+        const activeEnvs =
+          view === "member" ? await listAgentEnvironments(active.id) : [];
         if (view === "member") {
-          const envs = await listAgentEnvironments(active.id);
-          envNames = envs.map((e) => e.name);
           running = (
             await Promise.all(
-              envs.map(async (env) => {
+              activeEnvs.map(async (env) => {
                 const current = (await listDeployments(env.id)).find(
                   (d) => d.status === "live",
                 );
@@ -312,46 +301,47 @@ export const loader = (args: LoaderFunctionArgs) =>
               }),
             )
           ).filter((r) => r !== null);
+        }
 
-          const url = new URL(args.request.url);
-          const shippedSha = url.searchParams.get("shipped");
+        const url = new URL(args.request.url);
+        const shippedSha = url.searchParams.get("shipped");
+        if (shippedSha) {
+          // At team view there's no single active member to default the env from, so fall back
+          // to the ?env param (Quick deploy always sets it) or "default".
           const shipEnv =
-            url.searchParams.get("env") ?? envs[0]?.name ?? "default";
+            url.searchParams.get("env") ?? activeEnvs[0]?.name ?? "default";
           const shipSkipped = (url.searchParams.get("skipped") ?? "")
             .split(",")
             .filter(Boolean);
-          if (shippedSha) {
-            // Members are independent — resolve their env + deployment rows concurrently.
-            const rows = (
-              await Promise.all(
-                roster.map(async (member): Promise<ShipStatusRow | null> => {
-                  const memberEnvs =
-                    member.id === active.id
-                      ? envs
-                      : await listAgentEnvironments(member.id);
-                  const env = memberEnvs.find((e) => e.name === shipEnv);
-                  if (!env) return null;
-                  // Newest-first list; the first row at the shipped commit is the ship's
-                  // deploy (or its retry). Members untouched by the ship have no such row.
-                  const match = (await listDeployments(env.id)).find(
-                    (d) => d.gitSha === shippedSha,
-                  );
-                  if (!match) return null;
-                  return {
-                    agentName: member.name,
-                    version: match.version,
-                    status: match.status,
-                    url: match.url,
-                    errorDetail: match.errorDetail,
-                    environmentId: env.id,
-                    releaseId: match.releaseId,
-                  };
-                }),
-              )
-            ).filter((r): r is ShipStatusRow => r !== null);
-            if (rows.length > 0)
-              ship = { env: shipEnv, rows, skipped: shipSkipped };
-          }
+          // Members are independent — resolve their env + deployment rows concurrently.
+          const rows = (
+            await Promise.all(
+              roster.map(async (member): Promise<ShipStatusRow | null> => {
+                const memberEnvs =
+                  view === "member" && member.id === active.id
+                    ? activeEnvs
+                    : await listAgentEnvironments(member.id);
+                const env = memberEnvs.find((e) => e.name === shipEnv);
+                if (!env) return null;
+                // Newest-first list; the first row at the shipped commit is the ship's
+                // deploy (or its retry). Members untouched by the ship have no such row.
+                const match = (await listDeployments(env.id)).find(
+                  (d) => d.gitSha === shippedSha,
+                );
+                if (!match) return null;
+                return {
+                  agentName: member.name,
+                  version: match.version,
+                  status: match.status,
+                  url: match.url,
+                  errorDetail: match.errorDetail,
+                  environmentId: env.id,
+                  releaseId: match.releaseId,
+                };
+              }),
+            )
+          ).filter((r): r is ShipStatusRow => r !== null);
+          if (rows.length > 0) ship = { env: shipEnv, rows, skipped: shipSkipped };
         }
 
         return {
@@ -366,7 +356,6 @@ export const loader = (args: LoaderFunctionArgs) =>
           config,
           error: null,
           draftPaths: drafts.map((d) => d.path),
-          envNames,
           running,
           ship,
         };
@@ -383,7 +372,6 @@ export const loader = (args: LoaderFunctionArgs) =>
           config: null,
           error: (error as Error).message,
           draftPaths: [],
-          envNames: [],
           running: [],
           ship: null,
         };
@@ -411,33 +399,9 @@ export async function action(args: ActionFunctionArgs) {
   const repo = { owner: project.repoOwner, repo: project.repoName };
 
   try {
-    // ── Ship: the one-click path — staged changes (or branch head) → deployed version ──
-    if (intent === "ship" || intent === "ship-head") {
-      // No fallback name: environments are user-defined (M5.7), so a missing field is a
-      // bug to surface, not something to paper over with a guessed target.
-      const envName = String(form.get("env") ?? "").trim();
-      if (!envName) return { error: "Pick an environment to ship to." };
-      ensureWorkerStarted();
-      // Publish/merge/release run synchronously (same as the Deployment publish button);
-      // the build + deploy are queued, and the redirect's ?shipped drives the banner.
-      const result =
-        intent === "ship"
-          ? await shipStagedChanges({
-              project,
-              envName,
-              createdBy: auth.user.id,
-            })
-          : await shipHead({ project, envName, createdBy: auth.user.id });
-      const qs = new URLSearchParams();
-      qs.set("shipped", result.gitSha);
-      qs.set("env", envName);
-      if (result.skipped.length > 0) {
-        qs.set("skipped", result.skipped.map((s) => s.agentName).join(","));
-      }
-      throw redirect(
-        `${contextPath(project.id, agentFromParams(args.params))}?${qs.toString()}`,
-      );
-    }
+    // Ship now lives in the Quick deploy button (tab row) — the repos/<id>/quick-deploy
+    // resource route owns publish → merge → release → deploy. This route keeps retry-deploy
+    // and roster CRUD, plus the ?shipped banner its loader builds.
 
     // ── Retry a failed shipped deploy (same release, same environment) ──
     if (intent === "retry-deploy") {
@@ -512,7 +476,6 @@ export default function ProjectDetail({
     config,
     error,
     draftPaths,
-    envNames,
     running,
     ship,
   } = loaderData;
@@ -589,16 +552,6 @@ export default function ProjectDetail({
               </span>
             ) : (
               repoLine
-            )
-          }
-          actions={
-            !error && (
-              <ShipDialog
-                draftCount={draftPaths.length}
-                envNames={envNames}
-                defaultBranch={project.defaultBranch}
-                agentName={teamLayout && active ? active.name : ""}
-              />
             )
           }
         />
@@ -689,7 +642,7 @@ export default function ProjectDetail({
             {draftPaths.length === 1 ? "" : "s"} not shipped yet
           </AlertTitle>
           <AlertDescription>
-            Ship them with the button above, or{" "}
+            Ship them with the Quick deploy button in the tab row, or{" "}
             <Link
               to={`${ctx}/deployment`}
               className="font-medium underline underline-offset-4"
@@ -890,107 +843,6 @@ function AddMemberDialog() {
             Open change request
           </Button>
         </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/**
- * Ship — the one-click deploy. One dialog confirms the target environment (the member's
- * primary — its first — preselected), then a single action publishes + merges the staged
- * changes (or reuses the branch head), cuts the version, and queues the deploy. The current
- * version keeps serving until the new one is healthy, so shipping is never a step backwards.
- */
-function ShipDialog({
-  draftCount,
-  envNames,
-  defaultBranch,
-  agentName,
-}: {
-  draftCount: number;
-  envNames: string[];
-  defaultBranch: string;
-  agentName: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [env, setEnv] = useState(envNames[0] ?? "default");
-  const navigation = useNavigation();
-  const shipping =
-    navigation.state !== "idle" &&
-    ["ship", "ship-head"].includes(
-      String(navigation.formData?.get("intent") ?? ""),
-    );
-  // Publish + merge run synchronously, so hold the dialog open with a progress label until
-  // the submission settles — the redirect's banner (success) or page alert (error) takes over.
-  const wasShipping = useRef(false);
-  useEffect(() => {
-    if (shipping) {
-      wasShipping.current = true;
-      return;
-    }
-    if (wasShipping.current) {
-      wasShipping.current = false;
-      setOpen(false);
-    }
-  }, [shipping]);
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button disabled={navigation.state !== "idle"}>
-          {draftCount > 0
-            ? `Ship ${draftCount} change${draftCount === 1 ? "" : "s"}`
-            : `Ship latest from ${defaultBranch}`}
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>
-            {draftCount > 0
-              ? `Ship ${draftCount} staged change${draftCount === 1 ? "" : "s"}?`
-              : `Ship the latest ${defaultBranch}?`}
-          </DialogTitle>
-          <DialogDescription>
-            {draftCount > 0
-              ? "Publishes and merges your staged changes, cuts a new version, and deploys it. The current version keeps serving until the new one is healthy."
-              : `Cuts a version from the newest commit on ${defaultBranch} and deploys it. A commit that already shipped is reused — no rebuild.`}
-          </DialogDescription>
-        </DialogHeader>
-        <Form method="post">
-          <input
-            type="hidden"
-            name="intent"
-            value={draftCount > 0 ? "ship" : "ship-head"}
-          />
-          <input type="hidden" name="agent" value={agentName} />
-          <div className="space-y-1.5">
-            <Label htmlFor="ship-env">Environment</Label>
-            <Select name="env" value={env} onValueChange={setEnv}>
-              <SelectTrigger id="ship-env" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {envNames.map((n) => (
-                  <SelectItem key={n} value={n}>
-                    {n}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <DialogFooter className="mt-4">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={shipping}>
-              {shipping ? "Shipping…" : `Ship to ${env}`}
-            </Button>
-          </DialogFooter>
-        </Form>
       </DialogContent>
     </Dialog>
   );

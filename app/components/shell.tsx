@@ -19,6 +19,7 @@ import {
   useNavigation,
 } from "react-router";
 
+import { QuickDeploy } from "~/components/quick-deploy";
 import { ThemeToggle } from "~/components/theme-toggle";
 import { Button } from "~/components/ui/button";
 import {
@@ -394,6 +395,7 @@ export function AgentNav({
           ))}
         </nav>
         <div className="flex shrink-0 items-center gap-3">
+          <QuickDeploy base={base} />
           <StagedChangesPill base={base} />
           {level === "member" && roster && activeAgent && (
             <AgentSwitcher roster={roster} activeAgent={activeAgent} />

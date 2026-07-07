@@ -76,6 +76,7 @@ import {
 } from "~/deploy/environments.server";
 import {
   listAgentEnvironments,
+  listEnvironments,
   listReleases,
   syncProjectAgents,
 } from "~/db/queries.server";
@@ -214,12 +215,23 @@ export const loader = (args: LoaderFunctionArgs) =>
             : (memberFromPath(d.path) ?? "shared");
           groups.set(key, [...(groups.get(key) ?? []), d]);
         }
+        // One env query for the whole roster (grouped by agent) instead of one per member —
+        // the per-env live-deployment lookups below still fan out, but this avoids N extra
+        // round-trips that grow with team size.
+        const projectEnvs = await listEnvironments(project.id);
+        const envsByAgent = new Map<string, typeof projectEnvs>();
+        for (const env of projectEnvs) {
+          envsByAgent.set(env.agentId, [
+            ...(envsByAgent.get(env.agentId) ?? []),
+            env,
+          ]);
+        }
         const members = await Promise.all(
           roster.map(async (a) => {
             const latest = releaseRows.find((r) => r.agentId === a.id);
             // What's live across this member's envs, so the rollup can flag whether
             // they're running their latest version or lagging behind it.
-            const envRows = await listAgentEnvironments(a.id);
+            const envRows = envsByAgent.get(a.id) ?? [];
             const live = (
               await Promise.all(
                 envRows.map(async (env) =>

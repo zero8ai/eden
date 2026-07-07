@@ -21,6 +21,7 @@ import { getRuntime } from "~/seams/index.server";
 import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
 import { teammateRoster } from "~/team/roster.server";
 import { mintDelegationToken } from "~/team/token.server";
+import { DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS } from "./cleanup.server";
 import { isVersionLabelCollision, versionLabel } from "./versioning";
 
 export type { Release, Deployment } from "~/data/ports";
@@ -94,6 +95,28 @@ async function cleanupNewDeploymentInfra(
     return null;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function scheduleDeploymentContainerCleanup(
+  store: DataStore,
+  deploymentIds: string[],
+): Promise<void> {
+  if (deploymentIds.length === 0) return;
+  const runAt = new Date(Date.now() + Math.max(0, DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS));
+  try {
+    await Promise.all(
+      deploymentIds.map((deploymentId) =>
+        enqueue(
+          "cleanup_deployment_container",
+          { deploymentId },
+          { runAt, maxAttempts: 3 },
+          store,
+        ),
+      ),
+    );
+  } catch (error) {
+    console.warn("[deploy] failed to schedule deployment container cleanup", error);
   }
 }
 
@@ -395,6 +418,10 @@ export async function deployRelease(
         meta: { environmentId: input.environmentId, status: updated.status },
       });
     }
+    await scheduleDeploymentContainerCleanup(
+      store,
+      superseded.map((d) => d.id),
+    );
     return updated;
   } catch (error) {
     await cleanupNewDeploymentInfra(deployTarget, dep.id);

@@ -17,7 +17,8 @@ export type JobKind =
   | "deploy_release"
   | "rollback_release"
   | "assistant_deploy"
-  | "assistant_restart";
+  | "assistant_restart"
+  | "cleanup_deployment_container";
 
 export interface DeployReleasePayload {
   environmentId: string;

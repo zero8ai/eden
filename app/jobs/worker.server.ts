@@ -44,6 +44,18 @@ async function execute(job: Job): Promise<void> {
       await restartAssistantInstance(p.projectId);
       return;
     }
+    case "cleanup_deployment_container": {
+      const { cleanupDeploymentContainer } = await import("~/deploy/cleanup.server");
+      const p = job.payload as { deploymentId?: string };
+      if (!p.deploymentId) throw new Error("cleanup job missing deploymentId");
+      const result = await cleanupDeploymentContainer(p.deploymentId);
+      if (result.status === "skipped") {
+        console.log(
+          `[jobs] skipped cleanup_deployment_container ${p.deploymentId}: ${result.reason}`,
+        );
+      }
+      return;
+    }
     default:
       throw new Error(`Unknown job kind: ${job.kind}`);
   }

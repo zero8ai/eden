@@ -343,6 +343,17 @@ export const loader = (args: LoaderFunctionArgs) =>
 
         // Deploy guard (§9), aggregated across members and member-tagged.
         let missingSecrets: GuardMissingSecret[] = [];
+        // Discord setup is per member: show the team hint only when at least one
+        // roster member has a Discord channel file (committed or drafted).
+        let hasDiscordSetup = roster.some(
+          (a) =>
+            source.paths.includes(`${a.root}/channels/discord.ts`) ||
+            allDrafts.some(
+              (d) =>
+                d.content !== null &&
+                d.path === `${a.root}/channels/discord.ts`,
+            ),
+        );
         try {
           const shared = await listSharedSecrets(project.id);
           const sharedNames = new Set(shared.map((s) => s.key));
@@ -350,7 +361,7 @@ export const loader = (args: LoaderFunctionArgs) =>
             source.files["eden-lock.json"] ?? null,
             allDrafts.map((d) => ({ path: d.path, content: d.content })),
           );
-          const perMemberMissing = await Promise.all(
+          const perMemberSecrets = await Promise.all(
             roster.map(async (a) => {
               const state = await agentRequiredSecretState({
                 projectId: project.id,
@@ -359,14 +370,18 @@ export const loader = (args: LoaderFunctionArgs) =>
                 isTeam,
                 lock,
               });
-              return state.missing.map((m) => ({
-                ...m,
-                sharedExists: sharedNames.has(m.name),
-                member: a.name,
-              }));
+              return {
+                missing: state.missing.map((m) => ({
+                  ...m,
+                  sharedExists: sharedNames.has(m.name),
+                  member: a.name,
+                })),
+                hasDiscord: state.all.some(isDiscordSecretRequirement),
+              };
             }),
           );
-          missingSecrets = perMemberMissing.flat();
+          missingSecrets = perMemberSecrets.flatMap((m) => m.missing);
+          if (perMemberSecrets.some((m) => m.hasDiscord)) hasDiscordSetup = true;
         } catch {
           missingSecrets = []; // secrets store unavailable — never block the pipeline view
         }
@@ -395,7 +410,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           guardAgent,
           guardSettingsAction: `${contextPath(project.id, guardAgent)}/settings`,
           discordSetup: {
-            enabled: false,
+            enabled: hasDiscordSetup,
             origin: publicOrigin(args.request),
             routePath: DISCORD_INTERACTIONS_ROUTE,
           },
@@ -841,7 +856,7 @@ export default function Deployment({
       {view === "repo" ? (
         <>
           <TeamRollup loaderData={loaderData} />
-          <DiscordSetupTeamHint />
+          {loaderData.discordSetup.enabled && <DiscordSetupTeamHint />}
         </>
       ) : (
         <MemberPipeline loaderData={loaderData} />

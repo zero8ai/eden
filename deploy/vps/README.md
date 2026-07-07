@@ -8,15 +8,18 @@ instances over loopback), so don't split these across machines; scale the box in
 ```
                         ┌─────────────────────────── your VPS ───────────────────────────┐
  https://eden.example.com                                                                 │
-   │                    │  nginx (host, TLS via Let's Encrypt)                            │
+   │                    │  nginx (container, TLS via Let's Encrypt)                       │
    ├── /e/… ────────────┼──► splitter :8787 ──► agent instance containers (127.0.0.1:*)   │
    └── everything else ─┼──► Eden :3000 ─────► Docker socket (builds images, runs agents) │
                         │                └────► Postgres :5442 (control plane + worlds)   │
                         └─────────────────────────────────────────────────────────────────┘
 ```
 
-No installer script — the steps below are the deployment. Budget ~1 hour the first time,
-most of it in the GitHub App and WorkOS dashboards.
+No installer script — the steps below *are* the deployment: an ordered sequence meant to be run
+top to bottom exactly as written, whether you follow it yourself or hand it to a coding agent
+you've given SSH access to the box. Everything an install needs is in this directory (this
+runbook plus the compose, nginx, and env templates). Budget ~1 hour the first time, most of it in
+the GitHub App and WorkOS dashboards.
 
 ## 0. What you need before starting
 
@@ -102,37 +105,84 @@ Fill in every value (`deploy/vps/.env` is gitignored). Notes per section:
 
 ## 5. Build and start the stack
 
+The compose file is gitignored so you can tweak it — start from the tracked template (same
+copy-and-tweak pattern as `env.example` above):
+
 ```bash
 cd /opt/eden
-docker compose -f deploy/vps/docker-compose.yml up -d --build
-docker compose -f deploy/vps/docker-compose.yml run --rm migrate   # apply DB schema
-docker compose -f deploy/vps/docker-compose.yml logs -f eden       # watch it boot
+cp deploy/vps/docker-compose.example.yml deploy/vps/docker-compose.yml
+docker compose -f deploy/vps/docker-compose.yml up -d --build eden  # brings up postgres too
+docker compose -f deploy/vps/docker-compose.yml run --rm migrate    # apply DB schema
+docker compose -f deploy/vps/docker-compose.yml logs -f eden        # watch it boot
 ```
 
-Eden now serves plain HTTP on `127.0.0.1:3000` (host networking) — not publicly reachable
-until nginx fronts it. Verify from the VPS:
+(This starts Postgres and Eden but not nginx — nginx needs a TLS cert first, which step 6
+sets up.)
+
+Eden now serves plain HTTP on port `3000`. Because it uses host networking, it binds all
+interfaces (`0.0.0.0:3000`), not just loopback — so it's the **firewall** (step 1, which never
+opens 3000) that keeps it off the internet, not the bind address. nginx terminates TLS and
+proxies to it locally. Verify from the VPS:
 
 ```bash
 curl -sI http://127.0.0.1:3000 | head -1   # expect HTTP/1.1 200 or a 30x to /login
 ```
 
-## 6. Nginx + Let's Encrypt
+## 6. Nginx + TLS (both containerized)
+
+nginx and certbot run as containers in this same compose stack (the `nginx` service and the
+`certbot` tool service) — nothing TLS-related is installed on the host. nginx terminates TLS and
+proxies `/e/…` (agent channel traffic) to the splitter on `:8787` and everything else to Eden on
+`:3000`, with buffering off — Eden streams (assistant, playground), and buffered SSE looks like a
+hang.
+
+Point the site config at your domain:
 
 ```bash
-sudo apt install -y nginx certbot python3-certbot-nginx
-sudo cp deploy/vps/nginx-eden.conf /etc/nginx/sites-available/eden
-sudo sed -i 's/eden.example.com/<your-domain>/g' /etc/nginx/sites-available/eden
-sudo ln -s /etc/nginx/sites-available/eden /etc/nginx/sites-enabled/eden
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d <your-domain>        # obtains the cert, rewrites the site for TLS
+cd /opt/eden
+sed -i 's/eden.example.com/<your-domain>/g' deploy/vps/nginx-eden.conf
 ```
 
-Certbot installs a systemd timer for renewal; `sudo certbot renew --dry-run` verifies it.
+The config has a TLS server block, so nginx won't start until a certificate exists — a
+chicken-and-egg. Break it with a throwaway self-signed cert, boot nginx, then replace it with the
+real one over the ACME **webroot** (the same method the renewal cron uses):
 
-The site config proxies `/e/…` (agent channel traffic) to the splitter on `:8787` and
-everything else to Eden on `:3000`, with buffering off — Eden streams (assistant, playground),
-and buffered SSE looks like a hang.
+```bash
+CO="docker compose -f deploy/vps/docker-compose.yml"
+
+# 1. Placeholder cert (1-day self-signed) so nginx can boot.
+$CO run --rm --entrypoint sh certbot -c '
+  mkdir -p /etc/letsencrypt/live/<your-domain> &&
+  openssl req -x509 -newkey rsa:2048 -days 1 -nodes -subj "/CN=<your-domain>" \
+    -keyout /etc/letsencrypt/live/<your-domain>/privkey.pem \
+    -out    /etc/letsencrypt/live/<your-domain>/fullchain.pem'
+
+# 2. Start nginx (serves :80 ACME challenges + :443 with the placeholder).
+$CO up -d nginx
+
+# 3. Drop the placeholder, obtain the real cert via the webroot, then reload nginx.
+#    (nginx keeps serving the old cert from open handles until the reload.)
+$CO run --rm --entrypoint sh certbot -c '
+  rm -rf /etc/letsencrypt/live/<your-domain> \
+         /etc/letsencrypt/archive/<your-domain> \
+         /etc/letsencrypt/renewal/<your-domain>.conf'
+$CO run --rm certbot certonly --webroot -w /var/www/certbot -d <your-domain> \
+  --agree-tos -m you@example.com --no-eff-email
+docker exec eden-nginx nginx -s reload
+```
+
+Confirm TLS from anywhere:
+
+```bash
+curl -sI https://<your-domain> | head -1   # expect HTTP/2 200 (or a 30x to /login)
+```
+
+**Renewal** is a weekly host cron entry — certbot's own systemd timer isn't in play here since
+it's containerized. Add it with `crontab -e`:
+
+```
+17 3 * * 1 cd /opt/eden/deploy/vps && docker compose run --rm certbot renew --quiet && docker exec eden-nginx nginx -s reload
+```
 
 ## 7. First login & smoke test
 

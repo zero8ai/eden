@@ -6,6 +6,7 @@ import type { LoaderFunctionArgs } from "react-router";
 import { SiteHeader, SiteFooter } from "~/components/marketing/site-chrome";
 import { Reveal, Parallax } from "~/components/landing-motion";
 import { caseStudies, getCaseStudy } from "~/lib/case-studies";
+import { pageMeta } from "~/lib/seo";
 
 export async function loader(args: LoaderFunctionArgs) {
   const study = getCaseStudy(args.params.slug ?? "");
@@ -16,10 +17,11 @@ export async function loader(args: LoaderFunctionArgs) {
 export function meta({ params }: Route.MetaArgs) {
   const study = getCaseStudy(params.slug ?? "");
   if (!study) return [{ title: "Case study — Eden" }];
-  return [
-    { title: `${study.company} — Eden case study` },
-    { name: "description", content: study.dek },
-  ];
+  return pageMeta({
+    title: `${study.company} — Eden case study`,
+    description: study.dek,
+    path: `/case-studies/${study.slug}`,
+  });
 }
 
 /**

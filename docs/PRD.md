@@ -911,8 +911,7 @@ two-source-of-truth reconciliation problem.
   `7bb3153`, `55fc29b`, `0397211`; IA in M5.8.)
 - ✅ **Runtime collaboration — teammate delegation.** Every team member gets an `ask-teammate`
   tool, baked into its image at build time (never the repo; a repo file at that path wins), that
-  delegates a self-contained task to a peer and returns the peer's final reply. The design
-  (`docs/PLAN-TEAM-DELEGATION.md`):
+  delegates a self-contained task to a peer and returns the peer's final reply. The design:
   - **Eden relay, not peer-to-peer** — the tool POSTs `POST /api/team/ask` on the control plane,
     which resolves the peer's live deployment and drives its eve session via the hardened
     `sendTurn` client. Instances stay loopback-only and unauthenticated; the relay is the single
@@ -1034,9 +1033,9 @@ two-source-of-truth reconciliation problem.
 
 - **eve beta churn.** eve is in public beta; APIs (`defineAgent`, `defineTool`, build output, Worlds)
   may change. Eden must isolate an "eve-version adapter" layer and pin/track eve versions per repo.
-  **Sharpened by the spike (docs/SPIKE-EVE.md):** the eve ↔ `@workflow/world-postgres` version pair
+  **Sharpened by the eve spike:** the eve ↔ `@workflow/world-postgres` version pair
   is strict and runtime-enforced (world spec versions) — Eden must treat it as pinned per repo.
-- ~~**`eve init` in a server context.**~~ **Resolved (2026-07-02, docs/SPIKE-EVE.md):** `eve init`
+- ~~**`eve init` in a server context.**~~ **Resolved (2026-07-02):** `eve init`
   and `eve build` run fully headless (Node ≥ 24; Eden runs them inside build containers). A repo is
   deployable off-Vercel only if it declares the Postgres world in `agent.ts` — Connect should
   validate and offer a "make deployable" PR.
@@ -1062,7 +1061,7 @@ two-source-of-truth reconciliation problem.
   fire-and-forget vs. wait-for-completion vs. streaming intermediate progress back into the caller's
   turn; and how approval gates (`needsApproval`) compose across a delegation chain. Needs a spike.~~
   **RESOLVED (2026-07-06): teammate delegation.** Not a peer HTTP channel — an **Eden relay**
-  (`POST /api/team/ask`, `docs/PLAN-TEAM-DELEGATION.md`): the baked-in `ask-teammate` tool speaks
+  (`POST /api/team/ask`): the baked-in `ask-teammate` tool speaks
   plain JSON to the control plane, which drives the peer's eve session via `sendTurn` and returns
   its final reply. **Wait-for-completion**, one ask = one fresh peer session (multi-turn punted —
   the upstream continuation contract is unproven). **No progress streaming** into the caller's turn.

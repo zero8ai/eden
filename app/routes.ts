@@ -11,6 +11,7 @@ const memberRoute = (tail: string, file: string, id: string) =>
 
 export default [
   index("routes/home.tsx"),
+  route("sitemap.xml", "routes/sitemap[.]xml.tsx"),
   // Marketing case studies — index + one page per vertical.
   route("case-studies", "routes/case-studies.tsx"),
   route("case-studies/:slug", "routes/case-studies.$slug.tsx"),

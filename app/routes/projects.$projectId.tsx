@@ -84,6 +84,7 @@ import { agentRequiredSecretState } from "~/project/secrets.server";
 import { overlayLock } from "~/marketplace/lock";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Project } from "~/db/queries.server";
+import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/projects.$projectId";
 
 /** Roster card data for the team landing view. */
@@ -480,7 +481,10 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Project · Eden" }];
+  return [
+    { title: "Project · Eden" },
+    ...noindexMeta,
+  ];
 }
 
 export default function ProjectDetail({

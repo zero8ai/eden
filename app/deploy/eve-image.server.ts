@@ -1,5 +1,5 @@
 /**
- * eve repo → Docker image build pipeline (validated end-to-end in docs/SPIKE-EVE.md).
+ * eve repo → Docker image build pipeline (validated end-to-end against eve).
  *
  * Fetch the repo tarball at a commit (GitHub App) → extract to a scratch dir → ensure Eden's
  * reference multi-stage Dockerfile (respecting one the repo already has) → `docker build`.

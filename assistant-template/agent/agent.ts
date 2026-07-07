@@ -16,7 +16,7 @@ export default defineAgent({
     process.env.EDEN_ASSISTANT_MODEL ?? "z-ai/glm-5.2",
   ),
   modelContextWindowTokens: 200000,
-  // Deployable off-Vercel: declare + externalize the Postgres Workflow world (SPIKE-EVE §2).
+  // Deployable off-Vercel: declare + externalize the Postgres Workflow world.
   build: { externalDependencies: ["@workflow/world-postgres"] },
   experimental: { workflow: { world: "@workflow/world-postgres" } },
 });

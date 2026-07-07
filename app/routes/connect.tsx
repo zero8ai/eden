@@ -57,6 +57,7 @@ import {
 } from "~/github/repo.server";
 import { detectAgentRoots, isEveRepo } from "~/eve/parse";
 import { slugifyResourceName } from "~/eve/templates";
+import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/connect";
 
 type GithubConnectState =
@@ -223,7 +224,10 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "New repository · Eden" }];
+  return [
+    { title: "New repository · Eden" },
+    ...noindexMeta,
+  ];
 }
 
 export default function Connect({ loaderData, actionData }: Route.ComponentProps) {

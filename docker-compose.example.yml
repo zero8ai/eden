@@ -3,7 +3,7 @@
 # Copy this to docker-compose.yml (gitignored, so you can tweak it locally) and run:
 #   docker compose up -d
 #
-# The control plane standardizes on Postgres (HANDOFF §2 / D7) — it's also the engine
+# The control plane standardizes on Postgres (D7) — it's also the engine
 # that backs the eve Workflow World, so we run one database for everything.
 #
 # Add future local deps (object store, model gateway, etc.) as new services here.

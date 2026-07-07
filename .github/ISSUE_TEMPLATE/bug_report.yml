@@ -1,0 +1,54 @@
+name: "\U0001F41E Bug report"
+description: Report an issue with Eden
+labels: [bug, pending triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is. If you intend to submit a PR for this issue, tell us in the description. Thanks!
+      placeholder: I am doing ... What I expect is ... What actually happening is ...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: Steps to reproduce
+      description: Please provide the steps needed to reproduce the problem. Make it clear which screen, action, or flow triggers it.
+      placeholder: 1. Go to ... 2. Click on ... 3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Where did this happen? Include browser/OS, and whether it was local, staging, or production.
+      placeholder: e.g. Chrome 126 on macOS, production (eden.zero8.ai)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs & screenshots
+      description: |
+        Optional. Please paste any relevant console or server logs as text (not images), and attach screenshots if they help.
+      render: shell
+  - type: checkboxes
+    id: checkboxes
+    attributes:
+      label: Validations
+      description: Before submitting the issue, please make sure you do the following
+      options:
+        - label: Check that there isn't already an issue that reports the same bug to avoid creating a duplicate.
+          required: true
+        - label: Check that this is a concrete bug with clear steps to reproduce.
+          required: true

@@ -5,8 +5,9 @@ without hand-writing code. Eden puts a guided web UI + an embedded coding assist
 repo so **product managers** can author agents, then ships and operates the result. Open source +
 self-hostable, and also a commercial managed service.
 
-New here? Read [`HANDOFF.md`](./HANDOFF.md) first (state + plan), then [`PRD.md`](./PRD.md)
-(product) and [`ARCHITECTURE.md`](./ARCHITECTURE.md) (managed-service infra).
+New here? Start with [`docs/ROADMAP.md`](./docs/ROADMAP.md) (what's shipped and what's next),
+then [`docs/PRD.md`](./docs/PRD.md) (full product spec) and
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) (managed-service infra).
 
 **Stack:** React Router 7 (framework mode, SSR) · TypeScript · Tailwind 4 · Drizzle + Postgres ·
 WorkOS AuthKit (auth & tenancy).
@@ -115,7 +116,7 @@ eden/
 │   └── routes.ts         # route config
 ├── drizzle/              # generated SQL migrations
 ├── docker-compose.example.yml   # local deps (copy to docker-compose.yml)
-├── PRD.md · ARCHITECTURE.md · HANDOFF.md
+├── docs/                 # ROADMAP.md · PRD.md · ARCHITECTURE.md
 └── Dockerfile
 ```
 
@@ -128,4 +129,4 @@ and the agent instances it deploys.
 
 `npm run build` emits a standard Node server build under `build/` (client + server); the
 included `Dockerfile` containerizes it with the Docker CLI the deploy target needs. See
-`ARCHITECTURE.md` for the managed-service infrastructure.
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the managed-service infrastructure.

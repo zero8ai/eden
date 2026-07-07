@@ -21,7 +21,7 @@ class DeployToolingUnavailableError extends Error {
   constructor(step: string) {
     super(
       `Deploy step "${step}" needs the eve/docker toolchain, which isn't available here yet. ` +
-        `Configure a DeployTarget host (see ARCHITECTURE.md §5) to enable deploys.`,
+        `Configure a DeployTarget host (see docs/ARCHITECTURE.md §5) to enable deploys.`,
     );
     this.name = "DeployToolingUnavailableError";
   }

@@ -32,6 +32,7 @@ import {
 import { TEMPLATE_TYPES, type TemplateType } from "~/marketplace/manifest";
 import { getRuntime } from "~/seams/index.server";
 import { syncTenant } from "~/auth/tenant.server";
+import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/marketplace";
 
 /**
@@ -126,7 +127,10 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export function meta() {
-  return [{ title: "Marketplace · Eden" }];
+  return [
+    { title: "Marketplace · Eden" },
+    ...noindexMeta,
+  ];
 }
 
 export default function Marketplace({ loaderData }: Route.ComponentProps) {

@@ -52,6 +52,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        {/* Brand icons + PWA manifest. SVG is the primary favicon (crisp at any size);
+            the .ico is the legacy fallback for older crawlers/browsers. */}
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <link rel="icon" href="/favicon.ico" sizes="48x48" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+        <link rel="manifest" href="/site.webmanifest" />
+        <meta name="theme-color" content="#4B7DFF" />
         <script dangerouslySetInnerHTML={{ __html: darkModeScript }} />
         <Meta />
         <Links />

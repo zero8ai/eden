@@ -20,6 +20,7 @@ import {
 } from "react-router";
 
 import { QuickDeploy } from "~/components/quick-deploy";
+import { EdenWordmark } from "~/components/marketing/logo";
 import { ThemeToggle } from "~/components/theme-toggle";
 import { Button } from "~/components/ui/button";
 import {
@@ -96,8 +97,12 @@ export function AppShell({
       <NavProgress />
       <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-5xl items-center gap-2 px-4 sm:gap-4 sm:px-6">
-          <Link to="/dashboard" className="flex shrink-0 items-baseline gap-2">
-            <span className="text-base font-semibold tracking-tight">Eden</span>
+          <Link
+            to="/dashboard"
+            className="flex shrink-0 items-center"
+            aria-label="Eden dashboard"
+          >
+            <EdenWordmark className="h-5" />
           </Link>
           {breadcrumbs && breadcrumbs.length > 0 ? (
             <Breadcrumbs crumbs={breadcrumbs} />

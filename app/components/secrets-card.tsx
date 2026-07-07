@@ -1040,100 +1040,108 @@ function AddSecretForm({
 
   return (
     <form
-      className="flex flex-wrap items-end gap-2"
+      className="space-y-3"
       onSubmit={(e) => {
         e.preventDefault();
         submit();
       }}
     >
-      <div className="grid w-full gap-1.5 sm:w-auto">
-        <Label htmlFor="secret-add-name">Name</Label>
-        <Input
-          id="secret-add-name"
-          ref={nameRef}
-          value={name}
-          placeholder="API_KEY"
-          autoComplete="off"
-          className="w-full font-mono sm:w-52"
-          onChange={(e) => {
-            setName(normalizeSecretName(e.target.value));
-            setNameError(null);
-          }}
-          onBlur={() => {
-            if (name && !SECRET_NAME_RE.test(name)) {
-              setNameError("Must be a valid env var name (A–Z, 0–9, _).");
-            }
-          }}
-        />
-      </div>
-      <div className="grid w-full gap-1.5 sm:w-auto">
-        <Label htmlFor="secret-add-value">Value</Label>
-        <div className="relative w-full sm:w-auto">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="grid min-w-0 flex-1 gap-1.5 sm:max-w-52">
+          <Label htmlFor="secret-add-name">Name</Label>
           <Input
-            id="secret-add-value"
-            type={showValue ? "text" : "password"}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="value (write-only)"
+            id="secret-add-name"
+            ref={nameRef}
+            value={name}
+            placeholder="API_KEY"
             autoComplete="off"
-            className="w-full pr-8 font-mono sm:w-60"
+            className="w-full font-mono"
+            aria-invalid={!!nameError || collision}
+            onChange={(e) => {
+              setName(normalizeSecretName(e.target.value));
+              setNameError(null);
+            }}
+            onBlur={() => {
+              if (name && !SECRET_NAME_RE.test(name)) {
+                setNameError("Must be a valid env var name (A–Z, 0–9, _).");
+              }
+            }}
           />
-          <button
-            type="button"
-            className="absolute inset-y-0 right-2 text-muted-foreground"
-            aria-label={showValue ? "Hide value" : "Show value"}
-            onClick={() => setShowValue((v) => !v)}
+        </div>
+        <div className="grid min-w-0 flex-1 gap-1.5 sm:max-w-60">
+          <Label htmlFor="secret-add-value">Value</Label>
+          <div className="relative w-full">
+            <Input
+              id="secret-add-value"
+              type={showValue ? "text" : "password"}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="value (write-only)"
+              autoComplete="off"
+              className="w-full pr-8 font-mono"
+            />
+            <button
+              type="button"
+              className="absolute inset-y-0 right-2 text-muted-foreground"
+              aria-label={showValue ? "Hide value" : "Show value"}
+              onClick={() => setShowValue((v) => !v)}
+            >
+              {showValue ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+            </button>
+          </div>
+        </div>
+        <div className="grid gap-1.5">
+          <Label>Env</Label>
+          <Select
+            value={env}
+            onValueChange={(v) => {
+              touchedEnv.current = true;
+              setEnv(v);
+            }}
           >
-            {showValue ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-          </button>
+            <SelectTrigger className="h-9 w-full min-w-36" aria-label="Environment">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL}>All environments</SelectItem>
+              {envs.map((e) => (
+                <SelectItem key={e.id} value={e.id}>
+                  {e.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
-      <div className="grid w-full gap-1.5 sm:w-auto">
-        <Label>Env</Label>
-        <Select
-          value={env}
-          onValueChange={(v) => {
-            touchedEnv.current = true;
-            setEnv(v);
-          }}
-        >
-          <SelectTrigger className="h-9 w-full min-w-36 sm:w-auto" aria-label="Environment">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>All environments</SelectItem>
-            {envs.map((e) => (
-              <SelectItem key={e.id} value={e.id}>
-                {e.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      <div className="flex items-center justify-between gap-3">
+        <SandboxToggle
+          name={name || "this secret"}
+          label="Expose to sandbox"
+          checked={exposed}
+          onChange={setExposed}
+        />
+        <Button type="submit" disabled={!canAdd}>
+          Add
+        </Button>
       </div>
-      <SandboxToggle
-        name={name || "this secret"}
-        checked={exposed}
-        onChange={setExposed}
-      />
-      <Button type="submit" disabled={!canAdd}>
-        Add
-      </Button>
-      <div className="basis-full space-y-0.5">
-        {nameError && <p className="text-xs text-destructive">{nameError}</p>}
-        {collision && (
-          <p className="text-xs text-destructive">
-            {name} already exists for{" "}
-            {envIdOrNull === null ? "all environments" : envLabel(envIdOrNull, envs)} — use
-            Replace on its row instead.
-          </p>
-        )}
-        {sharedMatch && !collision && (
-          <p className="text-xs text-amber-700 dark:text-amber-400">
-            A project-level {name} exists — consider attaching the shared secret instead
-            (see Shared with project above).
-          </p>
-        )}
-      </div>
+      {(nameError || collision || (sharedMatch && !collision)) && (
+        <div className="space-y-0.5">
+          {nameError && <p className="text-xs text-destructive">{nameError}</p>}
+          {collision && (
+            <p className="text-xs text-destructive">
+              {name} already exists for{" "}
+              {envIdOrNull === null ? "all environments" : envLabel(envIdOrNull, envs)} — use
+              Replace on its row instead.
+            </p>
+          )}
+          {sharedMatch && !collision && (
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              A project-level {name} exists — consider attaching the shared secret instead
+              (see Shared with project above).
+            </p>
+          )}
+        </div>
+      )}
     </form>
   );
 }

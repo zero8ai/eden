@@ -128,47 +128,16 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
           </CardContent>
         </Card>
 
-        {manifest.type === "channel" && manifest.id === "discord" && (
+        {manifest.setup && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Discord setup</CardTitle>
+              <CardTitle className="text-base">Setup</CardTitle>
               <CardDescription>
-                Install the bot in Discord, then connect Discord to the deployed
-                agent environment.
+                What you&rsquo;ll do on the provider&rsquo;s side to wire this up.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <p>
-                In Discord Developer Portal, invite the app to your server with
-                the <code>bot</code> and <code>applications.commands</code>{" "}
-                scopes.
-              </p>
-              <p>
-                After you deploy the agent in Eden, open its Deployment tab and
-                copy the Discord endpoint for the environment you want Discord
-                to reach. Paste that value into General Information →
-                Interactions Endpoint URL.
-              </p>
-              <p>
-                The default Discord route is{" "}
-                <code className="rounded bg-muted px-1.5 py-0.5">
-                  /eve/v1/discord
-                </code>
-                . In self-hosted Eden, the full production URL is shown as{" "}
-                <code className="rounded bg-muted px-1.5 py-0.5">
-                  https://&lt;your-domain&gt;/e/&lt;environmentId&gt;/eve/v1/discord
-                </code>
-                .
-              </p>
-              <p>
-                Discord cannot call localhost. In local development, expose
-                Eden with a tunnel and use the tunnel host with the same path.
-              </p>
-              <p>
-                The bot replies in the channel where the slash command is used.
-                To limit it to one channel, set that channel&rsquo;s permissions
-                for the bot and deny access elsewhere.
-              </p>
+            <CardContent className="text-sm">
+              <MarkdownText text={manifest.setup} />
             </CardContent>
           </Card>
         )}

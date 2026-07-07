@@ -122,6 +122,13 @@ export const templateManifestSchema = z.object({
   /** Suggested model, for agent-type templates. */
   model: z.string().optional(),
   /**
+   * Provider-side setup a customer must do before this template works — rendered as Markdown on
+   * the detail page, *before* install. This is where a template carries the install knowledge a
+   * secret's description can't hold: creating an app on the provider, pointing a webhook at the
+   * agent's endpoint, scopes to grant. Mainly used by channels; any template may set it.
+   */
+  setup: z.string().min(1).optional(),
+  /**
    * Other catalog templates this one bundles by reference (composition). At install/update time
    * the resolver (compose.server.ts) flattens each include's files/deps/secrets/sandbox into this
    * template, so installed repos get materialized files — never live references. No version

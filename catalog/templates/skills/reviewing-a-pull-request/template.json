@@ -1,0 +1,9 @@
+{
+  "id": "reviewing-a-pull-request",
+  "type": "skill",
+  "name": "Reviewing a pull request",
+  "description": "How to judge whether a change is correct, safe, and ready — and give feedback that helps the author.",
+  "version": "0.1.0",
+  "eve": ">=0.1.0",
+  "files": ["skills/reviewing-a-pull-request.md"]
+}

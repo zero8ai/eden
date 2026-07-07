@@ -4,6 +4,8 @@ This directory is the Recruit marketplace catalog (PRD §7.8): a curated set of 
 
 A template can also **include** other templates by reference (see [Composition](#composition)): a channel like Discord is authored once and bundled into an agent, resolved to materialized files at install time.
 
+**Authoring an agent?** Its `instructions.md` system prompt must follow [`CONSTITUTION.md`](./CONSTITUTION.md) — how we ground agents without over-specifying them. It's also the checklist for reviewing one.
+
 **This directory's destiny is the eve OSS repo.** The owner decision (PRD §7.8, Distribution) is that the v1 catalog lives inside `github.com/vercel/eve` as `marketplace/`, not a separate repo. It's authored here in Eden and copied there. That's why `scripts/` imports **nothing** from Eden's `app/` — the whole directory must validate and index itself standing alone.
 
 (Inside Eden's repo it is named `catalog/` only because Vite's dev server would serve `marketplace/index.json` over the app's `/marketplace` route on a hard reload; the copy into eve renames it to `marketplace/`.)
@@ -47,6 +49,7 @@ Note the plural: a template of `type: "tool"` lives under `templates/tools/`.
    | `sandbox`             | no       | sandbox setup merged into the target agent, e.g. `bootstrap` shell commands, `env` defaults, and a `revalidationKey` |
    | `connections`         | no       | declared for future use                                                                                              |
    | `model`               | no       | suggested model (agent-type templates)                                                                               |
+   | `setup`               | no       | Markdown, shown on the detail page before install — provider-side steps a secret description can't hold (create an app, point a webhook at the agent's endpoint, grant scopes). Mainly channels |
    | `includes`            | no       | `[{ type, id }]` — other catalog templates bundled by reference; `type` is any type except `agent` (see Composition) |
 
 3. Put the shipped files under `files/`, mirroring the install-relative paths — a tool at `files/tools/<id>.ts` installs to the target agent's `tools/<id>.ts`.

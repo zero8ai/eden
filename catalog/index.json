@@ -17,6 +17,14 @@
       "hash": "3bcd794f23f05a15f84ca48c80d6d748f9889493"
     },
     {
+      "id": "designer",
+      "type": "agent",
+      "name": "Designer",
+      "version": "0.1.0",
+      "description": "A product designer that turns problems into build-ready design specs and critiques UI work — capturing decisions and feedback in GitHub as committed notes and PR/issue comments.",
+      "hash": "e3eaa61b503c3963a333f22e64529d8de99228b9"
+    },
+    {
       "id": "engineer",
       "type": "agent",
       "name": "Engineer",
@@ -25,12 +33,92 @@
       "hash": "8211ba2d1aa88079e274a5b4d810160f64c67936"
     },
     {
+      "id": "product-manager",
+      "type": "agent",
+      "name": "Product Manager",
+      "version": "0.1.0",
+      "description": "Draws the real need out of a request in conversation, then captures it as clear, actionable GitHub issues with gh — following each repo's own templates and labels.",
+      "hash": "363279ca6b52b7caf869a9e56becf063a09458a8"
+    },
+    {
+      "id": "reviewer",
+      "type": "agent",
+      "name": "Reviewer",
+      "version": "0.1.0",
+      "description": "Reviews open pull requests — reads the change against its issue, runs the repo's checks, and leaves specific, ranked feedback. Reviews; doesn't merge.",
+      "hash": "03b14ad0a416f78fb4d29c62ccd4879ad223b2c9"
+    },
+    {
+      "id": "technical-writer",
+      "type": "agent",
+      "name": "Technical Writer",
+      "version": "0.1.0",
+      "description": "Writes and maintains a project's documentation — READMEs, guides, references, changelogs — as pull requests, accurate to the code and in the project's own voice.",
+      "hash": "f7b7d51d4e87a82292795cea21205940d69e6bbc"
+    },
+    {
+      "id": "triage-lead",
+      "type": "agent",
+      "name": "Triage Lead",
+      "version": "0.1.0",
+      "description": "Keeps a GitHub issue backlog healthy — triages, labels, prioritizes, de-duplicates, and assigns work through gh, learning each repo's own taxonomy. Runs on demand or on a schedule.",
+      "hash": "1587613131e63d25be46e7e55fb18951becb2ca4"
+    },
+    {
       "id": "discord",
       "type": "channel",
       "name": "Discord",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Talk to this agent from Discord — slash-command interactions with signature verification, threaded replies, and typing indicators via eve's discordChannel.",
-      "hash": "f67a0cf6e6a8e9b1a4f2978aea97dc078149cc50"
+      "hash": "c8c4da26de305e765170feea8409e3d8e81aa9f3"
+    },
+    {
+      "id": "github",
+      "type": "channel",
+      "name": "GitHub",
+      "version": "0.1.0",
+      "description": "Talk to this agent by @mentioning it in GitHub issue and pull-request comments — a GitHub App with webhook signature verification via eve's githubChannel.",
+      "hash": "edee594f8e3154333074b4ab31fd9eed5b131a97"
+    },
+    {
+      "id": "linear",
+      "type": "channel",
+      "name": "Linear",
+      "version": "0.1.0",
+      "description": "Assign and @mention this agent in Linear — it works as a Linear agent, posting Agent Activities on delegated sessions via eve's linearChannel with webhook signature verification.",
+      "hash": "51bf1e41c76117e1ef87a5e2757f8d7c44c68ae3"
+    },
+    {
+      "id": "microsoft-teams",
+      "type": "channel",
+      "name": "Microsoft Teams",
+      "version": "0.1.0",
+      "description": "Talk to this agent from Microsoft Teams — inbound Bot Framework JWT validation and replies over the Bot Connector API via eve's teamsChannel.",
+      "hash": "63dbf1553963dc06ff417478206b1b8961f8d06f"
+    },
+    {
+      "id": "slack",
+      "type": "channel",
+      "name": "Slack",
+      "version": "0.1.0",
+      "description": "Talk to this agent from Slack — app mentions and direct messages with buttons and select menus, credentials brokered by a Vercel Connect connector via eve's slackChannel.",
+      "hash": "02829431505c2d47ae19c27b2a5c85c1f8655809"
+    },
+    {
+      "id": "telegram",
+      "type": "channel",
+      "name": "Telegram",
+      "version": "0.1.0",
+      "description": "Talk to this agent from Telegram — direct messages and group @mentions with inbound signature verification, replies, and typing indicators via eve's telegramChannel.",
+      "hash": "f9630f0cc2aa178fe5cd7f0370f1320e2699ad37"
+    },
+    {
+      "id": "twilio",
+      "type": "channel",
+      "name": "Twilio (SMS)",
+      "version": "0.1.0",
+      "description": "Talk to this agent over SMS through Twilio — inbound signature verification and outbound replies via eve's twilioChannel, with the allowed sender and from-number read from env.",
+      "hash": "40b1df659ac504c60859c2f6f30b097db37e20dc"
     },
     {
       "id": "agent-browser",
@@ -39,6 +127,46 @@
       "version": "0.1.0",
       "description": "Browser automation with the agent-browser CLI: navigate pages, inspect accessibility snapshots, click/fill by refs, capture screenshots, and run web QA from the sandbox shell.",
       "hash": "272c1e47fccc92831c32ce78ef56c8d10a848ae2"
+    },
+    {
+      "id": "design-critique",
+      "type": "skill",
+      "name": "Design critique",
+      "version": "0.1.0",
+      "description": "How to critique a design against its intent — hierarchy, consistency, the unhappy states, accessibility, and copy.",
+      "hash": "c7116a3a026df48cf6f4443407fa32089a451ad2"
+    },
+    {
+      "id": "reviewing-a-pull-request",
+      "type": "skill",
+      "name": "Reviewing a pull request",
+      "version": "0.1.0",
+      "description": "How to judge whether a change is correct, safe, and ready — and give feedback that helps the author.",
+      "hash": "3c5b4f5f15181b176ff913bd290be271d28d7ddb"
+    },
+    {
+      "id": "technical-writing",
+      "type": "skill",
+      "name": "Technical writing",
+      "version": "0.1.0",
+      "description": "How to write documentation that gets a reader to an outcome — leading with what they came for and cutting the rest.",
+      "hash": "bfa240a80f9c8559bd192a59e6401de714b573b3"
+    },
+    {
+      "id": "triaging-issues",
+      "type": "skill",
+      "name": "Triaging issues",
+      "version": "0.1.0",
+      "description": "How to groom a backlog — decide what an incoming issue is, how urgent it is, and what happens to it next.",
+      "hash": "e6ab4b70189ca9938f477c414c77f07c55e9d503"
+    },
+    {
+      "id": "writing-a-github-issue",
+      "type": "skill",
+      "name": "Writing a GitHub issue",
+      "version": "0.1.0",
+      "description": "How to turn a request, bug, or idea into a GitHub issue someone can act on without asking you anything.",
+      "hash": "1a77fe3908cbccc0692b9781fe457fd4454ca196"
     },
     {
       "id": "writing-a-prd",

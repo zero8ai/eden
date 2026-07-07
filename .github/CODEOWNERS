@@ -1,0 +1,5 @@
+# Default owner for everything in the repo. As a code owner, @asiraky is
+# automatically requested for review on every pull request, and — with
+# "Require review from Code Owners" branch protection enabled on main —
+# their approval is required before a PR can be merged.
+* @asiraky

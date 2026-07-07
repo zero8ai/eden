@@ -88,7 +88,8 @@ import {
   planInstall,
   planUninstall,
 } from "~/marketplace/install.server";
-import { overlayLock } from "~/marketplace/lock";
+import { overlayLock, renameMember, serializeLock } from "~/marketplace/lock";
+import { slugifyResourceName } from "~/eve/templates";
 import {
   resolveTemplate,
   type ResolvedTemplate,
@@ -151,6 +152,10 @@ interface SettingsView {
   showRepo: boolean;
   /** Member: whether the active member can be removed (team, not the last member). */
   canRemoveMember: boolean;
+  /** Member: whether the active agent can be renamed (any member/single-agent, self view). */
+  canRenameMember: boolean;
+  /** Member: an in-flight rename target (open PR), or null. */
+  pendingName: string | null;
   /** Member: current model (staged draft wins) + staging state. */
   model: string | null;
   modelInherited: boolean;
@@ -375,6 +380,8 @@ export const loader = (args: LoaderFunctionArgs) =>
         showMember,
         showRepo,
         canRemoveMember: showMember && isTeam && active.root !== "agent",
+        canRenameMember: showMember,
+        pendingName: showMember ? active.pendingName : null,
         model: null,
         modelInherited: false,
         hasAgentModule: false,
@@ -814,6 +821,130 @@ export async function action(args: ActionFunctionArgs) {
       };
     }
 
+    // ── Member: rename agent ──
+    // Root single-agent: the name is decoupled from the directory, so the rename is INSTANT (a
+    // DB update, no PR). Team member: the name IS the `agents/<name>/` directory, so it lands as
+    // a change-set that moves the directory; the row is renamed in place on merge (pendingName).
+    if (intent === "rename-member") {
+      const newName = slugifyResourceName(String(form.get("name") ?? ""));
+      if (!newName) return { error: "New name is required." };
+      if (newName === "assistant") {
+        return {
+          error: `"assistant" is reserved for Eden's built-in assistant — pick another name.`,
+        };
+      }
+      const { roster, active } = await resolveAgentContext(
+        project.id,
+        String(form.get("agent") ?? "") || null,
+      );
+      if (newName === active.name) {
+        return { error: "That's already this agent's name." };
+      }
+      // Collide against both live roster names and any other member's pending rename target.
+      const taken = roster.some(
+        (a) =>
+          a.id !== active.id &&
+          (a.name === newName || a.pendingName === newName),
+      );
+      if (taken) {
+        return { error: `A member named "${newName}" already exists.` };
+      }
+      if (active.pendingName) {
+        return {
+          error: `A rename to "${active.pendingName}" is already in flight — merge or close it first.`,
+        };
+      }
+
+      // Root single-agent: rename in place, no repo change.
+      if (active.root === "agent") {
+        await getRuntime().data.agents.rename(active.id, {
+          name: newName,
+          root: "agent",
+        });
+        return { ok: true as const, renamed: newName };
+      }
+
+      // Team member: move `agents/<old>/` → `agents/<new>/` as a change-set.
+      const oldName = active.name;
+      const source = await fetchAgentSource(project.repoInstallationId, repo);
+      const oldDir = `agents/${oldName}/`;
+      const newDir = `agents/${newName}/`;
+      const memberPaths = source.paths.filter((p) => p.startsWith(oldDir));
+      if (memberPaths.length === 0) {
+        return { error: `No files found under ${oldDir}.` };
+      }
+      const contents = await Promise.all(
+        memberPaths.map((p) =>
+          readAgentFile(project.repoInstallationId, repo, p),
+        ),
+      );
+      const files: FileChange[] = [];
+      memberPaths.forEach((p, i) => {
+        const content = contents[i];
+        if (content === null) return; // unreadable/binary — skip, leave it for the reviewer.
+        const destPath = `${newDir}${p.slice(oldDir.length)}`;
+        // The member package.json carries `"name": "<member>"` — retarget it to the new name.
+        let destContent = content;
+        if (p === `${oldDir}package.json`) {
+          try {
+            const pkg = JSON.parse(content);
+            pkg.name = newName;
+            destContent = JSON.stringify(pkg, null, 2) + "\n";
+          } catch {
+            // Leave a malformed package.json as-is; the reviewer sees it in the change-set.
+          }
+        }
+        files.push({ path: destPath, content: destContent });
+        files.push({ path: p, content: null });
+      });
+
+      // eden-lock.json lives at the repo root: retag this member's installs old → new.
+      const lockRaw = source.files["eden-lock.json"] ?? null;
+      if (lockRaw) {
+        const rewritten = renameMember(
+          overlayLock(lockRaw, []),
+          oldName,
+          newName,
+        );
+        if (rewritten.changed) {
+          files.push({
+            path: "eden-lock.json",
+            content: serializeLock(rewritten.lock),
+          });
+        }
+      }
+
+      // Mark the rename in-flight BEFORE opening the PR. If we opened the PR first and this DB
+      // write then failed, the PR could still merge with no pending mark — planPendingRenames would
+      // skip the row and syncRoster would cascade-delete its environments/releases/secrets/drafts.
+      // Marking first is safe: a stale mark left by a failed proposeChange (below) is rolled back.
+      await getRuntime().data.agents.setPendingName(active.id, newName);
+      let change;
+      try {
+        change = await proposeChange(project.repoInstallationId, repo, {
+          base: project.defaultBranch,
+          branch: `eden/rename-member-${oldName}-${newName}`,
+          files,
+          title: `Rename team member: ${oldName} → ${newName}`,
+          body:
+            `Moves \`agents/${oldName}/\` to \`agents/${newName}/\` (${memberPaths.length} files) ` +
+            `and retargets its package.json and marketplace installs. Eden renames the member in ` +
+            `place on merge — its environments, versions, secrets and run history are preserved.\n\n` +
+            `Note: mentions of \`${oldName}\` in other members' instructions or tools are not ` +
+            `rewritten automatically — update those separately if needed.`,
+        });
+      } catch (err) {
+        // No PR was opened, so drop the pending mark to avoid soft-locking future renames.
+        await getRuntime().data.agents.setPendingName(active.id, null);
+        throw err;
+      }
+      return {
+        ok: true as const,
+        changeUrl: change.pullRequestUrl,
+        member: newName,
+      };
+    }
+
     // ── Repo: ingest tokens ──
     if (intent === "create-token") {
       const token = await createIngestToken(
@@ -862,6 +993,8 @@ export default function Settings({
     showMember,
     showRepo,
     canRemoveMember,
+    canRenameMember,
+    pendingName,
   } = loaderData;
   const base = contextPath(project.id, level === "member" ? activeAgent : null);
   const [params] = useSearchParams();
@@ -875,6 +1008,10 @@ export default function Settings({
   const changeUrl =
     actionData && "changeUrl" in actionData
       ? (actionData.changeUrl as string)
+      : null;
+  const renamed =
+    actionData && "renamed" in actionData
+      ? (actionData.renamed as string)
       : null;
   const navigation = useNavigation();
   const deletingRepository =
@@ -925,12 +1062,20 @@ export default function Settings({
           </AlertDescription>
         </Alert>
       )}
-      {changeUrl && (
+      {renamed && (
+        <Alert className="mb-6">
+          <AlertTitle>Renamed to {renamed}</AlertTitle>
+          <AlertDescription>
+            This agent&rsquo;s name is updated across Eden.
+          </AlertDescription>
+        </Alert>
+      )}
+      {changeUrl && !renamed && (
         <Alert className="mb-6">
           <AlertTitle>Change request opened</AlertTitle>
           <AlertDescription>
-            The member is removed when it merges — review it on the Deployment
-            tab.
+            Review and merge it on the Deployment tab — nothing changes until it
+            does.
           </AlertDescription>
         </Alert>
       )}
@@ -989,6 +1134,13 @@ export default function Settings({
           />
         )}
         <MarketplaceInstallsSection loaderData={loaderData} />
+        {canRenameMember && (
+          <RenameSection
+            activeAgent={activeAgent}
+            isTeam={isTeam}
+            pendingName={pendingName}
+          />
+        )}
         {showRepo && <GeneralSection project={project} />}
         {showRepo && (
           <IngestSection loaderData={loaderData} newToken={newToken} />
@@ -1296,6 +1448,67 @@ function IngestSection({
           Create ingest token
         </Button>
       </Form>
+    </section>
+  );
+}
+
+/**
+ * Rename this agent. Root single-agent repos rename instantly (the name is decoupled from the
+ * directory); team members open a change-set that moves `agents/<name>/`, and the row is renamed
+ * in place on merge — so environments, versions, secrets and history are preserved either way.
+ */
+function RenameSection({
+  activeAgent,
+  isTeam,
+  pendingName,
+}: {
+  activeAgent: string;
+  isTeam: boolean;
+  pendingName: string | null;
+}) {
+  const navigation = useNavigation();
+  const busy =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "rename-member";
+  return (
+    <section>
+      <SectionHeader title="Name" />
+      {pendingName ? (
+        <Card>
+          <CardContent className="py-4 text-sm">
+            <p className="font-medium">Rename to {pendingName} pending</p>
+            <p className="text-muted-foreground">
+              A change request that renames this member is open. Merge or close
+              it from the Deployment tab; the rename applies on merge.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="space-y-3 py-4">
+            <Form method="post" className="flex flex-wrap items-center gap-2">
+              <input type="hidden" name="intent" value="rename-member" />
+              <input type="hidden" name="agent" value={activeAgent} />
+              <Input
+                name="name"
+                placeholder={activeAgent}
+                defaultValue=""
+                autoComplete="off"
+                className="w-full sm:max-w-xs"
+                aria-label="New agent name"
+              />
+              <Button type="submit" variant="outline" disabled={busy}>
+                {busy ? "Renaming…" : "Rename"}
+              </Button>
+            </Form>
+            <p className="text-sm text-muted-foreground">
+              {isTeam
+                ? `Opens a change request that moves agents/${activeAgent}/ to the new name. Environments, versions, secrets and history are preserved on merge. Mentions of "${activeAgent}" in other members' instructions or tools are not rewritten automatically.`
+                : "Applies immediately across Eden. The agent's repository directory is unaffected."}
+            </p>
+          </CardContent>
+        </Card>
+      )}
     </section>
   );
 }

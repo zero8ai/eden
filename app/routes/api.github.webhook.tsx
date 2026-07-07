@@ -12,6 +12,7 @@
 import { data, type ActionFunctionArgs } from "react-router";
 
 import { listAgents, syncProjectAgents } from "~/db/queries.server";
+import { getRuntime } from "~/seams/index.server";
 import { ensureReleasesForCommit, findProjectByRepo } from "~/deploy/controller.server";
 import { refreshTeammatesForRosterChange } from "~/deploy/teammate-refresh.server";
 import { ASSISTANT_CONFIG_ROOT, detectAgentRoots } from "~/eve/parse";
@@ -39,6 +40,7 @@ export async function action({ request }: ActionFunctionArgs) {
       title?: string;
       number?: number;
       base?: { ref?: string };
+      head?: { ref?: string };
     };
     repository?: { name?: string; owner?: { login?: string }; default_branch?: string };
     installation?: { id?: number };
@@ -57,6 +59,36 @@ export async function action({ request }: ActionFunctionArgs) {
       owner: payload.repository.owner.login,
       repo: payload.repository.name,
     });
+  }
+
+  // A rename PR closed WITHOUT merging must drop the member's pending mark. Otherwise the row
+  // stays "rename in flight" forever — planPendingRenames only clears once the new `agents/<new>/`
+  // directory is detected, which never happens for an unmerged PR — and settings.tsx blocks any
+  // further rename ("merge or close it first") with no PR left to merge or close. Match the branch
+  // back to its row by reconstructing the branch name, so ambiguous old-vs-new name parsing (names
+  // may contain hyphens) is never needed.
+  if (
+    event === "pull_request" &&
+    payload.action === "closed" &&
+    !payload.pull_request?.merged &&
+    payload.pull_request?.head?.ref?.startsWith("eden/rename-member-") &&
+    payload.repository?.owner?.login &&
+    payload.repository.name
+  ) {
+    const headRef = payload.pull_request.head.ref;
+    const project = await findProjectByRepo(
+      payload.repository.owner.login,
+      payload.repository.name,
+    );
+    if (project) {
+      const agents = await listAgents(project.id);
+      const match = agents.find(
+        (a) =>
+          a.pendingName &&
+          `eden/rename-member-${a.name}-${a.pendingName}` === headRef,
+      );
+      if (match) await getRuntime().data.agents.setPendingName(match.id, null);
+    }
   }
 
   // Only act on PRs merged into the default branch — a merge into a feature branch is not

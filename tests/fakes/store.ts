@@ -35,6 +35,7 @@ export interface FakeStore extends DataStore {
     name?: string;
     root?: string;
     kind?: string;
+    pendingName?: string | null;
   }): Agent;
   seedEnvironment(e: {
     id: string;
@@ -90,6 +91,7 @@ export function makeFakeStore(): FakeStore {
         name: a.name ?? "agent",
         root: a.root ?? "agent",
         kind: a.kind ?? "member",
+        pendingName: a.pendingName ?? null,
         createdAt: new Date(0),
         updatedAt: new Date(0),
       };
@@ -142,6 +144,7 @@ export function makeFakeStore(): FakeStore {
                 name: m.name,
                 root: m.root,
                 kind: "member",
+                pendingName: null,
                 createdAt: new Date(++seq),
                 updatedAt: new Date(seq),
               });
@@ -151,6 +154,24 @@ export function makeFakeStore(): FakeStore {
         return [...agents.values()]
           .filter((a) => a.projectId === projectId)
           .sort((a, b) => a.name.localeCompare(b.name));
+      },
+      async rename(aid, patch) {
+        const existing = agents.get(aid);
+        if (!existing) throw new Error("agent not found");
+        const row = {
+          ...existing,
+          name: patch.name,
+          root: patch.root,
+          pendingName: null,
+          updatedAt: new Date(++seq),
+        };
+        agents.set(aid, row);
+        return row;
+      },
+      async setPendingName(aid, pendingName) {
+        const existing = agents.get(aid);
+        if (!existing) return;
+        agents.set(aid, { ...existing, pendingName, updatedAt: new Date(++seq) });
       },
       async findAssistant(projectId) {
         return (
@@ -167,6 +188,7 @@ export function makeFakeStore(): FakeStore {
           name: input.name,
           root: input.root,
           kind: "assistant",
+          pendingName: null,
           createdAt: new Date(++seq),
           updatedAt: new Date(seq),
         };

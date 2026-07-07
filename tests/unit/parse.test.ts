@@ -190,6 +190,7 @@ describe("withPreservedNames", () => {
         name: "pm",
         root: "agent",
         kind: "member",
+        pendingName: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       },

@@ -129,6 +129,16 @@ export const agents = pgTable(
     name: text("name").notNull(),
     root: text("root").notNull(),
     /**
+     * A rename in flight (team members): the roster name the open `eden/rename-member-*` PR will
+     * land. Set the moment the rename change-set is opened; the roster sync maps the old row to
+     * this name IN PLACE when the merge is detected (the new `agents/<pendingName>/` directory
+     * appears and the old one is gone), then clears it — so the row id, and every FK to it
+     * (environments, releases, secrets, drafts, …), survives the rename. Null when no rename is
+     * pending. Root single-agent renames are instant (name is decoupled from the directory) and
+     * never set this.
+     */
+    pendingName: text("pending_name"),
+    /**
      * Roster classification. `member` is a normal roster agent detected from the repo tree
      * (the default — every synced row). `assistant` is Eden's built-in, project-level authoring
      * agent: one per project, created lazily, NEVER detected from the tree, so it must be

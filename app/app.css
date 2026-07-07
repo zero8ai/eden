@@ -48,73 +48,98 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * Eden theme — a calm, soft-blue identity over the shadcn token contract (M-spruce).
+ *
+ * The brand is a cornflower blue (#4B7DFF ≈ ~265° hue) carried by primary/accent/ring/
+ * sidebar-primary/chart-1. Neutrals are NOT pure
+ * gray: the ramp is warm (cream in light, charcoal in dark), so the cool blue sits against a warm
+ * ground rather than a clinical one. Because the whole app consumes these tokens (bg-primary,
+ * bg-accent, border, ring, sidebar-*), recoloring here re-skins every page at once — and a drop-in
+ * ShadCN theme still works by overriding this same variable set. Brand glyphs use the token-based
+ * `brand` accent (see shell.tsx accentChip/accentText), so the hue is one edit.
+ * NOTE: --destructive stays red; brand-blue vs destructive-red never collide.
+ */
+/*
+ * Light mode is "cream paper, blue ink" — the neutral ramp is rebased onto the editorial warm cream
+ * (#faf8f4 background, #1a1a18 warm ink, #dcd7cb sand line). The cool brand blue on warm cream reads
+ * like ink on paper. Cards sit a hair cleaner/whiter than the cream ground so they lift.
+ */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --background: oklch(0.98 0.006 85);
+  --foreground: oklch(0.225 0.006 100);
+  --card: oklch(0.997 0.004 91);
+  --card-foreground: oklch(0.225 0.006 100);
+  --popover: oklch(0.997 0.004 91);
+  --popover-foreground: oklch(0.225 0.006 100);
+  --primary: oklch(0.625 0.201 265);
+  --primary-foreground: oklch(0.985 0.006 85);
+  --secondary: oklch(0.943 0.011 89);
+  --secondary-foreground: oklch(0.4 0.02 96);
+  --muted: oklch(0.95 0.01 88);
+  --muted-foreground: oklch(0.443 0.015 87);
+  --accent: oklch(0.95 0.035 265);
+  --accent-foreground: oklch(0.5 0.17 265);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --border: oklch(0.88 0.017 88);
+  --input: oklch(0.88 0.017 88);
+  --ring: oklch(0.625 0.201 265);
+  --chart-1: oklch(0.625 0.201 265);
+  --chart-2: oklch(0.51 0.2 270);
+  --chart-3: oklch(0.7 0.13 210);
+  --chart-4: oklch(0.77 0.16 70);
+  --chart-5: oklch(0.64 0.22 15);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: oklch(0.965 0.008 88);
+  --sidebar-foreground: oklch(0.225 0.006 100);
+  --sidebar-primary: oklch(0.625 0.201 265);
+  --sidebar-primary-foreground: oklch(0.985 0.006 85);
+  --sidebar-accent: oklch(0.95 0.035 265);
+  --sidebar-accent-foreground: oklch(0.5 0.17 265);
+  --sidebar-border: oklch(0.88 0.017 88);
+  --sidebar-ring: oklch(0.625 0.201 265);
 }
 
+/*
+ * Dark mode is built on the editorial "warm charcoal" black (#1a1a18 == oklch(0.216 0.004 107)),
+ * borrowed from the landing page — a soft, faintly warm black rather than a cool neutral/violet
+ * one, so the page reads calm and premium instead of clinical. The neutral ramp (background, card,
+ * popover, muted, secondary, border, foreground, sidebar) all sit on this warm low-chroma hue;
+ * only the BRAND is the soft blue (primary/accent/ring/sidebar-primary + chart-1), which glows
+ * coolly against the warm charcoal without shouting. Light mode is the cream counterpart.
+ */
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --background: oklch(0.216 0.004 107);
+  --foreground: oklch(0.94 0.006 90);
+  --card: oklch(0.248 0.006 92);
+  --card-foreground: oklch(0.94 0.006 90);
+  --popover: oklch(0.238 0.006 92);
+  --popover-foreground: oklch(0.94 0.006 90);
+  --primary: oklch(0.66 0.19 265);
+  --primary-foreground: oklch(0.985 0.006 85);
+  --secondary: oklch(0.3 0.007 92);
+  --secondary-foreground: oklch(0.92 0.008 90);
+  --muted: oklch(0.272 0.006 95);
+  --muted-foreground: oklch(0.72 0.014 90);
+  --accent: oklch(0.36 0.07 265);
+  --accent-foreground: oklch(0.95 0.03 265);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --border: oklch(0.335 0.006 100);
+  --input: oklch(0.315 0.006 100);
+  --ring: oklch(0.66 0.19 265);
+  --chart-1: oklch(0.66 0.19 265);
+  --chart-2: oklch(0.6 0.19 270);
+  --chart-3: oklch(0.72 0.13 210);
+  --chart-4: oklch(0.78 0.16 70);
+  --chart-5: oklch(0.68 0.2 15);
+  --sidebar: oklch(0.198 0.004 107);
+  --sidebar-foreground: oklch(0.94 0.006 90);
+  --sidebar-primary: oklch(0.66 0.19 265);
+  --sidebar-primary-foreground: oklch(0.985 0.006 85);
+  --sidebar-accent: oklch(0.36 0.07 265);
+  --sidebar-accent-foreground: oklch(0.95 0.03 265);
+  --sidebar-border: oklch(0.3 0.006 100);
+  --sidebar-ring: oklch(0.66 0.19 265);
 }
 
 @layer base {

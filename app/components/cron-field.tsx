@@ -4,6 +4,7 @@
  * exposes the raw expression, so nothing expressible in cron is off the table. Controlled:
  * emits the cron string, and shows the plain-English reading + the expression it produced.
  */
+import { CalendarClock } from "lucide-react";
 import { useState } from "react";
 
 import { Input } from "~/components/ui/input";
@@ -217,14 +218,22 @@ export function CronField({
         )}
       </div>
 
-      <p className="text-xs text-muted-foreground">
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
         {!isValidCron(value) ? (
           <span className="text-destructive">Not a valid cron expression.</span>
-        ) : preset.kind === "custom" ? (
-          describeCron(value)
         ) : (
           <>
-            {describeCron(value)} <span className="font-mono">({value})</span>
+            <CalendarClock
+              className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+              aria-hidden
+            />
+            {preset.kind === "custom" ? (
+              describeCron(value)
+            ) : (
+              <>
+                {describeCron(value)} <span className="font-mono">({value})</span>
+              </>
+            )}
           </>
         )}
       </p>

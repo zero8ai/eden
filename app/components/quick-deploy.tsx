@@ -129,7 +129,11 @@ function QuickDeployDialog({
             const shared = group.member === null;
             return (
               <div key={group.member ?? "__shared__"} className="min-w-0 text-xs">
-                <div className="flex items-baseline gap-2">
+                <div className="flex items-center gap-2">
+                  <span
+                    className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                    aria-hidden
+                  />
                   {shared ? (
                     <span className="font-medium">Shared — affects all members</span>
                   ) : (
@@ -193,6 +197,7 @@ function QuickDeployDialog({
             Cancel
           </Button>
           <Button onClick={submit} disabled={deploying || !env}>
+            <Rocket className="h-4 w-4" aria-hidden />
             {deploying ? "Deploying…" : `Deploy to ${env || "…"}`}
           </Button>
         </DialogFooter>

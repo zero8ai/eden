@@ -37,8 +37,8 @@ export function DiffView({ patch }: { patch: string }) {
             key={i}
             className={cn(
               "block px-3 py-0.5 whitespace-pre",
-              line.kind === "add" && "bg-green-500/10 text-green-700 dark:text-green-400",
-              line.kind === "del" && "bg-red-500/10 text-red-700 dark:text-red-400",
+              line.kind === "add" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+              line.kind === "del" && "bg-rose-500/10 text-rose-700 dark:text-rose-400",
               line.kind === "hunk" && "bg-blue-500/10 text-blue-700 dark:text-blue-400",
               line.kind === "context" && "text-muted-foreground",
             )}

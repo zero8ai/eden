@@ -5,6 +5,7 @@
  * override row. Each checkbox is its own fetcher-JSON toggle (the secrets-card pattern): no
  * navigation, and the change takes effect on the next ask with no redeploy.
  */
+import { Users } from "lucide-react";
 import { useFetcher } from "react-router";
 
 import { SectionHeader } from "~/components/shell";
@@ -47,6 +48,7 @@ function LinkCheckbox({
           checked={checked}
           disabled={fetcher.state !== "idle"}
           aria-label={`${from.name} can ask ${to.name}`}
+          className="size-4 accent-emerald-600 dark:accent-emerald-500"
           onChange={(e) =>
             fetcher.submit(
               {
@@ -85,7 +87,7 @@ export function TeamLinksSection({
 
   return (
     <section>
-      <SectionHeader title="Team collaboration" />
+      <SectionHeader title="Team collaboration" icon={Users} accent="indigo" />
       <p className="mb-3 text-sm text-muted-foreground">
         By default every member can ask every other member for help. Uncheck a box to stop one
         member from delegating to another. Changes apply immediately — no redeploy.

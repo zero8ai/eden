@@ -1,9 +1,9 @@
 import { authkitLoader, signOut } from "@workos-inc/authkit-react-router";
-import { Users } from "lucide-react";
+import { Bot, FolderGit2, Users } from "lucide-react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link } from "react-router";
 
-import { AppShell, PageHeader } from "~/components/shell";
+import { AppShell, PageHeader, accentText } from "~/components/shell";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
@@ -66,6 +66,8 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
   return (
     <AppShell workspaceName={org?.name} userEmail={user.email}>
       <PageHeader
+        icon={FolderGit2}
+        accent="brand"
         title="Repositories"
         description="A repository holds one agent, or a team of agents that work together."
         actions={
@@ -78,6 +80,9 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
       {cards.length === 0 ? (
         <Card className="border-dashed">
           <CardHeader className="items-center py-12 text-center">
+            <div className="mx-auto mb-1 flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <FolderGit2 className="size-6" aria-hidden />
+            </div>
             <CardTitle className="text-lg">No repositories yet</CardTitle>
             <CardDescription>
               Connect an existing eve repository or create a new one to get started.
@@ -92,7 +97,7 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
           {teams.length > 0 && (
             <section>
               <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-                <Users className="h-4 w-4" aria-hidden /> Teams
+                <Users className={`h-4 w-4 ${accentText.emerald}`} aria-hidden /> Teams
               </h2>
               <div className="grid gap-4 sm:grid-cols-2">
                 {teams.map((c) => (
@@ -104,8 +109,8 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
           {singles.length > 0 && (
             <section>
               {teams.length > 0 && (
-                <h2 className="mb-3 text-sm font-semibold text-muted-foreground">
-                  Agents
+                <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+                  <Bot className={`h-4 w-4 ${accentText.brand}`} aria-hidden /> Agents
                 </h2>
               )}
               <div className="grid gap-4 sm:grid-cols-2">
@@ -130,7 +135,7 @@ function TeamCard({ card }: { card: ProjectCard }) {
         <CardHeader>
           <div className="flex items-center justify-between gap-2">
             <CardTitle className="flex items-center gap-2 truncate text-base">
-              <Users className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+              <Users className={`h-4 w-4 shrink-0 ${accentText.emerald}`} aria-hidden />
               {project.name}
             </CardTitle>
             <Badge className="shrink-0">
@@ -155,7 +160,10 @@ function AgentCard({ project }: { project: Project }) {
       <Card className="h-full transition-colors group-hover:border-ring/60">
         <CardHeader>
           <div className="flex items-center justify-between gap-2">
-            <CardTitle className="truncate text-base">{project.name}</CardTitle>
+            <CardTitle className="flex items-center gap-2 truncate text-base">
+              <Bot className={`h-4 w-4 shrink-0 ${accentText.brand}`} aria-hidden />
+              {project.name}
+            </CardTitle>
             {project.repoOwner ? (
               <Badge variant="secondary" className="shrink-0 font-mono text-xs">
                 {project.repoOwner}/{project.repoName}

@@ -19,7 +19,7 @@ import {
   type ReactNode,
 } from "react";
 import { useFetcher } from "react-router";
-import { Copy, Eye, EyeOff, Lock, MoreHorizontal } from "lucide-react";
+import { Copy, Eye, EyeOff, KeyRound, Lock, MoreHorizontal } from "lucide-react";
 
 import { SectionHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
@@ -394,7 +394,7 @@ function AgentSecretRow({
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-emerald-600" aria-hidden>
+        <span className="text-emerald-600 dark:text-emerald-400" aria-hidden>
           ✓
         </span>
         <span className="font-mono text-sm">{row.key}</span>
@@ -605,16 +605,11 @@ function RequiredSecretRow({
   return (
     <li className="border-l-2 border-amber-500 px-4 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-amber-600" aria-hidden>
+        <span className="text-amber-600 dark:text-amber-400" aria-hidden>
           ⚠
         </span>
         <span className="font-mono text-sm">{req.name}</span>
-        <Badge
-          variant="outline"
-          className="border-amber-500/50 text-amber-700 dark:text-amber-400"
-        >
-          {COPY.requiredBadge}
-        </Badge>
+        <Badge variant="warning">{COPY.requiredBadge}</Badge>
         <span className="ml-auto text-xs text-muted-foreground">
           required · {source}
           {extra > 0 && ` +${extra}`}
@@ -792,7 +787,14 @@ function SharedSecretRow({
   return (
     <li className={cn("px-4 py-2", dimmed && "opacity-60", overriddenByAgent && "opacity-50")}>
       <div className="flex flex-wrap items-center gap-2">
-        <span aria-hidden className={attached ? "text-emerald-600" : "text-muted-foreground"}>
+        <span
+          aria-hidden
+          className={
+            attached
+              ? "text-emerald-600 dark:text-emerald-400"
+              : "text-muted-foreground"
+          }
+        >
           {attached ? "●" : "○"}
         </span>
         <span className="font-mono text-sm">{row.key}</span>
@@ -802,7 +804,12 @@ function SharedSecretRow({
         <Badge variant={row.environmentId ? "secondary" : "outline"}>
           {envLabel(row.environmentId, envs)}
         </Badge>
-        <Badge variant="outline">Shared</Badge>
+        <Badge
+          variant="outline"
+          className="border-indigo-500/40 text-indigo-600 dark:text-indigo-400"
+        >
+          Shared
+        </Badge>
         {overriddenByAgent && (
           <span className="text-xs text-muted-foreground">overridden above</span>
         )}
@@ -963,7 +970,7 @@ function PendingAddRow({
   return (
     <li className="px-4 py-2 opacity-60">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-emerald-600" aria-hidden>
+        <span className="text-emerald-600 dark:text-emerald-400" aria-hidden>
           ✓
         </span>
         <span className="font-mono text-sm">{pending.key}</span>
@@ -1234,7 +1241,7 @@ export function SecretsCard({
 
   return (
     <section>
-      <SectionHeader title="Secrets" badges={badge} />
+      <SectionHeader title="Secrets" badges={badge} icon={KeyRound} accent="brand" />
       <Card>
         <CardContent className="py-4">
           {/* Header row: env pills + the write-only note with its Why popover. */}

@@ -3,9 +3,19 @@
  * derives the file path (agent/<category>/<slug>.<ext>), and opens the editor, which starts
  * from that category's starter template. Nothing is staged until the user saves.
  */
+import {
+  CalendarClock,
+  Hash,
+  Plug,
+  Sparkles,
+  Workflow,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
+import { accentChip, type Accent } from "~/components/shell";
 import { Button } from "~/components/ui/button";
 import {
   Dialog,
@@ -23,6 +33,21 @@ import {
   slugifyResourceName,
   type ResourceKind,
 } from "~/eve/templates";
+import { cn } from "~/lib/utils";
+
+/**
+ * Per-resource-kind signature glyph + accent, mirroring the marketplace type colours so a
+ * "New tool/skill/…" dialog is recognisable at a glance (tool=blue, skill=amber, subagent=
+ * fuchsia, channel=emerald, connection=cyan, schedule=amber — the schedule identity).
+ */
+const KIND_META: Record<ResourceKind["key"], { icon: LucideIcon; accent: Accent }> = {
+  tools: { icon: Wrench, accent: "blue" },
+  skills: { icon: Sparkles, accent: "amber" },
+  subagents: { icon: Workflow, accent: "fuchsia" },
+  channels: { icon: Hash, accent: "emerald" },
+  schedules: { icon: CalendarClock, accent: "amber" },
+  connections: { icon: Plug, accent: "cyan" },
+};
 
 export function NewResourceDialog({
   kind,
@@ -39,6 +64,8 @@ export function NewResourceDialog({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const slug = slugifyResourceName(name);
+  const meta = KIND_META[kind.key];
+  const Icon = meta.icon;
 
   const create = () => {
     if (!slug) return;
@@ -56,7 +83,17 @@ export function NewResourceDialog({
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>New {kind.label}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <span
+              className={cn(
+                "flex size-7 items-center justify-center rounded-lg",
+                accentChip[meta.accent],
+              )}
+            >
+              <Icon className="size-4" aria-hidden />
+            </span>
+            New {kind.label}
+          </DialogTitle>
           <DialogDescription>{kind.hint}</DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">

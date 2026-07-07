@@ -3,6 +3,7 @@
  * (never window.confirm: it blocks the main thread, can't be styled, and breaks automation).
  * Wraps shadcn's AlertDialog; the caller supplies the trigger and what confirming does.
  */
+import { TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
 
 import {
@@ -45,7 +46,17 @@ export function ConfirmDialog({
       {trigger && <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>}
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogTitle className="flex items-center gap-2">
+            {variant === "destructive" && (
+              <span
+                className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-rose-500/10 text-rose-600 ring-1 ring-rose-500/20 dark:text-rose-400"
+                aria-hidden
+              >
+                <TriangleAlert className="size-4" />
+              </span>
+            )}
+            {title}
+          </AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

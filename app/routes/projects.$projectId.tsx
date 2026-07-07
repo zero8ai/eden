@@ -7,7 +7,21 @@
  * change-sets (branch → PR) like every other edit; the roster row itself syncs on merge.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { X } from "lucide-react";
+import {
+  Bot,
+  Boxes,
+  CalendarClock,
+  FileText,
+  Hash,
+  Plug,
+  Sparkles,
+  Terminal,
+  Users,
+  Workflow,
+  Wrench,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   Link,
@@ -27,7 +41,9 @@ import {
   AppShell,
   PageHeader,
   SectionHeader,
+  accentChip,
   repoCrumbs,
+  type Accent,
 } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -64,6 +80,7 @@ import { proposeChange } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
 import { timeAgo } from "~/lib/time";
+import { cn } from "~/lib/utils";
 import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
   agentFromParams,
@@ -537,6 +554,8 @@ export default function ProjectDetail({
       />
       {view === "team" ? (
         <PageHeader
+          icon={Users}
+          accent="brand"
           title={
             <span className="flex flex-wrap items-center gap-3">
               {project.name}
@@ -550,6 +569,8 @@ export default function ProjectDetail({
         />
       ) : (
         <PageHeader
+          icon={Bot}
+          accent="brand"
           title={teamLayout && active ? active.name : project.name}
           description={
             teamLayout ? (
@@ -759,7 +780,7 @@ function TeamSurface({
             <Card className="h-full transition-colors group-hover:border-ring/60">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-2">
-                  <CardTitle className="truncate font-mono text-base">
+                  <CardTitle className="truncate text-base">
                     {m.name}
                   </CardTitle>
                   <span className="flex shrink-0 items-center gap-1.5">
@@ -780,16 +801,20 @@ function TeamSurface({
               </CardHeader>
               <CardContent className="pt-0">
                 <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                  <li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="size-1.5 rounded-full bg-blue-500" aria-hidden />
                     {m.tools} tool{m.tools === 1 ? "" : "s"}
                   </li>
-                  <li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="size-1.5 rounded-full bg-amber-500" aria-hidden />
                     {m.skills} skill{m.skills === 1 ? "" : "s"}
                   </li>
-                  <li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="size-1.5 rounded-full bg-fuchsia-500" aria-hidden />
                     {m.schedules} schedule{m.schedules === 1 ? "" : "s"}
                   </li>
-                  <li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="size-1.5 rounded-full bg-emerald-500" aria-hidden />
                     {m.channels} channel{m.channels === 1 ? "" : "s"}
                   </li>
                 </ul>
@@ -998,6 +1023,19 @@ const CATEGORY_HINTS: Record<string, string> = {
   connections: "Typed external integrations",
 };
 
+/**
+ * Per-category glyph + accent, matching the marketplace's colour language so a resource kind is
+ * scannable at a glance across the app (agent surfaces here, cards in Recruit).
+ */
+const CATEGORY_META: Record<string, { icon: LucideIcon; accent: Accent }> = {
+  tools: { icon: Wrench, accent: "blue" },
+  skills: { icon: Sparkles, accent: "amber" },
+  subagents: { icon: Workflow, accent: "fuchsia" },
+  channels: { icon: Hash, accent: "emerald" },
+  schedules: { icon: CalendarClock, accent: "amber" },
+  connections: { icon: Plug, accent: "cyan" },
+};
+
 /** How many items a category card previews before deferring to its list page. */
 const CARD_PREVIEW_COUNT = 5;
 
@@ -1049,6 +1087,8 @@ function AgentSurface({
       {/* Instructions — the always-on system prompt. */}
       <section>
         <SectionHeader
+          icon={FileText}
+          accent="blue"
           title="Instructions"
           badges={instructionsBadges}
           actions={
@@ -1073,9 +1113,11 @@ function AgentSurface({
 
       {/* Resources — at-a-glance cards; each category's list page is the management surface. */}
       <section>
-        <SectionHeader title="Resources" />
+        <SectionHeader icon={Boxes} accent="cyan" title="Resources" />
         <div className="grid gap-4 sm:grid-cols-2">
           {AGENT_CATEGORIES.map((cat) => {
+            const meta = CATEGORY_META[cat.key];
+            const CatIcon = meta.icon;
             const repoItems = config[cat.key];
             // Staged NEW files (drafts not yet in the repo) still belong in their category.
             const stagedNew = draftPaths.flatMap((p) =>
@@ -1091,6 +1133,14 @@ function AgentSurface({
                 <CardHeader className="space-y-1 pb-3">
                   <div className="flex items-center justify-between">
                     <Link to={listTo} className="group flex items-center gap-2">
+                      <span
+                        className={cn(
+                          "flex size-6 shrink-0 items-center justify-center rounded-md",
+                          accentChip[meta.accent],
+                        )}
+                      >
+                        <CatIcon className="size-3.5" aria-hidden />
+                      </span>
                       <CardTitle className="text-base underline-offset-4 group-hover:underline">
                         {cat.label}
                       </CardTitle>
@@ -1149,6 +1199,8 @@ function AgentSurface({
       {/* Sandbox — the isolated shell the agent's bash/file tools run in (one per agent). */}
       <section>
         <SectionHeader
+          icon={Terminal}
+          accent="brand"
           title="Sandbox"
           badges={sandboxBadges}
           actions={

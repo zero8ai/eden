@@ -8,7 +8,7 @@
  * provisioning state while the instance builds/deploys.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { Loader2 } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Link,
@@ -343,6 +343,8 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
     () => (
       <>
         <PageHeader
+          icon={Sparkles}
+          accent="brand"
           title="Assistant"
           description="Tell it what your agents should do. It writes the code, verifies the build, and stages everything for review on the Deployment tab — you never touch git."
           actions={headerActions}
@@ -423,9 +425,14 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         )}
 
         {entries.length === 0 && !live && !remoteBusy && !idle && !failed && !provisioning && (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            Say what you want built. The assistant keeps context across turns.
-          </p>
+          <div className="py-8 text-center">
+            <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <Sparkles className="size-6" aria-hidden />
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Say what you want built. The assistant keeps context across turns.
+            </p>
+          </div>
         )}
 
         {(entries as ChatEntry[]).map((e, i) =>

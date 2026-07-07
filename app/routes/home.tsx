@@ -2,7 +2,16 @@ import type { Route } from "./+types/home";
 import { Link, Form } from "react-router";
 import { signOut, authkitLoader } from "@workos-inc/authkit-react-router";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
+import {
+  GitPullRequest,
+  Plug,
+  Rocket,
+  Sparkles,
+  Sprout,
+  type LucideIcon,
+} from "lucide-react";
 
+import { accentChip, type Accent } from "~/components/shell";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
@@ -11,6 +20,7 @@ import {
   CardHeader,
   CardTitle,
 } from "~/components/ui/card";
+import { cn } from "~/lib/utils";
 
 export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
 
@@ -29,14 +39,24 @@ export function meta({}: Route.MetaArgs) {
 }
 
 // The four product pillars from PRD.md §6. These are placeholders for M0 —
-// each will become its own route/section as the milestones land.
-const pillars = [
+// each will become its own route/section as the milestones land. Each carries a
+// distinct signature icon + accent so the pillars read as a colored set.
+const pillars: {
+  key: string;
+  title: string;
+  blurb: string;
+  milestone: string;
+  icon: LucideIcon;
+  accent: Accent;
+}[] = [
   {
     key: "connect",
     title: "Connect",
     blurb:
       "GitHub App: create a new eve repo or connect an existing one, run init, parse the agent.",
     milestone: "M0–M1",
+    icon: Plug,
+    accent: "brand",
   },
   {
     key: "author",
@@ -44,6 +64,8 @@ const pillars = [
     blurb:
       "Visual editors for every eve concept, plus a Pi-based assistant that writes tool code for you.",
     milestone: "M1",
+    icon: Sparkles,
+    accent: "sky",
   },
   {
     key: "review",
@@ -51,6 +73,8 @@ const pillars = [
     blurb:
       "Git-native: every change is a branch → pull request → merge. The repo stays the source of truth.",
     milestone: "M1",
+    icon: GitPullRequest,
+    accent: "amber",
   },
   {
     key: "deploy",
@@ -58,6 +82,8 @@ const pillars = [
     blurb:
       "One-click deploy via the DeployTarget seam. Managed hosting, metering, and billing on top.",
     milestone: "M2–M3",
+    icon: Rocket,
+    accent: "emerald",
   },
 ];
 
@@ -68,7 +94,12 @@ export default function Home({ loaderData }: Route.ComponentProps) {
     <main className="min-h-screen bg-background text-foreground">
       <header className="border-b">
         <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6">
-          <span className="text-base font-semibold tracking-tight">Eden</span>
+          <span className="flex items-center gap-1.5">
+            <span className="flex size-6 items-center justify-center rounded-md bg-primary/10 text-primary ring-1 ring-primary/20">
+              <Sprout className="size-3.5" aria-hidden />
+            </span>
+            <span className="text-base font-semibold tracking-tight">Eden</span>
+          </span>
           <div className="flex items-center gap-3">
             {user ? (
               <>
@@ -99,7 +130,13 @@ export default function Home({ loaderData }: Route.ComponentProps) {
       </header>
 
       <section className="mx-auto flex max-w-3xl flex-col items-center px-4 py-24 text-center sm:px-6">
-        <Badge variant="secondary">Build, manage, and deploy eve agents</Badge>
+        <Badge
+          variant="secondary"
+          className="gap-1.5 border-primary/20 bg-primary/10 text-primary"
+        >
+          <Sprout className="size-3.5" aria-hidden />
+          Build, manage, and deploy eve agents
+        </Badge>
         <h1 className="mt-6 text-4xl font-semibold tracking-tight sm:text-5xl">
           Build, manage, and deploy eve agents from the web.
         </h1>
@@ -141,21 +178,34 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 
       <div className="mx-auto max-w-5xl px-4 pb-24 sm:px-6">
         <div className="grid gap-4 sm:grid-cols-2">
-          {pillars.map((p) => (
-            <Card key={p.key}>
-              <CardHeader>
-                <div className="flex items-baseline justify-between gap-2">
-                  <CardTitle className="text-lg">{p.title}</CardTitle>
-                  <span className="text-xs font-medium text-muted-foreground">
-                    {p.milestone}
-                  </span>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">{p.blurb}</p>
-              </CardContent>
-            </Card>
-          ))}
+          {pillars.map((p) => {
+            const Icon = p.icon;
+            return (
+              <Card key={p.key} className="transition-colors hover:border-ring/60">
+                <CardHeader>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <span
+                        className={cn(
+                          "flex size-9 shrink-0 items-center justify-center rounded-xl",
+                          accentChip[p.accent],
+                        )}
+                      >
+                        <Icon className="size-5" aria-hidden />
+                      </span>
+                      <CardTitle className="text-lg">{p.title}</CardTitle>
+                    </div>
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {p.milestone}
+                    </span>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">{p.blurb}</p>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
 
         <p className="mt-12 text-sm text-muted-foreground">

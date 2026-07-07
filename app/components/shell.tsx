@@ -7,7 +7,7 @@
  * repo-wide surfaces, member level gets the member-scoped ones, and single-agent repos
  * collapse both levels into one merged row.
  */
-import { LogOut, Menu, User, Users } from "lucide-react";
+import { LogOut, Menu, User, Users, type LucideIcon } from "lucide-react";
 import { useEffect } from "react";
 import {
   Form,
@@ -192,14 +192,29 @@ export function SectionHeader({
   title,
   badges,
   actions,
+  icon: Icon,
+  accent = "brand",
 }: {
   title: React.ReactNode;
   badges?: React.ReactNode;
   actions?: React.ReactNode;
+  /** Optional colored glyph left of the title, matching PageHeader's convention. */
+  icon?: LucideIcon;
+  accent?: Accent;
 }) {
   return (
     <div className="mb-3 flex items-center justify-between gap-3 border-b pb-2">
       <div className="flex items-center gap-2">
+        {Icon && (
+          <span
+            className={cn(
+              "flex size-6 shrink-0 items-center justify-center rounded-md",
+              accentChip[accent],
+            )}
+          >
+            <Icon className="size-3.5" aria-hidden />
+          </span>
+        )}
         <h2 className="text-base font-semibold tracking-tight">{title}</h2>
         {badges}
       </div>
@@ -289,6 +304,51 @@ function HeaderLink({ to, children }: { to: string; children: React.ReactNode })
   );
 }
 
+/**
+ * Tailwind accent presets for colored iconography (matches the marketplace's per-type colours).
+ * Use `accentChip[c]` for a tinted rounded glyph square; `accentText[c]` for a bare icon/label.
+ * Keyed by a semantic-ish colour name so call sites read intentionally. `brand` is special: it
+ * tracks the `--primary` theme token (not a fixed hue), so the app-wide brand accent changes by
+ * editing one CSS variable. The named hues are for categorical/semantic use (status, type chips).
+ */
+export type Accent =
+  | "brand"
+  | "violet"
+  | "indigo"
+  | "blue"
+  | "sky"
+  | "cyan"
+  | "emerald"
+  | "amber"
+  | "fuchsia"
+  | "rose";
+
+export const accentChip: Record<Accent, string> = {
+  brand: "bg-primary/10 text-primary ring-1 ring-primary/20",
+  violet: "bg-violet-500/10 text-violet-600 ring-1 ring-violet-500/20 dark:text-violet-400",
+  indigo: "bg-indigo-500/10 text-indigo-600 ring-1 ring-indigo-500/20 dark:text-indigo-400",
+  blue: "bg-blue-500/10 text-blue-600 ring-1 ring-blue-500/20 dark:text-blue-400",
+  sky: "bg-sky-500/10 text-sky-600 ring-1 ring-sky-500/20 dark:text-sky-400",
+  cyan: "bg-cyan-500/10 text-cyan-600 ring-1 ring-cyan-500/20 dark:text-cyan-400",
+  emerald: "bg-emerald-500/10 text-emerald-600 ring-1 ring-emerald-500/20 dark:text-emerald-400",
+  amber: "bg-amber-500/10 text-amber-600 ring-1 ring-amber-500/20 dark:text-amber-400",
+  fuchsia: "bg-fuchsia-500/10 text-fuchsia-600 ring-1 ring-fuchsia-500/20 dark:text-fuchsia-400",
+  rose: "bg-rose-500/10 text-rose-600 ring-1 ring-rose-500/20 dark:text-rose-400",
+};
+
+export const accentText: Record<Accent, string> = {
+  brand: "text-primary",
+  violet: "text-violet-600 dark:text-violet-400",
+  indigo: "text-indigo-600 dark:text-indigo-400",
+  blue: "text-blue-600 dark:text-blue-400",
+  sky: "text-sky-600 dark:text-sky-400",
+  cyan: "text-cyan-600 dark:text-cyan-400",
+  emerald: "text-emerald-600 dark:text-emerald-400",
+  amber: "text-amber-600 dark:text-amber-400",
+  fuchsia: "text-fuchsia-600 dark:text-fuchsia-400",
+  rose: "text-rose-600 dark:text-rose-400",
+};
+
 export function PageHeader({
   title,
   description,
@@ -297,6 +357,9 @@ export function PageHeader({
   title: React.ReactNode;
   description?: React.ReactNode;
   actions?: React.ReactNode;
+  /** Accepted for call-site compatibility but no longer rendered (page glyphs were removed). */
+  icon?: LucideIcon;
+  accent?: Accent;
 }) {
   return (
     <div className="mb-8 flex flex-wrap items-start justify-between gap-4">

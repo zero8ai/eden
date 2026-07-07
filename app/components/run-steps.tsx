@@ -199,7 +199,7 @@ function BashRenderer({ data }: { data: ToolData }) {
     <div>
       {command != null && (
         <Section title="Command">
-          <pre className="overflow-auto rounded-lg border bg-black/90 p-3 font-mono text-xs text-green-300 whitespace-pre-wrap dark:bg-black">
+          <pre className="overflow-auto rounded-lg border bg-black/90 p-3 font-mono text-xs text-emerald-300 whitespace-pre-wrap dark:bg-black">
             <span className="text-muted-foreground">$ </span>
             {asString(command)}
           </pre>
@@ -331,6 +331,13 @@ function ToolCall({
       : typeof input.teammate === "string"
         ? input.teammate
         : null;
+  // Failed tool calls read red; delegation is its own team hue (indigo); everything else
+  // takes the brand accent so the transcript has colour without being loud.
+  const iconColor = step.isError
+    ? "text-rose-600 dark:text-rose-400"
+    : delegation
+      ? "text-indigo-600 dark:text-indigo-400"
+      : "text-primary";
   return (
     <Expandable
       id={`step-${step.seq}`}
@@ -338,11 +345,11 @@ function ToolCall({
       header={() => (
         <span className="flex min-w-0 flex-1 items-center gap-2">
           {delegation ? (
-            <Users className="size-4 shrink-0 text-muted-foreground" />
+            <Users className={`size-4 shrink-0 ${iconColor}`} />
           ) : isBashShaped(step.toolName, data) ? (
-            <Terminal className="size-4 shrink-0 text-muted-foreground" />
+            <Terminal className={`size-4 shrink-0 ${iconColor}`} />
           ) : (
-            <Wrench className="size-4 shrink-0 text-muted-foreground" />
+            <Wrench className={`size-4 shrink-0 ${iconColor}`} />
           )}
           {delegation ? (
             <span className="font-medium">
@@ -435,7 +442,11 @@ function ModelCall({
   };
   const line = (
     <span className="flex min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground">
-      <Cpu className="size-3.5 shrink-0" />
+      <Cpu
+        className={`size-3.5 shrink-0 ${
+          step.isError ? "text-rose-600 dark:text-rose-400" : "text-blue-600 dark:text-blue-400"
+        }`}
+      />
       <span className="truncate font-mono">{step.model ?? "model call"}</span>
       {expensive && (
         <Badge variant="outline" className="border-amber-500/50 text-amber-600 dark:text-amber-400">
@@ -491,7 +502,7 @@ function Reasoning({ step }: { step: StepView }) {
       id={`step-${step.seq}`}
       header={() => (
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Brain className="size-3.5" />
+          <Brain className="size-3.5 text-primary" />
           Reasoning
         </span>
       )}

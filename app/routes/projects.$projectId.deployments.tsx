@@ -22,6 +22,15 @@
  *    renders the member layout with canAct=true — the same team-scoped intents, roster of one.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import {
+  FileStack,
+  GitPullRequest,
+  History,
+  MessageSquare,
+  Rocket,
+  Server,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   Form,
@@ -42,7 +51,9 @@ import {
   AgentNav,
   AppShell,
   PageHeader,
+  accentChip,
   repoCrumbs,
+  type Accent,
   type NavLevel,
 } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
@@ -110,6 +121,7 @@ import {
 import { getRuntime } from "~/seams/index.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
+import { cn } from "~/lib/utils";
 import { overlayLock } from "~/marketplace/lock";
 import {
   agentRequiredSecretState,
@@ -728,6 +740,20 @@ function runningOf(deployments: DeploymentRow[]): DeploymentRow | undefined {
   return deployments.find((d) => d.status === "live");
 }
 
+/** A tinted glyph square marking a pipeline card's role — keeps the surfaces scannable. */
+function CardGlyph({ icon: Icon, accent }: { icon: LucideIcon; accent: Accent }) {
+  return (
+    <span
+      className={cn(
+        "flex size-6 shrink-0 items-center justify-center rounded-md",
+        accentChip[accent],
+      )}
+    >
+      <Icon className="size-3.5" aria-hidden />
+    </span>
+  );
+}
+
 export default function Deployment({
   loaderData,
   actionData,
@@ -771,6 +797,8 @@ export default function Deployment({
         activeAgent={level === "member" ? activeAgent : undefined}
       />
       <PageHeader
+        icon={Rocket}
+        accent="emerald"
         title={
           level === "member" ? `Deployment — ${activeAgent}` : "Deployment"
         }
@@ -866,6 +894,7 @@ function StagedChangesCard({
     <Card className="mb-6">
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
+          <CardGlyph icon={FileStack} accent="amber" />
           <CardTitle className="text-base">Staged changes</CardTitle>
           <Badge variant="secondary">{drafts.length}</Badge>
         </div>
@@ -990,6 +1019,7 @@ function ChangeRequests({
   return (
     <div className="mb-6">
       <div className="mb-3 flex items-center gap-2">
+        <CardGlyph icon={GitPullRequest} accent="brand" />
         <h2 className="text-lg font-semibold">Open change requests</h2>
         {isTeam && (
           <span className="text-xs text-muted-foreground">
@@ -1163,9 +1193,9 @@ function MergeabilityBadge({
   conflicted: boolean;
   checking: boolean;
 }) {
-  if (checking) return <Badge variant="secondary">checking…</Badge>;
+  if (checking) return <Badge variant="warning">checking…</Badge>;
   if (conflicted) return <Badge variant="destructive">conflicts</Badge>;
-  return <Badge variant="outline">ready</Badge>;
+  return <Badge variant="success">ready</Badge>;
 }
 
 /* ────────────────────────────── team rollup ────────────────────────────── */
@@ -1186,6 +1216,7 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
       <Card className="mb-6">
         <CardHeader className="pb-3">
           <div className="flex items-center gap-2">
+            <CardGlyph icon={FileStack} accent="amber" />
             <CardTitle className="text-base">Staged changes</CardTitle>
             <Badge variant="secondary">{totalDrafts}</Badge>
           </div>
@@ -1321,7 +1352,10 @@ function TeamEnvironmentsCard({
     <Card className="mb-6">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">Environments</CardTitle>
+          <span className="flex items-center gap-2">
+            <CardGlyph icon={Server} accent="emerald" />
+            <CardTitle className="text-base">Environments</CardTitle>
+          </span>
           <EnvNameDialog
             intent="env-create"
             trigger={
@@ -1429,7 +1463,13 @@ function TeamEnvMemberRow({
         <span className="min-w-32 font-mono text-xs">{member.name}</span>
         {running ? (
           <>
-            <span className="font-semibold">{running.version}</span>
+            <span className="flex items-center gap-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
+              <span
+                className="size-1.5 rounded-full bg-emerald-500"
+                aria-hidden
+              />
+              {running.version}
+            </span>
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
               {running.gitSha.slice(0, 7)}
             </code>
@@ -1448,13 +1488,17 @@ function TeamEnvMemberRow({
       </div>
       {pending && (
         <p className="mt-1 text-sm text-muted-foreground">
-          {pending.version}{" "}
-          {pending.status === "building" ? "building" : "queued"}… switches over
-          once healthy{running ? `; ${running.version} keeps serving` : ""}.
+          <span className="font-medium text-amber-600 dark:text-amber-400">
+            {pending.version}{" "}
+            {pending.status === "building" ? "building" : "queued"}…
+          </span>{" "}
+          switches over once healthy
+          {running ? `; ${running.version} keeps serving` : ""}.
         </p>
       )}
       {failed && member.envId && (
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-destructive">
+          <span className="size-1.5 rounded-full bg-destructive" aria-hidden />
           <span>
             {failed.version} failed to deploy
             {running ? ` — ${running.version} still running` : ""}
@@ -1516,7 +1560,10 @@ function TeamVersionHistory({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">Version history</CardTitle>
+        <div className="flex items-center gap-2">
+          <CardGlyph icon={History} accent="indigo" />
+          <CardTitle className="text-base">Version history</CardTitle>
+        </div>
       </CardHeader>
       <CardContent>
         {skipped.length > 0 && (
@@ -1709,7 +1756,10 @@ function EnvironmentsCard({
     <Card className="mb-6">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">Environments</CardTitle>
+          <span className="flex items-center gap-2">
+            <CardGlyph icon={Server} accent="emerald" />
+            <CardTitle className="text-base">Environments</CardTitle>
+          </span>
           {canAct && (
             <EnvNameDialog
               intent="env-create"
@@ -1746,7 +1796,13 @@ function EnvironmentsCard({
                   <span className="min-w-32 font-medium">{env.name}</span>
                   {running ? (
                     <>
-                      <span className="font-semibold">{running.version}</span>
+                      <span className="flex items-center gap-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
+                        <span
+                          className="size-1.5 rounded-full bg-emerald-500"
+                          aria-hidden
+                        />
+                        {running.version}
+                      </span>
                       {(() => {
                         const f = releaseFreshness(running.releaseId, releases);
                         return f ? (
@@ -1818,14 +1874,20 @@ function EnvironmentsCard({
                 </div>
                 {pending && (
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {pending.version}{" "}
-                    {pending.status === "building" ? "building" : "queued"}…
+                    <span className="font-medium text-amber-600 dark:text-amber-400">
+                      {pending.version}{" "}
+                      {pending.status === "building" ? "building" : "queued"}…
+                    </span>{" "}
                     switches over once healthy
                     {running ? `; ${running.version} keeps serving` : ""}.
                   </p>
                 )}
                 {failed && (
                   <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-destructive">
+                    <span
+                      className="size-1.5 rounded-full bg-destructive"
+                      aria-hidden
+                    />
                     <span>
                       {failed.version} failed to deploy
                       {running ? ` — ${running.version} still running` : ""}
@@ -1906,7 +1968,10 @@ function DiscordSetupHelp({
   return (
     <Card className="mb-6 mt-6">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">Discord setup</CardTitle>
+        <div className="flex items-center gap-2">
+          <CardGlyph icon={MessageSquare} accent="brand" />
+          <CardTitle className="text-base">Discord setup</CardTitle>
+        </div>
       </CardHeader>
       <CardContent>
         <div className="space-y-3 text-sm">
@@ -1990,7 +2055,10 @@ function DiscordSetupTeamHint() {
   return (
     <Card className="mb-6 mt-6">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">Discord setup</CardTitle>
+        <div className="flex items-center gap-2">
+          <CardGlyph icon={MessageSquare} accent="brand" />
+          <CardTitle className="text-base">Discord setup</CardTitle>
+        </div>
       </CardHeader>
       <CardContent>
         <div className="space-y-3 text-sm">
@@ -2062,7 +2130,10 @@ function VersionHistory({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">Version history</CardTitle>
+        <div className="flex items-center gap-2">
+          <CardGlyph icon={History} accent="indigo" />
+          <CardTitle className="text-base">Version history</CardTitle>
+        </div>
       </CardHeader>
       <CardContent>
         {!canAct && (

@@ -23,8 +23,9 @@ import {
 } from "react-router";
 
 import { useState } from "react";
+import { Download, FolderGit2, Plug, Plus } from "lucide-react";
 
-import { AppShell, PageHeader } from "~/components/shell";
+import { AppShell, PageHeader, accentText } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -239,6 +240,8 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
   return (
     <AppShell workspaceName={org?.name}>
       <PageHeader
+        icon={Plug}
+        accent="brand"
         title="New repository"
         description="A repository holds one agent or a team of agents. Connect an existing repo, or scaffold a fresh one."
         actions={
@@ -265,7 +268,10 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
       {github.state === "install" && (
         <Card>
           <CardHeader>
-            <CardTitle>Install the GitHub App</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Download className={`size-4 shrink-0 ${accentText.brand}`} aria-hidden />
+              Install the GitHub App
+            </CardTitle>
             <CardDescription>
               Install Eden on the account that owns your eve repository, then pick
               the repo to connect. You control which repositories it can access.
@@ -283,7 +289,10 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Connect an existing repository</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <FolderGit2 className={`size-4 shrink-0 ${accentText.brand}`} aria-hidden />
+                Connect an existing repository
+              </CardTitle>
               <CardDescription>
                 Repositories the GitHub App can access. Eden validates that the
                 repo is an eve project before connecting.
@@ -337,7 +346,10 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
 
           <Card>
             <CardHeader>
-              <CardTitle>Create a new repository</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <Plus className={`size-4 shrink-0 ${accentText.emerald}`} aria-hidden />
+                Create a new repository
+              </CardTitle>
               <CardDescription>
                 Creates a repository in your organization and scaffolds it — a single
                 agent (<span className="font-mono">agent/</span>) or a team of agents

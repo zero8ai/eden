@@ -3,6 +3,7 @@
  * token usage, and the operational audit log. Org-scoped; roles/SSO are delegated to WorkOS.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { Building2, Cpu, Gauge, ScrollText, ShieldAlert } from "lucide-react";
 import {
   Form,
   Link,
@@ -13,7 +14,7 @@ import {
 } from "react-router";
 
 import { ModelSelect } from "~/components/model-select";
-import { AppShell, PageHeader } from "~/components/shell";
+import { AppShell, PageHeader, accentText } from "~/components/shell";
 import { Button } from "~/components/ui/button";
 import {
   Card,
@@ -162,6 +163,8 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
     return (
       <AppShell userEmail={user?.email}>
         <PageHeader
+          icon={Building2}
+          accent="indigo"
           title="Settings"
           description="You're not scoped to an organization."
         />
@@ -175,6 +178,8 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
   return (
     <AppShell workspaceName={org.name} userEmail={user?.email}>
       <PageHeader
+        icon={Building2}
+        accent="indigo"
         title={`${org.name} — settings`}
         description={
           <>
@@ -188,7 +193,10 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
         {/* Model provider: OpenRouter key + default model for authoring and agents */}
         <Card>
           <CardHeader>
-            <CardTitle>Model provider</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Cpu className={`size-4 ${accentText.blue}`} aria-hidden />
+              Model provider
+            </CardTitle>
             <CardDescription>
               OpenRouter is the default model provider. Eden injects this key as{" "}
               <span className="font-mono">OPENROUTER_API_KEY</span> for deployments,
@@ -273,10 +281,13 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
         {/* Spend controls */}
         <Card>
           <CardHeader>
-            <CardTitle>Spend controls</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Gauge className={`size-4 ${accentText.amber}`} aria-hidden />
+              Spend controls
+            </CardTitle>
             <CardDescription>
               Tokens used (last 30 days):{" "}
-              <span className="font-medium text-foreground">
+              <span className={`font-medium ${accentText.indigo}`}>
                 {used.toLocaleString()}
               </span>
               {limit?.monthlyTokenCap != null &&
@@ -297,7 +308,8 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                   className="w-48"
                 />
               </div>
-              <Label className="flex items-center gap-2 font-normal">
+              <Label className="flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2 font-normal text-rose-700 dark:text-rose-400">
+                <ShieldAlert className="size-4 shrink-0" aria-hidden />
                 <input
                   type="checkbox"
                   name="killSwitch"
@@ -314,7 +326,10 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
         {/* Audit log */}
         <Card>
           <CardHeader>
-            <CardTitle>Audit log</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <ScrollText className={`size-4 ${accentText.indigo}`} aria-hidden />
+              Audit log
+            </CardTitle>
           </CardHeader>
           <CardContent>
             {audit.length === 0 ? (

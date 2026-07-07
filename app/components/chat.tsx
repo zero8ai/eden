@@ -67,7 +67,7 @@ export function ChatTranscript({
 
 export function UserBubble({ text }: { text: string }) {
   return (
-    <div className="ml-auto w-fit max-w-[85%] rounded-2xl bg-primary px-4 py-2.5 text-sm text-primary-foreground">
+    <div className="ml-auto w-fit max-w-[85%] rounded-2xl bg-muted px-4 py-2.5 text-sm text-foreground">
       <p className="whitespace-pre-wrap">{text}</p>
     </div>
   );
@@ -75,7 +75,7 @@ export function UserBubble({ text }: { text: string }) {
 
 export function AssistantBubble({ children }: { children: ReactNode }) {
   return (
-    <div className="w-fit max-w-[85%] rounded-2xl border bg-card px-4 py-2.5 text-sm">
+    <div className="w-fit max-w-[85%] rounded-2xl border border-l-2 border-primary/20 border-l-primary/50 bg-card px-4 py-2.5 text-sm">
       {children}
     </div>
   );
@@ -492,11 +492,11 @@ export function InputRequestsBlock({
  * never reads like a real reply. */
 export function PendingBubble() {
   return (
-    <div className="w-fit rounded-2xl border bg-card px-4 py-3">
+    <div className="w-fit rounded-2xl border border-l-2 border-primary/20 border-l-primary/50 bg-card px-4 py-3">
       <div className="flex items-center gap-1" aria-hidden="true">
-        <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:-0.3s]" />
-        <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:-0.15s]" />
-        <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground/60" />
+        <span className="size-1.5 animate-pulse rounded-full bg-primary/70 [animation-delay:-0.3s]" />
+        <span className="size-1.5 animate-pulse rounded-full bg-primary/70 [animation-delay:-0.15s]" />
+        <span className="size-1.5 animate-pulse rounded-full bg-primary/70" />
       </div>
       <span className="sr-only">Working…</span>
     </div>
@@ -524,15 +524,15 @@ export function StepsCard({
   const totalMs = steps.reduce((sum, s) => sum + (s.durationMs ?? 0), 0);
   const failed = steps.some((s) => s.isError);
   return (
-    <details className="group w-fit max-w-[85%] rounded-xl border bg-muted/40 text-xs text-muted-foreground">
+    <details className="group w-fit max-w-[85%] rounded-xl border border-l-2 border-l-blue-500/50 bg-muted/40 text-xs text-muted-foreground">
       <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 [&::-webkit-details-marker]:hidden">
         <ChevronRight
-          className="size-3.5 shrink-0 transition-transform group-open:rotate-90"
+          className="size-3.5 shrink-0 text-blue-600 transition-transform group-open:rotate-90 dark:text-blue-400"
           aria-hidden
         />
         {activity ? (
           <span className="flex min-w-0 items-center gap-1.5">
-            <Loader2 className="size-3 shrink-0 animate-spin" />
+            <Loader2 className="size-3 shrink-0 animate-spin text-blue-600 dark:text-blue-400" />
             <span className="truncate font-mono">{activity}</span>
             {steps.length > 0 && (
               <span className="shrink-0 text-muted-foreground/70">

@@ -7,7 +7,7 @@
  */
 import { useMemo, useRef, useState } from "react";
 import { Link, useFetcher } from "react-router";
-import { Copy, Eye, EyeOff, Lock, MoreHorizontal } from "lucide-react";
+import { Copy, Eye, EyeOff, KeyRound, Lock, MoreHorizontal } from "lucide-react";
 
 import { COPY, SECRET_NAME_RE, normalizeSecretName, relativeTime } from "~/components/secrets-card";
 import { SectionHeader } from "~/components/shell";
@@ -102,6 +102,10 @@ function SharedRow({
   return (
     <li className="px-4 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
+        <KeyRound
+          className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
+          aria-hidden
+        />
         <span className="font-mono text-sm">{row.key}</span>
         <span className="select-none text-xs text-muted-foreground" aria-hidden>
           {MASK}
@@ -366,7 +370,7 @@ export function SharedSecretsSection({
 
   return (
     <section>
-      <SectionHeader title="Shared Secrets" badges={badge} />
+      <SectionHeader title="Shared Secrets" badges={badge} icon={KeyRound} accent="indigo" />
       <Card>
         <CardContent className="py-4">
           <p className="mb-3 flex items-center gap-1.5 text-sm text-muted-foreground">

@@ -64,4 +64,81 @@ describe("assistant instance: provisioning", () => {
     const stats = await store.jobs.statsByStatus();
     expect(stats.queued ?? 0).toBe(1);
   });
+
+  it("recovers when a concurrent request wins the pending-insert race (#31)", async () => {
+    const store = makeFakeStore();
+    store.seedProject({ id: "p", orgId: "o", repoOwner: "a", repoName: "r", repoInstallationId: "i" });
+    // Reproduce the race deterministically: both requests read the environment's deployments
+    // BEFORE either has inserted its pending row, so both take the "nothing usable" branch and
+    // race on insert. Serving [] for the first two reads is exactly that interleaving.
+    const realList = store.deployments.listByEnvironment.bind(store.deployments);
+    let staleReads = 2;
+    store.deployments.listByEnvironment = async (envId) =>
+      staleReads-- > 0 ? [] : realList(envId);
+
+    const first = await ensureAssistantInstance("p", store);
+    const second = await ensureAssistantInstance("p", store);
+
+    // The loser's insert hits deployments_env_inflight_uq and adopts the winner's row.
+    expect(second.status).toBe("provisioning");
+    expect(second.deploymentId).toBe(first.deploymentId);
+    const stats = await store.jobs.statsByStatus();
+    expect(stats.queued ?? 0).toBe(1);
+  });
+
+  it("never leaves two in-flight rows or two jobs under genuinely concurrent provisions", async () => {
+    const store = makeFakeStore();
+    store.seedProject({ id: "p", orgId: "o", repoOwner: "a", repoName: "r", repoInstallationId: "i" });
+    // Settle the agent/env rows first: their creation race is covered by unique indexes the
+    // fake doesn't model. This test pins the deployment-level invariant only.
+    await ensureAssistantAgent("p", store);
+    const [a, b] = await Promise.all([
+      ensureAssistantInstance("p", store),
+      ensureAssistantInstance("p", store),
+    ]);
+    expect(a.deploymentId).toBe(b.deploymentId);
+    const { environment } = await ensureAssistantAgent("p", store);
+    const deployments = await store.deployments.listByEnvironment(environment.id);
+    expect(deployments.filter((d) => d.status === "pending" || d.status === "building")).toHaveLength(1);
+    const stats = await store.jobs.statsByStatus();
+    expect(stats.queued ?? 0).toBe(1);
+  });
+});
+
+describe("fake store: in-flight deployment uniqueness", () => {
+  it("rejects a second pending row for the same environment like Postgres would", async () => {
+    const store = makeFakeStore();
+    store.seedProject({ id: "p", orgId: "o", repoOwner: "a", repoName: "r", repoInstallationId: "i" });
+    store.seedAgent({ id: "a1", projectId: "p" });
+    store.seedEnvironment({ id: "e1", projectId: "p", agentId: "a1" });
+    const release = await store.releases.insert({
+      projectId: "p",
+      agentId: "a1",
+      version: "v1",
+      gitSha: "sha",
+    });
+    await store.deployments.insert({
+      environmentId: "e1",
+      releaseId: release.id,
+      status: "pending",
+      trafficWeight: 100,
+    });
+    await expect(
+      store.deployments.insert({
+        environmentId: "e1",
+        releaseId: release.id,
+        status: "building",
+        trafficWeight: 100,
+      }),
+    ).rejects.toMatchObject({ code: "23505", constraint_name: "deployments_env_inflight_uq" });
+    // Non-in-flight statuses stay unconstrained (a cutover transiently has two live rows).
+    await expect(
+      store.deployments.insert({
+        environmentId: "e1",
+        releaseId: release.id,
+        status: "queued",
+        trafficWeight: 100,
+      }),
+    ).resolves.toBeTruthy();
+  });
 });

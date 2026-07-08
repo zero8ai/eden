@@ -99,6 +99,10 @@ export interface ReleaseRepo {
 
 export interface DeploymentRepo {
   findById(id: string): Promise<Deployment | null>;
+  /**
+   * Insert a deployment; a second in-flight (pending/building) row for the same environment
+   * throws the `deployments_env_inflight_uq` unique-violation like Postgres would.
+   */
   insert(input: {
     environmentId: string;
     releaseId: string;

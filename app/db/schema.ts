@@ -226,7 +226,16 @@ export const deployments = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("deployments_environment_idx").on(t.environmentId)],
+  (t) => [
+    index("deployments_environment_idx").on(t.environmentId),
+    // At most one in-flight (pending/building) deployment per environment: two concurrent
+    // provision requests can both read "no in-flight row" before either inserts one (#31), and
+    // only the database can enforce the invariant atomically. Queued/live/stopped/failed rows
+    // are unconstrained — a cutover transiently has two live rows.
+    uniqueIndex("deployments_env_inflight_uq")
+      .on(t.environmentId)
+      .where(sql`${t.status} in ('pending', 'building')`),
+  ],
 );
 
 /**

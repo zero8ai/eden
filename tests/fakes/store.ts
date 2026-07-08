@@ -26,6 +26,17 @@ function versionCollision(): Error {
   });
 }
 
+/** An in-flight deployment (pending/building) per environment. */
+const IN_FLIGHT_STATUSES = new Set(["pending", "building"]);
+
+/** The Postgres unique-violation raised by the deployments_env_inflight_uq partial index. */
+function inflightDeploymentCollision(): Error {
+  return Object.assign(new Error("duplicate key value violates unique constraint"), {
+    code: "23505",
+    constraint_name: "deployments_env_inflight_uq",
+  });
+}
+
 export interface FakeStore extends DataStore {
   /** Test seams: pre-populate rows the logic reads but doesn't create. */
   seedProject(p: Partial<Project> & { id: string; orgId: string }): Project;
@@ -250,6 +261,16 @@ export function makeFakeStore(): FakeStore {
         return deployments.get(did) ?? null;
       },
       async insert(input) {
+        // Model deployments_env_inflight_uq: at most one pending/building row per environment,
+        // so the concurrent-provision race (#31) is exercisable without Postgres.
+        if (
+          IN_FLIGHT_STATUSES.has(input.status) &&
+          [...deployments.values()].some(
+            (d) => d.environmentId === input.environmentId && IN_FLIGHT_STATUSES.has(d.status),
+          )
+        ) {
+          throw inflightDeploymentCollision();
+        }
         const row: Deployment = {
           id: id("dep"),
           environmentId: input.environmentId,
@@ -269,6 +290,19 @@ export function makeFakeStore(): FakeStore {
         const cur = deployments.get(did);
         if (!cur) throw new Error("deployment not found");
         const next = { ...cur, ...patch, updatedAt: new Date(++seq) };
+        // The partial unique index also rejects an UPDATE that moves a second row in-flight.
+        if (
+          patch.status !== undefined &&
+          IN_FLIGHT_STATUSES.has(next.status) &&
+          [...deployments.values()].some(
+            (d) =>
+              d.id !== did &&
+              d.environmentId === cur.environmentId &&
+              IN_FLIGHT_STATUSES.has(d.status),
+          )
+        ) {
+          throw inflightDeploymentCollision();
+        }
         deployments.set(did, next);
         return next;
       },

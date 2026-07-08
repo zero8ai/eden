@@ -6,7 +6,7 @@
 # invoke it explicitly with `$work-issue` (or via the `/skills` selector).
 interface:
   display_name: "work-issue"
-  short_description: "Take a GitHub issue to a review-ready PR: implement, browser-verify, satisfy CI + Greptile."
+  short_description: "Take a GitHub issue to a review-ready PR: implement, browser-verify, satisfy CI."
 
 policy:
   allow_implicit_invocation: false

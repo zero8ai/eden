@@ -52,7 +52,13 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action({ request }: ActionFunctionArgs) {
-  return await signOut(request);
+  // Without an explicit returnTo, WorkOS falls back to the dashboard's "App Homepage
+  // URL" setting and shows an error page when it's unset (#24). Send users back to
+  // this deployment's home page. Derived from WORKOS_REDIRECT_URI (not request.url,
+  // whose origin is the container's internal host behind the nginx proxy). The URL
+  // must be allowlisted under Logout redirects in the WorkOS dashboard.
+  const returnTo = new URL("/", process.env.WORKOS_REDIRECT_URI).toString();
+  return await signOut(request, { returnTo });
 }
 
 export function meta() {

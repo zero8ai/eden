@@ -1,0 +1,20 @@
+{
+  "id": "linear",
+  "type": "channel",
+  "name": "Linear",
+  "description": "Assign and @mention this agent in Linear — it works as a Linear agent, posting Agent Activities on delegated sessions via eve's linearChannel with webhook signature verification.",
+  "version": "0.1.0",
+  "eve": ">=0.20.0",
+  "files": ["channels/linear.ts"],
+  "setup": "This channel uses Linear's native **agent** surface (Agent Sessions), not ordinary comments.\n\n1. Create a **Linear OAuth app** (Settings → API → OAuth applications). Configure the OAuth authorize flow with `actor=app` and grant agent scopes including `app:assignable` and `app:mentionable`.\n2. Obtain an **agent access token** for the app → `LINEAR_AGENT_ACCESS_TOKEN`, and set a **webhook secret** → `LINEAR_WEBHOOK_SECRET`.\n3. Enable **Agent Session events** on the app and point its **webhook URL** at `https://<your-domain>/e/<environmentId>/eve/v1/linear`.\n\nOnce installed, assigning an issue to the agent or `@mention`ing it opens an Agent Session (a `created` event); the agent replies with Agent Activities (thought, action, response).",
+  "secrets": [
+    {
+      "name": "LINEAR_AGENT_ACCESS_TOKEN",
+      "description": "Agent access token for the Linear OAuth app — used to post Agent Activities and open proactive sessions."
+    },
+    {
+      "name": "LINEAR_WEBHOOK_SECRET",
+      "description": "The app's webhook secret — eve verifies the Linear-Signature HMAC on inbound webhooks against it."
+    }
+  ]
+}

@@ -131,6 +131,12 @@ function validateManifest(where, m) {
   if (m.model !== undefined && typeof m.model !== "string") {
     fail(where, "model must be a string");
   }
+  if (
+    m.setup !== undefined &&
+    (typeof m.setup !== "string" || m.setup.length === 0)
+  ) {
+    fail(where, "setup must be a non-empty string");
+  }
 
   if (m.includes !== undefined) {
     if (!Array.isArray(m.includes)) {

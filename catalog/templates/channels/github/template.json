@@ -1,0 +1,28 @@
+{
+  "id": "github",
+  "type": "channel",
+  "name": "GitHub",
+  "description": "Talk to this agent by @mentioning it in GitHub issue and pull-request comments — a GitHub App with webhook signature verification via eve's githubChannel.",
+  "version": "0.1.0",
+  "eve": ">=0.20.0",
+  "files": ["channels/github.ts"],
+  "setup": "This channel is a **GitHub App** the agent listens through — separate from any personal token an agent uses to *do* work.\n\n1. Create a **GitHub App** (Settings → Developer settings → GitHub Apps). Note its **App ID** → `GITHUB_APP_ID` and its slug → `GITHUB_APP_SLUG` (the `@name` people mention).\n2. Generate a **private key** (PEM) and put its full contents in `GITHUB_APP_PRIVATE_KEY`. Set a **webhook secret** → `GITHUB_WEBHOOK_SECRET`.\n3. Deploy the agent, then set the App's **Webhook URL** to `https://<your-domain>/e/<environmentId>/eve/v1/github`.\n4. Under the App's webhook events, subscribe to **Issue comment** and **Pull request review comment** (add `issues`, `pull_request`, or check/workflow events only if you wire up those hooks).\n5. Install the App on the repositories it should watch.\n\nAn issue or PR comment that `@mention`s the App's slug starts a turn.",
+  "secrets": [
+    {
+      "name": "GITHUB_APP_ID",
+      "description": "The GitHub App's numeric App ID."
+    },
+    {
+      "name": "GITHUB_APP_PRIVATE_KEY",
+      "description": "The GitHub App's private key (full PEM contents) — used to authenticate as the app and post replies."
+    },
+    {
+      "name": "GITHUB_WEBHOOK_SECRET",
+      "description": "The webhook secret configured on the App — eve verifies the inbound webhook signature against it."
+    },
+    {
+      "name": "GITHUB_APP_SLUG",
+      "description": "The App's slug — the @name mentioned to trigger the agent."
+    }
+  ]
+}

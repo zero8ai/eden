@@ -3,10 +3,11 @@
   "type": "agent",
   "name": "Engineer",
   "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "eve": ">=0.1.0",
   "model": "z-ai/glm-5.2",
   "includes": [
+    { "type": "skill", "id": "working-with-github" },
     { "type": "channel", "id": "discord" },
     { "type": "tool", "id": "discord-send-message" }
   ],
@@ -19,17 +20,9 @@
     "bootstrap": [
       "apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip rsync openssh-client build-essential pkg-config python3 python3-pip ripgrep fd-find shellcheck less nano && rm -rf /var/lib/apt/lists/*",
       "command -v fd >/dev/null || (command -v fdfind >/dev/null && ln -s \"$(command -v fdfind)\" /usr/local/bin/fd) || true",
-      "command -v gh >/dev/null || (apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && mkdir -p -m 755 /etc/apt/keyrings && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" > /etc/apt/sources.list.d/github-cli.list && apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/*)",
       "corepack enable || true",
       "set -e; command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@latest; command -v yarn >/dev/null 2>&1 || npm install -g yarn@latest"
     ],
-    "revalidationKey": "engineer-sandbox@2026-07-07"
-  },
-  "secrets": [
-    {
-      "name": "GITHUB_TOKEN",
-      "description": "GitHub token with repo read/write plus issue assignment/comment, pull request review/merge, and branch push access for every repository this agent may work in. The agent discovers accessible repositories from this token when the target repo is not explicit.",
-      "sandbox": true
-    }
-  ]
+    "revalidationKey": "engineer-sandbox@2026-07-08"
+  }
 }

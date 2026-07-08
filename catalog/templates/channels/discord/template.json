@@ -3,9 +3,10 @@
   "type": "channel",
   "name": "Discord",
   "description": "Talk to this agent from Discord — slash-command interactions with signature verification, threaded replies, and typing indicators via eve's discordChannel.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "eve": ">=0.20.0",
   "files": ["channels/discord.ts"],
+  "setup": "1. In the **Discord Developer Portal**, invite the app to your server with the `bot` and `applications.commands` scopes.\n2. After you deploy the agent in Eden, open its **Deployment** tab and copy the Discord endpoint for the environment you want Discord to reach. Paste it into **General Information → Interactions Endpoint URL**.\n3. The default Discord route is `/eve/v1/discord`. In self-hosted Eden the full production URL is `https://<your-domain>/e/<environmentId>/eve/v1/discord`.\n4. Discord can't call `localhost` — in local development, expose Eden with a tunnel and use the tunnel host with the same path.\n\nThe bot replies in the channel where the slash command is used. To limit it to one channel, set that channel's permissions for the bot and deny access elsewhere.",
   "secrets": [
     {
       "name": "DISCORD_APPLICATION_ID",

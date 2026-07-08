@@ -1,0 +1,8 @@
+import { defaultBackend, defineSandbox } from "eve/sandbox";
+
+const names = (process.env.EDEN_SANDBOX_ENV ?? "").split(",").filter(Boolean);
+const env = Object.fromEntries(names.map((n) => [n, process.env[n] ?? ""]));
+
+export default defineSandbox({
+  backend: () => defaultBackend({ docker: { env }, vercel: { env } }),
+});

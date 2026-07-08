@@ -1,0 +1,19 @@
+{
+  "id": "slack",
+  "type": "channel",
+  "name": "Slack",
+  "description": "Talk to this agent from Slack — app mentions and direct messages with buttons and select menus, credentials brokered by a Vercel Connect connector via eve's slackChannel.",
+  "version": "0.1.0",
+  "eve": ">=0.20.0",
+  "files": ["channels/slack.ts"],
+  "dependencies": {
+    "@vercel/connect": "^0.3.2"
+  },
+  "setup": "Slack credentials aren't plain secrets — a **Vercel Connect** connector brokers the bot token (rotation, refresh, and webhook verification handled server-side), and `SLACK_CONNECTOR` holds only that connector's UID.\n\n1. Create the connector. The flow creates the Slack app, requests scopes, and installs it to your workspace for you:\n\n```\nvercel connect create slack --triggers\n```\n\n2. Attach the connector to the agent's Slack webhook so Slack events reach eve. The default Slack route is `/eve/v1/slack`:\n\n```\nvercel connect attach <connector-uid> --triggers --trigger-path /eve/v1/slack\n```\n\n3. Set `SLACK_CONNECTOR` to the connector's UID (e.g. `slack/my-agent`) — eve resolves a fresh bot token from it on every inbound event.\n4. In the Slack app's **Event Subscriptions**, subscribe the bot to `app_mention` and `message.im`, and enable **Interactivity** for buttons and select menus. The connector flow sets the request URLs; confirm they point at your endpoint.\n5. In self-hosted Eden the full endpoint is `https://<your-domain>/e/<environmentId>/eve/v1/slack`. Slack can't reach `localhost` — expose Eden with a tunnel in local development and use the tunnel host with the same path.",
+  "secrets": [
+    {
+      "name": "SLACK_CONNECTOR",
+      "description": "Vercel Connect connector UID that brokers the Slack bot token — token rotation, refresh, and inbound webhook verification are handled server-side. Example: slack/my-agent."
+    }
+  ]
+}

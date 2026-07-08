@@ -1,0 +1,29 @@
+{
+  "id": "product-manager",
+  "type": "agent",
+  "name": "Product Manager",
+  "description": "Draws the real need out of a request in conversation, then captures it as clear, actionable GitHub issues with gh — following each repo's own templates and labels.",
+  "version": "0.1.0",
+  "eve": ">=0.1.0",
+  "model": "z-ai/glm-5.2",
+  "includes": [{ "type": "skill", "id": "writing-a-github-issue" }],
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.5",
+    "zod": "^4.4.3"
+  },
+  "files": ["instructions.md", "agent.ts", "sandbox.ts"],
+  "sandbox": {
+    "bootstrap": [
+      "apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git jq && rm -rf /var/lib/apt/lists/*",
+      "command -v gh >/dev/null || (apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && mkdir -p -m 755 /etc/apt/keyrings && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" > /etc/apt/sources.list.d/github-cli.list && apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/*)"
+    ],
+    "revalidationKey": "product-manager-sandbox@2026-07-07"
+  },
+  "secrets": [
+    {
+      "name": "GITHUB_TOKEN",
+      "description": "GitHub token with issue read/write access for the repositories this agent files into. The agent discovers accessible repositories from this token when the target repo is not explicit.",
+      "sandbox": true
+    }
+  ]
+}

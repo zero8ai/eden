@@ -1,0 +1,28 @@
+{
+  "id": "twilio",
+  "type": "channel",
+  "name": "Twilio (SMS)",
+  "description": "Talk to this agent over SMS through Twilio — inbound signature verification and outbound replies via eve's twilioChannel, with the allowed sender and from-number read from env.",
+  "version": "0.1.0",
+  "eve": ">=0.20.0",
+  "files": ["channels/twilio.ts"],
+  "setup": "1. In the **Twilio Console**, copy your Account SID and Auth Token into `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`.\n2. Set `TWILIO_FROM_NUMBER` to a Twilio number you own (E.164, e.g. `+15557654321`) and `TWILIO_ALLOW_FROM` to the number(s) allowed to reach the agent — comma-separated for several, `*` for anyone.\n3. Deploy the agent, then on your Twilio number point the **Messaging** webhook at `POST https://<your-domain>/e/<environmentId>/eve/v1/twilio/messages`. (Voice is also available at `/eve/v1/twilio/voice` if you want it.)\n\nUse the exact public URL Twilio will call — eve verifies the `X-Twilio-Signature` against it. Sending SMS is subject to consent, opt-out, and recording laws in your region; make sure your use complies.",
+  "secrets": [
+    {
+      "name": "TWILIO_ACCOUNT_SID",
+      "description": "Twilio account SID — identifies the account for outbound SMS."
+    },
+    {
+      "name": "TWILIO_AUTH_TOKEN",
+      "description": "Twilio auth token — eve uses it to verify the X-Twilio-Signature on inbound requests."
+    },
+    {
+      "name": "TWILIO_FROM_NUMBER",
+      "description": "The Twilio number the agent sends from, in E.164 format (e.g. +15557654321)."
+    },
+    {
+      "name": "TWILIO_ALLOW_FROM",
+      "description": "The phone number(s) allowed to message the agent, in E.164 format — comma-separated for several, or * to allow anyone. Messages from anyone else are ignored."
+    }
+  ]
+}

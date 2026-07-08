@@ -268,7 +268,7 @@ export function meta({ params }: Route.MetaArgs) {
   const label =
     AGENT_CATEGORIES.find((c) => c.key === params.category)?.label ??
     "Resources";
-  return [{ title: `${label} · Eden` }];
+  return [{ title: `${label} · eden` }];
 }
 
 function relativeTime(iso: string | null): string {

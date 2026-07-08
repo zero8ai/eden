@@ -158,7 +158,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Assistant · Eden" }];
+  return [{ title: "Assistant · eden" }];
 }
 
 interface LiveTurn {
@@ -198,8 +198,10 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
   const [sendError, setSendError] = useState<string | null>(null);
 
   const remoteBusy = currentSessionStatus === "running";
-  // Treat the just-submitted "provision" click as provisioning too, so feedback is instant —
-  // the loader may still report "idle" until the worker creates the building row.
+  // Treat the in-flight "provision" click as provisioning for instant feedback; once the action
+  // redirects, the loader reports "provisioning" from the `pending` deployment row that
+  // ensureAssistantInstance now persists synchronously, so the spinner stays put and polling keeps
+  // running instead of flickering back to the empty state (#17).
   const provisioning =
     instanceStatus === "provisioning" || provisionFetcher.state !== "idle";
   const busy = (live !== null && !live.done) || remoteBusy || provisioning;
@@ -353,7 +355,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           <Alert className="mb-4">
             <AlertTitle>Setting up your assistant…</AlertTitle>
             <AlertDescription>
-              Eden is building and starting your assistant instance. This takes a minute the
+              eden is building and starting your assistant instance. This takes a minute the
               first time — the page updates automatically.
             </AlertDescription>
           </Alert>

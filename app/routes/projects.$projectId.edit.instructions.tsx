@@ -129,7 +129,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Edit instructions · Eden" }];
+  return [{ title: "Edit instructions · eden" }];
 }
 
 export default function EditInstructions({

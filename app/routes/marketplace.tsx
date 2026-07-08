@@ -128,13 +128,13 @@ export const loader = (args: LoaderFunctionArgs) =>
 
 export function meta() {
   return [
-    { title: "Marketplace · Eden" },
+    { title: "Marketplace · eden" },
     ...noindexMeta,
   ];
 }
 
 export default function Marketplace({ loaderData }: Route.ComponentProps) {
-  const { user, org, templates, catalogError } = loaderData;
+  const { user, templates, catalogError } = loaderData;
   const [filter, setFilter] = useState<TemplateType | "all">("all");
 
   const counts = TEMPLATE_TYPES.reduce(
@@ -148,7 +148,7 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
     filter === "all" ? templates : templates.filter((t) => t.type === filter);
 
   return (
-    <AppShell workspaceName={org?.name} userEmail={user.email}>
+    <AppShell userEmail={user.email}>
       <PageHeader
         title="Marketplace"
         description="Recruit pre-built tools, skills, and agents — instantiate an expert-authored template instead of writing one from scratch."
@@ -159,7 +159,7 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
           <CardHeader className="items-center py-12 text-center">
             <CardTitle className="text-lg">Catalog unavailable</CardTitle>
             <CardDescription className="max-w-lg">
-              Eden couldn&rsquo;t reach the template catalog. In development it reads
+              eden couldn&rsquo;t reach the template catalog. In development it reads
               the in-repo <span className="font-mono">marketplace/</span> seed; in
               production set <span className="font-mono">EDEN_CATALOG_REPO</span> to an
               &ldquo;owner/repo&rdquo; pointer at the catalog.

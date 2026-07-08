@@ -490,13 +490,12 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Install · Marketplace · Eden" }];
+  return [{ title: "Install · Marketplace · eden" }];
 }
 
 export default function InstallWizard({ loaderData, actionData }: Route.ComponentProps) {
   const {
     user,
-    org,
     type,
     manifest,
     projects,
@@ -533,7 +532,7 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
   };
 
   return (
-    <AppShell workspaceName={org?.name} userEmail={user.email}>
+    <AppShell userEmail={user.email}>
       <div className="mb-4">
         <Link
           to={backTo}

@@ -4,6 +4,7 @@ import {
   assistantTemplateHash,
   ensureAssistantAgent,
   ensureAssistantInstance,
+  peekAssistantInstance,
 } from "~/assistant/instance.server";
 import { makeFakeStore } from "../fakes/store";
 
@@ -39,13 +40,28 @@ describe("assistant instance: template hash", () => {
 });
 
 describe("assistant instance: provisioning", () => {
-  it("queues an assistant_deploy job and reports provisioning when nothing is live", async () => {
+  it("persists a pending deployment, queues assistant_deploy, and reports provisioning", async () => {
     const store = makeFakeStore();
     store.seedProject({ id: "p", orgId: "o", repoOwner: "a", repoName: "r", repoInstallationId: "i" });
     const instance = await ensureAssistantInstance("p", store);
     expect(instance.status).toBe("provisioning");
-    expect(instance.deploymentId).toBeNull();
+    // The `pending` row is created synchronously (#17): a loader re-read right after the provision
+    // click must already see "provisioning" instead of racing the async worker.
+    expect(instance.deploymentId).not.toBeNull();
+    const snapshot = await peekAssistantInstance("p", store);
+    expect(snapshot.status).toBe("provisioning");
     const stats = await store.jobs.statsByStatus();
     expect((stats.queued ?? 0) >= 1).toBe(true);
+  });
+
+  it("does not enqueue a second deploy while one is already pending", async () => {
+    const store = makeFakeStore();
+    store.seedProject({ id: "p", orgId: "o", repoOwner: "a", repoName: "r", repoInstallationId: "i" });
+    const first = await ensureAssistantInstance("p", store);
+    const second = await ensureAssistantInstance("p", store);
+    // The second call finds the pending row and returns it — no duplicate row, no duplicate job.
+    expect(second.deploymentId).toBe(first.deploymentId);
+    const stats = await store.jobs.statsByStatus();
+    expect(stats.queued ?? 0).toBe(1);
   });
 });

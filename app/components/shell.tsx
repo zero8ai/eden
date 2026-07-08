@@ -20,6 +20,7 @@ import {
 } from "react-router";
 
 import { QuickDeploy } from "~/components/quick-deploy";
+import { EdenWordmark } from "~/components/marketing/logo";
 import { ThemeToggle } from "~/components/theme-toggle";
 import { Button } from "~/components/ui/button";
 import {
@@ -75,13 +76,11 @@ export function repoCrumbs(opts: {
 }
 
 export function AppShell({
-  workspaceName,
   userEmail,
   breadcrumbs,
   fullHeight,
   children,
 }: {
-  workspaceName?: string | null;
   userEmail?: string | null;
   /** Hierarchy trail: workspace → repo → member → …; the "up" navigation. */
   breadcrumbs?: Crumb[];
@@ -96,17 +95,15 @@ export function AppShell({
       <NavProgress />
       <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-5xl items-center gap-2 px-4 sm:gap-4 sm:px-6">
-          <Link to="/dashboard" className="flex shrink-0 items-baseline gap-2">
-            <span className="text-base font-semibold tracking-tight">Eden</span>
+          <Link
+            to="/dashboard"
+            className="flex shrink-0 items-center"
+            aria-label="eden dashboard"
+          >
+            <EdenWordmark className="h-5" />
           </Link>
-          {breadcrumbs && breadcrumbs.length > 0 ? (
+          {breadcrumbs && breadcrumbs.length > 0 && (
             <Breadcrumbs crumbs={breadcrumbs} />
-          ) : (
-            workspaceName && (
-              <span className="max-w-48 truncate text-sm text-muted-foreground">
-                {workspaceName}
-              </span>
-            )
           )}
           {/* Desktop: inline primary nav. Mobile: folds into the menu button below. */}
           <nav className="ml-auto hidden items-center gap-1 text-sm md:flex">

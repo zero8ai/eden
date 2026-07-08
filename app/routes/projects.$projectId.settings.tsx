@@ -839,7 +839,7 @@ export async function action(args: ActionFunctionArgs) {
       if (!newName) return { error: "New name is required." };
       if (newName === "assistant") {
         return {
-          error: `"assistant" is reserved for Eden's built-in assistant — pick another name.`,
+          error: `"assistant" is reserved for eden's built-in assistant — pick another name.`,
         };
       }
       const { roster, active } = await resolveAgentContext(
@@ -937,7 +937,7 @@ export async function action(args: ActionFunctionArgs) {
           title: `Rename team member: ${oldName} → ${newName}`,
           body:
             `Moves \`agents/${oldName}/\` to \`agents/${newName}/\` (${memberPaths.length} files) ` +
-            `and retargets its package.json and marketplace installs. Eden renames the member in ` +
+            `and retargets its package.json and marketplace installs. eden renames the member in ` +
             `place on merge — its environments, versions, secrets and run history are preserved.\n\n` +
             `Note: mentions of \`${oldName}\` in other members' instructions or tools are not ` +
             `rewritten automatically — update those separately if needed.`,
@@ -986,7 +986,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Settings · Eden" }];
+  return [{ title: "Settings · eden" }];
 }
 
 export default function Settings({
@@ -1068,7 +1068,7 @@ export default function Settings({
         <Alert className="mb-6">
           <AlertTitle>Deleting repository</AlertTitle>
           <AlertDescription>
-            Cleaning up deployments and Eden data. This can take a few minutes;
+            Cleaning up deployments and eden data. This can take a few minutes;
             you&apos;ll be sent back to the Dashboard when it finishes.
           </AlertDescription>
         </Alert>
@@ -1077,7 +1077,7 @@ export default function Settings({
         <Alert className="mb-6">
           <AlertTitle>Renamed to {renamed}</AlertTitle>
           <AlertDescription>
-            This agent&rsquo;s name is updated across Eden.
+            This agent&rsquo;s name is updated across eden.
           </AlertDescription>
         </Alert>
       )}
@@ -1520,7 +1520,7 @@ function RenameSection({
             <p className="text-sm text-muted-foreground">
               {isTeam
                 ? `Opens a change request that moves agents/${activeAgent}/ to the new name. Environments, versions, secrets and history are preserved on merge. Mentions of "${activeAgent}" in other members' instructions or tools are not rewritten automatically.`
-                : "Applies immediately across Eden. The agent's repository directory is unaffected."}
+                : "Applies immediately across eden. The agent's repository directory is unaffected."}
             </p>
           </CardContent>
         </Card>
@@ -1589,13 +1589,13 @@ function DangerSection({
             <div className="flex flex-wrap items-center justify-between gap-3 py-4">
               <div>
                 <p className="text-sm font-medium">
-                  Delete this repository from Eden
+                  Delete this repository from eden
                 </p>
                 <p className="text-sm text-muted-foreground">
                   Stops and destroys every running instance, then permanently
                   deletes {isTeam ? "all members' " : "the agent's "}
                   versions, environments, secrets, drafts, and run history from
-                  Eden. The GitHub repository itself is not touched.
+                  eden. The GitHub repository itself is not touched.
                 </p>
               </div>
               <DeleteRepositoryDialog
@@ -1645,11 +1645,11 @@ function DeleteRepositoryDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
-            Delete &ldquo;{projectName}&rdquo; from Eden?
+            Delete &ldquo;{projectName}&rdquo; from eden?
           </DialogTitle>
           <DialogDescription>
             This stops everything that&rsquo;s running and permanently deletes
-            all Eden data for this repository — versions, environments, secrets,
+            all eden data for this repository — versions, environments, secrets,
             drafts, run history. It cannot be undone. The GitHub repository
             itself is not touched.
           </DialogDescription>

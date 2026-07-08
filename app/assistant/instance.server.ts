@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
-import type { Agent, DataStore, Environment } from "~/data/ports";
+import type { Agent, DataStore, Environment, Release } from "~/data/ports";
 import { buildAssistantImage } from "~/deploy/eve-image.server";
 import { enqueue } from "~/jobs/queue.server";
 import {
@@ -170,6 +170,30 @@ async function assistantEnv(input: {
   };
 }
 
+/**
+ * Ensure the release row for the current template hash exists — reuse the one recorded for this
+ * hash, or synthesize a new one. Pure metadata (no image build), so it's cheap enough to run
+ * synchronously in a request handler when we need a release id up front.
+ */
+async function ensureAssistantRelease(
+  projectId: string,
+  agent: Agent,
+  hash: string,
+  store: DataStore,
+): Promise<Release> {
+  const gitSha = templateGitSha(hash);
+  return (
+    (await store.releases.findByCommit(agent.id, gitSha)) ??
+    (await store.releases.insert({
+      projectId,
+      agentId: agent.id,
+      version: `t${(await store.releases.countByAgent(agent.id)) + 1}`,
+      gitSha,
+      changelog: `Assistant template ${hash}`,
+    }))
+  );
+}
+
 // ── Provisioning (the assistant_deploy job body) ───────────────────────────────
 
 export interface AssistantDeployPayload {
@@ -191,19 +215,10 @@ export async function runAssistantDeploy(
   const { agent, environment } = await ensureAssistantAgent(project.id, store);
 
   const hash = await assistantTemplateHash();
-  const gitSha = templateGitSha(hash);
   const imageRef = assistantImageRef(hash);
 
   // Reuse the release for this template hash, or synthesize one.
-  let release =
-    (await store.releases.findByCommit(agent.id, gitSha)) ??
-    (await store.releases.insert({
-      projectId: project.id,
-      agentId: agent.id,
-      version: `t${(await store.releases.countByAgent(agent.id)) + 1}`,
-      gitSha,
-      changelog: `Assistant template ${hash}`,
-    }));
+  let release = await ensureAssistantRelease(project.id, agent, hash, store);
 
   // Build the shared image if this release hasn't recorded one yet (docker layer cache makes a
   // repeat build across projects cheap).
@@ -348,15 +363,26 @@ export async function ensureAssistantInstance(
   }
 
   // Nothing usable (never deployed, image changed after an Eden upgrade, or previous failure):
-  // queue a build+deploy.
+  // create the `pending` deployment row synchronously, THEN queue the build+deploy. The worker's
+  // runAssistantDeploy only *takes over* a pending/building row — it doesn't create one — so
+  // without this, a loader re-read right after the provision click still saw "idle" until the
+  // worker got around to inserting the row, and the UI flickered back to the empty state (#17).
+  // Persisting `pending` up front means peekAssistantInstance reports "provisioning" immediately.
+  const release = await ensureAssistantRelease(projectId, agent, hash, store);
+  const dep = await store.deployments.insert({
+    environmentId: environment.id,
+    releaseId: release.id,
+    status: "pending",
+    trafficWeight: 100,
+  });
   await enqueue("assistant_deploy", { projectId } satisfies AssistantDeployPayload, undefined, store);
   return {
     ...base,
     status: "provisioning",
     url: null,
-    deploymentId: null,
-    releaseId: null,
-    version: null,
+    deploymentId: dep.id,
+    releaseId: release.id,
+    version: release.version,
   };
 }
 

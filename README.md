@@ -122,11 +122,34 @@ eden/
 
 ## Deployment
 
-**Self-hosting on a VPS is the supported production path** — the full runbook is
-[`deploy/vps/README.md`](./deploy/vps/README.md) (firewall → Docker → compose stack →
-nginx + Let's Encrypt → GitHub App/WorkOS). One Linux box runs everything: Eden, Postgres,
-and the agent instances it deploys.
+**Self-hosting on a VPS is the supported production path.** Everything needed to reproduce a
+working production install lives in [`deploy/vps/`](./deploy/vps/): a single runbook
+([`deploy/vps/README.md`](./deploy/vps/README.md)) plus the compose, nginx, and env templates it
+references. It's a complete, ordered sequence — firewall → Docker → the compose stack (Eden +
+Postgres) → containerized nginx + Let's Encrypt → GitHub App / WorkOS wiring → smoke test. One
+Linux box runs everything: Eden, Postgres, and the agent instances it deploys.
 
-`npm run build` emits a standard Node server build under `build/` (client + server); the
-included `Dockerfile` containerizes it with the Docker CLI the deploy target needs. See
+**Two ways to run it:**
+
+- **Hand it to your coding agent.** Give an agent (Claude Code or similar) SSH access to a fresh
+  VPS and point it at `deploy/vps/README.md`. The runbook is written to be followed to the letter,
+  so the agent can stand the whole thing up for you end-to-end. If you'd rather not give a coding
+  agent SSH access to your server, don't — that's entirely your call.
+- **Follow it yourself.** The exact same runbook is an ordinary step-by-step guide; nothing in it
+  requires an agent.
+
+**Before you start you'll need** a VPS (Ubuntu 24.04 LTS; 2 vCPU / 4 GB RAM / 40 GB disk minimum)
+and a **domain you control**, with an A record pointing at the VPS — Eden is served from that
+domain, and the GitHub App and WorkOS callbacks require it. (Ours is `eden.zero8.ai`; yours is
+whatever domain you register and point at your box.) The runbook's first section lists the full
+prerequisites, including the WorkOS account, GitHub App, and Anthropic API key.
+
+`npm run build` emits a standard Node server build under `build/` (client + server); the included
+`Dockerfile` containerizes it with the Docker CLI the deploy target needs. See
 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the managed-service infrastructure.
+
+## License & ownership
+
+Copyright © 2026 Aaron HS. Eden is created and owned by Aaron HS.
+
+Licensed under the [GNU Affero General Public License v3.0](./LICENSE) (AGPL-3.0).

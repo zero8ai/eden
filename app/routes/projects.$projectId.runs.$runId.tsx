@@ -75,7 +75,7 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export function meta() {
-  return [{ title: "Run · Eden" }];
+  return [{ title: "Run · eden" }];
 }
 
 /** failed→destructive, completed→success (emerald), running→default (violet), else outline. */

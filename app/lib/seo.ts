@@ -30,7 +30,7 @@ export function pageMeta(opts: {
     { name: "description", content: description },
     { tagName: "link", rel: "canonical", href: url },
     { property: "og:type", content: "website" },
-    { property: "og:site_name", content: "Eden" },
+    { property: "og:site_name", content: "eden" },
     { property: "og:title", content: title },
     { property: "og:description", content: description },
     { property: "og:url", content: url },

@@ -187,7 +187,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [{ title: "Playground · Eden" }];
+  return [{ title: "Playground · eden" }];
 }
 
 /** Local mirror of an in-flight turn, driven by the NDJSON stream. */

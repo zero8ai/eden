@@ -225,7 +225,7 @@ export async function action(args: ActionFunctionArgs) {
 
 export function meta() {
   return [
-    { title: "New repository · Eden" },
+    { title: "New repository · eden" },
     ...noindexMeta,
   ];
 }
@@ -242,7 +242,7 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
   const [layout, setLayout] = useState<"single" | "team">("single");
 
   return (
-    <AppShell workspaceName={org?.name}>
+    <AppShell>
       <PageHeader
         icon={Plug}
         accent="brand"
@@ -277,7 +277,7 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
               Install the GitHub App
             </CardTitle>
             <CardDescription>
-              Install Eden on the account that owns your eve repository, then pick
+              Install eden on the account that owns your eve repository, then pick
               the repo to connect. You control which repositories it can access.
             </CardDescription>
           </CardHeader>
@@ -298,7 +298,7 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                 Connect an existing repository
               </CardTitle>
               <CardDescription>
-                Repositories the GitHub App can access. Eden validates that the
+                Repositories the GitHub App can access. eden validates that the
                 repo is an eve project before connecting.
               </CardDescription>
             </CardHeader>

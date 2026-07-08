@@ -1,0 +1,28 @@
+{
+  "id": "deploying-cloudflare-apps",
+  "type": "skill",
+  "name": "Deploying Cloudflare apps",
+  "description": "How to deploy an app to Cloudflare and provision what it needs — wrangler config and deploys, KV/D1/R2/Queues/Pages, dry-runs, and getting deploy credentials into a CI pipeline. Cloudflare only; getting the code and wiring a specific forge's pipeline are separate skills.",
+  "version": "0.1.0",
+  "eve": ">=0.1.0",
+  "files": ["skills/deploying-cloudflare-apps.md"],
+  "sandbox": {
+    "bootstrap": [
+      "apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git jq && rm -rf /var/lib/apt/lists/*",
+      "npm install -g wrangler@latest"
+    ],
+    "revalidationKey": "deploying-cloudflare-apps-sandbox@2026-07-08"
+  },
+  "secrets": [
+    {
+      "name": "CLOUDFLARE_API_TOKEN",
+      "description": "API token for the target account with Workers edit permission plus any product permissions the app needs (KV, D1, R2, Queues, Pages, Routes, DNS). wrangler reads it from the sandbox shell environment.",
+      "sandbox": true
+    },
+    {
+      "name": "CLOUDFLARE_ACCOUNT_ID",
+      "description": "The Cloudflare account id the app deploys into.",
+      "sandbox": true
+    }
+  ]
+}

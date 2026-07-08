@@ -1,10 +1,12 @@
 ---
-description: Use when building, changing, shipping, or debugging a React web app that runs on Cloudflare Workers — how to choose the right Cloudflare scaffold, project layout, wrangler.jsonc semantics, the verify workflow, and the SPA-vs-Worker routing rules.
+description: Use when building, changing, or debugging a React web app that runs on Cloudflare Workers — how to choose the right Cloudflare scaffold, the project layout, wrangler.jsonc semantics, the verify workflow, and the SPA-vs-Worker routing rules. Building only; deploying to Cloudflare and shipping to a forge are separate skills.
 ---
 
-# React on Cloudflare Workers
+# Building on Cloudflare Workers
 
 One project, two halves: a React + Vite single-page app served as static assets, and a Worker that is the API backend. Cloudflare's Vite plugin runs the Worker locally under the same conditions as production, so what works in dev works deployed.
+
+Anything stateful or secret — KV, D1, R2, AI — goes behind an `/api/...` route in `worker/index.ts`; the front end reaches it with `fetch()`. Never import server resources into `src/`.
 
 ## Choose the scaffold
 
@@ -49,25 +51,25 @@ test -f src/App.tsx
 node -e 'const p=require("./package.json"); for (const d of ["react","react-dom","vite","@cloudflare/vite-plugin"]) if(!JSON.stringify(p).includes(d)) throw new Error(`missing ${d}`)'
 ```
 
-If the scaffold does not match the selected scenario, stop and correct the scaffold. Delete the bad output and retry the official generator once with the right prompt answers or CLI arguments. Only reconstruct files manually when the official generator is unreachable or repeatedly broken, and say that clearly in the final report.
+If the scaffold does not match the selected scenario, stop and correct the scaffold. Delete the bad output and retry the official generator once with the right prompt answers or CLI arguments. Only reconstruct files manually when the official generator is unreachable or repeatedly broken, and say that clearly.
 
 ## The two routing rules
 
 1. `wrangler.jsonc` sets `assets.not_found_handling: "single-page-application"`: unmatched paths return `index.html`, so client-side routes work on refresh and never invoke (or bill) the Worker. Leave it that way.
 2. The Worker handles only `/api/*` (see the generated `worker/index.ts`). Add backend endpoints there; add pages in React. Never serve pages from the Worker and never import bindings into `src/` — React reaches compute, storage, and AI only through `fetch()` to the Worker.
 
-## Verify, then ship
+When asked for a feature, build the whole slice: the React UI, the Worker API route behind it, and the types they share.
+
+## Verify
 
 All commands run in the app directory.
 
 ```bash
 npm install --no-audit --no-fund   # once, or after dependency changes
-npm run build                      # production build — run after changes, ALWAYS before pushing
+npm run build                      # production build — run after changes, ALWAYS before shipping
 ```
 
-A clean `npm run build` is your definition of shippable: the deploy downstream runs the same build, so what passes here won't die in the build step there. You do not deploy — that happens after your PR merges, with credentials you don't have or need. On a build failure, read the last lines of the output — that's the actual error — fix, and re-verify before pushing.
-
-For local development with hot reload (a human at a browser): `npm run dev`.
+A clean `npm run build` is the definition of shippable: the deploy downstream runs the same build, so what passes here won't die in the build step there. On a build failure, read the last lines of the output — that's the actual error — fix, and re-verify. For local development with hot reload (a human at a browser): `npm run dev`.
 
 ## Bindings (KV, D1, R2, AI, …)
 

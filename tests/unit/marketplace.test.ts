@@ -159,7 +159,7 @@ describe("composition against the real seed", () => {
       "sendDiscordChannelMessage",
     );
 
-    // Discord requirements union in alongside the engineer's own GitHub token.
+    // GITHUB_TOKEN comes from the working-with-github skill; Discord's secrets union in too.
     const secretNames = (resolved.manifest.secrets ?? []).map((s) => s.name);
     expect(secretNames).toEqual(
       expect.arrayContaining([
@@ -184,8 +184,18 @@ describe("composition against the real seed", () => {
     const discordToolRow = index.templates.find(
       (t) => t.type === "tool" && t.id === "discord-send-message",
     )!;
+    const githubSkillRow = index.templates.find(
+      (t) => t.type === "skill" && t.id === "working-with-github",
+    )!;
     expect(resolved.hash).toBe(engineerRow.hash);
     expect(resolved.includes).toEqual([
+      {
+        id: "working-with-github",
+        type: "skill",
+        name: "Working with GitHub",
+        version: githubSkillRow.version,
+        hash: githubSkillRow.hash,
+      },
       {
         id: "discord",
         type: "channel",

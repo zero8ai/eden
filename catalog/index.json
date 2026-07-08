@@ -1,22 +1,6 @@
 {
   "templates": [
     {
-      "id": "cloudflare-app-builder",
-      "type": "agent",
-      "name": "Cloudflare App Builder",
-      "version": "0.4.0",
-      "description": "An agent that builds full-stack web apps on Cloudflare Workers — React + Vite SPA with a Worker API backend — and ships every project to GitHub. It builds; it does not deploy.",
-      "hash": "67e94808b987724d3b0ca84070eeee7695934b5c"
-    },
-    {
-      "id": "cloudflare-deployment-engineer",
-      "type": "agent",
-      "name": "Cloudflare CI Engineer",
-      "version": "0.3.0",
-      "description": "An agent that sets up and operates CI/CD for Cloudflare apps from GitHub — gh + wrangler/API with sandbox-exposed credentials, no bespoke tools.",
-      "hash": "3bcd794f23f05a15f84ca48c80d6d748f9889493"
-    },
-    {
       "id": "designer",
       "type": "agent",
       "name": "Designer",
@@ -28,9 +12,9 @@
       "id": "engineer",
       "type": "agent",
       "name": "Engineer",
-      "version": "0.2.3",
+      "version": "0.3.0",
       "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-      "hash": "8211ba2d1aa88079e274a5b4d810160f64c67936"
+      "hash": "64312421ded2961a0c324657ef22386c21e25db4"
     },
     {
       "id": "product-manager",
@@ -129,6 +113,22 @@
       "hash": "272c1e47fccc92831c32ce78ef56c8d10a848ae2"
     },
     {
+      "id": "building-cloudflare-apps",
+      "type": "skill",
+      "name": "Building Cloudflare apps",
+      "version": "0.1.0",
+      "description": "How to build a full-stack web app on Cloudflare Workers — a React + Vite SPA with a Worker API backend: choosing the scaffold, project layout, wrangler.jsonc semantics, the SPA-vs-Worker routing rules, the verify workflow, and bindings. Building only; deploying and shipping to a forge are separate skills.",
+      "hash": "2d7809dc41bdf9971b66193e6be67a43cc592a36"
+    },
+    {
+      "id": "deploying-cloudflare-apps",
+      "type": "skill",
+      "name": "Deploying Cloudflare apps",
+      "version": "0.1.0",
+      "description": "How to deploy an app to Cloudflare and provision what it needs — wrangler config and deploys, KV/D1/R2/Queues/Pages, dry-runs, and getting deploy credentials into a CI pipeline. Cloudflare only; getting the code and wiring a specific forge's pipeline are separate skills.",
+      "hash": "fcfeb9fec37e3017f8f0410923f36dbc5934596e"
+    },
+    {
       "id": "design-critique",
       "type": "skill",
       "name": "Design critique",
@@ -159,6 +159,14 @@
       "version": "0.1.0",
       "description": "How to groom a backlog — decide what an incoming issue is, how urgent it is, and what happens to it next.",
       "hash": "e6ab4b70189ca9938f477c414c77f07c55e9d503"
+    },
+    {
+      "id": "working-with-github",
+      "type": "skill",
+      "name": "Working with GitHub",
+      "version": "0.1.0",
+      "description": "How to work a GitHub repository from the terminal with gh and git — authenticating, finding the right repo, branching and pushing, opening and updating pull requests, reviewing and merging, and storing CI secrets and workflows.",
+      "hash": "5473dc749de2057217c9b5b9e92e3e2170ae18a9"
     },
     {
       "id": "writing-a-github-issue",

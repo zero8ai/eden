@@ -119,6 +119,22 @@ export function narrowedReadTokenParams(installationId: string | number, repo: s
   };
 }
 
+/**
+ * The account (org or user) an installation lives on — via the App-JWT `GET
+ * /app/installations/{id}` endpoint, so it works even when the installation shares zero
+ * repositories (a minimal-permission install used only to create new repos).
+ */
+export async function getInstallationAccountLogin(
+  installationId: string | number,
+): Promise<string | null> {
+  const octokit = getGitHubApp().octokit;
+  const { data } = await octokit.rest.apps.getInstallation({
+    installation_id: Number(installationId),
+  });
+  const account = data.account;
+  return account && "login" in account ? account.login : null;
+}
+
 /** Public URL where a user installs the App on a new org/account. */
 export function getInstallUrl(state?: string): string {
   const base = `https://github.com/apps/${getGitHubConfig().slug}/installations/new`;

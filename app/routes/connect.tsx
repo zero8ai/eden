@@ -67,6 +67,8 @@ type GithubConnectState =
       state: "pick";
       installationId: string;
       repos: InstallationRepo[];
+      /** Installation's org/user — prefills "create" even when zero repos are shared. */
+      accountLogin: string | null;
       /** Always offered so another GitHub org/account can be added. */
       installUrl: string;
     }
@@ -111,9 +113,17 @@ export const loader = (args: LoaderFunctionArgs) =>
         for (const installationId of candidates) {
           try {
             const repos = await listInstallationRepos(installationId);
+            const accountLogin =
+              known.find((k) => k.installationId === installationId)?.accountLogin ?? null;
             return {
               org,
-              github: { state: "pick" as const, installationId, repos, installUrl },
+              github: {
+                state: "pick" as const,
+                installationId,
+                repos,
+                accountLogin,
+                installUrl,
+              },
             };
           } catch {
             await forgetInstallation(org.id, installationId);
@@ -278,7 +288,9 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
             </CardTitle>
             <CardDescription>
               Install eden on the account that owns your eve repository, then pick
-              the repo to connect. You control which repositories it can access.
+              the repo to connect. You control which repositories it can access —
+              selecting none is fine too, if you only want eden to create new repos
+              for you.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -305,8 +317,16 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
             <CardContent>
               {github.repos.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  No repositories are accessible to this installation. Grant the
-                  App access to your eve repo and try again.
+                  No repositories are shared with the app yet — that&rsquo;s fine
+                  if you only want eden to create repos for you. Create a new
+                  repository below, or{" "}
+                  <a
+                    href={github.installUrl}
+                    className="font-medium underline underline-offset-4"
+                  >
+                    grant the app access
+                  </a>{" "}
+                  to an existing eve repo on GitHub.
                 </p>
               ) : (
                 <ul className="divide-y rounded-lg border">
@@ -409,7 +429,7 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                       id="owner"
                       name="owner"
                       aria-label="GitHub organization"
-                      defaultValue={github.repos[0]?.owner ?? ""}
+                      defaultValue={github.accountLogin ?? github.repos[0]?.owner ?? ""}
                       placeholder="org"
                       className="w-full min-w-0 sm:w-40"
                     />
@@ -424,7 +444,7 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                   <p className="text-xs text-muted-foreground">
                     Created on GitHub as{" "}
                     <span className="font-mono">
-                      {github.repos[0]?.owner ?? "org"}/
+                      {github.accountLogin ?? github.repos[0]?.owner ?? "org"}/
                       {layout === "team" ? "my-team" : "my-agent"}
                     </span>
                     .

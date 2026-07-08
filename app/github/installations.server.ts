@@ -7,7 +7,7 @@ import { and, desc, eq } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import { githubInstallations } from "~/db/schema";
-import { getInstallationOctokit } from "./client.server";
+import { getInstallationAccountLogin } from "./client.server";
 
 export interface KnownInstallation {
   installationId: string;
@@ -21,11 +21,9 @@ export async function rememberInstallation(
 ): Promise<void> {
   let accountLogin: string | null = null;
   try {
-    const octokit = await getInstallationOctokit(installationId);
-    const { data } = await octokit.request("GET /installation/repositories", {
-      per_page: 1,
-    });
-    accountLogin = data.repositories[0]?.owner.login ?? null;
+    // App-level lookup, not "first shared repo's owner" — a zero-repo (minimal-permission)
+    // install has no repos to infer from but still has an account.
+    accountLogin = await getInstallationAccountLogin(installationId);
   } catch {
     // Display metadata only — never block the connect flow on it.
   }

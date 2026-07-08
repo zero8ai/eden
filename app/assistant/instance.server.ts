@@ -12,6 +12,7 @@ import path from "node:path";
 
 import type { Agent, DataStore, Environment, Release } from "~/data/ports";
 import { buildAssistantImage } from "~/deploy/eve-image.server";
+import { isVersionLabelCollision } from "~/deploy/versioning";
 import { enqueue } from "~/jobs/queue.server";
 import {
   getWorkspaceAssistantModel,
@@ -182,16 +183,24 @@ async function ensureAssistantRelease(
   store: DataStore,
 ): Promise<Release> {
   const gitSha = templateGitSha(hash);
-  return (
-    (await store.releases.findByCommit(agent.id, gitSha)) ??
-    (await store.releases.insert({
+  const existing = await store.releases.findByCommit(agent.id, gitSha);
+  if (existing) return existing;
+  try {
+    return await store.releases.insert({
       projectId,
       agentId: agent.id,
       version: `t${(await store.releases.countByAgent(agent.id)) + 1}`,
       gitSha,
       changelog: `Assistant template ${hash}`,
-    }))
-  );
+    });
+  } catch (error) {
+    // Two concurrent provisions race on the version label (#31); the winner recorded this same
+    // template hash, so adopt its row rather than failing the request.
+    if (!isVersionLabelCollision(error)) throw error;
+    const raced = await store.releases.findByCommit(agent.id, gitSha);
+    if (raced) return raced;
+    throw error;
+  }
 }
 
 // ── Provisioning (the assistant_deploy job body) ───────────────────────────────
@@ -271,6 +280,21 @@ export async function runAssistantDeploy(
     });
     throw error;
   }
+}
+
+/**
+ * Is `err` the unique-violation raised by `deployments_env_inflight_uq` (at most one
+ * pending/building deployment per environment)? Drizzle wraps the driver error, so walk the
+ * cause chain rather than matching the top-level message (same shape as isVersionLabelCollision).
+ */
+function isInflightDeploymentCollision(err: unknown): boolean {
+  for (let e: unknown = err; e instanceof Error; e = e.cause) {
+    const pg = e as Error & { code?: string; constraint_name?: string };
+    if (pg.code === "23505" && pg.constraint_name === "deployments_env_inflight_uq") {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ── The entry the UI / stream route calls ──────────────────────────────────────
@@ -369,12 +393,41 @@ export async function ensureAssistantInstance(
   // worker got around to inserting the row, and the UI flickered back to the empty state (#17).
   // Persisting `pending` up front means peekAssistantInstance reports "provisioning" immediately.
   const release = await ensureAssistantRelease(projectId, agent, hash, store);
-  const dep = await store.deployments.insert({
-    environmentId: environment.id,
-    releaseId: release.id,
-    status: "pending",
-    trafficWeight: 100,
-  });
+  let dep;
+  try {
+    dep = await store.deployments.insert({
+      environmentId: environment.id,
+      releaseId: release.id,
+      status: "pending",
+      trafficWeight: 100,
+    });
+  } catch (error) {
+    // Lost the insert race (#31): a concurrent request created its `pending` row (and, right
+    // after, enqueued the deploy — the enqueue below stays AFTER the insert so the winner is
+    // always the one that queued a job). Adopt the winner's row instead of failing — no second
+    // row, no second job.
+    if (!isInflightDeploymentCollision(error)) throw error;
+    const raced = (await store.deployments.listByEnvironment(environment.id)).find(
+      (d) => d.status === "pending" || d.status === "building",
+    );
+    if (!raced) {
+      // The winner's row left pending/building in the gap between our insert and this re-read.
+      // Vanishingly rare (a deploy takes far longer than a DB round-trip); surface a clear
+      // error — the next turn re-enters this function and finds whatever state the winner left.
+      throw new Error(
+        "Assistant provisioning raced a concurrent request that already completed; retry.",
+        { cause: error },
+      );
+    }
+    return {
+      ...base,
+      status: "provisioning",
+      url: null,
+      deploymentId: raced.id,
+      releaseId: raced.releaseId,
+      version: raced.version,
+    };
+  }
   await enqueue("assistant_deploy", { projectId } satisfies AssistantDeployPayload, undefined, store);
   return {
     ...base,

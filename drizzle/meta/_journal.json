@@ -183,6 +183,13 @@
       "when": 1783417403524,
       "tag": "0026_team_environments",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1783550566777,
+      "tag": "0027_bouncy_spectrum",
+      "breakpoints": true
     }
   ]
 }

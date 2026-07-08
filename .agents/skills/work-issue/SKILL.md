@@ -14,9 +14,9 @@ The workflow:
 
 1. Read the issue and its comments. Research the codebase enough to implement it well and match
    existing patterns.
-2. Verify it end-to-end in a browser **using the `agent-browser` skill** — never the built-in
-   browser tools. Exercise the actual flow from the issue and capture screenshots of anything
-   that surfaces in the UI.
+2. If the change surfaces in the UI, verify it end-to-end in a browser **using the `agent-browser`
+   skill** — never the built-in browser tools. Exercise the actual flow from the issue and capture
+   screenshots.
 3. Open a PR against `main`, linked to the issue.
 4. Wait for CI and the Greptile review to finish. Address the feedback — fix what's right, push
    back on what isn't. Every push re-triggers both; repeat until CI is green and Greptile has no

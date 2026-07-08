@@ -402,14 +402,23 @@ export async function ensureAssistantInstance(
       trafficWeight: 100,
     });
   } catch (error) {
-    // Lost the insert race (#31): a concurrent request created its `pending` row (and enqueued
-    // the deploy) between our read above and this insert; the partial unique index rejects ours.
-    // Adopt the winner's row instead of failing — no second row, no second job.
+    // Lost the insert race (#31): a concurrent request created its `pending` row (and, right
+    // after, enqueued the deploy — the enqueue below stays AFTER the insert so the winner is
+    // always the one that queued a job). Adopt the winner's row instead of failing — no second
+    // row, no second job.
     if (!isInflightDeploymentCollision(error)) throw error;
     const raced = (await store.deployments.listByEnvironment(environment.id)).find(
       (d) => d.status === "pending" || d.status === "building",
     );
-    if (!raced) throw error;
+    if (!raced) {
+      // The winner's row left pending/building in the gap between our insert and this re-read.
+      // Vanishingly rare (a deploy takes far longer than a DB round-trip); surface a clear
+      // error — the next turn re-enters this function and finds whatever state the winner left.
+      throw new Error(
+        "Assistant provisioning raced a concurrent request that already completed; retry.",
+        { cause: error },
+      );
+    }
     return {
       ...base,
       status: "provisioning",

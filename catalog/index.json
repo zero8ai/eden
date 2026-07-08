@@ -102,7 +102,7 @@
       "name": "Twilio (SMS)",
       "version": "0.1.0",
       "description": "Talk to this agent over SMS through Twilio — inbound signature verification and outbound replies via eve's twilioChannel, with the allowed sender and from-number read from env.",
-      "hash": "40b1df659ac504c60859c2f6f30b097db37e20dc"
+      "hash": "6696c610b9291779a5ceaa29e36e760e04445f46"
     },
     {
       "id": "agent-browser",

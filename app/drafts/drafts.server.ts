@@ -8,6 +8,7 @@
  */
 import type { DataStore, DraftChange } from "~/data/ports";
 import { agentForPath } from "~/db/queries.server";
+import { EDEN_EVE_DOCKERFILE } from "~/deploy/eve-image.server";
 import {
   ensureOpenRouterDependency,
   LEGACY_OPENROUTER_PROVIDER_PACKAGE,
@@ -288,7 +289,28 @@ async function normalizeOpenRouterPackageDrafts(input: {
     const repoPkg = await readAgentFile(input.project.repoInstallationId, repo, file.path);
     if (repoPkg === file.content) continue; // dependencies unchanged — the lock is still valid
     const lock = await readAgentFile(input.project.repoInstallationId, repo, lockPath);
-    if (lock !== null) byPath.set(lockPath, { path: lockPath, content: null });
+    if (lock === null) continue;
+    byPath.set(lockPath, { path: lockPath, content: null });
+
+    // Repos scaffolded by older Edens carry a committed copy of Eden's reference Dockerfile
+    // that COPYs package-lock.json explicitly and runs a bare `npm ci` — deleting the lock
+    // would break it at COPY. That file is Eden-authored (its header says so), so heal it to
+    // the current reference image, which tolerates a missing lock. A user-authored Dockerfile
+    // (no Eden header) is never touched — the repo stays theirs (D3).
+    const dockerfilePath = file.path.replace(/package\.json$/, "Dockerfile");
+    if (byPath.has(dockerfilePath)) continue;
+    const dockerfile = await readAgentFile(
+      input.project.repoInstallationId,
+      repo,
+      dockerfilePath,
+    );
+    if (
+      dockerfile !== null &&
+      dockerfile.includes("package-lock.json") &&
+      /^#.*eden.*(reference|generated)/im.test(dockerfile.split("\n", 1)[0])
+    ) {
+      byPath.set(dockerfilePath, { path: dockerfilePath, content: EDEN_EVE_DOCKERFILE });
+    }
   }
 
   return [...byPath.values()];

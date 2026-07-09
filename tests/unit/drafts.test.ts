@@ -352,6 +352,82 @@ describe("publish gate (build check)", () => {
     });
   });
 
+  it("heals a stale Eden-authored Dockerfile when the lock deletion would break its COPY", async () => {
+    const repoPackage =
+      JSON.stringify({ dependencies: { "@openrouter/ai-sdk-provider": "^2.10.0" } }, null, 2) +
+      "\n";
+    // Older Eden scaffolds committed a copy of the reference image that COPYs the lock
+    // explicitly and runs a bare `npm ci` — deleting the lock breaks it at COPY.
+    const staleDockerfile = `# Eden reference image for an eve agent (mirrors LocalDockerTarget.build()).
+FROM node:24-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+`;
+    readAgentFileMock.mockImplementation(async (_inst, _repo, path) => {
+      if (path === "package.json") return repoPackage;
+      if (path === "package-lock.json") return '{"lockfileVersion": 3}';
+      if (path === "Dockerfile") return staleDockerfile;
+      return null;
+    });
+    await stageDraft(
+      {
+        projectId: PROJECT.id,
+        path: "agent/agent.ts",
+        content: "export default defineAgent({ model: openrouter.chatModel('m/x') });",
+      },
+      store,
+    );
+    const check = vi.fn().mockResolvedValue({ ok: true });
+
+    await publishDrafts(
+      { project: PROJECT, paths: ["agent/agent.ts"] },
+      store,
+      vi.fn().mockResolvedValue(proposed),
+      check,
+    );
+
+    const overlay = check.mock.calls[0][0].overlay as {
+      path: string;
+      content: string | null;
+    }[];
+    const dockerfile = overlay.find((f) => f.path === "Dockerfile");
+    expect(dockerfile?.content).toContain("COPY package*.json ./");
+    expect(dockerfile?.content).toContain("npm install");
+  });
+
+  it("never touches a user-authored Dockerfile (no Eden header)", async () => {
+    const repoPackage =
+      JSON.stringify({ dependencies: { "@openrouter/ai-sdk-provider": "^2.10.0" } }, null, 2) +
+      "\n";
+    readAgentFileMock.mockImplementation(async (_inst, _repo, path) => {
+      if (path === "package.json") return repoPackage;
+      if (path === "package-lock.json") return '{"lockfileVersion": 3}';
+      if (path === "Dockerfile")
+        return "FROM node:24\nCOPY package.json package-lock.json ./\nRUN npm ci\n";
+      return null;
+    });
+    await stageDraft(
+      {
+        projectId: PROJECT.id,
+        path: "agent/agent.ts",
+        content: "export default defineAgent({ model: openrouter.chatModel('m/x') });",
+      },
+      store,
+    );
+    const check = vi.fn().mockResolvedValue({ ok: true });
+
+    await publishDrafts(
+      { project: PROJECT, paths: ["agent/agent.ts"] },
+      store,
+      vi.fn().mockResolvedValue(proposed),
+      check,
+    );
+
+    const overlay = check.mock.calls[0][0].overlay as { path: string }[];
+    expect(overlay.some((f) => f.path === "Dockerfile")).toBe(false);
+  });
+
   it("keeps the lockfile when the published package.json matches the repo's", async () => {
     const repoPackage =
       JSON.stringify(

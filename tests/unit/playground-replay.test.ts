@@ -31,6 +31,7 @@ const target: Target = {
   url: "https://agent.example.test",
   version: "v1",
   environmentName: "production",
+  gitSha: "sha_1",
 };
 
 function session(over: Partial<PlaygroundSession> = {}): PlaygroundSession {

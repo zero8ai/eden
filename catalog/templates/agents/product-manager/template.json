@@ -3,14 +3,15 @@
   "type": "agent",
   "name": "Product Manager",
   "description": "Draws the real need out of a request in conversation, then captures it as clear, actionable GitHub issues with gh — following each repo's own templates and labels.",
-  "version": "0.2.0",
-  "eve": ">=0.1.0",
+  "version": "0.3.0",
+  "eve": ">=0.22.0",
   "model": "z-ai/glm-5.2",
   "includes": [
     { "type": "skill", "id": "writing-a-github-issue" }
   ],
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.5",
+    "eve": "^0.22.0",
     "zod": "^4.4.3"
   },
   "files": ["instructions.md", "agent.ts", "sandbox.ts"],

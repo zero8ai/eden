@@ -306,6 +306,8 @@ export interface AssistantInstance {
   environmentId: string;
   releaseId: string | null;
   version: string | null;
+  /** The release's template-hash marker (`templateGitSha` — not a repo commit). */
+  gitSha: string | null;
   agentId: string;
   error?: string | null;
 }
@@ -348,6 +350,7 @@ export async function ensureAssistantInstance(
         deploymentId: live.id,
         releaseId: live.releaseId,
         version: live.version,
+        gitSha: live.gitSha,
       };
     }
   }
@@ -369,6 +372,7 @@ export async function ensureAssistantInstance(
         deploymentId: stopped.id,
         releaseId: stopped.releaseId,
         version: stopped.version,
+        gitSha: stopped.gitSha,
       };
     }
   }
@@ -383,6 +387,7 @@ export async function ensureAssistantInstance(
       deploymentId: pending.id,
       releaseId: pending.releaseId,
       version: pending.version,
+      gitSha: pending.gitSha,
     };
   }
 
@@ -426,6 +431,7 @@ export async function ensureAssistantInstance(
       deploymentId: raced.id,
       releaseId: raced.releaseId,
       version: raced.version,
+      gitSha: raced.gitSha,
     };
   }
   await enqueue("assistant_deploy", { projectId } satisfies AssistantDeployPayload, undefined, store);
@@ -436,6 +442,7 @@ export async function ensureAssistantInstance(
     deploymentId: dep.id,
     releaseId: release.id,
     version: release.version,
+    gitSha: release.gitSha,
   };
 }
 
@@ -456,6 +463,8 @@ export interface AssistantSnapshot {
     url: string;
     version: string;
     environmentName: string;
+    /** The release's template-hash marker (`templateGitSha` — not a repo commit). */
+    gitSha: string;
   } | null;
 }
 
@@ -490,6 +499,7 @@ export async function peekAssistantInstance(
         url: live.url,
         version: live.version,
         environmentName: ASSISTANT_ENV,
+        gitSha: live.gitSha,
       },
     };
   }

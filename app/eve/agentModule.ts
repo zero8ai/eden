@@ -116,6 +116,15 @@ function dynamicModelValue(model: string): string {
   })`;
 }
 
+/**
+ * True when the module's `model:` is the Eden dynamic wrapper — i.e. a build of this source
+ * honors the playground's per-conversation model directive. A static module (plain provider
+ * call or bare string) ignores the directive and always runs its baked-in model.
+ */
+export function hasDynamicModel(source: string | null | undefined): boolean {
+  return typeof source === "string" && MODEL_DYNAMIC.test(source);
+}
+
 /** Read the model string from an agent module, or null if not found. */
 export function readModel(source: string): string | null {
   if (MODEL_DYNAMIC.test(source)) {
@@ -128,6 +137,14 @@ export function readModel(source: string): string | null {
   if (call) return call[4];
   const m = source.match(MODEL_LITERAL);
   return m ? m[3] : null;
+}
+
+/** Read the declared `modelContextWindowTokens` from an agent module, or null if absent. */
+export function readModelContextWindow(source: string): number | null {
+  const match = source.match(/\bmodelContextWindowTokens\s*:\s*([\d_]+)/);
+  if (!match) return null;
+  const tokens = Number(match[1].replaceAll("_", ""));
+  return Number.isFinite(tokens) && tokens > 0 ? tokens : null;
 }
 
 function contextWindow(input?: { contextWindowTokens?: number | null }): number {

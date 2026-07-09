@@ -8,7 +8,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   ensureOpenRouterDependency,
+  hasDynamicModel,
   readModel,
+  readModelContextWindow,
   scaffoldAgentModule,
   setModel,
 } from "~/eve/agentModule";
@@ -57,6 +59,33 @@ describe("readModel", () => {
   it("reads a user-authored gateway-string fallback", () => {
     const source = `import { defineAgent, defineDynamic } from 'eve';\nexport default defineAgent({\n  model: defineDynamic({ fallback: 'anthropic/claude-sonnet-5', events: {} }),\n});\n`;
     expect(readModel(source)).toBe("anthropic/claude-sonnet-5");
+  });
+});
+
+describe("hasDynamicModel", () => {
+  it("detects the dynamic wrapper Eden writes", () => {
+    expect(hasDynamicModel(scaffoldAgentModule("anthropic/claude-sonnet-5"))).toBe(true);
+    expect(hasDynamicModel(setModel(WRAPPED, "z-ai/glm-5.2"))).toBe(true);
+  });
+  it("is false for static modules — a static build ignores model directives", () => {
+    expect(hasDynamicModel(WRAPPED)).toBe(false);
+    expect(hasDynamicModel(LEGACY_WRAPPED)).toBe(false);
+    expect(hasDynamicModel(PLAIN)).toBe(false);
+  });
+  it("is false for a missing module", () => {
+    expect(hasDynamicModel(null)).toBe(false);
+    expect(hasDynamicModel(undefined)).toBe(false);
+    expect(hasDynamicModel("")).toBe(false);
+  });
+});
+
+describe("readModelContextWindow", () => {
+  it("reads the declared tokens, with or without numeric separators", () => {
+    expect(readModelContextWindow(WRAPPED)).toBe(200_000);
+    expect(readModelContextWindow("modelContextWindowTokens: 1000000,")).toBe(1_000_000);
+  });
+  it("is null when the prop is absent", () => {
+    expect(readModelContextWindow(PLAIN)).toBeNull();
   });
 });
 

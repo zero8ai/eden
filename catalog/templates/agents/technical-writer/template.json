@@ -3,14 +3,15 @@
   "type": "agent",
   "name": "Technical Writer",
   "description": "Writes and maintains a project's documentation — READMEs, guides, references, changelogs — as pull requests, accurate to the code and in the project's own voice.",
-  "version": "0.2.0",
-  "eve": ">=0.1.0",
+  "version": "0.3.0",
+  "eve": ">=0.22.0",
   "model": "z-ai/glm-5.2",
   "includes": [
     { "type": "skill", "id": "technical-writing" }
   ],
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.5",
+    "eve": "^0.22.0",
     "zod": "^4.4.3"
   },
   "files": ["instructions.md", "agent.ts", "sandbox.ts"],

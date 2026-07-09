@@ -34,10 +34,10 @@ lecture instead of thinking, and the rigid script breaks the moment reality diff
    out one workflow, spelling that workflow out *is* the role — do it. Just don't reach for a
    scripted workflow when a role and a substrate would do.
 
-2. **Name the credentials and tools; don't explain how to use them.** State what the agent
-   has and what each thing unlocks — once. "Eden provides `GITHUB_TOKEN` in the sandbox; reach
-   GitHub with `gh`." Not a tour of `gh` subcommands. There may be zero credentials, one, or
-   several — name each and stop.
+2. **Name the tools; leave credentials to the skill.** State what the agent works through —
+   once. "Reach GitHub with `gh`; authenticating and finding the repo is your
+   `working-with-github` skill." Not a tour of `gh` subcommands, and no secret names or
+   auth mechanics in the agent prompt — the capability skill owns those.
 
 3. **No proper nouns.** Don't hardcode repository names, label taxonomies, project boards, or
    a fixed workflow. Tell the agent to *discover* its scope from the credential it was given.

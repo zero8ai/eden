@@ -4,9 +4,9 @@
       "id": "designer",
       "type": "agent",
       "name": "Designer",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "A product designer that turns problems into build-ready design specs and critiques UI work — capturing decisions and feedback in GitHub as committed notes and PR/issue comments.",
-      "hash": "e3eaa61b503c3963a333f22e64529d8de99228b9"
+      "hash": "4dd44bfd33be03c1e250d9c2036c49bf7f3b8845"
     },
     {
       "id": "engineer",
@@ -20,33 +20,33 @@
       "id": "product-manager",
       "type": "agent",
       "name": "Product Manager",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Draws the real need out of a request in conversation, then captures it as clear, actionable GitHub issues with gh — following each repo's own templates and labels.",
-      "hash": "363279ca6b52b7caf869a9e56becf063a09458a8"
+      "hash": "6b29bf7ac86a051f36f934aefe07898e05ab69d2"
     },
     {
       "id": "reviewer",
       "type": "agent",
       "name": "Reviewer",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Reviews open pull requests — reads the change against its issue, runs the repo's checks, and leaves specific, ranked feedback. Reviews; doesn't merge.",
-      "hash": "03b14ad0a416f78fb4d29c62ccd4879ad223b2c9"
+      "hash": "aa30754b8ee0442487f82b5be225812f05fe65fa"
     },
     {
       "id": "technical-writer",
       "type": "agent",
       "name": "Technical Writer",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Writes and maintains a project's documentation — READMEs, guides, references, changelogs — as pull requests, accurate to the code and in the project's own voice.",
-      "hash": "f7b7d51d4e87a82292795cea21205940d69e6bbc"
+      "hash": "61cea233b0b2c28156dba6d8893f4aac9d833934"
     },
     {
       "id": "triage-lead",
       "type": "agent",
       "name": "Triage Lead",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Keeps a GitHub issue backlog healthy — triages, labels, prioritizes, de-duplicates, and assigns work through gh, learning each repo's own taxonomy. Runs on demand or on a schedule.",
-      "hash": "1587613131e63d25be46e7e55fb18951becb2ca4"
+      "hash": "f1b2332f7843aaba6eba91819aea72df6b1a38ba"
     },
     {
       "id": "discord",

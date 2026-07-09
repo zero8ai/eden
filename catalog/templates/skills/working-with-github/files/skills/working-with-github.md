@@ -4,14 +4,13 @@ description: Use when working a GitHub repository from the terminal — authenti
 
 # GitHub
 
-Work GitHub from the terminal with `gh` and `git`. Credentials come in two shapes — check in this order, confirm the first GitHub call works, and if neither authenticates, stop and tell the user rather than guessing. Never print a token or ask for one in chat.
+Work GitHub from the terminal with `gh` and `git`. The credential is **the agent's own GitHub App** — `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` in the environment (they arrive with the agent's GitHub channel; `GITHUB_APP_SLUG` is the app's @name). Mint a short-lived installation access token: sign a RS256 JWT as the app, find the installation (the app's only one, or the one covering the target repo), then `POST /app/installations/{id}/access_tokens`. Export the result as `GH_TOKEN` for `gh`; for git-over-HTTPS use it as the password with username `x-access-token`. Tokens expire after an hour — re-mint instead of persisting. Work is attributed to the app's bot identity, and the repositories the token can reach are exactly the ones the app is installed on: that is the agent's scope.
 
-1. **The agent's own GitHub App** — when `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are in the environment (they arrive with the agent's GitHub channel; `GITHUB_APP_SLUG` is the app's @name). Mint a short-lived installation access token: sign a RS256 JWT as the app, find the installation (the app's only one, or the one covering the target repo), then `POST /app/installations/{id}/access_tokens`. Export the result as `GH_TOKEN` for `gh`; for git-over-HTTPS use it as the password with username `x-access-token`. Tokens expire after an hour — re-mint instead of persisting. Work is attributed to the app's bot identity, and the repositories the token can reach are exactly the ones the app is installed on: that is the agent's scope.
-2. **`GITHUB_TOKEN`** — a personal access token provided directly; `gh` reads it from the environment. The fallback when no app credentials are set.
+If the app credentials are missing or the first GitHub call fails, stop and tell the user (the agent's GitHub channel setup provides them) rather than guessing. Never print a token or ask for one in chat.
 
 ## Find the repository
 
-Use the repo named by the user or implied by the issue context. If it isn't clear, discover what the credential can reach — the app installation's repository list, or the repos accessible to the token; given an owner but not a repo, list that owner's repos. If an issue number could belong to more than one repo, search the likely ones and act only on a single clear match — otherwise ask.
+Use the repo named by the user or implied by the issue context. If it isn't clear, discover what the credential can reach — the app installations' repository lists; given an owner but not a repo, list that owner's repos. If an issue number could belong to more than one repo, search the likely ones and act only on a single clear match — otherwise ask.
 
 Clone the repo, or fetch and reset to the remote if you already have it, and start from a fresh default branch unless the task names another ref.
 

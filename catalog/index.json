@@ -165,8 +165,8 @@
       "type": "skill",
       "name": "Working with GitHub",
       "version": "0.2.0",
-      "description": "How to work a GitHub repository from the terminal with gh and git — authenticating (the agent's GitHub App, or a personal token), finding the right repo, branching and pushing, opening and updating pull requests, reviewing and merging, and storing CI secrets and workflows.",
-      "hash": "31014a80d2cf4700f37738ec96746722f26f7ddc"
+      "description": "How to work a GitHub repository from the terminal with gh and git — authenticating as the agent's GitHub App, finding the right repo, branching and pushing, opening and updating pull requests, reviewing and merging, and storing CI secrets and workflows.",
+      "hash": "beddf0eab546573765c72e7deb8fe0ae3b012f83"
     },
     {
       "id": "writing-a-github-issue",

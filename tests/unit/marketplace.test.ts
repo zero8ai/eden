@@ -169,16 +169,17 @@ describe("composition against the real seed", () => {
       "sendDiscordChannelMessage",
     );
 
-    // GITHUB_TOKEN comes from the working-with-github skill; Discord's secrets union in too.
+    // Discord's secrets union in; the working-with-github skill declares NONE — the agent's
+    // GitHub App (installed via the GitHub channel) is the one GitHub credential.
     const secretNames = (resolved.manifest.secrets ?? []).map((s) => s.name);
     expect(secretNames).toEqual(
       expect.arrayContaining([
-        "GITHUB_TOKEN",
         "DISCORD_APPLICATION_ID",
         "DISCORD_BOT_TOKEN",
         "DISCORD_PUBLIC_KEY",
       ]),
     );
+    expect(secretNames).not.toContain("GITHUB_TOKEN");
     expect(secretNames).not.toContain("GITHUB_REPOSITORIES");
     expect(secretNames).not.toContain("GITHUB_DEFAULT_REPOSITORY");
 

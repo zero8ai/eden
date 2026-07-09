@@ -26,6 +26,7 @@ const TYPE_DIRS = {
   subagent: "subagents",
   channel: "channels",
   connection: "connections",
+  bundle: "bundles",
   agent: "agents",
 };
 

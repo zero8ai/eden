@@ -1,0 +1,16 @@
+{
+  "id": "github-app-auth",
+  "type": "skill",
+  "name": "GitHub App auth",
+  "description": "Exchange the agent's GitHub App private key for a short-lived installation token (GH_TOKEN), with gh and git preinstalled in the sandbox — the credential mechanics every GitHub-using agent needs, and nothing else.",
+  "version": "0.1.0",
+  "eve": ">=0.1.0",
+  "files": ["skills/github-app-auth.md"],
+  "sandbox": {
+    "bootstrap": [
+      "apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git jq openssl && rm -rf /var/lib/apt/lists/*",
+      "command -v gh >/dev/null || (apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && mkdir -p -m 755 /etc/apt/keyrings && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" > /etc/apt/sources.list.d/github-cli.list && apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/*)"
+    ],
+    "revalidationKey": "github-app-auth-sandbox@2026-07-09"
+  }
+}

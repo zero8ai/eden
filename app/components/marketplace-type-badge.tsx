@@ -1,6 +1,7 @@
 import {
   Bot,
   Hash,
+  Package,
   Plug,
   Sparkles,
   Workflow,
@@ -22,6 +23,7 @@ export const TYPE_META: Record<
   { label: string; icon: LucideIcon; accent: Accent }
 > = {
   agent: { label: "Agent", icon: Bot, accent: "violet" },
+  bundle: { label: "Bundle", icon: Package, accent: "rose" },
   tool: { label: "Tool", icon: Wrench, accent: "blue" },
   skill: { label: "Skill", icon: Sparkles, accent: "amber" },
   subagent: { label: "Subagent", icon: Workflow, accent: "fuchsia" },

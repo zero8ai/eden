@@ -28,7 +28,7 @@ import { buildIndex, loadTemplates } from "./build-index.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-const TYPES = ["tool", "skill", "subagent", "channel", "connection", "agent"];
+const TYPES = ["tool", "skill", "subagent", "channel", "connection", "bundle", "agent"];
 /** Types a template may `includes`-reference — everything except `agent`. */
 const INCLUDABLE = TYPES.filter((t) => t !== "agent");
 const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -60,13 +60,23 @@ function validateManifest(where, m) {
     fail(where, `version "${m.version}" is not semver x.y.z`);
   if (!m.eve) fail(where, "eve range is required");
 
-  if (!Array.isArray(m.files) || m.files.length === 0) {
-    fail(where, "files must be a non-empty array");
+  // Only a bundle may ship no files of its own (pure composition — its includes carry them).
+  if (!Array.isArray(m.files) || (m.files.length === 0 && m.type !== "bundle")) {
+    fail(where, "files must be a non-empty array (only a bundle may be empty)");
   } else {
     for (const p of m.files) {
       const reason = badPath(p);
       if (reason) fail(where, `file path "${p}" ${reason}`);
     }
+  }
+  // A file-less bundle with no includes would install nothing.
+  if (
+    m.type === "bundle" &&
+    Array.isArray(m.files) &&
+    m.files.length === 0 &&
+    (m.includes?.length ?? 0) === 0
+  ) {
+    fail(where, "a bundle with no files must include at least one template");
   }
 
   if (m.dependencies !== undefined) {

@@ -22,6 +22,9 @@ import { z } from "zod";
  * and `connection` join the original four as first-class marketplace artifacts (composition): a
  * channel like Discord is defined ONCE and included by reference into agent templates. Like
  * tool/skill/subagent they install INTO an existing member; only `agent` installs as a new one.
+ * `bundle` (issue #42) is pure composition — a named group of includable assets that installs
+ * into an existing member as one unit; the agent is conceptually "a bundle that also seeds a
+ * new member".
  */
 export const TEMPLATE_TYPES = [
   "tool",
@@ -29,6 +32,7 @@ export const TEMPLATE_TYPES = [
   "subagent",
   "channel",
   "connection",
+  "bundle",
   "agent",
 ] as const;
 export type TemplateType = (typeof TEMPLATE_TYPES)[number];
@@ -89,7 +93,8 @@ const sandboxSetupSchema = z.object({
   revalidationKey: z.string().min(1).optional(),
 });
 
-export const templateManifestSchema = z.object({
+export const templateManifestSchema = z
+  .object({
   id: slug,
   type: z.enum(TEMPLATE_TYPES),
   name: z.string().min(1),
@@ -97,8 +102,12 @@ export const templateManifestSchema = z.object({
   version: semver,
   /** A semver *range* the template targets (e.g. ">=0.1.0") — opaque here; we never parse ranges. */
   eve: z.string().min(1),
-  /** Non-empty list of install-relative paths the template ships. */
-  files: z.array(relativeFilePath).min(1),
+  /**
+   * Install-relative paths the template ships. Non-empty for every type except `bundle`: a
+   * bundle is pure composition, so it may ship nothing of its own (its `includes` carry the
+   * files) — see the superRefine below.
+   */
+  files: z.array(relativeFilePath),
   /** npm name → version range, JSON-merged into the target's package.json at install (PRD §7.8). */
   dependencies: z.record(npmName, z.string().min(1)).optional(),
   /**
@@ -152,7 +161,28 @@ export const templateManifestSchema = z.object({
       }),
     )
     .optional(),
-});
+  })
+  .superRefine((m, ctx) => {
+    // Only a bundle may ship no files of its own (pure grouping); everything else must ship ≥1.
+    if (m.type !== "bundle" && m.files.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_small,
+        minimum: 1,
+        type: "array",
+        inclusive: true,
+        path: ["files"],
+        message: "files must be non-empty (only a bundle may ship no files of its own)",
+      });
+    }
+    // A file-less bundle with no includes would install nothing — reject it as authored noise.
+    if (m.type === "bundle" && m.files.length === 0 && (m.includes?.length ?? 0) === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["includes"],
+        message: "a bundle with no files must include at least one template",
+      });
+    }
+  });
 
 export type TemplateManifest = z.infer<typeof templateManifestSchema>;
 

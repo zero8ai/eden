@@ -49,6 +49,14 @@
       "hash": "29cfde7837014244455f386697aa9aca397be5ff"
     },
     {
+      "id": "github-bundle",
+      "type": "bundle",
+      "name": "GitHub",
+      "version": "0.1.0",
+      "description": "Everything an agent needs to work GitHub as itself: the GitHub App channel (its @mention identity and credentials), the gh CLI in its sandbox, and the skill that turns the App's private key into a working token.",
+      "hash": "d5c10a14b2ae37a5d03e2e48ff5ef68df9c4681a"
+    },
+    {
       "id": "discord",
       "type": "channel",
       "name": "Discord",
@@ -135,6 +143,14 @@
       "version": "0.1.0",
       "description": "How to critique a design against its intent — hierarchy, consistency, the unhappy states, accessibility, and copy.",
       "hash": "c7116a3a026df48cf6f4443407fa32089a451ad2"
+    },
+    {
+      "id": "github-app-auth",
+      "type": "skill",
+      "name": "GitHub App auth",
+      "version": "0.1.0",
+      "description": "Exchange the agent's GitHub App private key for a short-lived installation token (GH_TOKEN), with gh and git preinstalled in the sandbox — the credential mechanics every GitHub-using agent needs, and nothing else.",
+      "hash": "126e8bd7911e5e5ca385e4b8bc8f585844d285d4"
     },
     {
       "id": "reviewing-a-pull-request",

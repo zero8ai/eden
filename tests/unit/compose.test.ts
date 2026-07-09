@@ -255,6 +255,47 @@ describe("resolveTemplate — a template with no includes resolves to itself", (
   });
 });
 
+describe("resolveTemplate — a file-less bundle (pure composition, issue #42)", () => {
+  const bundleTpl: CatalogTemplate = {
+    manifest: {
+      id: "chat-pack",
+      type: "bundle",
+      name: "Chat pack",
+      description: "The Discord channel plus the search tool, as one unit.",
+      version: "0.1.0",
+      eve: ">=0.20.0",
+      files: [],
+      includes: [
+        { type: "channel", id: "discord" },
+        { type: "tool", id: "search" },
+      ],
+    },
+    files: {},
+  };
+  const source = fakeCatalog([channelTpl, toolTpl, bundleTpl]);
+
+  it("flattens its includes despite shipping no files of its own", async () => {
+    const resolved = await resolveTemplate(source, "bundle", "chat-pack");
+    expect(resolved.manifest.type).toBe("bundle");
+    expect(resolved.manifest.files).toEqual([
+      "channels/discord.ts",
+      "tools/search.ts",
+    ]);
+    expect(resolved.includes.map((i) => i.id)).toEqual(["discord", "search"]);
+    // The includes' sandbox setups merge even though the bundle declares none of its own.
+    expect(resolved.manifest.sandbox?.bootstrap).toEqual(["install discord"]);
+    expect(resolved.manifest.dependencies).toEqual({
+      "discord-lib": "^1.0.0",
+      "search-lib": "^2.0.0",
+    });
+  });
+
+  it("keeps the bundle's OWN hash (its includes never fold into it)", async () => {
+    const resolved = await resolveTemplate(source, "bundle", "chat-pack");
+    expect(resolved.hash).toBe(templateContentHash(bundleTpl));
+  });
+});
+
 describe("resolveTemplate — guard rails", () => {
   it("throws on a cycle, naming it", async () => {
     const a: CatalogTemplate = {

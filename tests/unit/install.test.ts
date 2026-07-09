@@ -713,6 +713,130 @@ describe("planInstall — resolved (composed) templates", () => {
   });
 });
 
+describe("planInstall — composite absorbs a standalone include install (issue #42)", () => {
+  /** The member already has the Discord channel installed standalone… */
+  const standaloneEntry: InstallEntry = {
+    id: "discord",
+    type: "channel",
+    name: "Discord",
+    version: "0.1.0",
+    hash: "discord-own-hash",
+    registry: REGISTRY,
+    member: "x",
+    files: [
+      "agents/x/agent/channels/discord.ts",
+      "agents/x/agent/sandbox/addons/discord.ts",
+    ],
+  };
+  /** …and the bundle being installed includes that same channel (flattened by the resolver). */
+  const resolvedBundle: CatalogTemplate & {
+    hash?: string;
+    includes?: Array<{
+      id: string;
+      type: "channel";
+      name: string;
+      version: string;
+      hash: string;
+    }>;
+  } = {
+    manifest: {
+      id: "chat-pack",
+      type: "bundle",
+      name: "Chat pack",
+      description: "Discord plus a chat skill.",
+      version: "0.1.0",
+      eve: ">=0.20.0",
+      files: ["channels/discord.ts", "skills/chat.md"],
+    },
+    files: {
+      "channels/discord.ts": "export default {};\n",
+      "skills/chat.md": "# Chat\n",
+    },
+    hash: "bundle-own-hash",
+    includes: [
+      {
+        id: "discord",
+        type: "channel",
+        name: "Discord",
+        version: "0.1.0",
+        hash: "discord-own-hash",
+      },
+    ],
+  };
+
+  function absorbCtx(over: Partial<PlanContext> = {}): PlanContext {
+    return {
+      template: resolvedBundle,
+      registry: REGISTRY,
+      repoPaths: standaloneEntry.files,
+      drafts: [],
+      packageJson: null,
+      lock: upsertInstall(emptyLock(), standaloneEntry),
+      target: { kind: "member", memberName: "x", root: "agents/x/agent" },
+      ...over,
+    };
+  }
+
+  it("overwrites the standalone install instead of refusing, and supersedes its lock entry", () => {
+    const plan = planInstall(absorbCtx());
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.isUpdate).toBe(false);
+    // Files the standalone owned that the composite doesn't re-ship are staged deletions.
+    expect(plan.deletions).toEqual(["agents/x/agent/sandbox/addons/discord.ts"]);
+    // The reviewer is told an existing install was absorbed.
+    expect(plan.warnings.some((w) => w.includes("Absorbs"))).toBe(true);
+
+    const lock = parseLock(
+      JSON.parse(plan.writes.find((w) => w.path === "eden-lock.json")!.content),
+    );
+    // The standalone entry is gone; the composite's entry records the include provenance.
+    expect(findInstall(lock, "discord", "x")).toBeUndefined();
+    const entry = findInstall(lock, "chat-pack", "x")!;
+    expect(entry.includes?.map((i) => i.id)).toEqual(["discord"]);
+    expect(entry.files).toContain("agents/x/agent/channels/discord.ts");
+    expect(entry.files).toContain("agents/x/agent/skills/chat.md");
+  });
+
+  it("leaves the same template installed under a DIFFERENT member untouched", () => {
+    const otherMember: InstallEntry = {
+      ...standaloneEntry,
+      member: "y",
+      files: ["agents/y/agent/channels/discord.ts"],
+    };
+    const plan = planInstall(
+      absorbCtx({
+        repoPaths: [...standaloneEntry.files, ...otherMember.files],
+        lock: upsertInstall(
+          upsertInstall(emptyLock(), standaloneEntry),
+          otherMember,
+        ),
+      }),
+    );
+    expect(plan.conflicts).toEqual([]);
+    const lock = parseLock(
+      JSON.parse(plan.writes.find((w) => w.path === "eden-lock.json")!.content),
+    );
+    expect(findInstall(lock, "discord", "y")).toBeDefined();
+    expect(findInstall(lock, "discord", "x")).toBeUndefined();
+  });
+
+  it("still refuses a path owned by an install the composite does NOT include", () => {
+    const unrelated: InstallEntry = {
+      ...standaloneEntry,
+      id: "telegram",
+      name: "Telegram",
+      files: ["agents/x/agent/channels/discord.ts"], // occupies the same path
+    };
+    const plan = planInstall(
+      absorbCtx({
+        repoPaths: unrelated.files,
+        lock: upsertInstall(emptyLock(), unrelated),
+      }),
+    );
+    expect(plan.conflicts).toEqual(["agents/x/agent/channels/discord.ts"]);
+  });
+});
+
 describe("lock helpers round-trip", () => {
   const entry: InstallEntry = {
     id: "cloudflare-deploy",

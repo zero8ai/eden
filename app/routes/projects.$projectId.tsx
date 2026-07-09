@@ -15,14 +15,13 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Link,
   data,
   redirect,
   useFetcher,
   useNavigation,
-  useRevalidator,
   useSubmit,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
@@ -72,6 +71,7 @@ import { getAgentSource } from "~/github/cached.server";
 import { proposeChange } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
+import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { timeAgo } from "~/lib/time";
 import { cn } from "~/lib/utils";
 import { getWorkspaceAssistantModel } from "~/org/workspace.server";
@@ -511,19 +511,14 @@ export default function ProjectDetail({
   const level = view === "team" ? "repo" : teamLayout ? "member" : "single";
   const ctx = contextPath(project.id, level === "member" ? active?.name : null);
 
-  // While a shipped deploy is queued/building, poll so the banner walks to live/failed
-  // without a manual refresh (same cadence as the Versions page).
-  const revalidator = useRevalidator();
+  // Keep the deploy banner fresh without a manual refresh. Poll faster while a
+  // ship is queued/building so the banner walks to live/failed; a slower baseline
+  // poll runs regardless so a deploy STARTED after this page loaded is still
+  // picked up rather than sitting stale until a manual refresh (issue #41).
   const shipInFlight = !!ship?.rows.some((r) =>
     ["queued", "pending", "building"].includes(r.status),
   );
-  useEffect(() => {
-    if (!shipInFlight) return;
-    const timer = setInterval(() => {
-      if (revalidator.state === "idle") revalidator.revalidate();
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [shipInFlight, revalidator]);
+  useLiveRevalidate({ active: shipInFlight });
 
   const repoLine =
     project.repoOwner && project.repoName ? (

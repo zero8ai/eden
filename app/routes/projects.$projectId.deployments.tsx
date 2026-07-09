@@ -32,14 +32,13 @@ import {
   Webhook,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   Form,
   Link,
   redirect,
   useFetcher,
   useNavigation,
-  useRevalidator,
   useSearchParams,
   useSubmit,
   type ActionFunctionArgs,
@@ -129,6 +128,7 @@ import { getRuntime } from "~/seams/index.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { envIngressUrl, isLocalOrigin, publicOrigin } from "~/lib/ingress";
 import { contextPath } from "~/lib/paths";
+import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { cn } from "~/lib/utils";
 import { overlayLock } from "~/marketplace/lock";
 import {
@@ -861,18 +861,14 @@ export default function Deployment({
   const justReleased = params.get("released");
   const justInstalled = params.get("installed");
 
-  // Progress: while any deployment is queued/building, re-fetch every few seconds.
-  const revalidator = useRevalidator();
+  // Progress: re-fetch faster while any deployment is queued/building. A slower
+  // baseline poll runs regardless, so a deploy STARTED after this page loaded is
+  // picked up on its own rather than staying stale until a manual refresh, and
+  // the tail-end clear can't be missed either (issue #41).
   const inFlight = loaderData.envs.some(({ deployments }) =>
     deployments.some((d) => IN_FLIGHT.has(d.status)),
   );
-  useEffect(() => {
-    if (!inFlight) return;
-    const timer = setInterval(() => {
-      if (revalidator.state === "idle") revalidator.revalidate();
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [inFlight, revalidator]);
+  useLiveRevalidate({ active: inFlight });
 
   return (
     <AppShell

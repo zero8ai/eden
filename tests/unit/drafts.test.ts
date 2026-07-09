@@ -330,6 +330,23 @@ describe("publish gate (build check)", () => {
     expect(draft.agentId).toBe("agent_pm");
   });
 
+  it("attributes the member's package directory to that member, not 'shared'", async () => {
+    // agents/pm/package.json sits outside the agent/ root but is still pm's file. Staged
+    // unattributed, it would ride along as a "shared" draft into publishes from other
+    // members — dragging pm's build (and any breakage) into unrelated change-sets.
+    store.seedAgent({
+      id: "agent_pm",
+      projectId: PROJECT.id,
+      name: "pm",
+      root: "agents/pm/agent",
+    });
+    const pkg = await stageDraft(
+      { projectId: PROJECT.id, path: "agents/pm/package.json", content: "{}" },
+      store,
+    );
+    expect(pkg.agentId).toBe("agent_pm");
+  });
+
   it("checks a staged new team member against its inferred agent root", async () => {
     await stageDraft(
       {

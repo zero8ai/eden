@@ -264,13 +264,21 @@ export async function syncProjectAgents(
 
 /**
  * The roster member a repo path belongs to — longest matching root wins ("agent" vs
- * "agents/pm/agent" can't actually collide, but be precise anyway). Null when the path is
- * outside every member (e.g. root package.json).
+ * "agents/pm/agent" can't actually collide, but be precise anyway). A team member owns its
+ * whole package directory (`agents/<name>/…`), not just the `agent/` config inside it —
+ * otherwise `agents/<name>/package.json` stages as a "shared" draft that rides along into
+ * publishes from unrelated members. Null when the path is outside every member (e.g. the
+ * root package.json of a single-agent repo).
  */
 export function agentForPath(agents: Agent[], path: string): Agent | null {
   let best: Agent | null = null;
   for (const a of agents) {
-    if (path === a.root || path.startsWith(`${a.root}/`)) {
+    const packageDir = a.root.match(/^(agents\/[^/]+)\/agent$/)?.[1];
+    const owns =
+      path === a.root ||
+      path.startsWith(`${a.root}/`) ||
+      (packageDir !== undefined && path.startsWith(`${packageDir}/`));
+    if (owns) {
       if (!best || a.root.length > best.root.length) best = a;
     }
   }

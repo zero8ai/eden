@@ -1,13 +1,15 @@
 /**
  * agent.ts model read/write — pins the authored forms in the wild. Eden writes OpenRouter
  * provider wiring by default so provider-prefixed model ids don't accidentally route through
- * Eve's default Vercel AI Gateway path.
+ * Eve's default Vercel AI Gateway path, and wraps the model in `defineDynamic` so the
+ * playground's per-conversation model directive works (the chosen model is the fallback).
  */
 import { describe, expect, it } from "vitest";
 
 import {
   ensureOpenRouterDependency,
   readModel,
+  scaffoldAgentModule,
   setModel,
 } from "~/eve/agentModule";
 
@@ -47,16 +49,55 @@ describe("readModel", () => {
   it("reads a plain string literal", () => {
     expect(readModel(PLAIN)).toBe("anthropic/claude-sonnet-5");
   });
+  it("reads the defineDynamic fallback of an Eden-written module", () => {
+    expect(readModel(scaffoldAgentModule("anthropic/claude-sonnet-5"))).toBe(
+      "anthropic/claude-sonnet-5",
+    );
+  });
+  it("reads a user-authored gateway-string fallback", () => {
+    const source = `import { defineAgent, defineDynamic } from 'eve';\nexport default defineAgent({\n  model: defineDynamic({ fallback: 'anthropic/claude-sonnet-5', events: {} }),\n});\n`;
+    expect(readModel(source)).toBe("anthropic/claude-sonnet-5");
+  });
 });
 
+/** Structural invariants of the dynamic model wrapper Eden writes. */
+function expectDynamicShape(source: string, model: string) {
+  expect(source).toContain(
+    `fallback: openrouter.chatModel('${model}')`,
+  );
+  expect(source.match(/model\s*:\s*defineDynamic\s*\(/g)).toHaveLength(1);
+  expect(source.match(/function edenSelectedModel/g)).toHaveLength(1);
+  expect(source).toMatch(/import\s*\{[^}]*\bdefineDynamic\b[^}]*\}\s*from\s*['"]eve['"]/);
+  expect(source).toContain("'step.started'");
+  expect(readModel(source)).toBe(model);
+}
+
 describe("setModel", () => {
-  it("replaces INSIDE the provider call — never injects a duplicate model prop", () => {
+  it("upgrades a static provider call to the dynamic wrapper — never a duplicate model prop", () => {
     const next = setModel(WRAPPED, "z-ai/glm-5.2", {
       contextWindowTokens: 131_072,
     });
-    expect(next).toContain(`model: openrouter.chatModel('z-ai/glm-5.2')`);
+    expectDynamicShape(next, "z-ai/glm-5.2");
     expect(next).toContain("modelContextWindowTokens: 131072");
-    expect(next.match(/\bmodel\s*:/g)).toHaveLength(1);
+    expect(next.match(/\bmodel\s*:\s*openrouter\.chatModel\(['"`]/g)).toBeNull();
+  });
+
+  it("retargets the fallback in place on re-save (idempotent wiring)", () => {
+    const first = setModel(WRAPPED, "z-ai/glm-5.2");
+    const second = setModel(first, "openai/gpt-5.1", {
+      contextWindowTokens: 400_000,
+    });
+    expectDynamicShape(second, "openai/gpt-5.1");
+    expect(second).toContain("modelContextWindowTokens: 400000");
+    // No duplicated helper, import, or resolver from repeated saves.
+    expect(second.match(/EDEN_MODEL_DIRECTIVE/g)?.length).toBe(2); // const + one use
+  });
+
+  it("rewires a user-authored gateway-string fallback to OpenRouter", () => {
+    const source = `import { defineAgent, defineDynamic } from 'eve';\n\nexport default defineAgent({\n  model: defineDynamic({ fallback: 'anthropic/claude-sonnet-5', events: {} }),\n});\n`;
+    const next = setModel(source, "z-ai/glm-5.2");
+    expect(next).toContain("fallback: openrouter.chatModel('z-ai/glm-5.2')");
+    expect(next).toContain("@ai-sdk/openai-compatible");
     expect(readModel(next)).toBe("z-ai/glm-5.2");
   });
 
@@ -64,8 +105,7 @@ describe("setModel", () => {
     const next = setModel(LEGACY_WRAPPED, "z-ai/glm-5.2");
     expect(next).toContain("@ai-sdk/openai-compatible");
     expect(next).not.toContain("@openrouter/ai-sdk-provider");
-    expect(next).toContain(`model: openrouter.chatModel('z-ai/glm-5.2')`);
-    expect(readModel(next)).toBe("z-ai/glm-5.2");
+    expectDynamicShape(next, "z-ai/glm-5.2");
   });
 
   it("converts a plain string literal to OpenRouter provider wiring", () => {
@@ -78,10 +118,8 @@ describe("setModel", () => {
     expect(next).toContain(
       `const openrouter = createOpenAICompatible({ name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY ?? '' });`,
     );
-    expect(next).toContain(`model: openrouter.chatModel('openai/gpt-5.1')`);
+    expectDynamicShape(next, "openai/gpt-5.1");
     expect(next).toContain("modelContextWindowTokens: 400000");
-    expect(readModel(next)).toBe("openai/gpt-5.1");
-    expect(next.match(/\bmodel\s*:/g)).toHaveLength(1);
   });
 
   it("still injects into defineAgent({...}) when no model exists", () => {
@@ -89,14 +127,13 @@ describe("setModel", () => {
       `import { defineAgent } from 'eve';\nexport default defineAgent({\n});\n`,
       "anthropic/claude-haiku-4-5",
     );
-    expect(readModel(next)).toBe("anthropic/claude-haiku-4-5");
-    expect(next).toContain("model: openrouter.chatModel('anthropic/claude-haiku-4-5')");
+    expectDynamicShape(next, "anthropic/claude-haiku-4-5");
   });
 
   it("scaffolds OpenRouter wiring when no agent module exists", () => {
     const next = setModel("", "anthropic/claude-sonnet-5");
     expect(next).toContain("@ai-sdk/openai-compatible");
-    expect(next).toContain("model: openrouter.chatModel('anthropic/claude-sonnet-5')");
+    expectDynamicShape(next, "anthropic/claude-sonnet-5");
     expect(next).toContain("modelContextWindowTokens: 200000");
   });
 });

@@ -147,8 +147,17 @@ export function detectSandbox(paths: string[], base: string): AgentSandbox | nul
  */
 function extractModel(agentModuleSource: string | undefined): string | null {
   if (!agentModuleSource) return null;
-  // Provider-wrapped form first (`model: openrouter.chatModel("...")`), then the bare literal —
-  // the same order `readModel` in ~/eve/agentModule uses, so repo and draft views agree.
+  // Eden's dynamic wrapper first (`model: defineDynamic({ fallback: … })` — the deploy-default
+  // id lives in the fallback), then the provider-wrapped form, then the bare literal — the same
+  // order `readModel` in ~/eve/agentModule uses, so repo and draft views agree.
+  if (/\bmodel\s*:\s*defineDynamic\s*\(/.test(agentModuleSource)) {
+    const fallbackCall = agentModuleSource.match(
+      /\bfallback\s*:\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\(\s*(['"`])([^'"`]+)\1/,
+    );
+    if (fallbackCall) return fallbackCall[2];
+    const fallbackLiteral = agentModuleSource.match(/\bfallback\s*:\s*(['"`])([^'"`]+)\1/);
+    if (fallbackLiteral) return fallbackLiteral[2];
+  }
   const call = agentModuleSource.match(
     /\bmodel\s*:\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\(\s*(['"`])([^'"`]+)\1/,
   );

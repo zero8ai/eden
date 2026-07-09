@@ -31,7 +31,7 @@ function sessionStart(): Response {
   });
 }
 
-async function drain(events: unknown[]): Promise<TalkEvent[]> {
+async function drain(events: unknown[], message = "hi"): Promise<TalkEvent[]> {
   const fetchMock = vi
     .fn<typeof fetch>()
     .mockResolvedValueOnce(sessionStart())
@@ -40,7 +40,7 @@ async function drain(events: unknown[]): Promise<TalkEvent[]> {
   const out: TalkEvent[] = [];
   for await (const event of streamTurn({
     baseUrl: "https://agent.example.test",
-    message: "hi",
+    message,
   })) {
     out.push(event);
   }
@@ -429,5 +429,69 @@ describe("streamTurn", () => {
     expect(done?.kind === "done" && done.result.reply).toBe("our reply");
     // Only our turn's single step counts — the replayed turn_0 step is ignored.
     expect(done?.kind === "done" && done.result.steps).toHaveLength(1);
+  });
+
+  it("resolves a dynamic-model agent's modelId to the fallback when no directive is sent", async () => {
+    const at = new Date().toISOString();
+    const out = await drain([
+      {
+        type: "session.started",
+        data: { runtime: { modelId: "dynamic:anthropic/claude-sonnet-5" } },
+        meta: { at },
+      },
+      {
+        type: "message.received",
+        data: { message: "hi", turnId: "turn_1" },
+        meta: { at },
+      },
+      {
+        type: "message.completed",
+        data: { turnId: "turn_1", message: "Hello" },
+        meta: { at },
+      },
+      { type: "turn.completed", data: { turnId: "turn_1" }, meta: { at } },
+    ]);
+
+    const model = out.find((e) => e.kind === "model");
+    expect(model?.kind === "model" && model.modelId).toBe(
+      "anthropic/claude-sonnet-5",
+    );
+    const done = out.at(-1);
+    expect(done?.kind === "done" && done.result.modelId).toBe(
+      "anthropic/claude-sonnet-5",
+    );
+  });
+
+  it("resolves a dynamic-model agent's modelId to the sent model directive", async () => {
+    const at = new Date().toISOString();
+    const sent = "<!-- eden:model openai/gpt-5.1 ctx=400000 -->\n\nwhat model are you?";
+    const out = await drain(
+      [
+        {
+          type: "session.started",
+          data: { runtime: { modelId: "dynamic:anthropic/claude-sonnet-5" } },
+          meta: { at },
+        },
+        {
+          // Eve echoes the full SENT message — directive included — and matching still works.
+          type: "message.received",
+          data: { message: sent, turnId: "turn_1" },
+          meta: { at },
+        },
+        {
+          type: "message.completed",
+          data: { turnId: "turn_1", message: "gpt-5.1 here" },
+          meta: { at },
+        },
+        { type: "turn.completed", data: { turnId: "turn_1" }, meta: { at } },
+      ],
+      sent,
+    );
+
+    const model = out.find((e) => e.kind === "model");
+    expect(model?.kind === "model" && model.modelId).toBe("openai/gpt-5.1");
+    const done = out.at(-1);
+    expect(done?.kind === "done" && done.result.reply).toBe("gpt-5.1 here");
+    expect(done?.kind === "done" && done.result.modelId).toBe("openai/gpt-5.1");
   });
 });

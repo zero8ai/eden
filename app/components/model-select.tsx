@@ -46,12 +46,21 @@ function formatPricing(model: ModelCatalogEntry): string | null {
 export function ModelSelect({
   value,
   busy,
+  disabled,
+  placeholder = "Pick a model",
+  triggerClassName,
   onCommit,
 }: {
   /** Current model id (repo or staged draft), or null when agent.ts has none yet. */
   value: string | null;
-  /** Disable while the stage request is in flight. */
+  /** Disable while the stage request is in flight (also shows "Saving…"). */
   busy: boolean;
+  /** Disable without the "Saving…" label (e.g. while a chat turn is streaming). */
+  disabled?: boolean;
+  /** Trigger label when no model id is known yet. */
+  placeholder?: string;
+  /** Override the trigger button styling (e.g. to sit in a composer control bar). */
+  triggerClassName?: string;
   onCommit: (model: string) => void;
 }) {
   const fetcher = useFetcher<{ models: ModelCatalogEntry[] | null }>();
@@ -163,12 +172,15 @@ export function ModelSelect({
         <PopoverTrigger asChild>
           <Button
             variant="outline"
-            disabled={busy}
+            disabled={busy || disabled}
             aria-label="Model"
-            className="w-full justify-between font-mono text-sm sm:w-72"
+            className={cn(
+              "w-full justify-between font-mono text-sm sm:w-72",
+              triggerClassName,
+            )}
           >
             <span className="truncate">
-              {busy ? "Saving…" : (value ?? "Pick a model")}
+              {busy ? "Saving…" : (value ?? placeholder)}
             </span>
           </Button>
         </PopoverTrigger>

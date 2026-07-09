@@ -45,12 +45,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
+import { ModelSelect } from "~/components/model-select";
+import { buildAgentConfig } from "~/eve/parse";
+import { getAgentSource } from "~/github/cached.server";
 import { contextPath } from "~/lib/paths";
 import {
   createPlaygroundSession,
   loadPlaygroundEntriesFromEve,
   listPlaygroundSessions,
   reconcilePlaygroundSessionFromEve,
+  setPlaygroundSessionModel,
   summarizePlaygroundSession,
 } from "~/playground/sessions.server";
 import { newPlaygroundSessionPath } from "~/playground/url";
@@ -88,13 +92,21 @@ export const loader = (args: LoaderFunctionArgs) =>
       // Teams have no repo-level Playground — the tab exists only at the member level.
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
 
-      const [targets, sessions] = await Promise.all([
+      const [targets, sessions, defaultModelId] = await Promise.all([
         liveTargets(active.id),
         listPlaygroundSessions({
           projectId: project.id,
           agentId: active.id,
           userId: auth.user!.id,
         }),
+        // The selector's default: the agent's configured model (the defineDynamic fallback).
+        // Best-effort — a repo-read hiccup must not take down the playground.
+        getAgentSource(project.repoInstallationId, {
+          owner: project.repoOwner,
+          repo: project.repoName,
+        })
+          .then((source) => buildAgentConfig(source, active.root).model)
+          .catch(() => null),
       ]);
       const selectedSessionId = args.url.searchParams.get("session");
       let currentSession =
@@ -145,6 +157,8 @@ export const loader = (args: LoaderFunctionArgs) =>
         currentSessionId: currentSession?.id ?? null,
         currentSessionEnvironmentId: currentSession?.environmentId ?? null,
         currentSessionStatus: currentSession?.status ?? null,
+        currentSessionModelId: currentSession?.modelId ?? null,
+        defaultModelId,
         entries,
         historyError,
         lastDeploymentId: currentSession?.lastDeploymentId ?? null,
@@ -183,6 +197,21 @@ export async function action(args: ActionFunctionArgs) {
     });
     throw redirect(newPlaygroundSessionPath(args.url, session.id));
   }
+  // Persist the selector on change (not just on send) so the choice survives a reload.
+  if (String(form.get("intent")) === "set-session-model") {
+    const sessionId = String(form.get("playgroundSessionId") ?? "");
+    const modelId = String(form.get("modelId") ?? "").trim();
+    if (sessionId && modelId) {
+      await setPlaygroundSessionModel({
+        id: sessionId,
+        projectId: project.id,
+        agentId: active.id,
+        userId: auth.user.id,
+        modelId,
+      });
+    }
+    return { ok: true as const };
+  }
   return { ok: true as const };
 }
 
@@ -211,6 +240,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     currentSessionId,
     currentSessionEnvironmentId,
     currentSessionStatus,
+    currentSessionModelId,
+    defaultModelId,
     entries,
     historyError,
     lastDeploymentId,
@@ -223,9 +254,16 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const revalidator = useRevalidator();
   const newSessionFetcher = useFetcher<typeof action>();
   const NewSessionForm = newSessionFetcher.Form;
+  const modelFetcher = useFetcher<typeof action>();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [live, setLive] = useState<LiveTurn | null>(null);
+  // The user's not-yet-persisted selector choice; the stored session override wins otherwise.
+  const [modelOverride, setModelOverride] = useState<string | null>(null);
+  useEffect(() => {
+    setModelOverride(null);
+  }, [currentSessionId]);
+  const selectedModelId = modelOverride ?? currentSessionModelId;
   const [sendError, setSendError] = useState<string | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const stopRequestedRef = useRef(false);
@@ -305,6 +343,9 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       form.set("deploymentId", deploymentId);
       form.set("agentName", activeAgent);
       if (currentSessionId) form.set("playgroundSessionId", currentSessionId);
+      // The current model selection applies to this and subsequent turns (and is persisted on
+      // the session server-side, so a first-send selection survives the session's creation).
+      if (selectedModelId) form.set("modelId", selectedModelId);
 
       try {
         const controller = new AbortController();
@@ -399,7 +440,27 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       navigate,
       project.id,
       revalidator,
+      selectedModelId,
     ],
+  );
+
+  const changeModel = useCallback(
+    (modelId: string) => {
+      setModelOverride(modelId);
+      // Persist immediately when the conversation already exists; a brand-new conversation has
+      // no row yet — the first send carries the selection and creates it with the override.
+      if (currentSessionId) {
+        modelFetcher.submit(
+          {
+            intent: "set-session-model",
+            playgroundSessionId: currentSessionId,
+            modelId,
+          },
+          { method: "post" },
+        );
+      }
+    },
+    [currentSessionId, modelFetcher],
   );
 
   const stopTurn = useCallback(async () => {
@@ -464,6 +525,14 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const targetPicker = useMemo(
     () => (
       <>
+        <ModelSelect
+          value={selectedModelId ?? defaultModelId}
+          busy={false}
+          disabled={busy}
+          placeholder="Deployed model"
+          triggerClassName="h-9 w-auto max-w-56 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted sm:w-auto"
+          onCommit={changeModel}
+        />
         <Select
           value={deploymentId}
           onValueChange={(nextDeploymentId) => {
@@ -501,7 +570,17 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         )}
       </>
     ),
-    [busy, deploymentId, searchParams, setSearchParams, stopTurn, targets],
+    [
+      busy,
+      changeModel,
+      defaultModelId,
+      deploymentId,
+      searchParams,
+      selectedModelId,
+      setSearchParams,
+      stopTurn,
+      targets,
+    ],
   );
 
   const headerActions = useMemo(

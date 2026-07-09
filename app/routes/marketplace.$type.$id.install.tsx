@@ -555,8 +555,9 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
 
   const backTo = `/marketplace/${type}/${manifest.id}`;
   const hasConflicts = (preview?.conflicts.length ?? 0) > 0;
-  // Provisioned secrets are set by a guided Eden flow (e.g. Create GitHub App) — the wizard
-  // never collects them, so the form only renders inputs for the user-supplied ones.
+  // Issue #47: provisioned secrets are set by a guided Eden flow (e.g. Create GitHub App on the
+  // Deployment tab) — the wizard never collects them. Only the user-supplied ones get inputs; the
+  // provisioned ones get a single muted note so the user isn't led to think they must provide them.
   const userSecrets = (preview?.secrets ?? []).filter((s) => !s.provisioned);
   const provisionedSecrets = (preview?.secrets ?? []).filter(
     (s) => s.provisioned,
@@ -866,7 +867,9 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
               <input type="hidden" name="member" value={selectedMember ?? ""} />
             )}
 
-            {preview.secrets.length > 0 && (
+            {/* Issue #47: gate on userSecrets, not preview.secrets — a template whose secrets are
+                all provisioned (e.g. the GitHub channel) shows no Secrets card at all. */}
+            {userSecrets.length > 0 && (
               <Card className="mb-6">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
@@ -874,28 +877,12 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                     Secrets
                   </CardTitle>
                   <CardDescription>
-                    {userSecrets.length === 0
-                      ? "Eden sets this template's secrets for you — nothing to enter here."
-                      : newMemberTemplate
-                        ? `This agent needs ${userSecrets.length} secret${userSecrets.length === 1 ? "" : "s"}. Enter them now — they'll be attached when the member ships. Values are encrypted write-only.`
-                        : "Stored per-agent, agent-wide. Values are encrypted write-only. Leave blank to set later in Settings."}
+                    {newMemberTemplate
+                      ? `This agent needs ${userSecrets.length} secret${userSecrets.length === 1 ? "" : "s"}. Enter them now — they'll be attached when the member ships. Values are encrypted write-only.`
+                      : "Stored per-agent, agent-wide. Values are encrypted write-only. Leave blank to set later in Settings."}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
-                  {provisionedSecrets.length > 0 && (
-                    <Alert>
-                      <AlertTitle>Set automatically by Eden</AlertTitle>
-                      <AlertDescription>
-                        <span className="font-mono text-xs">
-                          {provisionedSecrets.map((s) => s.name).join(", ")}
-                        </span>{" "}
-                        — Eden sets{" "}
-                        {provisionedSecrets.length === 1 ? "this" : "these"}{" "}
-                        during guided setup on the agent&rsquo;s Deployment tab
-                        after install.
-                      </AlertDescription>
-                    </Alert>
-                  )}
                   {userSecrets.map((s) => (
                     <InstallSecretField
                       key={s.name}
@@ -910,6 +897,18 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                   )}
                 </CardContent>
               </Card>
+            )}
+
+            {/* Issue #47: provisioned secrets are set by guided setup, not entered here — a single
+                muted line, no card and no key icon, so they read as informational, not a to-do. */}
+            {provisionedSecrets.length > 0 && (
+              <p className="mb-6 text-xs text-muted-foreground">
+                <span className="font-mono">
+                  {provisionedSecrets.map((s) => s.name).join(", ")}
+                </span>{" "}
+                are set automatically during guided setup on the agent&rsquo;s
+                Deployment tab after install — nothing to enter here.
+              </p>
             )}
 
             <div className="flex items-center gap-3">

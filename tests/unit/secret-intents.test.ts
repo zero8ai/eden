@@ -289,4 +289,64 @@ describe("computeRequiredSecrets (§9 missing computation, §11.6 multi-source)"
     expect(missing.map((m) => m.name)).toEqual(["CLOUDFLARE_API_TOKEN"]);
     expect(dismissed).toEqual([]);
   });
+
+  // Issue #47: provisioned secrets (GITHUB_APP_ID and friends) are set by the Create GitHub App
+  // guided flow, never by the user — so they are never "missing" or "dismissed", but they DO stay
+  // in `all` so the Deployment tab can detect which channel-setup card to show.
+  describe("provisioned secrets (Issue #47)", () => {
+    const provisionedLock = [
+      {
+        templateId: "github-channel",
+        secrets: [
+          { name: "GITHUB_APP_ID", provisioned: true },
+          { name: "DISCORD_BOT_TOKEN", description: "Bot token" },
+        ],
+      },
+    ];
+
+    it("an unset provisioned secret is excluded from missing; a genuine unset one is not", () => {
+      const { missing } = computeRequiredSecrets({
+        lockSecrets: provisionedLock,
+        setNames: [],
+        attachedNames: [],
+        dismissedNames: [],
+      });
+      expect(missing.map((m) => m.name)).toEqual(["DISCORD_BOT_TOKEN"]);
+    });
+
+    it("provisioned entries remain in `all` flagged (keeps Deployment-tab channel detection working)", () => {
+      const { all } = computeRequiredSecrets({
+        lockSecrets: provisionedLock,
+        setNames: [],
+        attachedNames: [],
+        dismissedNames: [],
+      });
+      const gh = all.find((r) => r.name === "GITHUB_APP_ID");
+      expect(gh?.provisioned).toBe(true);
+    });
+
+    it("provisioned ORs across sources — a plain declaration plus a provisioned one is excluded", () => {
+      const { missing, all } = computeRequiredSecrets({
+        lockSecrets: [
+          { templateId: "a", secrets: [{ name: "GITHUB_APP_ID" }] },
+          { templateId: "b", secrets: [{ name: "GITHUB_APP_ID", provisioned: true }] },
+        ],
+        setNames: [],
+        attachedNames: [],
+        dismissedNames: [],
+      });
+      expect(missing).toEqual([]);
+      expect(all.find((r) => r.name === "GITHUB_APP_ID")?.provisioned).toBe(true);
+    });
+
+    it("a provisioned name in dismissedNames does not appear in dismissed", () => {
+      const { dismissed } = computeRequiredSecrets({
+        lockSecrets: provisionedLock,
+        setNames: [],
+        attachedNames: [],
+        dismissedNames: ["GITHUB_APP_ID"],
+      });
+      expect(dismissed).toEqual([]);
+    });
+  });
 });

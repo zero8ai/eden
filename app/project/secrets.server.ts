@@ -187,11 +187,19 @@ export async function handleSecretIntent(
  * (set ∪ attached ∪ dismissed). Grouped by name with every requiring template id (a name two
  * installs require renders once with `+1`, §11.6). Used by the Settings loader (required rows)
  * and the deploy guard alike so they can never disagree.
+ *
+ * Issue #47: a `provisioned` secret (GITHUB_APP_ID and friends, set by the Create GitHub App
+ * guided flow — never by the user) is NEVER the user's to supply, so it is filtered out of
+ * `missing` and `dismissed`: it must not nag, prompt, count toward "N secrets missing", or trip
+ * the deploy guard before the guided flow has run. It DELIBERATELY stays in `all` — the
+ * Deployment tab detects which channel-setup cards to show (GitHub/Discord guided flows) by
+ * looking for those names in `all`, so dropping them there would hide the very flow that sets them.
  */
 export interface RequiredSecretComputed {
   name: string;
   description?: string;
   sandbox?: boolean;
+  provisioned?: boolean;
   sources: string[];
 }
 
@@ -199,7 +207,7 @@ export function computeRequiredSecrets(input: {
   /** Lock entries owned by this member (already filtered by member). */
   lockSecrets: Array<{
     templateId: string;
-    secrets: Array<{ name: string; description?: string; sandbox?: boolean }>;
+    secrets: Array<{ name: string; description?: string; sandbox?: boolean; provisioned?: boolean }>;
   }>;
   setNames: string[];
   attachedNames: string[];
@@ -211,14 +219,16 @@ export function computeRequiredSecrets(input: {
       const existing = byName.get(s.name);
       if (existing) {
         existing.sources.push(entry.templateId);
-        // First description wins; sandbox true from ANY source pre-checks the box.
+        // First description wins; sandbox/provisioned true from ANY source sticks.
         if (!existing.description && s.description) existing.description = s.description;
         if (s.sandbox) existing.sandbox = true;
+        if (s.provisioned) existing.provisioned = true;
       } else {
         byName.set(s.name, {
           name: s.name,
           description: s.description,
           sandbox: s.sandbox,
+          provisioned: s.provisioned,
           sources: [entry.templateId],
         });
       }
@@ -229,8 +239,15 @@ export function computeRequiredSecrets(input: {
   const all = [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : 1));
   return {
     all,
-    missing: all.filter((r) => !satisfied.has(r.name) && !dismissedSet.has(r.name)),
-    dismissed: all.filter((r) => !satisfied.has(r.name) && dismissedSet.has(r.name)),
+    // Issue #47: provisioned secrets are Eden's to set, never the user's — they can't be
+    // "missing" or "dismissed" from the user's perspective, so exclude them from both lists.
+    // They remain in `all` for Deployment-tab channel-setup detection (see the doc comment).
+    missing: all.filter(
+      (r) => !r.provisioned && !satisfied.has(r.name) && !dismissedSet.has(r.name),
+    ),
+    dismissed: all.filter(
+      (r) => !r.provisioned && !satisfied.has(r.name) && dismissedSet.has(r.name),
+    ),
   };
 }
 

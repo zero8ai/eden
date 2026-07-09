@@ -112,7 +112,7 @@ copy-and-tweak pattern as `env.example` above):
 cd /opt/eden
 cp deploy/vps/docker-compose.example.yml deploy/vps/docker-compose.yml
 docker compose -f deploy/vps/docker-compose.yml up -d --build eden  # brings up postgres too
-docker compose -f deploy/vps/docker-compose.yml run --rm migrate    # apply DB schema
+docker compose -f deploy/vps/docker-compose.yml run --rm --build migrate  # apply DB schema
 docker compose -f deploy/vps/docker-compose.yml logs -f eden        # watch it boot
 ```
 
@@ -210,7 +210,22 @@ sandbox `bootstrap()` shows up there).
 ```bash
 cd /opt/eden && git pull
 docker compose -f deploy/vps/docker-compose.yml up -d --build
-docker compose -f deploy/vps/docker-compose.yml run --rm migrate
+docker compose -f deploy/vps/docker-compose.yml run --rm --build migrate
+```
+
+The `--build` on the `migrate` step is **not** optional. The `migrate` service is behind the
+`tools` profile, so the preceding `up -d --build` does *not* rebuild its image — without `--build`
+here, `run --rm migrate` executes whatever image a *previous* deploy built, which is missing any
+migration files added since. drizzle-kit then finds nothing new and prints `migrations applied
+successfully!` while the new migration is silently skipped.
+
+Verify the migration actually landed — the row count in `drizzle.__drizzle_migrations` should match
+the number of entries in `drizzle/meta/_journal.json`:
+
+```bash
+docker exec eden-postgres psql -U eden eden -tAc \
+  'select count(*) from drizzle.__drizzle_migrations'                 # DB rows
+grep -c '"idx"' drizzle/meta/_journal.json                            # journal entries
 ```
 
 Agent instances keep running through an Eden update (they're independent containers); an

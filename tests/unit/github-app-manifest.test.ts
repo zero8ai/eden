@@ -6,15 +6,17 @@
  * GitHub redirect back to (project, agent, environment) — tampering and expiry must fail
  * closed. Conflict detection is what keeps two agents from sharing one @mention identity.
  */
-import { randomBytes } from "node:crypto";
+import { createVerify, generateKeyPairSync, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
   GITHUB_APP_NAME_MAX,
   buildAppManifest,
+  createAppJwt,
   defaultAppName,
   findAppCredentialConflict,
   findStoredAppCredentialConflict,
+  listAppInstallations,
   manifestSubmitUrl,
   signManifestState,
   verifyManifestState,
@@ -66,6 +68,90 @@ describe("buildAppManifest", () => {
     const privateApp = buildAppManifest(input);
     const publicApp = buildAppManifest({ ...input, publicApp: true });
     expect(publicApp).toEqual({ ...privateApp, public: true });
+  });
+});
+
+describe("App installations (Deployment card status)", () => {
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
+
+  it("createAppJwt signs RS256 as the App with GitHub's clock-drift backdating", () => {
+    const now = new Date("2026-07-09T10:00:00Z");
+    const jwt = createAppJwt("12345", pem, now);
+    const [header, payload, signature] = jwt.split(".");
+
+    const verifier = createVerify("RSA-SHA256").update(`${header}.${payload}`);
+    expect(verifier.verify(publicKey, Buffer.from(signature, "base64url"))).toBe(true);
+
+    expect(JSON.parse(Buffer.from(header, "base64url").toString())).toEqual({
+      alg: "RS256",
+      typ: "JWT",
+    });
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+    const nowSeconds = Math.floor(now.getTime() / 1000);
+    expect(claims).toEqual({ iss: "12345", iat: nowSeconds - 60, exp: nowSeconds + 300 });
+  });
+
+  it("createAppJwt restores literal \\n escapes in the PEM (hosted secret stores)", () => {
+    const escaped = pem.replace(/\n/g, "\\n");
+    const jwt = createAppJwt("12345", escaped);
+    const [header, payload, signature] = jwt.split(".");
+    const verifier = createVerify("RSA-SHA256").update(`${header}.${payload}`);
+    expect(verifier.verify(publicKey, Buffer.from(signature, "base64url"))).toBe(true);
+  });
+
+  it("listAppInstallations authenticates as the App and maps the accounts", async () => {
+    let captured: { url: string; auth: string } | null = null;
+    const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      captured = {
+        url: String(url),
+        auth: (init?.headers as Record<string, string>).authorization,
+      };
+      return new Response(
+        JSON.stringify([
+          {
+            account: { login: "acme-org", type: "Organization" },
+            repository_selection: "all",
+            html_url: "https://github.com/organizations/acme-org/settings/installations/1",
+          },
+          {
+            account: { login: "jane", type: "User" },
+            repository_selection: "selected",
+            html_url: "https://github.com/settings/installations/2",
+          },
+        ]),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    const installations = await listAppInstallations(
+      { appId: "12345", privateKey: pem },
+      fetchImpl,
+    );
+
+    expect(captured!.url).toBe("https://api.github.com/app/installations?per_page=100");
+    expect(captured!.auth).toMatch(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/);
+    expect(installations).toEqual([
+      {
+        account: "acme-org",
+        accountType: "Organization",
+        repositorySelection: "all",
+        htmlUrl: "https://github.com/organizations/acme-org/settings/installations/1",
+      },
+      {
+        account: "jane",
+        accountType: "User",
+        repositorySelection: "selected",
+        htmlUrl: "https://github.com/settings/installations/2",
+      },
+    ]);
+  });
+
+  it("listAppInstallations fails loudly on a GitHub error (callers fall back to a link)", async () => {
+    const fetchImpl = (async () => new Response("{}", { status: 401 })) as typeof fetch;
+    await expect(
+      listAppInstallations({ appId: "12345", privateKey: pem }, fetchImpl),
+    ).rejects.toThrow(/HTTP 401/);
   });
 });
 

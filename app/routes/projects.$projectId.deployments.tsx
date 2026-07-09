@@ -116,6 +116,8 @@ import {
 import {
   findStoredAppCredentialConflict,
   listAppCredentialRows,
+  listAppInstallations,
+  type AppInstallation,
 } from "~/github/app-manifest.server";
 import { fetchAgentSource } from "~/github/repo.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
@@ -224,6 +226,8 @@ interface DeploymentData {
     routePath: string;
     /** The agent's App slug (its @name) once created — links the card to GitHub's install picker. */
     appSlug: string | null;
+    /** Where the App is installed (accounts + repo grants); null when it couldn't be fetched. */
+    installations: AppInstallation[] | null;
   };
 }
 
@@ -435,6 +439,7 @@ export const loader = (args: LoaderFunctionArgs) =>
             origin: publicOrigin(args.request),
             routePath: GITHUB_MENTIONS_ROUTE,
             appSlug: null,
+            installations: null,
           },
         };
       }
@@ -492,19 +497,31 @@ export const loader = (args: LoaderFunctionArgs) =>
       } catch {
         missingSecrets = []; // secrets store unavailable — never block the pipeline view
       }
-      // The App's @name once the guided flow (or manual setup) stored it — the setup card
-      // links it to GitHub's install picker so additional accounts/orgs are one click away.
+      // The App's @name once the guided flow (or manual setup) stored it, plus where it's
+      // installed — the setup card renders real state (accounts, repo grants) and guides
+      // adding accounts, so the user never needs to know GitHub's install-page URL.
       let githubAppSlug: string | null = null;
+      let githubInstallations: AppInstallation[] | null = null;
       if (hasGithubSetup) {
+        const secretRef = (key: string) => ({
+          projectId: project.id,
+          agentId: active.id,
+          environmentId: null,
+          key,
+        });
         try {
-          githubAppSlug = await getRuntime().secrets.get({
-            projectId: project.id,
-            agentId: active.id,
-            environmentId: null,
-            key: "GITHUB_APP_SLUG",
-          });
+          githubAppSlug = await getRuntime().secrets.get(secretRef("GITHUB_APP_SLUG"));
+          if (githubAppSlug) {
+            const [appId, privateKey] = await Promise.all([
+              getRuntime().secrets.get(secretRef("GITHUB_APP_ID")),
+              getRuntime().secrets.get(secretRef("GITHUB_APP_PRIVATE_KEY")),
+            ]);
+            if (appId && privateKey) {
+              githubInstallations = await listAppInstallations({ appId, privateKey });
+            }
+          }
         } catch {
-          githubAppSlug = null; // secrets store unavailable — the card just omits the link
+          githubInstallations = null; // GitHub/secrets hiccup — the card falls back to a link
         }
       }
       return {
@@ -540,6 +557,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           origin: publicOrigin(args.request),
           routePath: GITHUB_MENTIONS_ROUTE,
           appSlug: githubAppSlug,
+          installations: githubInstallations,
         },
       };
     },
@@ -2175,25 +2193,81 @@ function GitHubSetupHelp({
             repositories it should watch.
           </p>
           {setup.appSlug && (
-            <p>
-              <span className="font-medium">
-                App created: <code>@{setup.appSlug}</code>.
-              </span>{" "}
-              Add repositories — or install it on another account or organization —
-              from{" "}
-              <a
-                href={`https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`}
-                target="_blank"
-                rel="noreferrer"
-                className="underline underline-offset-2"
-              >
-                its install page
-              </a>
-              . Run it once per account; each installation grants only the
-              repositories you pick there.
-            </p>
+            <div className="space-y-2">
+              <p className="font-medium">
+                App created: <code>@{setup.appSlug}</code>
+              </p>
+              {setup.installations === null ? (
+                <p className="text-muted-foreground">
+                  Couldn&rsquo;t reach GitHub to list where it&rsquo;s installed —{" "}
+                  <a
+                    href={`https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline underline-offset-2"
+                  >
+                    manage installations on GitHub
+                  </a>
+                  .
+                </p>
+              ) : setup.installations.length === 0 ? (
+                <p className="text-muted-foreground">
+                  Not installed on any account yet — it can&rsquo;t see any
+                  repositories until it is.
+                </p>
+              ) : (
+                <ul className="space-y-1 rounded-lg border px-3 py-2">
+                  {setup.installations.map((inst) => (
+                    <li
+                      key={`${inst.accountType}:${inst.account}`}
+                      className="flex flex-wrap items-baseline gap-x-2"
+                    >
+                      <span className="font-medium">{inst.account}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {inst.accountType === "Organization"
+                          ? "organization"
+                          : "personal account"}
+                        {" · "}
+                        {inst.repositorySelection === "all"
+                          ? "all repositories"
+                          : "selected repositories"}
+                      </span>
+                      {inst.htmlUrl && (
+                        <a
+                          href={inst.htmlUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs underline underline-offset-2"
+                        >
+                          change repositories
+                        </a>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {setup.installations !== null && (
+                <p className="text-muted-foreground">
+                  GitHub asks you to grant repositories on its own screen, then
+                  returns you here.
+                </p>
+              )}
+            </div>
           )}
-          <div>
+          <div className="flex flex-wrap gap-2">
+            {setup.appSlug && setup.installations !== null && (
+              <Button asChild size="sm">
+                <a
+                  href={`https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {setup.installations.length === 0
+                    ? "Install the App"
+                    : "Add another account or organization"}
+                </a>
+              </Button>
+            )}
             <Button asChild size="sm" variant={setup.appSlug ? "outline" : "default"}>
               <Link to={createUrl(envs[0]?.env.id)}>
                 {setup.appSlug ? "Recreate GitHub App" : "Create GitHub App"}

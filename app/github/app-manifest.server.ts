@@ -20,7 +20,7 @@
  * Everything shape-like is exported pure so tests assert the literals (the repo convention);
  * only `convertManifestCode` and the secret/DB helpers touch the network or the database.
  */
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, createSign, timingSafeEqual } from "node:crypto";
 
 import { and, eq, inArray } from "drizzle-orm";
 
@@ -249,6 +249,78 @@ export async function convertManifestCode(
 /** Where the user installs the newly minted App on the repos it should watch. */
 export function appInstallUrl(slug: string): string {
   return `https://github.com/apps/${encodeURIComponent(slug)}/installations/new`;
+}
+
+/* ───────────────────── installation status (Deployment card) ───────────────────── */
+
+/** One place the agent's App is installed — an account (user or org) and its repo grant. */
+export interface AppInstallation {
+  /** The account's login (user or organization name). */
+  account: string;
+  accountType: "User" | "Organization" | string;
+  /** GitHub's grant shape: "all" repositories, or "selected" ones. */
+  repositorySelection: string;
+  /** GitHub's settings page for this installation (adjust repos, uninstall). */
+  htmlUrl: string;
+}
+
+function base64UrlJson(value: unknown): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+/**
+ * A short-lived RS256 App JWT — authenticates AS the agent's App (not as an installation),
+ * which is what `GET /app/installations` requires. `iat` is backdated 60s per GitHub's
+ * clock-drift guidance.
+ */
+export function createAppJwt(
+  appId: string,
+  privateKey: string,
+  now: Date = new Date(),
+): string {
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+  const header = { alg: "RS256", typ: "JWT" };
+  const payload = { iat: nowSeconds - 60, exp: nowSeconds + 5 * 60, iss: appId };
+  const signingInput = `${base64UrlJson(header)}.${base64UrlJson(payload)}`;
+  // Hosted secret stores sometimes flatten PEM newlines into literal "\n" — restore them.
+  const pem = privateKey.replace(/\\n/g, "\n");
+  const signature = createSign("RSA-SHA256").update(signingInput).sign(pem, "base64url");
+  return `${signingInput}.${signature}`;
+}
+
+/**
+ * Every account the agent's App is installed on — the Deployment card renders this so the
+ * user sees real state ("installed on org1, all repos") and adds accounts from Eden instead
+ * of having to know GitHub's install-page URL. Uses the AGENT'S App credentials (the ones
+ * the manifest callback stored), never Eden's own Connect App.
+ */
+export async function listAppInstallations(
+  creds: { appId: string; privateKey: string },
+  fetchImpl: typeof fetch = fetch,
+  now: Date = new Date(),
+): Promise<AppInstallation[]> {
+  const res = await fetchImpl("https://api.github.com/app/installations?per_page=100", {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${createAppJwt(creds.appId, creds.privateKey, now)}`,
+      "x-github-api-version": "2022-11-28",
+    },
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub rejected the App installations listing (HTTP ${res.status}).`);
+  }
+  const body = (await res.json()) as Array<{
+    account: { login?: string; type?: string } | null;
+    repository_selection?: string;
+    html_url?: string;
+  }>;
+  return body.map((i) => ({
+    account: i.account?.login ?? "(unknown)",
+    accountType: i.account?.type ?? "User",
+    repositorySelection: i.repository_selection ?? "selected",
+    htmlUrl: i.html_url ?? "",
+  }));
 }
 
 /* ─────────────────────── slug/App-ID uniqueness (issue #26) ─────────────────────── */

@@ -98,24 +98,31 @@ function stagedTeamMemberRoot(path: string): string | null {
   return packageMatch ? `agents/${packageMatch[1]}/agent` : null;
 }
 
-function inferBuildRoot(agents: { id: string; root: string }[], drafts: DraftChange[]) {
-  let root: string | undefined;
+/**
+ * The member roots a selection spans — the gate builds each one. `undefined` means the
+ * selection touches a truly shared file (e.g. the root package.json), where only a repo-root
+ * check can see the effect.
+ */
+function inferBuildRoots(
+  agents: { id: string; root: string }[],
+  drafts: DraftChange[],
+): string[] | undefined {
+  const roots = new Set<string>();
   for (const draft of drafts) {
     const agentRoot =
       (draft.agentId
         ? agents.find((a) => a.id === draft.agentId)?.root
         : undefined) ?? stagedTeamMemberRoot(draft.path);
     if (agentRoot) {
-      if (root && root !== agentRoot) return undefined;
-      root = agentRoot;
+      roots.add(agentRoot);
       continue;
     }
     // Marketplace provenance is repo-level but should not force a whole-repo build when
-    // selected with one member's install/update drafts.
+    // selected with member install/update drafts.
     if (draft.path === "eden-lock.json") continue;
     return undefined;
   }
-  return root;
+  return [...roots];
 }
 
 /**
@@ -304,12 +311,14 @@ export async function publishDrafts(
 
   // Publish gate: the change-set must compile against the branch it targets. A failed check
   // creates NOTHING (no branch, no PR) and keeps the drafts staged so they can be fixed and
-  // republished — broken code never becomes a change request. When every selected draft
-  // belongs to one roster member, the gate builds that member's directory. For staged new
-  // members, there is no agent row yet, so infer the same root from `agents/<name>/...`.
-  // Mixed or truly shared selections check the repo root.
+  // republished — broken code never becomes a change request. The gate builds each member
+  // directory the selection touches (a multi-member publish — e.g. installing a channel on
+  // several agents — checks every affected member; in a team repo the root is not an eve
+  // project, so collapsing to one whole-repo build would always fail). For staged new members,
+  // there is no agent row yet, so the root is inferred from `agents/<name>/...`. Selections
+  // touching truly shared files check the repo root.
   const agents = await store.agents.listByProject(input.project.id);
-  const agentRoot = inferBuildRoot(agents, selected);
+  const roots = inferBuildRoots(agents, selected);
   const files = await normalizeOpenRouterPackageDrafts({
     project: input.project,
     files: selected.map((d) => ({ path: d.path, content: d.content })),
@@ -318,9 +327,13 @@ export async function publishDrafts(
   // build, so a changeset of ONLY those files has nothing to compile — skip the gate. Any member
   // file in the selection still triggers the normal build check.
   const assistantConfigOnly = selected.every((d) => isAssistantConfigPath(d.path));
-  const check = assistantConfigOnly
-    ? { ok: true as const, skipped: true }
-    : await checkBuild({
+  if (!assistantConfigOnly) {
+    // A lock-only selection has no member root; fall through to the repo-root check rather
+    // than silently skipping the gate. Sequential on purpose: checkEveBuild reuses one
+    // docker tag per project, so concurrent checks would race on it.
+    const buildRoots = !roots || roots.length === 0 ? [undefined] : roots;
+    for (const agentRoot of buildRoots) {
+      const check = await checkBuild({
         projectId: input.project.id,
         repo: { owner: input.project.repoOwner, repo: input.project.repoName },
         ref: input.project.defaultBranch,
@@ -328,10 +341,13 @@ export async function publishDrafts(
         overlay: files,
         agentRoot,
       });
-  if (!check.ok) {
-    throw new Error(
-      `Build check failed — no change request was created. Fix this and publish again:\n\n${check.output}`,
-    );
+      if (!check.ok) {
+        const scope = buildRoots.length > 1 && agentRoot ? ` for \`${agentRoot}\`` : "";
+        throw new Error(
+          `Build check failed${scope} — no change request was created. Fix this and publish again:\n\n${check.output}`,
+        );
+      }
+    }
   }
 
   const deletions = selected.filter((d) => d.content === null).length;

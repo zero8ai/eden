@@ -372,6 +372,98 @@ describe("publish gate (build check)", () => {
     );
   });
 
+  it("a multi-member selection checks every member root, not the repo root", async () => {
+    store.seedAgent({
+      id: "agent_pm",
+      projectId: PROJECT.id,
+      name: "pm",
+      root: "agents/pm/agent",
+    });
+    store.seedAgent({
+      id: "agent_reviewer",
+      projectId: PROJECT.id,
+      name: "reviewer",
+      root: "agents/reviewer/agent",
+    });
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agents/pm/agent/channels/github.ts", content: "//" },
+      store,
+    );
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agents/reviewer/agent/channels/github.ts", content: "//" },
+      store,
+    );
+    await stageDraft({ projectId: PROJECT.id, path: "eden-lock.json", content: "{}" }, store);
+
+    const check = vi.fn().mockResolvedValue({ ok: true });
+    await publishDrafts(
+      {
+        project: PROJECT,
+        paths: [
+          "agents/pm/agent/channels/github.ts",
+          "agents/reviewer/agent/channels/github.ts",
+          "eden-lock.json",
+        ],
+      },
+      store,
+      vi.fn().mockResolvedValue(proposed),
+      check,
+    );
+
+    const checkedRoots = check.mock.calls.map((c) => c[0].agentRoot).sort();
+    expect(checkedRoots).toEqual(["agents/pm/agent", "agents/reviewer/agent"]);
+    // Every check sees the full overlay; files outside its build dir are inert.
+    for (const call of check.mock.calls) {
+      expect(call[0].overlay).toHaveLength(3);
+    }
+  });
+
+  it("names the failing member when a multi-member publish is blocked", async () => {
+    store.seedAgent({
+      id: "agent_pm",
+      projectId: PROJECT.id,
+      name: "pm",
+      root: "agents/pm/agent",
+    });
+    store.seedAgent({
+      id: "agent_reviewer",
+      projectId: PROJECT.id,
+      name: "reviewer",
+      root: "agents/reviewer/agent",
+    });
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agents/pm/agent/channels/github.ts", content: "//" },
+      store,
+    );
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agents/reviewer/agent/channels/github.ts", content: "bad" },
+      store,
+    );
+
+    const propose = vi.fn().mockResolvedValue(proposed);
+    const check = vi.fn().mockImplementation(({ agentRoot }) =>
+      agentRoot === "agents/reviewer/agent"
+        ? { ok: false, output: "TS2304: Cannot find name 'bad'." }
+        : { ok: true },
+    );
+
+    await expect(
+      publishDrafts(
+        {
+          project: PROJECT,
+          paths: [
+            "agents/pm/agent/channels/github.ts",
+            "agents/reviewer/agent/channels/github.ts",
+          ],
+        },
+        store,
+        propose,
+        check,
+      ),
+    ).rejects.toThrow(/Build check failed for `agents\/reviewer\/agent`/);
+    expect(propose).not.toHaveBeenCalled();
+  });
+
   it("a skipped check (no toolchain) still publishes", async () => {
     await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "A" }, store);
     const propose = vi.fn().mockResolvedValue(proposed);

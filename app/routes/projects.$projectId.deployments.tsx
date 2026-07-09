@@ -944,13 +944,22 @@ export default function Deployment({
 /* ────────────────────────────── member pipeline ────────────────────────────── */
 
 function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
-  const { drafts, changes, releases, envs, activeAgent, isTeam, canAct } = loaderData;
+  const { project, drafts, changes, releases, envs, activeAgent, isTeam, canAct } =
+    loaderData;
+  // Where "open" on a running deployment points: the agent's playground, not the instance's
+  // internal URL (a 127.0.0.1:<port> that's unreachable from a browser).
+  const playgroundPath = `${contextPath(project.id, isTeam ? activeAgent : null)}/playground`;
 
   return (
     <>
       <StagedChangesCard drafts={drafts} isTeam={isTeam} />
       <ChangeRequests changes={changes} isTeam={isTeam} />
-      <EnvironmentsCard envs={envs} canAct={canAct} releases={releases} />
+      <EnvironmentsCard
+        envs={envs}
+        canAct={canAct}
+        releases={releases}
+        playgroundPath={playgroundPath}
+      />
       <VersionHistory
         releases={releases}
         envs={envs}
@@ -1525,6 +1534,7 @@ function TeamEnvironmentsCard({
                     <TeamEnvMemberRow
                       key={m.name}
                       member={m}
+                      projectId={project.id}
                       fetcher={fetcher}
                       busy={busy}
                     />
@@ -1542,10 +1552,12 @@ function TeamEnvironmentsCard({
 /** One member's status inside a team environment row: running version, in-flight, failed. */
 function TeamEnvMemberRow({
   member,
+  projectId,
   fetcher,
   busy,
 }: {
   member: TeamEnvMember;
+  projectId: string;
   fetcher: ReturnType<typeof useFetcher<typeof action>>;
   busy: boolean;
 }) {
@@ -1573,10 +1585,15 @@ function TeamEnvMemberRow({
             <span className="text-muted-foreground">
               deployed {timeAgo(running.createdAt)}
             </span>
+            {/* `url` isn't the link target (it's an instance-internal address) — its presence is
+                the "there's a reachable instance to talk to" signal gating the playground link. */}
             {running.url && (
-              <a href={running.url} className="underline underline-offset-4">
+              <Link
+                to={`${contextPath(projectId, member.name)}/playground`}
+                className="underline underline-offset-4"
+              >
                 open
-              </a>
+              </Link>
             )}
           </>
         ) : (
@@ -1839,10 +1856,12 @@ function EnvironmentsCard({
   envs,
   canAct,
   releases,
+  playgroundPath,
 }: {
   envs: EnvState[];
   canAct: boolean;
   releases: ReleaseRow[];
+  playgroundPath: string;
 }) {
   const fetcher = useFetcher<typeof action>();
   const busy = fetcher.state !== "idle";
@@ -1915,13 +1934,16 @@ function EnvironmentsCard({
                       <span className="text-muted-foreground">
                         deployed {timeAgo(running.createdAt)}
                       </span>
+                      {/* `url` isn't the link target (it's an instance-internal address) — its
+                          presence is the "there's a reachable instance to talk to" signal gating
+                          the playground link. */}
                       {running.url && (
-                        <a
-                          href={running.url}
+                        <Link
+                          to={playgroundPath}
                           className="underline underline-offset-4"
                         >
                           open
-                        </a>
+                        </Link>
                       )}
                     </>
                   ) : (

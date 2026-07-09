@@ -21,10 +21,12 @@ import {
   recordTurnStart,
 } from "~/observability/record.server";
 import {
+  savePlaygroundEvents,
   savePlaygroundSessionCursor,
   savePlaygroundSessionProgress,
   type PlaygroundSession,
 } from "~/playground/sessions.server";
+import type { RawEveEvent } from "~/agent/talk.server";
 import { syncConversationCheckout } from "~/assistant/checkout-sync.server";
 
 /** Eve turns can run for hours; fail only after this much silence on the event stream. */
@@ -37,6 +39,16 @@ export function cancelActiveTurn(playgroundSessionId: string): boolean {
   if (!controller) return false;
   controller.abort();
   return true;
+}
+
+/**
+ * Whether a turn for this session is actively streaming in THIS process (its drain is alive and
+ * persisting progress). Reconnect uses this to tell a genuinely-live session apart from one stuck
+ * `running` because its drain died with the Eden process (restart/redeploy mid-turn) — only the
+ * latter needs a status reconcile from Eve.
+ */
+export function hasActiveTurn(playgroundSessionId: string): boolean {
+  return activeTurnControllers.has(playgroundSessionId);
 }
 
 /** Lean step projection sent to the browser (full actions go only to the recorder). */
@@ -108,6 +120,37 @@ export function streamTurnResponse(input: {
         let savedStreamIndex = activeSession.streamIndex;
         let lastProgressSavedAt = 0;
         let progressSave: Promise<void> = Promise.resolve();
+        // Durable transcript cache: buffer raw events and flush in batches on the same ~1s cadence
+        // as the cursor save, so reconnect reads the transcript from Eden's DB instead of replaying
+        // Eve from index 0 (and a crash mid-turn still leaves a durable partial transcript).
+        //
+        // Invariant: the persisted cursor must never advance past events that aren't durably in
+        // `playground_events` — the loader treats the cache as the transcript's source of truth,
+        // and the next turn drains Eve from the cursor, so an event the cursor skips is lost for
+        // good. Hence a failed batch is re-queued for the next flush (retry is a safe no-op via
+        // the PK + ON CONFLICT DO NOTHING), and every cursor save caps itself at
+        // `persistedEventIndex`, the highest index a batch insert has actually confirmed.
+        const pendingEvents: Array<{ streamIndex: number } & RawEveEvent> = [];
+        let persistedEventIndex = activeSession.streamIndex;
+        let eventSave: Promise<void> = Promise.resolve();
+        const flushEvents = () => {
+          if (pendingEvents.length === 0) return;
+          const batch = pendingEvents.splice(0, pendingEvents.length);
+          eventSave = eventSave.then(async () => {
+            try {
+              await savePlaygroundEvents(activeSession.id, batch);
+              persistedEventIndex = Math.max(
+                persistedEventIndex,
+                batch[batch.length - 1].streamIndex,
+              );
+            } catch (e) {
+              // Put the batch back so a later flush retries it; the cursor cap (above) keeps the
+              // not-yet-persisted indices replayable from Eve in the meantime.
+              pendingEvents.unshift(...batch);
+              console.error(`${tag} persist transcript events failed`, e);
+            }
+          });
+        };
         let recorded = false;
         let startRecording: Promise<void> = Promise.resolve();
         let result: TurnResult | null = null;
@@ -128,15 +171,22 @@ export function streamTurnResponse(input: {
           savedSessionId = externalSessionId;
           savedStreamIndex = nextStreamIndex;
           lastProgressSavedAt = now;
+          flushEvents();
+          // Order matters: the cursor save runs after the event batch it covers has settled, and
+          // caps at `persistedEventIndex` so a failed batch (re-queued above) is never skipped
+          // over. `savedStreamIndex` stays optimistic — a retried batch that later lands lets the
+          // next save catch the cursor up.
+          const coveringEventSave = eventSave;
           progressSave = progressSave
             .catch(() => {})
+            .then(() => coveringEventSave)
             .then(() =>
               savePlaygroundSessionProgress({
                 id: activeSession.id,
                 target,
                 externalSessionId,
                 continuationToken: nextContinuationToken,
-                streamIndex: nextStreamIndex,
+                streamIndex: Math.min(nextStreamIndex, persistedEventIndex),
                 title,
               }).catch((e) => console.error(`${tag} persist session progress failed`, e)),
             );
@@ -166,6 +216,7 @@ export function streamTurnResponse(input: {
                 sessionId = event.sessionId;
                 continuationToken = event.continuationToken;
                 streamIndex = event.streamIndex;
+                pendingEvents.push({ streamIndex: event.streamIndex, ...event.rawEvent });
                 queueProgressSave();
                 break;
               case "turn":
@@ -247,6 +298,14 @@ export function streamTurnResponse(input: {
           if (activeTurnControllers.get(activeSession.id) === turnController) {
             activeTurnControllers.delete(activeSession.id);
           }
+          flushEvents();
+          await eventSave;
+          if (pendingEvents.length > 0) {
+            // A batch insert failed mid-turn and was re-queued — this is the drain's last chance
+            // to land it before exiting, so retry once more.
+            flushEvents();
+            await eventSave;
+          }
           await progressSave;
           if (result) {
             const settled: TurnResult = result;
@@ -256,7 +315,14 @@ export function streamTurnResponse(input: {
                 target,
                 externalSessionId: settled.sessionId ?? activeSession.externalSessionId,
                 continuationToken: settled.continuationToken ?? activeSession.continuationToken,
-                streamIndex: Math.max(settled.streamIndex, activeSession.streamIndex),
+                // Capped at what's durably cached (see the invariant above): if the final event
+                // batch never landed, leaving the cursor behind means the missing events are
+                // re-read from Eve later (the next turn's drain, or the loader's reconcile for a
+                // failed session) and cached then — instead of being skipped forever.
+                streamIndex: Math.min(
+                  Math.max(settled.streamIndex, activeSession.streamIndex),
+                  persistedEventIndex,
+                ),
                 title,
                 status: settled.ok ? "waiting" : "failed",
               });

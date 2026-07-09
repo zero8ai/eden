@@ -733,6 +733,34 @@ export const playgroundSessions = pgTable(
 );
 
 /**
+ * Durable transcript cache for a playground/assistant session. One row per Eve durable stream
+ * event, keyed by (session, streamIndex) — the same monotonic cursor `playground_sessions.stream_index`
+ * counts. The turn-stream drain writes rows as events arrive (disconnect-safe), so reconnecting
+ * reads the transcript straight from here — no replay of Eve's whole log from index 0 — and a crash
+ * mid-turn still leaves a durable partial transcript. `type`/`data`/`meta` are the raw Eve event
+ * shape, so the existing `projectEventsToEntries` reconstructs `ChatEntry[]` unchanged. The PK makes
+ * writes idempotent (re-drained index = no-op via ON CONFLICT DO NOTHING).
+ */
+export const playgroundEvents = pgTable(
+  "playground_events",
+  {
+    sessionId: varchar("session_id", { length: 12 })
+      .notNull()
+      .references(() => playgroundSessions.id, { onDelete: "cascade" }),
+    /** Eve durable-stream cursor for this event; monotonic per session, the natural order key. */
+    streamIndex: integer("stream_index").notNull(),
+    /** Raw Eve event type, e.g. "message.appended" / "actions.requested" / "action.result". */
+    type: text("type").notNull(),
+    /** Raw Eve event `data` payload (full — tool outputs included). */
+    data: jsonb("data").notNull(),
+    /** Raw Eve event `meta` (carries `at` timestamp), when present. */
+    meta: jsonb("meta"),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.sessionId, t.streamIndex] })],
+);
+
+/**
  * Assistant coding-agent checkouts. One row per
  * assistant conversation (a `playground_sessions` row on the assistant channel) that has grown a
  * repo checkout. The assistant edits a per-conversation git checkout on the shared home volume;

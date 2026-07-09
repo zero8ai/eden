@@ -21,6 +21,7 @@ import { getRuntime } from "~/seams/index.server";
 import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
 import { teammateRoster } from "~/team/roster.server";
 import { mintDelegationToken } from "~/team/token.server";
+import { getDiscordAppConfig } from "~/discord/config.server";
 import { DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS } from "./cleanup.server";
 import { isVersionLabelCollision, versionLabel } from "./versioning";
 
@@ -44,9 +45,13 @@ function deployDeps(): DeployDeps {
     deployTarget: r.deployTarget,
     secrets: r.secrets,
     workspaceModelKey: (orgId) =>
-      import("~/org/workspace.server").then((m) => m.getWorkspaceModelKey(orgId)),
+      import("~/org/workspace.server").then((m) =>
+        m.getWorkspaceModelKey(orgId),
+      ),
     sandboxExposedNames: (scope) =>
-      import("~/seams/oss/secret-store").then((m) => m.listSandboxExposedNames(scope)),
+      import("~/seams/oss/secret-store").then((m) =>
+        m.listSandboxExposedNames(scope),
+      ),
   };
 }
 
@@ -83,7 +88,9 @@ async function stopDeploymentInfra(
     );
   }
 
-  throw new Error(`deployment ${deploymentId} is still ${health.status} after stop`);
+  throw new Error(
+    `deployment ${deploymentId} is still ${health.status} after stop`,
+  );
 }
 
 async function cleanupNewDeploymentInfra(
@@ -103,7 +110,9 @@ async function scheduleDeploymentContainerCleanup(
   deploymentIds: string[],
 ): Promise<void> {
   if (deploymentIds.length === 0) return;
-  const runAt = new Date(Date.now() + Math.max(0, DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS));
+  const runAt = new Date(
+    Date.now() + Math.max(0, DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS),
+  );
   try {
     await Promise.all(
       deploymentIds.map((deploymentId) =>
@@ -116,7 +125,10 @@ async function scheduleDeploymentContainerCleanup(
       ),
     );
   } catch (error) {
-    console.warn("[deploy] failed to schedule deployment container cleanup", error);
+    console.warn(
+      "[deploy] failed to schedule deployment container cleanup",
+      error,
+    );
   }
 }
 
@@ -142,7 +154,10 @@ export async function createRelease(
   const attempt = async (round: number): Promise<Release> => {
     const count = await store.releases.countByAgent(input.agentId);
     try {
-      return await store.releases.insert({ ...input, version: versionLabel(count) });
+      return await store.releases.insert({
+        ...input,
+        version: versionLabel(count),
+      });
     } catch (err) {
       if (!isVersionLabelCollision(err) || round >= 8) throw err;
       return attempt(round + 1);
@@ -167,7 +182,10 @@ export async function ensureReleaseForCommit(
   },
   store: DataStore = getRuntime().data,
 ): Promise<{ release: Release; created: boolean }> {
-  const existing = await store.releases.findByCommit(input.agentId, input.gitSha);
+  const existing = await store.releases.findByCommit(
+    input.agentId,
+    input.gitSha,
+  );
   if (existing) return { release: existing, created: false };
   const release = await createRelease(input, store);
   return { release, created: true };
@@ -199,7 +217,10 @@ export async function ensureReleasesForCommit(
 }
 
 /** Deployments for an environment, newest first, joined to their release version. */
-export function listDeployments(environmentId: string, store: DataStore = getRuntime().data) {
+export function listDeployments(
+  environmentId: string,
+  store: DataStore = getRuntime().data,
+) {
   return store.deployments.listByEnvironment(environmentId);
 }
 
@@ -254,7 +275,8 @@ export async function deployRelease(
   // and the env is set; EDEN_TEAMMATES is simply an empty roster.
   // Roster for teammate wiring is real members only (never the built-in assistant).
   const roster = allAgents.filter((a) => a.kind === "member");
-  const isTeamMember = !!agent && agent.kind === "member" && agent.root !== "agent";
+  const isTeamMember =
+    !!agent && agent.kind === "member" && agent.root !== "agent";
 
   try {
     const scope: SecretScope = {
@@ -289,7 +311,9 @@ export async function deployRelease(
     // own allowlist. Names only — never values — and only names that actually resolved to an
     // injected env var (exposing a secret that doesn't exist in scope forwards nothing).
     delete envVars.EDEN_SANDBOX_ENV;
-    const exposed = deps.sandboxExposedNames ? await deps.sandboxExposedNames(scope) : [];
+    const exposed = deps.sandboxExposedNames
+      ? await deps.sandboxExposedNames(scope)
+      : [];
     const allowlist = exposed.filter((name) => name in envVars);
     if (allowlist.length > 0) envVars.EDEN_SANDBOX_ENV = allowlist.join(",");
 
@@ -324,15 +348,43 @@ export async function deployRelease(
       envVars.EDEN_TEAMMATES = JSON.stringify(teammates);
       // Keep the tool's fetch budget aligned with the relay's when an operator overrides it.
       if (process.env.EDEN_DELEGATION_TIMEOUT_MS) {
-        envVars.EDEN_DELEGATION_TIMEOUT_MS = process.env.EDEN_DELEGATION_TIMEOUT_MS;
+        envVars.EDEN_DELEGATION_TIMEOUT_MS =
+          process.env.EDEN_DELEGATION_TIMEOUT_MS;
       }
+    }
+
+    // Shared Discord app (issue #32): the bot token can act in every connected server across
+    // all tenants, so it NEVER reaches an instance — instances get only the public credentials
+    // (application id + public key, used for inbound Ed25519 verification) plus the URL of the
+    // control-plane send proxy. All bot-token operations happen control-plane-side. Only when the
+    // operator has configured the shared app: legacy self-managed-app users are left untouched.
+    // Anti-shadowing (as with EDEN_SANDBOX_ENV / EDEN_TEAM_*): delete user-set keys, then set.
+    const discord = getDiscordAppConfig();
+    if (discord) {
+      for (const key of [
+        "DISCORD_BOT_TOKEN",
+        "DISCORD_APPLICATION_ID",
+        "DISCORD_PUBLIC_KEY",
+        "EDEN_DISCORD_SEND_URL",
+      ]) {
+        delete envVars[key];
+      }
+      envVars.DISCORD_APPLICATION_ID = discord.applicationId;
+      envVars.DISCORD_PUBLIC_KEY = discord.publicKey;
+      // Same control-plane base-URL derivation as EDEN_TEAM_URL above.
+      const controlPlaneBase =
+        process.env.EDEN_TEAM_RELAY_URL ??
+        `http://host.docker.internal:${process.env.PORT ?? (process.env.NODE_ENV === "production" ? "3000" : "5173")}`;
+      envVars.EDEN_DISCORD_SEND_URL = `${controlPlaneBase}/api/discord/send`;
     }
 
     let imageRef = release.imageRef;
     const shouldBuild = input.rebuild || !imageRef;
     if (shouldBuild) {
       if (!project?.repoOwner || !project.repoName) {
-        throw new Error("Cannot build release: project is not connected to a GitHub repo.");
+        throw new Error(
+          "Cannot build release: project is not connected to a GitHub repo.",
+        );
       }
       const built = await deployTarget.build({
         projectId: release.projectId,
@@ -356,7 +408,10 @@ export async function deployRelease(
     });
 
     if (health.status !== "live") {
-      const cleanupError = await cleanupNewDeploymentInfra(deployTarget, dep.id);
+      const cleanupError = await cleanupNewDeploymentInfra(
+        deployTarget,
+        dep.id,
+      );
       return store.deployments.update(dep.id, {
         status: health.status,
         url: health.url ?? null,
@@ -376,8 +431,12 @@ export async function deployRelease(
     // version keeps serving until this moment, so a failed deploy never takes anything down.
     // (The weighted multi-version splitter survives in the data model, but the product model
     // is single-live-per-environment for now.)
-    const siblings = await store.deployments.listByEnvironment(input.environmentId);
-    const superseded = siblings.filter((d) => d.id !== dep.id && d.status === "live");
+    const siblings = await store.deployments.listByEnvironment(
+      input.environmentId,
+    );
+    const superseded = siblings.filter(
+      (d) => d.id !== dep.id && d.status === "live",
+    );
     try {
       await Promise.all(
         superseded.map(async (d) => {
@@ -390,7 +449,10 @@ export async function deployRelease(
         }),
       );
     } catch (error) {
-      const cleanupError = await cleanupNewDeploymentInfra(deployTarget, dep.id);
+      const cleanupError = await cleanupNewDeploymentInfra(
+        deployTarget,
+        dep.id,
+      );
       const detail = error instanceof Error ? error.message : String(error);
       return store.deployments.update(dep.id, {
         status: "failed",
@@ -428,7 +490,10 @@ export async function deployRelease(
     // Record WHY it failed — a bare `failed` row is undebuggable (and while the eve
     // toolchain is young, build failures are the expected failure mode).
     const detail = error instanceof Error ? error.message : String(error);
-    return store.deployments.update(dep.id, { status: "failed", errorDetail: detail });
+    return store.deployments.update(dep.id, {
+      status: "failed",
+      errorDetail: detail,
+    });
   }
 }
 

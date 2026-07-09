@@ -1,7 +1,10 @@
-import { sendDiscordChannelMessage } from "eve/channels/discord";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
+// Sends via Eden's control-plane Discord proxy (issue #32) instead of talking to Discord
+// directly: the shared bot token never reaches the instance. EDEN_DISCORD_SEND_URL and
+// EDEN_TEAM_TOKEN are injected at deploy; the proxy scopes sends to servers this agent is
+// connected to.
 export default defineTool({
   description:
     "Send a message to a Discord channel by channel id. Use this when the user asks you to notify or update Discord.",
@@ -17,27 +20,26 @@ export default defineTool({
       .describe("Plain text message to send. Keep it concise."),
   }),
   async execute({ channelId, message }) {
-    const botToken = process.env.DISCORD_BOT_TOKEN;
-    if (!botToken) {
+    const sendUrl = process.env.EDEN_DISCORD_SEND_URL;
+    const token = process.env.EDEN_TEAM_TOKEN;
+    if (!sendUrl || !token) {
       return {
         ok: false,
-        error: "DISCORD_BOT_TOKEN is not configured.",
+        error: "Discord sending is not configured for this deployment.",
       };
     }
 
-    const posted = await sendDiscordChannelMessage({
-      channelId,
-      credentials: { botToken },
-      body: {
-        content: message,
-        allowed_mentions: { parse: [] },
+    const res = await fetch(sendUrl, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
       },
+      body: JSON.stringify({ channelId, message }),
     });
 
-    return {
-      ok: true,
-      channelId,
-      messageId: posted.id,
-    };
+    return (await res.json()) as
+      | { ok: true; channelId: string; messageId: string | null }
+      | { ok: false; error: string };
   },
 });

@@ -88,7 +88,54 @@ export const githubInstallations = pgTable(
     accountLogin: text("account_login"),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex("github_installations_org_install_uq").on(t.orgId, t.installationId)],
+  (t) => [
+    uniqueIndex("github_installations_org_install_uq").on(
+      t.orgId,
+      t.installationId,
+    ),
+  ],
+);
+
+/**
+ * Discord connections (issue #32). Eden owns ONE shared Discord app per installation; a user
+ * authorizes it into their server and Eden registers a guild slash command named after the
+ * agent. This row binds (guild, command) → the agent/environment it routes to, so the
+ * interactions relay can look up the target deployment. The bot token is never stored here (or
+ * anywhere per-agent) — it lives only in control-plane env.
+ *
+ * Unique on (guildId, commandName): a slash command name is unique within a Discord server, so
+ * two agents can't both claim `/x` in one guild — the connect flow refuses the collision.
+ */
+export const discordConnections = pgTable(
+  "discord_connections",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 12 })
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    environmentId: varchar("environment_id", { length: 12 })
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    /** The Discord server (guild) the app was authorized into. */
+    guildId: text("guild_id").notNull(),
+    /** The guild's display name at connect time (best-effort, display-only). */
+    guildName: text("guild_name"),
+    /** The registered slash command name (Eden derives it from the agent name). */
+    commandName: text("command_name").notNull(),
+    /** Discord's id for the registered command, for dedup/cleanup on disconnect. */
+    commandId: text("command_id"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("discord_connections_guild_command_uq").on(
+      t.guildId,
+      t.commandName,
+    ),
+  ],
 );
 
 /** A project == one connected eve repo. */
@@ -257,7 +304,9 @@ export const draftChanges = pgTable(
      * The roster member the path belongs to (derived from the path's agent root). Null for
      * project-shared files outside every member (e.g. the root package.json).
      */
-    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
+      onDelete: "cascade",
+    }),
     /** Repo-relative path under the agent's root (e.g. "agent/instructions.md"). */
     path: text("path").notNull(),
     /**
@@ -295,9 +344,12 @@ export const secretsMetadata = pgTable(
       onDelete: "cascade",
     }),
     // null environmentId == agent-wide secret (all of that agent's environments)
-    environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
-      onDelete: "cascade",
-    }),
+    environmentId: varchar("environment_id", { length: 12 }).references(
+      () => environments.id,
+      {
+        onDelete: "cascade",
+      },
+    ),
     key: text("key").notNull(),
     /**
      * Expose this secret to the agent's SANDBOX shell (not just its tools). Deploys join the
@@ -337,13 +389,21 @@ export const runs = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     /** Roster member the run belongs to; nullable — telemetry may arrive unattributed. */
-    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, { onDelete: "set null" }),
-    deploymentId: varchar("deployment_id", { length: 12 }).references(() => deployments.id, {
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
       onDelete: "set null",
     }),
-    releaseId: varchar("release_id", { length: 12 }).references(() => releases.id, {
-      onDelete: "set null",
-    }),
+    deploymentId: varchar("deployment_id", { length: 12 }).references(
+      () => deployments.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    releaseId: varchar("release_id", { length: 12 }).references(
+      () => releases.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     sessionId: varchar("session_id", { length: 12 }),
     // Correlates to the eve/Workflow run id in the telemetry store.
     externalRunId: text("external_run_id"),
@@ -354,7 +414,9 @@ export const runs = pgTable(
     tokensOutput: integer("tokens_output"),
     wallClockMs: integer("wall_clock_ms"),
     error: text("error"),
-    metadata: jsonb("metadata").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
     startedAt: timestamp("started_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -379,7 +441,9 @@ export const sessions = pgTable(
     projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, { onDelete: "set null" }),
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
+      onDelete: "set null",
+    }),
     externalSessionId: text("external_session_id"),
     trigger: text("trigger"),
     channel: text("channel"),
@@ -417,7 +481,9 @@ export const runSteps = pgTable(
     durationMs: integer("duration_ms"),
     isError: boolean("is_error").notNull().default(false),
     approvalGated: boolean("approval_gated").notNull().default(false),
-    data: jsonb("data").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    data: jsonb("data")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
     startedAt: timestamp("started_at", { withTimezone: true }),
   },
   (t) => [index("run_steps_run_seq_idx").on(t.runId, t.seq)],
@@ -459,9 +525,12 @@ export const secretValues = pgTable(
     agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
       onDelete: "cascade",
     }),
-    environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
-      onDelete: "cascade",
-    }),
+    environmentId: varchar("environment_id", { length: 12 }).references(
+      () => environments.id,
+      {
+        onDelete: "cascade",
+      },
+    ),
     key: text("key").notNull(),
     ciphertext: text("ciphertext").notNull(),
     iv: text("iv").notNull(),
@@ -521,7 +590,9 @@ export const secretRequirementDismissals = pgTable(
     createdBy: text("created_by").references(() => users.id),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex("secret_req_dismissals_agent_key_uq").on(t.agentId, t.key)],
+  (t) => [
+    uniqueIndex("secret_req_dismissals_agent_key_uq").on(t.agentId, t.key),
+  ],
 );
 
 /**
@@ -554,7 +625,11 @@ export const pendingSecrets = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    uniqueIndex("pending_secrets_scope_key_uq").on(t.projectId, t.memberName, t.key),
+    uniqueIndex("pending_secrets_scope_key_uq").on(
+      t.projectId,
+      t.memberName,
+      t.key,
+    ),
   ],
 );
 
@@ -606,7 +681,9 @@ export const auditLog = pgTable(
     }),
     action: text("action").notNull(),
     target: text("target"),
-    meta: jsonb("meta").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    meta: jsonb("meta")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
     createdAt: createdAt(),
   },
   (t) => [index("audit_log_org_created_idx").on(t.orgId, t.createdAt)],
@@ -623,14 +700,19 @@ export const usageEvents = pgTable(
     orgId: text("org_id")
       .notNull()
       .references(() => orgs.id, { onDelete: "cascade" }),
-    deploymentId: varchar("deployment_id", { length: 12 }).references(() => deployments.id, {
-      onDelete: "set null",
-    }),
+    deploymentId: varchar("deployment_id", { length: 12 }).references(
+      () => deployments.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     // model_tokens | compute_seconds | sandbox_exec
     kind: text("kind").notNull(),
     quantity: integer("quantity").notNull(),
     at: timestamp("at", { withTimezone: true }).notNull(),
-    meta: jsonb("meta").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    meta: jsonb("meta")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
   },
   (t) => [index("usage_events_org_at_idx").on(t.orgId, t.at)],
 );
@@ -692,9 +774,12 @@ export const playgroundSessions = pgTable(
     agentId: varchar("agent_id", { length: 12 })
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
-    environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
-      onDelete: "cascade",
-    }),
+    environmentId: varchar("environment_id", { length: 12 }).references(
+      () => environments.id,
+      {
+        onDelete: "cascade",
+      },
+    ),
     /** Same value passed to DeployRequest.worldKey; currently the environment id. */
     worldKey: text("world_key"),
     createdBy: text("created_by")
@@ -713,9 +798,12 @@ export const playgroundSessions = pgTable(
       () => deployments.id,
       { onDelete: "set null" },
     ),
-    lastReleaseId: varchar("last_release_id", { length: 12 }).references(() => releases.id, {
-      onDelete: "set null",
-    }),
+    lastReleaseId: varchar("last_release_id", { length: 12 }).references(
+      () => releases.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     lastVersion: text("last_version"),
     /**
      * Per-conversation model override (an OpenRouter id) applied to subsequent turns via the
@@ -733,7 +821,10 @@ export const playgroundSessions = pgTable(
       t.createdBy,
       t.updatedAt,
     ),
-    uniqueIndex("playground_sessions_external_uq").on(t.projectId, t.externalSessionId),
+    uniqueIndex("playground_sessions_external_uq").on(
+      t.projectId,
+      t.externalSessionId,
+    ),
   ],
 );
 
@@ -804,7 +895,9 @@ export const assistantCheckouts = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex("assistant_checkouts_conversation_uq").on(t.conversationId)],
+  (t) => [
+    uniqueIndex("assistant_checkouts_conversation_uq").on(t.conversationId),
+  ],
 );
 
 /**
@@ -850,13 +943,19 @@ export const delegations = pgTable(
     projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    fromAgentId: varchar("from_agent_id", { length: 12 }).references(() => agents.id, {
-      onDelete: "set null",
-    }),
+    fromAgentId: varchar("from_agent_id", { length: 12 }).references(
+      () => agents.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     fromEnvironmentId: varchar("from_environment_id", { length: 12 }),
-    toAgentId: varchar("to_agent_id", { length: 12 }).references(() => agents.id, {
-      onDelete: "set null",
-    }),
+    toAgentId: varchar("to_agent_id", { length: 12 }).references(
+      () => agents.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     toEnvironmentId: varchar("to_environment_id", { length: 12 }),
     /** The peer eve session the relay opened for this ask. */
     externalSessionId: text("external_session_id"),
@@ -868,5 +967,7 @@ export const delegations = pgTable(
     startedAt: createdAt(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
-  (t) => [index("delegations_project_started_idx").on(t.projectId, t.startedAt)],
+  (t) => [
+    index("delegations_project_started_idx").on(t.projectId, t.startedAt),
+  ],
 );

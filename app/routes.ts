@@ -141,6 +141,13 @@ export default [
   // GitHub redirects back to the callback with a single-use code to convert.
   route("github/apps/new", "routes/github.apps.new.tsx"),
   route("github/apps/callback", "routes/github.apps.callback.tsx"),
+  // One-click Discord channel (issue #32): Eden's shared app. The relay is the app's single
+  // Interactions Endpoint URL; connect/callback run the OAuth authorize + guild-command
+  // registration; send is the control-plane proxy the discord-send-message tool calls.
+  route("api/discord/interactions", "routes/api.discord.interactions.ts"),
+  route("discord/connect", "routes/discord.connect.tsx"),
+  route("discord/callback", "routes/discord.callback.tsx"),
+  route("api/discord/send", "routes/api.discord.send.ts"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
   // Teammate delegation relay: a team member's ask-teammate tool POSTs here (Bearer token).
   route("api/team/ask", "routes/api.team.ask.ts"),

@@ -46,7 +46,10 @@ import {
 } from "react-router";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
-import { FreshnessBadge, releaseFreshness } from "~/components/deploy-freshness";
+import {
+  FreshnessBadge,
+  releaseFreshness,
+} from "~/components/deploy-freshness";
 import {
   AgentNav,
   AppShell,
@@ -120,6 +123,8 @@ import {
 } from "~/github/app-manifest.server";
 import { fetchAgentSource } from "~/github/repo.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
+import { getDiscordAppConfig } from "~/discord/config.server";
+import { listConnectionsForAgent } from "~/discord/connections.server";
 import {
   discardConversationCheckoutByBranch,
   isConversationBranch,
@@ -213,11 +218,20 @@ interface DeploymentData {
   /** Deploy guard: the member whose settings the guard links to fix secrets on. */
   guardAgent: string;
   guardSettingsAction: string;
-  /** Member/single view: Discord setup URL when the agent has the marketplace Discord channel. */
+  /** Member/single view: Discord connect state when the agent has the marketplace Discord channel. */
   discordSetup: {
     enabled: boolean;
+    /** Whether the operator has configured Eden's shared Discord app (EDEN_DISCORD_*). */
+    configured: boolean;
     origin: string;
-    routePath: string;
+    /** Member view: the agent's connected servers; null in the team (hint-only) view. */
+    connections: Array<{
+      id: string;
+      guildId: string;
+      guildName: string | null;
+      commandName: string;
+      environmentId: string;
+    }> | null;
   };
   /** Member/single view: GitHub App setup when the agent has the marketplace GitHub channel. */
   githubSetup: {
@@ -400,12 +414,14 @@ export const loader = (args: LoaderFunctionArgs) =>
             }),
           );
           missingSecrets = perMemberSecrets.flatMap((m) => m.missing);
-          if (perMemberSecrets.some((m) => m.hasDiscord)) hasDiscordSetup = true;
+          if (perMemberSecrets.some((m) => m.hasDiscord))
+            hasDiscordSetup = true;
           if (perMemberSecrets.some((m) => m.hasGithub)) hasGithubSetup = true;
         } catch {
           missingSecrets = []; // secrets store unavailable — never block the pipeline view
         }
-        const guardAgent = missingSecrets[0]?.member ?? roster[0]?.name ?? active.name;
+        const guardAgent =
+          missingSecrets[0]?.member ?? roster[0]?.name ?? active.name;
         return {
           project,
           roster: roster.map((a) => ({ name: a.name })),
@@ -431,8 +447,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           guardSettingsAction: `${contextPath(project.id, guardAgent)}/settings`,
           discordSetup: {
             enabled: hasDiscordSetup,
+            configured: getDiscordAppConfig() !== null,
             origin: publicOrigin(args.request),
-            routePath: DISCORD_INTERACTIONS_ROUTE,
+            connections: null,
           },
           githubSetup: {
             enabled: hasGithubSetup,
@@ -500,6 +517,25 @@ export const loader = (args: LoaderFunctionArgs) =>
       // The App's @name once the guided flow (or manual setup) stored it, plus where it's
       // installed — the setup card renders real state (accounts, repo grants) and guides
       // adding accounts, so the user never needs to know GitHub's install-page URL.
+      // Discord: the servers this agent is connected to (issue #32) — the setup card lists them
+      // and offers "Connect another server". Only when the operator configured the shared app.
+      const discordConfigured = getDiscordAppConfig() !== null;
+      let discordConnections: DeploymentData["discordSetup"]["connections"] =
+        null;
+      if (hasDiscordSetup && discordConfigured) {
+        try {
+          const rows = await listConnectionsForAgent(active.id);
+          discordConnections = rows.map((c) => ({
+            id: c.id,
+            guildId: c.guildId,
+            guildName: c.guildName,
+            commandName: c.commandName,
+            environmentId: c.environmentId,
+          }));
+        } catch {
+          discordConnections = null; // store hiccup — the card falls back to the connect button
+        }
+      }
       let githubAppSlug: string | null = null;
       let githubInstallations: AppInstallation[] | null = null;
       if (hasGithubSetup) {
@@ -510,14 +546,19 @@ export const loader = (args: LoaderFunctionArgs) =>
           key,
         });
         try {
-          githubAppSlug = await getRuntime().secrets.get(secretRef("GITHUB_APP_SLUG"));
+          githubAppSlug = await getRuntime().secrets.get(
+            secretRef("GITHUB_APP_SLUG"),
+          );
           if (githubAppSlug) {
             const [appId, privateKey] = await Promise.all([
               getRuntime().secrets.get(secretRef("GITHUB_APP_ID")),
               getRuntime().secrets.get(secretRef("GITHUB_APP_PRIVATE_KEY")),
             ]);
             if (appId && privateKey) {
-              githubInstallations = await listAppInstallations({ appId, privateKey });
+              githubInstallations = await listAppInstallations({
+                appId,
+                privateKey,
+              });
             }
           }
         } catch {
@@ -549,8 +590,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         )}/settings`,
         discordSetup: {
           enabled: hasDiscordSetup,
+          configured: discordConfigured,
           origin: publicOrigin(args.request),
-          routePath: DISCORD_INTERACTIONS_ROUTE,
+          connections: discordConnections,
         },
         githubSetup: {
           enabled: hasGithubSetup,
@@ -625,7 +667,8 @@ export async function action(args: ActionFunctionArgs) {
         branch,
       );
       // An assistant conversation branch is discarded with its PR — drop the checkout link row.
-      if (isConversationBranch(branch)) await discardConversationCheckoutByBranch(branch!);
+      if (isConversationBranch(branch))
+        await discardConversationCheckoutByBranch(branch!);
       // Closing an unmerged change is the other abandonment path — same sweep (§4.4).
       await sweepPendingSecrets(project.id);
       throw redirect(back);
@@ -685,7 +728,8 @@ export async function action(args: ActionFunctionArgs) {
         changelog: `#${pullNumber} ${title}`.trim(),
         createdBy: auth.user.id,
       });
-      if (isConversationBranch(branch)) await discardConversationCheckoutByBranch(branch!);
+      if (isConversationBranch(branch))
+        await discardConversationCheckoutByBranch(branch!);
       const version = results[0]?.release.version ?? "";
       throw redirect(`${back}?released=${encodeURIComponent(version)}`);
     }
@@ -733,7 +777,9 @@ export async function action(args: ActionFunctionArgs) {
       for (const credAgentId of new Set(credRows.map((r) => r.agentId))) {
         const conflict = findStoredAppCredentialConflict(credRows, credAgentId);
         if (conflict) {
-          const self = credRows.find((r) => r.agentId === credAgentId)!.agentName;
+          const self = credRows.find(
+            (r) => r.agentId === credAgentId,
+          )!.agentName;
           return {
             error:
               `Agents "${self}" and "${conflict.agentName}" share the same GitHub App ` +
@@ -791,10 +837,8 @@ type DraftRow = LoaderData["drafts"][number];
 type ChangeRow = LoaderData["changes"][number];
 
 const IN_FLIGHT = new Set(["queued", "pending", "building"]);
-const DISCORD_INTERACTIONS_ROUTE = "/eve/v1/discord";
 const DISCORD_SECRET_NAMES = new Set([
   "DISCORD_APPLICATION_ID",
-  "DISCORD_BOT_TOKEN",
   "DISCORD_PUBLIC_KEY",
 ]);
 const GITHUB_MENTIONS_ROUTE = "/eve/v1/github";
@@ -835,7 +879,13 @@ function runningOf(deployments: DeploymentRow[]): DeploymentRow | undefined {
 }
 
 /** A tinted glyph square marking a pipeline card's role — keeps the surfaces scannable. */
-function CardGlyph({ icon: Icon, accent }: { icon: LucideIcon; accent: Accent }) {
+function CardGlyph({
+  icon: Icon,
+  accent,
+}: {
+  icon: LucideIcon;
+  accent: Accent;
+}) {
   return (
     <span
       className={cn(
@@ -944,8 +994,16 @@ export default function Deployment({
 /* ────────────────────────────── member pipeline ────────────────────────────── */
 
 function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
-  const { project, drafts, changes, releases, envs, activeAgent, isTeam, canAct } =
-    loaderData;
+  const {
+    project,
+    drafts,
+    changes,
+    releases,
+    envs,
+    activeAgent,
+    isTeam,
+    canAct,
+  } = loaderData;
   // Where "open" on a running deployment points: the agent's playground, not the instance's
   // internal URL (a 127.0.0.1:<port> that's unreachable from a browser).
   const playgroundPath = `${contextPath(project.id, isTeam ? activeAgent : null)}/playground`;
@@ -976,7 +1034,11 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
         projectId={loaderData.project.id}
         agentName={activeAgent}
       />
-      <DiscordSetupHelp envs={envs} setup={loaderData.discordSetup} />
+      <DiscordSetupHelp
+        setup={loaderData.discordSetup}
+        projectId={loaderData.project.id}
+        agentName={activeAgent}
+      />
     </>
   );
 }
@@ -1483,9 +1545,7 @@ function TeamEnvironmentsCard({
           </Alert>
         )}
         {teamEnvs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No environments yet.
-          </p>
+          <p className="text-sm text-muted-foreground">No environments yet.</p>
         ) : (
           <div className="space-y-4">
             {teamEnvs.map((te) => (
@@ -1564,7 +1624,9 @@ function TeamEnvMemberRow({
   const running = runningOf(member.deployments);
   const pending = member.deployments.find((d) => IN_FLIGHT.has(d.status));
   const failed = member.deployments.find((d) => d.status === "failed");
-  const failedCount = member.deployments.filter((d) => d.status === "failed").length;
+  const failedCount = member.deployments.filter(
+    (d) => d.status === "failed",
+  ).length;
 
   return (
     <li className="px-4 py-2">
@@ -1682,7 +1744,9 @@ function TeamVersionHistory({
       <CardContent>
         {skipped.length > 0 && (
           <Alert className="mb-4">
-            <AlertTitle>Some members stayed on their current version</AlertTitle>
+            <AlertTitle>
+              Some members stayed on their current version
+            </AlertTitle>
             <AlertDescription>
               {skipped.join(", ")} had no build at this commit, so they were
               left behind. Ship them a version to bring the team back in sync.
@@ -1763,7 +1827,8 @@ function TeamDeployControl({
   const [guardEnv, setGuardEnv] = useState<string | null>(null);
   const guarded = guard.missing.length > 0;
   const runningHere = (name: string) => version.runningEnvNames.includes(name);
-  const run = (name: string) => onDeploy(name, version.gitSha, runningHere(name));
+  const run = (name: string) =>
+    onDeploy(name, version.gitSha, runningHere(name));
 
   const confirmFor = (name: string) =>
     runningHere(name)
@@ -1803,7 +1868,9 @@ function TeamDeployControl({
           <DropdownMenuContent align="end">
             {teamEnvNames.map((name) => (
               <DropdownMenuItem key={name} onSelect={() => pick(name)}>
-                {runningHere(name) ? `Redeploy in ${name}` : `Deploy to ${name}`}
+                {runningHere(name)
+                  ? `Redeploy in ${name}`
+                  : `Deploy to ${name}`}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -2072,15 +2139,24 @@ function EnvironmentsCard({
   );
 }
 
+/**
+ * Discord channel setup (issue #32): one-click connect through Eden's shared Discord app. The
+ * user clicks Connect Discord, approves one authorization screen, and Eden registers a
+ * `/<agent-name>` slash command and routes interactions automatically — no portal, no secrets.
+ */
 function DiscordSetupHelp({
-  envs,
   setup,
+  projectId,
+  agentName,
 }: {
-  envs: EnvState[];
   setup: LoaderData["discordSetup"];
+  projectId: string;
+  agentName: string;
 }) {
-  const isLocal = isLocalOrigin(setup.origin);
   if (!setup.enabled) return null;
+
+  const connectUrl = `/discord/connect?project=${encodeURIComponent(projectId)}&agent=${encodeURIComponent(agentName)}`;
+  const connections = setup.connections ?? [];
 
   return (
     <Card className="mb-6 mt-6">
@@ -2092,76 +2168,57 @@ function DiscordSetupHelp({
       </CardHeader>
       <CardContent>
         <div className="space-y-3 text-sm">
-          <p>
-            Add the bot to your server with the <code>bot</code> and{" "}
-            <code>applications.commands</code> scopes. In Discord Developer
-            Portal, paste the endpoint for the environment you want Discord to
-            reach into General Information → Interactions Endpoint URL.
-          </p>
-          <div>
-            <p className="font-medium">Set up the slash command</p>
-            <ol className="mt-2 list-decimal space-y-1 pl-5">
-              <li>
-                Use Discord&rsquo;s guild command API for your application:{" "}
-                <code>
-                  PUT /applications/&lt;applicationId&gt;/guilds/&lt;guildId&gt;/commands
-                </code>
-                .
-              </li>
-              <li>
-                Create a command named <code>ask</code> with one required
-                string option named <code>message</code>.
-              </li>
-              <li>
-                Use the command in Discord as{" "}
-                <code>/ask message:review the latest issue</code>.
-              </li>
-            </ol>
-            <pre className="mt-3 overflow-x-auto rounded-md bg-muted p-3 text-xs">
-              <code>{`{
-  "name": "ask",
-  "description": "Ask the eden agent",
-  "options": [
-    {
-      "type": 3,
-      "name": "message",
-      "description": "What should the agent do?",
-      "required": true
-    }
-  ]
-}`}</code>
-            </pre>
-          </div>
-          {envs.length > 0 ? (
-            <ul className="space-y-2">
-              {envs.map(({ env }) => (
-                <li key={env.id}>
-                  <span className="font-medium">{env.name}: </span>
-                  <code className="break-all rounded bg-muted px-1.5 py-0.5">
-                    {envIngressUrl(setup.origin, env.id, setup.routePath)}
-                  </code>
-                </li>
-              ))}
-            </ul>
+          {!setup.configured ? (
+            <p className="text-muted-foreground">
+              This Eden installation doesn&rsquo;t have a Discord app configured
+              yet, so connecting a server isn&rsquo;t available. An operator
+              needs to set <code>EDEN_DISCORD_APPLICATION_ID</code>,{" "}
+              <code>EDEN_DISCORD_BOT_TOKEN</code>, and{" "}
+              <code>EDEN_DISCORD_PUBLIC_KEY</code> on the control plane (see the
+              self-host docs). For local development, set the same vars in{" "}
+              <code>.env.local</code>.
+            </p>
           ) : (
-            <p>
-              Create an environment below and this page will show its Discord
-              endpoint.
-            </p>
+            <>
+              <p>
+                Connect this agent to a Discord server. Eden adds its shared
+                bot, registers a <code>/{agentName}</code> slash command, and
+                routes interactions to the agent — use it as{" "}
+                <code>/{agentName} message: ...</code>. There are no secrets to
+                copy.
+              </p>
+              {connections.length > 0 && (
+                <ul className="space-y-1 rounded-lg border px-3 py-2">
+                  {connections.map((c) => (
+                    <li
+                      key={c.id}
+                      className="flex flex-wrap items-baseline gap-x-2"
+                    >
+                      <span className="font-medium">
+                        {c.guildName ?? `Server ${c.guildId}`}
+                      </span>
+                      <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                        /{c.commandName}
+                      </code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  asChild
+                  size="sm"
+                  variant={connections.length ? "outline" : "default"}
+                >
+                  <Link to={connectUrl}>
+                    {connections.length
+                      ? "Connect another server"
+                      : "Connect Discord"}
+                  </Link>
+                </Button>
+              </div>
+            </>
           )}
-          {isLocal && (
-            <p>
-              Discord cannot call localhost. For local development, expose eden
-              with a tunnel and use that public tunnel host with the same path.
-            </p>
-          )}
-          <p>
-            When someone runs the command, Discord sends the interaction to
-            this endpoint. eden verifies it, gives the <code>message</code>{" "}
-            text to the agent, and posts the agent&rsquo;s reply back to the
-            same Discord channel. To restrict where it can be used, set that
-            channel&rsquo;s permissions for the bot and deny access elsewhere.
-          </p>
         </div>
       </CardContent>
     </Card>
@@ -2206,8 +2263,8 @@ function GitHubSetupHelp({
             This agent talks to GitHub through its own GitHub App — its{" "}
             <code>@mention</code> identity in issues and pull requests, and its
             credential for the repositories you install it on. Create it below;
-            Eden registers the App, stores its secrets, and sends you to GitHub to
-            pick the repositories it watches.
+            Eden registers the App, stores its secrets, and sends you to GitHub
+            to pick the repositories it watches.
           </p>
           {setup.appSlug && (
             <div className="space-y-2">
@@ -2216,7 +2273,8 @@ function GitHubSetupHelp({
               </p>
               {setup.installations === null ? (
                 <p className="text-muted-foreground">
-                  Couldn&rsquo;t reach GitHub to list where it&rsquo;s installed —{" "}
+                  Couldn&rsquo;t reach GitHub to list where it&rsquo;s installed
+                  —{" "}
                   <a
                     href={`https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`}
                     target="_blank"
@@ -2285,7 +2343,11 @@ function GitHubSetupHelp({
                 </a>
               </Button>
             )}
-            <Button asChild size="sm" variant={setup.appSlug ? "outline" : "default"}>
+            <Button
+              asChild
+              size="sm"
+              variant={setup.appSlug ? "outline" : "default"}
+            >
               <Link to={createUrl(envs[0]?.env.id)}>
                 {setup.appSlug ? "Recreate GitHub App" : "Create GitHub App"}
               </Link>
@@ -2364,16 +2426,10 @@ function DiscordSetupTeamHint() {
       <CardContent>
         <div className="space-y-3 text-sm">
           <p>
-            Discord endpoints are per member and per environment. Open a member
-            below, then use the endpoint shown at the bottom of that
-            member&rsquo;s Deployment page as the Interactions Endpoint URL in
-            Discord Developer Portal.
-          </p>
-          <p>
-            Register a slash command named <code>ask</code> with a required
-            string option named <code>message</code>. When someone runs it, eden
-            sends the message text to that member&rsquo;s agent and posts the
-            reply back to the Discord channel.
+            Discord connections are per member — each agent gets its own{" "}
+            <code>/&lt;name&gt;</code> slash command. Open a member below and
+            use <span className="font-medium">Connect Discord</span> on that
+            member&rsquo;s Deployment page to add a server.
           </p>
         </div>
       </CardContent>
@@ -2453,9 +2509,7 @@ function VersionHistory({
               <li key={r.id} className="flex items-center gap-2 px-4 py-2">
                 <span className="w-10 shrink-0 font-semibold">{r.version}</span>
                 <span className="flex shrink-0 items-center gap-1">
-                  {i === 0 && (
-                    <Badge variant="success">Latest</Badge>
-                  )}
+                  {i === 0 && <Badge variant="success">Latest</Badge>}
                   {(runningEnvNames.get(r.id) ?? []).map((name) => (
                     <Badge key={name} variant="secondary">
                       {name}
@@ -2570,7 +2624,9 @@ function DeployControl({
               missing={guard.missing}
               activeAgent={guard.activeAgent}
               settingsAction={guard.settingsAction}
-              deployLabel={guardTarget.mode === "redeploy" ? "Redeploy" : "Deploy"}
+              deployLabel={
+                guardTarget.mode === "redeploy" ? "Redeploy" : "Deploy"
+              }
               onDeploy={() => {
                 run(guardTarget.envState, guardTarget.mode);
                 setGuardTarget(null);
@@ -2611,7 +2667,9 @@ function DeployControl({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {envs.map((s) => {
-            const mode = runningHere(s) ? ("redeploy" as const) : ("deploy" as const);
+            const mode = runningHere(s)
+              ? ("redeploy" as const)
+              : ("deploy" as const);
             return (
               <DropdownMenuItem
                 key={s.env.id}
@@ -2728,9 +2786,7 @@ function EnvNameDialog({
           </Alert>
         )}
         <div className="space-y-1.5">
-          <Label htmlFor={`env-name-${intent}-${from ?? "new"}`}>
-            Name
-          </Label>
+          <Label htmlFor={`env-name-${intent}-${from ?? "new"}`}>Name</Label>
           <Input
             id={`env-name-${intent}-${from ?? "new"}`}
             value={name}

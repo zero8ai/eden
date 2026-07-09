@@ -102,6 +102,16 @@ Fill in every value (`deploy/vps/.env` is gitignored). Notes per section:
   - Generate a **private key** (PEM) and a **client secret**; copy the App ID, slug, client ID,
     client secret, and key into the env file. The PEM can be pasted as one line with `\n`
     escapes.
+- **Discord app (optional)** — for the one-click Discord channel (issue #32), register **one**
+  Discord application for this installation at
+  [discord.com/developers/applications](https://discord.com/developers/applications):
+  - **Interactions Endpoint URL**: `https://eden.example.com/api/discord/interactions` (Discord
+    validates it with a signed PING — Eden answers it, so it saves cleanly).
+  - **OAuth2 → Redirects**: add `https://eden.example.com/discord/callback`.
+  - Copy the **Application ID** → `EDEN_DISCORD_APPLICATION_ID`, the **Public Key** →
+    `EDEN_DISCORD_PUBLIC_KEY`, and a **Bot** token → `EDEN_DISCORD_BOT_TOKEN`. The bot token
+    stays on the control plane and is never shipped to agent instances. Users then connect
+    servers from each agent's Deployment tab — nothing else to configure per agent.
 
 ## 5. Build and start the stack
 

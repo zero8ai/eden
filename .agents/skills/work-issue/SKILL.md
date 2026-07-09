@@ -21,3 +21,19 @@ The workflow:
 4. Wait for CI to finish. Address any failures; every push re-triggers it. Repeat until CI is
    green.
 5. Hand me the finished PR with a summary and the screenshots. Don't merge.
+
+## Model split
+
+All code implementation — product code *and* tests, including running the tests — is done by the
+main agent (or a sub-agent that inherits the session model). Don't downgrade it.
+
+The lighter process work around the change is offloaded to sub-agents running **Opus**
+(`model: opus`):
+
+- browser verification via `agent-browser` and capturing screenshots
+- opening the PR, watching CI, and shepherding it until green
+- routine PR management (rebases, comment replies, re-pushes)
+
+If CI or verification reveals a real code problem, the fix is again implementation — do it at
+the session model (main agent or an inheriting sub-agent). The Opus agents handle the loop,
+not the code.

@@ -70,6 +70,16 @@ describe("manifest schema", () => {
     ).toThrow();
   });
 
+  it("preserves a secret's provisioned flag (set by a guided Eden flow, not the wizard)", () => {
+    const parsed = parseManifest({
+      ...VALID,
+      secrets: [{ name: "GITHUB_APP_ID", sandbox: true, provisioned: true }],
+    });
+    expect(parsed.secrets).toEqual([
+      { name: "GITHUB_APP_ID", sandbox: true, provisioned: true },
+    ]);
+  });
+
   it("accepts optional fields via the schema directly", () => {
     const parsed = templateManifestSchema.parse({
       ...VALID,
@@ -141,16 +151,20 @@ describe("fixture catalog (the real in-repo seed)", () => {
 });
 
 describe("composition against the real seed", () => {
-  it("resolves the engineer agent, materializing the bundled Discord channel and send tool", async () => {
+  it("resolves the engineer agent, materializing the bundled GitHub + Discord channels and send tool", async () => {
     const resolved = await resolveTemplate(fixtureCatalog, "agent", "engineer");
 
-    // The Discord channel and outbound tool are flattened into the agent's file set.
+    // The GitHub + Discord channels and the outbound tool are flattened into the agent's file set.
     expect(new Set(Object.keys(resolved.files))).toEqual(
       new Set(resolved.manifest.files),
     );
+    expect(Object.keys(resolved.files)).toContain("channels/github.ts");
     expect(Object.keys(resolved.files)).toContain("channels/discord.ts");
     expect(Object.keys(resolved.files)).toContain(
       "tools/discord-send-message.ts",
+    );
+    expect(resolved.files["channels/github.ts"]).toContain(
+      'from "eve/channels/github"',
     );
     expect(resolved.files["channels/discord.ts"]).toContain(
       'from "eve/channels/discord"',
@@ -159,24 +173,30 @@ describe("composition against the real seed", () => {
       "sendDiscordChannelMessage",
     );
 
-    // GITHUB_TOKEN comes from the working-with-github skill; Discord's secrets union in too.
+    // The GitHub App secrets (from the GitHub channel) and Discord's secrets union in. The
+    // agent's own GitHub App is its only GitHub credential — there is no personal token.
     const secretNames = (resolved.manifest.secrets ?? []).map((s) => s.name);
     expect(secretNames).toEqual(
       expect.arrayContaining([
-        "GITHUB_TOKEN",
+        "GITHUB_APP_ID",
+        "GITHUB_APP_PRIVATE_KEY",
+        "GITHUB_WEBHOOK_SECRET",
+        "GITHUB_APP_SLUG",
         "DISCORD_APPLICATION_ID",
         "DISCORD_BOT_TOKEN",
         "DISCORD_PUBLIC_KEY",
       ]),
     );
-    expect(secretNames).not.toContain("GITHUB_REPOSITORIES");
-    expect(secretNames).not.toContain("GITHUB_DEFAULT_REPOSITORY");
+    expect(secretNames).not.toContain("GITHUB_TOKEN");
 
-    // Provenance + hash lockstep: the parent's hash is its own index row; the include carries
-    // Discord's own index-row hash.
+    // Provenance + hash lockstep: the parent's hash is its own index row; each include carries
+    // its own index-row hash, in manifest order.
     const index = await fixtureCatalog.index();
     const engineerRow = index.templates.find(
       (t) => t.type === "agent" && t.id === "engineer",
+    )!;
+    const githubRow = index.templates.find(
+      (t) => t.type === "channel" && t.id === "github",
     )!;
     const discordRow = index.templates.find(
       (t) => t.type === "channel" && t.id === "discord",
@@ -184,17 +204,14 @@ describe("composition against the real seed", () => {
     const discordToolRow = index.templates.find(
       (t) => t.type === "tool" && t.id === "discord-send-message",
     )!;
-    const githubSkillRow = index.templates.find(
-      (t) => t.type === "skill" && t.id === "working-with-github",
-    )!;
     expect(resolved.hash).toBe(engineerRow.hash);
     expect(resolved.includes).toEqual([
       {
-        id: "working-with-github",
-        type: "skill",
-        name: "Working with GitHub",
-        version: githubSkillRow.version,
-        hash: githubSkillRow.hash,
+        id: "github",
+        type: "channel",
+        name: "GitHub",
+        version: githubRow.version,
+        hash: githubRow.hash,
       },
       {
         id: "discord",

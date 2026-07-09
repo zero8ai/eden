@@ -29,6 +29,7 @@ import {
   MessageSquare,
   Rocket,
   Server,
+  Webhook,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -112,6 +113,12 @@ import {
   invalidateRepoSource,
   warmAgentSource,
 } from "~/github/cached.server";
+import {
+  findStoredAppCredentialConflict,
+  listAppCredentialRows,
+  listAppInstallations,
+  type AppInstallation,
+} from "~/github/app-manifest.server";
 import { fetchAgentSource } from "~/github/repo.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
 import {
@@ -120,6 +127,7 @@ import {
 } from "~/assistant/checkout-sync.server";
 import { getRuntime } from "~/seams/index.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
+import { envIngressUrl, isLocalOrigin, publicOrigin } from "~/lib/ingress";
 import { contextPath } from "~/lib/paths";
 import { cn } from "~/lib/utils";
 import { overlayLock } from "~/marketplace/lock";
@@ -210,6 +218,16 @@ interface DeploymentData {
     enabled: boolean;
     origin: string;
     routePath: string;
+  };
+  /** Member/single view: GitHub App setup when the agent has the marketplace GitHub channel. */
+  githubSetup: {
+    enabled: boolean;
+    origin: string;
+    routePath: string;
+    /** The agent's App slug (its @name) once created — links the card to GitHub's install picker. */
+    appSlug: string | null;
+    /** Where the App is installed (accounts + repo grants); null when it couldn't be fetched. */
+    installations: AppInstallation[] | null;
   };
 }
 
@@ -343,17 +361,17 @@ export const loader = (args: LoaderFunctionArgs) =>
 
         // Deploy guard (§9), aggregated across members and member-tagged.
         let missingSecrets: GuardMissingSecret[] = [];
-        // Discord setup is per member: show the team hint only when at least one
-        // roster member has a Discord channel file (committed or drafted).
-        let hasDiscordSetup = roster.some(
-          (a) =>
-            source.paths.includes(`${a.root}/channels/discord.ts`) ||
-            allDrafts.some(
-              (d) =>
-                d.content !== null &&
-                d.path === `${a.root}/channels/discord.ts`,
-            ),
-        );
+        // Channel setup is per member: show a team hint only when at least one
+        // roster member has that channel's file (committed or drafted).
+        const hasChannelFile = (a: (typeof roster)[number], channel: string) =>
+          source.paths.includes(`${a.root}/channels/${channel}.ts`) ||
+          allDrafts.some(
+            (d) =>
+              d.content !== null &&
+              d.path === `${a.root}/channels/${channel}.ts`,
+          );
+        let hasDiscordSetup = roster.some((a) => hasChannelFile(a, "discord"));
+        let hasGithubSetup = roster.some((a) => hasChannelFile(a, "github"));
         try {
           const shared = await listSharedSecrets(project.id);
           const sharedNames = new Set(shared.map((s) => s.key));
@@ -377,11 +395,13 @@ export const loader = (args: LoaderFunctionArgs) =>
                   member: a.name,
                 })),
                 hasDiscord: state.all.some(isDiscordSecretRequirement),
+                hasGithub: state.all.some(isGitHubSecretRequirement),
               };
             }),
           );
           missingSecrets = perMemberSecrets.flatMap((m) => m.missing);
           if (perMemberSecrets.some((m) => m.hasDiscord)) hasDiscordSetup = true;
+          if (perMemberSecrets.some((m) => m.hasGithub)) hasGithubSetup = true;
         } catch {
           missingSecrets = []; // secrets store unavailable — never block the pipeline view
         }
@@ -414,6 +434,13 @@ export const loader = (args: LoaderFunctionArgs) =>
             origin: publicOrigin(args.request),
             routePath: DISCORD_INTERACTIONS_ROUTE,
           },
+          githubSetup: {
+            enabled: hasGithubSetup,
+            origin: publicOrigin(args.request),
+            routePath: GITHUB_MENTIONS_ROUTE,
+            appSlug: null,
+            installations: null,
+          },
         };
       }
 
@@ -432,13 +459,15 @@ export const loader = (args: LoaderFunctionArgs) =>
       );
       // Deploy guard (§9): required-but-unset names for this member; dismissed never trigger.
       let missingSecrets: GuardMissingSecret[] = [];
-      let hasDiscordSetup =
-        source.paths.includes(`${active.root}/channels/discord.ts`) ||
+      const activeHasChannelFile = (channel: string) =>
+        source.paths.includes(`${active.root}/channels/${channel}.ts`) ||
         allDrafts.some(
           (d) =>
             d.content !== null &&
-            d.path === `${active.root}/channels/discord.ts`,
+            d.path === `${active.root}/channels/${channel}.ts`,
         );
+      let hasDiscordSetup = activeHasChannelFile("discord");
+      let hasGithubSetup = activeHasChannelFile("github");
       try {
         const lock = overlayLock(
           source.files["eden-lock.json"] ?? null,
@@ -462,8 +491,38 @@ export const loader = (args: LoaderFunctionArgs) =>
         if (state.all.some(isDiscordSecretRequirement)) {
           hasDiscordSetup = true;
         }
+        if (state.all.some(isGitHubSecretRequirement)) {
+          hasGithubSetup = true;
+        }
       } catch {
         missingSecrets = []; // secrets store unavailable — never block the pipeline view
+      }
+      // The App's @name once the guided flow (or manual setup) stored it, plus where it's
+      // installed — the setup card renders real state (accounts, repo grants) and guides
+      // adding accounts, so the user never needs to know GitHub's install-page URL.
+      let githubAppSlug: string | null = null;
+      let githubInstallations: AppInstallation[] | null = null;
+      if (hasGithubSetup) {
+        const secretRef = (key: string) => ({
+          projectId: project.id,
+          agentId: active.id,
+          environmentId: null,
+          key,
+        });
+        try {
+          githubAppSlug = await getRuntime().secrets.get(secretRef("GITHUB_APP_SLUG"));
+          if (githubAppSlug) {
+            const [appId, privateKey] = await Promise.all([
+              getRuntime().secrets.get(secretRef("GITHUB_APP_ID")),
+              getRuntime().secrets.get(secretRef("GITHUB_APP_PRIVATE_KEY")),
+            ]);
+            if (appId && privateKey) {
+              githubInstallations = await listAppInstallations({ appId, privateKey });
+            }
+          }
+        } catch {
+          githubInstallations = null; // GitHub/secrets hiccup — the card falls back to a link
+        }
       }
       return {
         project,
@@ -492,6 +551,13 @@ export const loader = (args: LoaderFunctionArgs) =>
           enabled: hasDiscordSetup,
           origin: publicOrigin(args.request),
           routePath: DISCORD_INTERACTIONS_ROUTE,
+        },
+        githubSetup: {
+          enabled: hasGithubSetup,
+          origin: publicOrigin(args.request),
+          routePath: GITHUB_MENTIONS_ROUTE,
+          appSlug: githubAppSlug,
+          installations: githubInstallations,
         },
       };
     },
@@ -660,6 +726,22 @@ export async function action(args: ActionFunctionArgs) {
     // older commit reuses its image; a rebuild forces a fresh build).
     if (intent === "deploy-team-version") {
       ensureWorkerStarted();
+      // Issue #26: two agents holding the same GitHub App identity (slug/App ID) means at
+      // most one of them ever hears its @mentions — refuse the deploy with names attached.
+      // Fingerprint comparison only; no secret is decrypted.
+      const credRows = await listAppCredentialRows(project.id);
+      for (const credAgentId of new Set(credRows.map((r) => r.agentId))) {
+        const conflict = findStoredAppCredentialConflict(credRows, credAgentId);
+        if (conflict) {
+          const self = credRows.find((r) => r.agentId === credAgentId)!.agentName;
+          return {
+            error:
+              `Agents "${self}" and "${conflict.agentName}" share the same GitHub App ` +
+              `(${conflict.key}). Every agent needs its own App — create one from the ` +
+              "agent's Deployment tab (Create GitHub App), then deploy again.",
+          };
+        }
+      }
       const rebuild = String(form.get("rebuild") ?? "") === "1";
       // A member with no release at this commit (e.g. added after this historical version)
       // can't move — surface those names so a partial roll never silently skews versions.
@@ -715,23 +797,20 @@ const DISCORD_SECRET_NAMES = new Set([
   "DISCORD_BOT_TOKEN",
   "DISCORD_PUBLIC_KEY",
 ]);
+const GITHUB_MENTIONS_ROUTE = "/eve/v1/github";
+const GITHUB_SECRET_NAMES = new Set([
+  "GITHUB_APP_ID",
+  "GITHUB_APP_PRIVATE_KEY",
+  "GITHUB_WEBHOOK_SECRET",
+  "GITHUB_APP_SLUG",
+]);
 
 function isDiscordSecretRequirement(secret: { name: string }): boolean {
   return DISCORD_SECRET_NAMES.has(secret.name);
 }
 
-function publicOrigin(request: Request): string {
-  const url = new URL(request.url);
-  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
-  const proto = forwardedProto || url.protocol.replace(/:$/, "");
-  const host = forwardedHost || request.headers.get("host") || url.host;
-  return `${proto}://${host}`;
-}
-
-function envIngressUrl(origin: string, environmentId: string, path = ""): string {
-  const suffix = path.startsWith("/") ? path : `/${path}`;
-  return `${origin.replace(/\/+$/, "")}/e/${environmentId}${suffix}`;
+function isGitHubSecretRequirement(secret: { name: string }): boolean {
+  return GITHUB_SECRET_NAMES.has(secret.name);
 }
 
 function PublishStatus({ active }: { active: boolean }) {
@@ -856,6 +935,7 @@ export default function Deployment({
       {view === "repo" ? (
         <>
           <TeamRollup loaderData={loaderData} />
+          {loaderData.githubSetup.enabled && <GitHubSetupTeamHint />}
           {loaderData.discordSetup.enabled && <DiscordSetupTeamHint />}
         </>
       ) : (
@@ -884,6 +964,12 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
           activeAgent: loaderData.guardAgent,
           settingsAction: loaderData.guardSettingsAction,
         }}
+      />
+      <GitHubSetupHelp
+        envs={envs}
+        setup={loaderData.githubSetup}
+        projectId={loaderData.project.id}
+        agentName={activeAgent}
       />
       <DiscordSetupHelp envs={envs} setup={loaderData.discordSetup} />
     </>
@@ -1975,10 +2061,8 @@ function DiscordSetupHelp({
   envs: EnvState[];
   setup: LoaderData["discordSetup"];
 }) {
-  const isLocal =
-    setup.origin.includes("localhost") ||
-    setup.origin.includes("127.0.0.1") ||
-    setup.origin.includes("0.0.0.0");
+  const isLocal = isLocalOrigin(setup.origin);
+  if (!setup.enabled) return null;
 
   return (
     <Card className="mb-6 mt-6">
@@ -2059,6 +2143,190 @@ function DiscordSetupHelp({
             text to the agent, and posts the agent&rsquo;s reply back to the
             same Discord channel. To restrict where it can be used, set that
             channel&rsquo;s permissions for the bot and deny access elsewhere.
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * GitHub channel setup (issue #26): the agent listens through its OWN GitHub App. The primary
+ * path is the Manifest flow (Eden registers the App, stores the four secrets, and sends the
+ * user to pick repos); the webhook URLs are shown for the manual fallback.
+ */
+function GitHubSetupHelp({
+  envs,
+  setup,
+  projectId,
+  agentName,
+}: {
+  envs: EnvState[];
+  setup: LoaderData["githubSetup"];
+  projectId: string;
+  agentName: string;
+}) {
+  const isLocal = isLocalOrigin(setup.origin);
+  if (!setup.enabled) return null;
+
+  const createUrl = (envId?: string) =>
+    `/github/apps/new?project=${encodeURIComponent(projectId)}&agent=${encodeURIComponent(agentName)}${
+      envId ? `&env=${encodeURIComponent(envId)}` : ""
+    }`;
+
+  return (
+    <Card className="mb-6 mt-6">
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <CardGlyph icon={Webhook} accent="brand" />
+          <CardTitle className="text-base">GitHub setup</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3 text-sm">
+          <p>
+            This agent talks to GitHub through its own GitHub App — its{" "}
+            <code>@mention</code> identity in issues and pull requests, and its
+            credential for the repositories you install it on. Create it below;
+            Eden registers the App, stores its secrets, and sends you to GitHub to
+            pick the repositories it watches.
+          </p>
+          {setup.appSlug && (
+            <div className="space-y-2">
+              <p className="font-medium">
+                App created: <code>@{setup.appSlug}</code>
+              </p>
+              {setup.installations === null ? (
+                <p className="text-muted-foreground">
+                  Couldn&rsquo;t reach GitHub to list where it&rsquo;s installed —{" "}
+                  <a
+                    href={`https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline underline-offset-2"
+                  >
+                    manage installations on GitHub
+                  </a>
+                  .
+                </p>
+              ) : setup.installations.length === 0 ? (
+                <p className="text-muted-foreground">
+                  Not installed on any account yet — it can&rsquo;t see any
+                  repositories until it is.
+                </p>
+              ) : (
+                <ul className="space-y-1 rounded-lg border px-3 py-2">
+                  {setup.installations.map((inst) => (
+                    <li
+                      key={`${inst.accountType}:${inst.account}`}
+                      className="flex flex-wrap items-baseline gap-x-2"
+                    >
+                      <span className="font-medium">{inst.account}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {inst.accountType === "Organization"
+                          ? "organization"
+                          : "personal account"}
+                        {" · "}
+                        {inst.repositorySelection === "all"
+                          ? "all repositories"
+                          : "selected repositories"}
+                      </span>
+                      {inst.htmlUrl && (
+                        <a
+                          href={inst.htmlUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs underline underline-offset-2"
+                        >
+                          change repositories
+                        </a>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {setup.installations !== null && (
+                <p className="text-muted-foreground">
+                  GitHub asks you to grant repositories on its own screen, then
+                  returns you here.
+                </p>
+              )}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {setup.appSlug && setup.installations !== null && (
+              <Button asChild size="sm">
+                <a
+                  href={`https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {setup.installations.length === 0
+                    ? "Install the App"
+                    : "Add another account or organization"}
+                </a>
+              </Button>
+            )}
+            <Button asChild size="sm" variant={setup.appSlug ? "outline" : "default"}>
+              <Link to={createUrl(envs[0]?.env.id)}>
+                {setup.appSlug ? "Recreate GitHub App" : "Create GitHub App"}
+              </Link>
+            </Button>
+          </div>
+          {envs.length > 0 ? (
+            <ul className="space-y-2">
+              {envs.map(({ env }) => (
+                <li key={env.id}>
+                  <span className="font-medium">{env.name}: </span>
+                  <code className="break-all rounded bg-muted px-1.5 py-0.5">
+                    {envIngressUrl(setup.origin, env.id, setup.routePath)}
+                  </code>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>
+              Create an environment below and this page will show its GitHub
+              webhook endpoint.
+            </p>
+          )}
+          {isLocal && (
+            <p>
+              GitHub cannot call localhost. For local development, expose eden
+              with a tunnel and set the App&rsquo;s webhook URL to that public
+              tunnel host with the same path.
+            </p>
+          )}
+          <p className="text-muted-foreground">
+            Prefer manual setup? Register a GitHub App yourself and set{" "}
+            <code>GITHUB_APP_ID</code>, <code>GITHUB_APP_PRIVATE_KEY</code>,{" "}
+            <code>GITHUB_WEBHOOK_SECRET</code>, and <code>GITHUB_APP_SLUG</code>{" "}
+            in this agent&rsquo;s settings — the steps are in the channel
+            template&rsquo;s setup notes. Each agent needs its own App: two
+            agents sharing a slug can&rsquo;t both hear their mentions.
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function GitHubSetupTeamHint() {
+  return (
+    <Card className="mb-6 mt-6">
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <CardGlyph icon={Webhook} accent="brand" />
+          <CardTitle className="text-base">GitHub setup</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3 text-sm">
+          <p>
+            GitHub Apps are per member — each agent gets its own App and{" "}
+            <code>@mention</code> identity. Open a member below and use{" "}
+            <span className="font-medium">Create GitHub App</span> on that
+            member&rsquo;s Deployment page.
           </p>
         </div>
       </CardContent>

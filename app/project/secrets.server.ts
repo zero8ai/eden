@@ -293,15 +293,19 @@ export type InstallSecretOp =
  *    that name exists — prevents token sprawl; else value).
  *  - `secret:<name>` = the value (blank value ⇒ skip; Continue is never gated).
  *  - `secretsandbox:<name>` = "1"/"0" — pre-checked from the manifest, user-editable.
+ * A `provisioned` secret (set by a guided Eden flow, never collected by the wizard) is always
+ * a skip, no matter what the form carries — the wizard renders no input for it, and this is
+ * the defense in depth if a value is somehow submitted anyway.
  * Values pass through here transiently; they are never returned to a client or logged.
  */
 export function planInstallSecretOps(input: {
-  secrets: Array<{ name: string; sandbox?: boolean }>;
+  secrets: Array<{ name: string; sandbox?: boolean; provisioned?: boolean }>;
   form: Pick<FormData, "get" | "has">;
   sharedNames: string[];
 }): InstallSecretOp[] {
   const shared = new Set(input.sharedNames);
   return input.secrets.map((s) => {
+    if (s.provisioned) return { kind: "skip", name: s.name };
     const sandbox = input.form.has(`secretsandbox:${s.name}`)
       ? input.form.get(`secretsandbox:${s.name}`) === "1"
       : (s.sandbox ?? false);

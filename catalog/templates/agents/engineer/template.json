@@ -7,7 +7,7 @@
   "eve": ">=0.1.0",
   "model": "z-ai/glm-5.2",
   "includes": [
-    { "type": "skill", "id": "working-with-github" },
+    { "type": "channel", "id": "github" },
     { "type": "channel", "id": "discord" },
     { "type": "tool", "id": "discord-send-message" }
   ],

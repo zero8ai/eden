@@ -137,6 +137,10 @@ export default [
     "routes/api.projects.$projectId.assistant.stream.ts",
   ),
   route("api/github/webhook", "routes/api.github.webhook.tsx"),
+  // Per-agent GitHub App Manifest flow (issue #26): submit the manifest to GitHub, then
+  // GitHub redirects back to the callback with a single-use code to convert.
+  route("github/apps/new", "routes/github.apps.new.tsx"),
+  route("github/apps/callback", "routes/github.apps.callback.tsx"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
   // Teammate delegation relay: a team member's ask-teammate tool POSTs here (Bearer token).
   route("api/team/ask", "routes/api.team.ask.ts"),

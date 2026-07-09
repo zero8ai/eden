@@ -72,8 +72,13 @@ import {
   type ResolvedInclude,
 } from "~/marketplace/compose.server";
 import {
+  findAppCredentialConflict,
+  listAppCredentialRows,
+} from "~/github/app-manifest.server";
+import {
   planInstallSecretOps,
   writePendingSecret,
+  type InstallSecretOp,
 } from "~/project/secrets.server";
 import { listSharedSecrets, setAttachment } from "~/seams/oss/secret-store";
 import { decodeKey, fingerprint, seal } from "~/seams/oss/secretbox";
@@ -128,7 +133,12 @@ interface PreviewData {
   conflicts: string[];
   warnings: string[];
   deps: DependencyDecision[];
-  secrets: Array<{ name: string; description?: string; sandbox?: boolean }>;
+  secrets: Array<{
+    name: string;
+    description?: string;
+    sandbox?: boolean;
+    provisioned?: boolean;
+  }>;
   isUpdate: boolean;
   /** Templates bundled by reference (composition) — rendered as a "Bundled from the catalog" card. */
   includes: ResolvedInclude[];
@@ -384,6 +394,47 @@ export async function action(args: ActionFunctionArgs) {
       };
     }
 
+    // Secrets are PLANNED before anything is staged so a refused install stages nothing.
+    let secretOps: InstallSecretOp[] = [];
+    if ((template.manifest.secrets?.length ?? 0) > 0) {
+      let sharedNames: string[] = [];
+      try {
+        sharedNames = (await listSharedSecrets(project.id)).map((s) => s.key);
+      } catch {
+        sharedNames = [];
+      }
+      secretOps = planInstallSecretOps({
+        secrets: template.manifest.secrets ?? [],
+        form,
+        sharedNames,
+      });
+
+      // Issue #26: a GitHub App is an agent's @mention identity — two agents in one project
+      // sharing a slug/App ID is ambiguous (one webhook URL per App). The manifest flow can't
+      // produce this, but the manual fallback lets the same credentials be pasted twice.
+      const setValue = (name: string) => {
+        const op = secretOps.find((o) => o.kind === "set" && o.name === name);
+        return op?.kind === "set" ? op.value : undefined;
+      };
+      const slug = setValue("GITHUB_APP_SLUG");
+      const appId = setValue("GITHUB_APP_ID");
+      if (slug || appId) {
+        const conflict = findAppCredentialConflict(
+          await listAppCredentialRows(project.id),
+          secretAgent?.id ?? null,
+          { slug, appId },
+        );
+        if (conflict) {
+          return {
+            error:
+              `Another agent in this project ("${conflict.agentName}") already uses this GitHub App ` +
+              `(${conflict.key} matches). Every agent needs its own GitHub App — create one for this ` +
+              "agent with the guided flow on its Deployment tab, or paste different credentials.",
+          };
+        }
+      }
+    }
+
     for (const write of plan.writes) {
       await stageDraft({
         projectId: project.id,
@@ -398,21 +449,11 @@ export async function action(args: ActionFunctionArgs) {
       );
     }
 
-    // Secrets step (§9): one enabled step for every template kind. The pure planner decides
-    // each secret's fate from the form (shared-attach / value / skip); values never persist
-    // anywhere but the sealed stores.
-    if ((template.manifest.secrets?.length ?? 0) > 0) {
-      let sharedNames: string[] = [];
-      try {
-        sharedNames = (await listSharedSecrets(project.id)).map((s) => s.key);
-      } catch {
-        sharedNames = [];
-      }
-      const ops = planInstallSecretOps({
-        secrets: template.manifest.secrets ?? [],
-        form,
-        sharedNames,
-      });
+    // Secrets step (§9): one enabled step for every template kind. The pure planner decided
+    // each secret's fate from the form above (shared-attach / value / skip); values never
+    // persist anywhere but the sealed stores.
+    if (secretOps.length > 0) {
+      const ops = secretOps;
       if (secretAgent) {
         // Member install: the agent row exists — write agent-wide values (sandbox set
         // atomically) and attachment rows directly.
@@ -514,6 +555,12 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
 
   const backTo = `/marketplace/${type}/${manifest.id}`;
   const hasConflicts = (preview?.conflicts.length ?? 0) > 0;
+  // Provisioned secrets are set by a guided Eden flow (e.g. Create GitHub App) — the wizard
+  // never collects them, so the form only renders inputs for the user-supplied ones.
+  const userSecrets = (preview?.secrets ?? []).filter((s) => !s.provisioned);
+  const provisionedSecrets = (preview?.secrets ?? []).filter(
+    (s) => s.provisioned,
+  );
   const targetChosen = newMemberTemplate ? !!newMemberName : !!selectedMember;
   const canSubmit =
     !!selectedProjectId && targetChosen && !hasConflicts && !singleAgentInvalid;
@@ -827,20 +874,36 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                     Secrets
                   </CardTitle>
                   <CardDescription>
-                    {newMemberTemplate
-                      ? `This agent needs ${preview.secrets.length} secret${preview.secrets.length === 1 ? "" : "s"}. Enter them now — they'll be attached when the member ships. Values are encrypted write-only.`
-                      : "Stored per-agent, agent-wide. Values are encrypted write-only. Leave blank to set later in Settings."}
+                    {userSecrets.length === 0
+                      ? "Eden sets this template's secrets for you — nothing to enter here."
+                      : newMemberTemplate
+                        ? `This agent needs ${userSecrets.length} secret${userSecrets.length === 1 ? "" : "s"}. Enter them now — they'll be attached when the member ships. Values are encrypted write-only.`
+                        : "Stored per-agent, agent-wide. Values are encrypted write-only. Leave blank to set later in Settings."}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
-                  {preview.secrets.map((s) => (
+                  {provisionedSecrets.length > 0 && (
+                    <Alert>
+                      <AlertTitle>Set automatically by Eden</AlertTitle>
+                      <AlertDescription>
+                        <span className="font-mono text-xs">
+                          {provisionedSecrets.map((s) => s.name).join(", ")}
+                        </span>{" "}
+                        — Eden sets{" "}
+                        {provisionedSecrets.length === 1 ? "this" : "these"}{" "}
+                        during guided setup on the agent&rsquo;s Deployment tab
+                        after install.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                  {userSecrets.map((s) => (
                     <InstallSecretField
                       key={s.name}
                       secret={s}
                       sharedExists={sharedNames.includes(s.name)}
                     />
                   ))}
-                  {newMemberTemplate && (
+                  {newMemberTemplate && userSecrets.length > 0 && (
                     <p className="text-xs text-muted-foreground">
                       {COPY.installDeferral}
                     </p>

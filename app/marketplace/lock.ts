@@ -52,6 +52,8 @@ const installEntrySchema = z.object({
         name: z.string().min(1),
         description: z.string().optional(),
         sandbox: z.boolean().optional(),
+        /** Set by a guided Eden flow (e.g. the GitHub App manifest flow), not collected at install. */
+        provisioned: z.boolean().optional(),
       }),
     )
     .optional(),

@@ -37,8 +37,18 @@ export default defineConfig(({ mode }) => {
       // Containerized eve instances (the built-in assistant, team-delegation peers) call back
       // into Eden's dev server via `host.docker.internal`. Vite's dev server rejects Host
       // headers it doesn't recognise with a 403, so allow that one explicitly (dev-only; the
-      // production server is react-router-serve, which has no host allowlist).
-      allowedHosts: ["host.docker.internal"],
+      // production server is react-router-serve, which has no host allowlist). `.loca.lt`
+      // and `.trycloudflare.com` admit tunnel hostnames so the GitHub App manifest flow
+      // (webhook delivery, OAuth-style redirects) can be exercised against a local dev server.
+      allowedHosts: ["host.docker.internal", ".loca.lt", ".trycloudflare.com"],
+      // In production nginx routes /e/<environmentId>/… to the traffic splitter
+      // (deploy/vps/nginx-eden.conf); mirror that here so the ingress URLs the UI shows —
+      // and the webhook URLs baked into GitHub App manifests — work against the dev server.
+      proxy: {
+        "/e/": {
+          target: `http://127.0.0.1:${env.EDEN_SPLITTER_PORT ?? 8787}`,
+        },
+      },
     },
   };
 });

@@ -112,6 +112,12 @@ export const templateManifestSchema = z.object({
         name: secretName,
         description: z.string().optional(),
         sandbox: z.boolean().optional(),
+        /**
+         * Marks a secret that a guided Eden flow sets (e.g. the GitHub App manifest flow on the
+         * Deployment tab) rather than one collected at install — the wizard renders no input
+         * for it.
+         */
+        provisioned: z.boolean().optional(),
       }),
     )
     .optional(),

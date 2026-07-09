@@ -3,7 +3,8 @@
  * unit: a project owns ONE set of env NAMES and every roster member has a row of every name.
  * Verifies the invariants that hangs on: seeding fans the team env set across all members, CRUD
  * fans out (create/rename/delete a NAME touches every member's row), delete refuses the team's
- * last env and tears down instance infra per member, and ensureTeamEnvironments converges drift
+ * last env and tears down instance infra per member, a roster prune (member removal) reaps the
+ * removed member's infra before the row cascade, and ensureTeamEnvironments converges drift
  * (a member missing a name gets it) and seeds 'default' when a roster has no envs at all.
  */
 import { beforeEach, describe, expect, it } from "vitest";
@@ -214,6 +215,76 @@ describe("deleteTeamEnvironment", () => {
     expect(await store.environments.findById(alphaStaging.id)).toBeNull();
   });
 
+});
+
+describe("member removal (roster prune) tears down infra", () => {
+  it("a removed member's instances and worlds are torn down before the roster prune", async () => {
+    const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
+    store.seedProject({ id: project.id, orgId: ORG, repoOwner: "acme", repoName: "a" });
+    const target = fakeDeployTarget({ health: { status: "live", url: "http://x" } });
+
+    // Deploy something live for beta so removing it has infra to reap.
+    const beta = (await store.agents.listByProject(project.id)).find((a) => a.name === "beta")!;
+    const [betaDefault] = await store.environments.listByAgent(beta.id);
+    const release = await createRelease(
+      { projectId: project.id, agentId: beta.id, gitSha: "c".repeat(40) },
+      store,
+    );
+    const dep = await deployRelease(
+      { environmentId: betaDefault.id, releaseId: release.id },
+      { store, deployTarget: target, secrets: fakeSecrets() },
+    );
+
+    // beta's directory vanished from the tree (merged remove-member change request).
+    const destroyed: string[] = [];
+    const destroyedWorlds: string[] = [];
+    const roster = await syncProjectAgents(
+      project.id,
+      [{ name: "alpha", root: "agents/alpha/agent" }],
+      store,
+      {
+        ...target,
+        destroy: async (id) => {
+          destroyed.push(id);
+        },
+        destroyWorld: async (key) => {
+          destroyedWorlds.push(key);
+        },
+      },
+    );
+
+    expect(destroyed).toEqual([dep.id]);
+    expect(destroyedWorlds).toContain(betaDefault.id);
+    expect(roster.map((a) => a.name)).toEqual(["alpha"]);
+  });
+
+  it("a sync without removals (adds, renames) never touches instance infra", async () => {
+    const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
+    const destroyed: string[] = [];
+    const destroyedWorlds: string[] = [];
+    const target = {
+      ...fakeDeployTarget(),
+      destroy: async (id: string) => {
+        destroyed.push(id);
+      },
+      destroyWorld: async (key: string) => {
+        destroyedWorlds.push(key);
+      },
+    };
+
+    await syncProjectAgents(
+      project.id,
+      [...TEAM, { name: "gamma", root: "agents/gamma/agent" }],
+      store,
+      target,
+    );
+
+    expect(destroyed).toEqual([]);
+    expect(destroyedWorlds).toEqual([]);
+  });
+});
+
+describe("deleteTeamEnvironment (guards & fallbacks)", () => {
   it("refuses to delete the team's only environment", async () => {
     const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
     await expect(

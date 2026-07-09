@@ -28,7 +28,7 @@ const channelTpl: CatalogTemplate = {
     dependencies: { "discord-lib": "^1.0.0" },
     secrets: [
       { name: "DISCORD_BOT_TOKEN", description: "bot token" },
-      { name: "SHARED_SECRET", description: "from channel" },
+      { name: "SHARED_SECRET", description: "from channel", provisioned: true },
     ],
     connections: ["discord-gateway"],
     sandbox: {
@@ -111,12 +111,18 @@ describe("resolveTemplate — flattening an agent that includes a channel + a to
     });
   });
 
-  it("unions secrets by name — first occurrence keeps its description, sandbox ORs", async () => {
+  it("unions secrets by name — first occurrence keeps its description, sandbox/provisioned OR", async () => {
     const resolved = await resolveTemplate(source, "agent", "engineer");
     expect(resolved.manifest.secrets).toEqual([
       { name: "DISCORD_BOT_TOKEN", description: "bot token" },
-      // channel declared it first ("from channel"); parent re-declares it sandbox:true → OR wins.
-      { name: "SHARED_SECRET", description: "from channel", sandbox: true },
+      // channel declared it first ("from channel", provisioned); parent re-declares it
+      // sandbox:true → both flags OR across occurrences, so neither is lost in the flatten.
+      {
+        name: "SHARED_SECRET",
+        description: "from channel",
+        sandbox: true,
+        provisioned: true,
+      },
       { name: "AGENT_SECRET", description: "agent only" },
     ]);
   });

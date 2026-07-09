@@ -55,7 +55,9 @@ describe.runIf(LIVE)("teams against real Postgres", () => {
       expect(await listAgentEnvironments(roster[1].id, store)).toHaveLength(1);
 
       // 2. Roster sync: add qa, drop pm; empty detection never wipes the roster; a re-sync
-      // never re-seeds members that already have environments.
+      // never re-seeds members that already have environments. The fake deploy target keeps
+      // the pruned member's infra teardown away from real docker.
+      const { fakeDeployTarget } = await import("../fakes/infra");
       roster = await syncProjectAgents(
         project.id,
         [
@@ -63,6 +65,7 @@ describe.runIf(LIVE)("teams against real Postgres", () => {
           { name: "qa", root: "agents/qa/agent" },
         ],
         store,
+        fakeDeployTarget(),
       );
       expect(roster.map((a) => a.name)).toEqual(["deployer", "qa"]);
       const qa = roster[1];

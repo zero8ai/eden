@@ -207,4 +207,41 @@ describe("ensureOpenRouterDependency", () => {
       zod: "^4.4.3",
     });
   });
+
+  it("bumps an eve pin too old for defineDynamic (< 0.22)", () => {
+    // A 0.x caret can never reach 0.22 — the generated agent.ts would import a
+    // non-existent export and fail the build gate.
+    const next = ensureOpenRouterDependency(
+      JSON.stringify(
+        {
+          dependencies: {
+            "@openrouter/ai-sdk-provider": "^2.10.0",
+            eve: "^0.18.1",
+            zod: "^3.23.0",
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    expect(JSON.parse(next).dependencies.eve).toBe("^0.22.0");
+  });
+
+  it("leaves resolvable or absent eve specs alone", () => {
+    for (const eve of ["latest", "*", ">=0.20.0", "^0.22.0", "^1.0.0", undefined]) {
+      const pkg =
+        JSON.stringify(
+          {
+            dependencies: {
+              "@ai-sdk/openai-compatible": "^3.0.5",
+              ...(eve === undefined ? {} : { eve }),
+              zod: "^4.4.3",
+            },
+          },
+          null,
+          2,
+        ) + "\n";
+      expect(ensureOpenRouterDependency(pkg)).toBe(pkg);
+    }
+  });
 });

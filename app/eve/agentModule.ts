@@ -12,6 +12,9 @@ export const OPENROUTER_PROVIDER_VERSION = "^3.0.5";
 export const LEGACY_OPENROUTER_PROVIDER_PACKAGE = "@openrouter/ai-sdk-provider";
 export const ZOD_PACKAGE = "zod";
 export const ZOD_VERSION = "^4.4.3";
+export const EVE_PACKAGE = "eve";
+/** `defineDynamic` (root export) first shipped in eve@0.22.0 — the generated model wrapper needs it. */
+export const EVE_MIN_VERSION = "^0.22.0";
 export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 200_000;
 
 /** A curated OpenRouter shortlist for the picker; the UI also allows a free-text override. */
@@ -263,6 +266,19 @@ export function scaffoldAgentModule(
   return `${OPENROUTER_IMPORT}import { defineAgent, defineDynamic } from 'eve';\n\n${OPENROUTER_FACTORY}\n${EDEN_MODEL_HELPER}\nexport default defineAgent({\n  model: ${dynamicModelValue(safe)},\n  modelContextWindowTokens: ${tokens},\n});\n`;
 }
 
+/**
+ * True when a declared eve range can resolve to >= 0.22.0 (`defineDynamic`'s first release).
+ * Absent specs pass — a team member's package.json may inherit eve from the repo root, and a
+ * repo without eve anywhere was never going to build. Non-numeric specs ("latest", "*",
+ * ">=…", tags, urls) pass too — npm resolves those to a modern eve.
+ */
+function eveSupportsDefineDynamic(spec: string | undefined): boolean {
+  if (typeof spec !== "string") return true;
+  const pinned = spec.trim().match(/^[~^=v]?(\d+)\.(\d+)/);
+  if (!pinned) return true;
+  return Number(pinned[1]) > 0 || Number(pinned[2]) >= 22;
+}
+
 export function ensureOpenRouterDependency(packageJson: string | null): string {
   const base = packageJson
     ? (JSON.parse(packageJson) as Record<string, unknown>)
@@ -280,7 +296,9 @@ export function ensureOpenRouterDependency(packageJson: string | null): string {
   // The OpenAI-compatible provider tracks AI SDK v7's provider interfaces. Existing Eden
   // scaffolds used zod ^3, so a model save must upgrade it or npm publish checks fail.
   const zodOk = typeof current[ZOD_PACKAGE] === "string" && /\b4\b|4\./.test(current[ZOD_PACKAGE]);
-  if (providerOk && !legacyProviderPresent && zodOk) {
+  // The generated agent.ts imports `defineDynamic` from eve — a pin below 0.22 can't provide it.
+  const eveOk = eveSupportsDefineDynamic(current[EVE_PACKAGE]);
+  if (providerOk && !legacyProviderPresent && zodOk && eveOk) {
     return packageJson ?? JSON.stringify(base, null, 2) + "\n";
   }
   const withoutLegacy = Object.fromEntries(
@@ -291,6 +309,7 @@ export function ensureOpenRouterDependency(packageJson: string | null): string {
       ...withoutLegacy,
       [OPENROUTER_PROVIDER_PACKAGE]: OPENROUTER_PROVIDER_VERSION,
       ...(zodOk ? {} : { [ZOD_PACKAGE]: ZOD_VERSION }),
+      ...(eveOk ? {} : { [EVE_PACKAGE]: EVE_MIN_VERSION }),
     }).sort(([a], [b]) => a.localeCompare(b)),
   );
   return JSON.stringify({ ...base, dependencies }, null, 2) + "\n";

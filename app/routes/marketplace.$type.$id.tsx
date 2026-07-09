@@ -226,6 +226,8 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
           </Card>
         </div>
 
+        {/* A pure-composition bundle ships no files of its own — hide the empty section. */}
+        {manifest.files.length > 0 && (
         <div>
           <h2 className="mb-3 text-base font-semibold tracking-tight">
             Files{" "}
@@ -252,6 +254,7 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
             ))}
           </div>
         </div>
+        )}
       </div>
     </AppShell>
   );

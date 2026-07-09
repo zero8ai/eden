@@ -1,6 +1,6 @@
 # Marketplace — the first-party catalog
 
-This directory is the Recruit marketplace catalog (PRD §7.8): a curated set of **templates** — pre-built tools, skills, subagents, channels, connections, and whole agents a customer instantiates instead of authoring from scratch. A template is just **files + a manifest**; installing one materializes those files into the customer's repo as a normal reviewable change-set. There is no build step — templates are source.
+This directory is the Recruit marketplace catalog (PRD §7.8): a curated set of **templates** — pre-built tools, skills, subagents, channels, connections, bundles, and whole agents a customer instantiates instead of authoring from scratch. A template is just **files + a manifest**; installing one materializes those files into the customer's repo as a normal reviewable change-set. There is no build step — templates are source.
 
 A template can also **include** other templates by reference (see [Composition](#composition)): a channel like Discord is authored once and bundled into an agent, resolved to materialized files at install time.
 
@@ -26,6 +26,7 @@ marketplace/
     subagents/<id>/
     channels/<id>/
     connections/<id>/
+    bundles/<id>/
     agents/<id>/
 ```
 
@@ -39,11 +40,11 @@ Note the plural: a template of `type: "tool"` lives under `templates/tools/`.
    | field                 | required | notes                                                                                                                |
    | --------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
    | `id`                  | yes      | kebab-case slug, matches the directory name                                                                          |
-   | `type`                | yes      | `tool` \| `skill` \| `subagent` \| `channel` \| `connection` \| `agent`                                              |
+   | `type`                | yes      | `tool` \| `skill` \| `subagent` \| `channel` \| `connection` \| `bundle` \| `agent`                                  |
    | `name`, `description` | yes      | non-empty                                                                                                            |
    | `version`             | yes      | semver `x.y.z`                                                                                                       |
    | `eve`                 | yes      | semver _range_ the template targets, e.g. `">=0.1.0"`                                                                |
-   | `files`               | yes      | non-empty list of install-relative paths — **no absolute paths, no `..`, no backslashes**                            |
+   | `files`               | yes      | list of install-relative paths — **no absolute paths, no `..`, no backslashes**; non-empty for every type except `bundle` (a bundle may be pure composition) |
    | `dependencies`        | no       | npm name → version range; JSON-merged into the target's `package.json`                                               |
    | `secrets`             | no       | `[{ name: UPPER_SNAKE, description? }]` — the install wizard makes placeholders                                      |
    | `sandbox`             | no       | sandbox setup merged into the target agent, e.g. `bootstrap` shell commands, `env` defaults, and a `revalidationKey` |
@@ -72,6 +73,8 @@ The content hash is `sha1(hex)` over the canonicalized manifest plus every file'
 ## Composition
 
 A template may bundle other templates by reference with `includes: [{ type, id }]`. `type` is any template type except `agent` (an agent is a whole team member — it installs as its own root and can't flatten into a parent). Includes may nest (a skill may include a tool); cycles are an error.
+
+The `bundle` type is composition made first-class (issue #42): a named group of includable assets that installs **into an existing member** as one unit, with no (or few) files of its own. An `agent` is conceptually a bundle that also seeds a new member. Installing a composite onto a member that already has one of its includes installed standalone *absorbs* that install — the composite takes ownership of its files and lock entry instead of refusing on a path conflict.
 
 At install (and update) time Eden's resolver flattens each reference into the parent, so:
 

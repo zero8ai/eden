@@ -52,6 +52,24 @@ describe("manifest schema", () => {
     expect(() => parseManifest({ ...VALID, files: [] })).toThrow();
   });
 
+  it("accepts a bundle with no files of its own (pure composition — issue #42)", () => {
+    const parsed = parseManifest({
+      ...VALID,
+      id: "chat-pack",
+      type: "bundle",
+      files: [],
+      includes: [{ type: "channel", id: "discord" }],
+    });
+    expect(parsed.files).toEqual([]);
+    expect(parsed.includes).toEqual([{ type: "channel", id: "discord" }]);
+  });
+
+  it("rejects a file-less bundle with no includes (it would install nothing)", () => {
+    expect(() =>
+      parseManifest({ ...VALID, type: "bundle", files: [], includes: [] }),
+    ).toThrow();
+  });
+
   it("rejects a non-semver version", () => {
     expect(() => parseManifest({ ...VALID, version: "1.0" })).toThrow();
   });

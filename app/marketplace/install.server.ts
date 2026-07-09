@@ -10,8 +10,9 @@
  * route a thin "gather → plan → stage" shell that re-plans server-side before it writes.
  *
  * Two paths mirror the two install shapes:
- *  - a tool/skill/subagent installs INTO an existing member (files land under that member's
- *    agent root; deps merge into that member's package.json);
+ *  - everything except an agent (tool/skill/subagent/channel/connection/bundle) installs INTO
+ *    an existing member (files land under that member's agent root; deps merge into that
+ *    member's package.json);
  *  - an agent installs AS A NEW team member (a fresh `agents/<name>/` project — files plus a
  *    generated package.json).
  * Both always rewrite `eden-lock.json` so provenance is one more reviewable file in the PR.
@@ -388,6 +389,25 @@ export function planInstall(ctx: PlanContext): InstallPlan {
   const owned = new Set(existing?.files ?? []);
   const newPaths = new Set(fileWrites.map((w) => w.path));
 
+  // Composition absorb (issue #42): a composite landing on a member that already has one of its
+  // includes installed standalone is routine, not a conflict — the composite takes over that
+  // install. Its files become ours to overwrite, files it owned that we no longer ship become
+  // deletions, and its lock entry is dropped (the composite's `includes` provenance replaces it).
+  const includeIds = new Set((template.includes ?? []).map((i) => i.id));
+  const absorbed =
+    target.kind === "member"
+      ? ctx.lock.installs.filter(
+          (e) =>
+            e.member === member && e.id !== manifest.id && includeIds.has(e.id),
+        )
+      : [];
+  for (const e of absorbed) {
+    for (const f of e.files) owned.add(f);
+    warnings.push(
+      `Absorbs the existing "${e.name}" v${e.version} install — its files are now managed by ${manifest.name}.`,
+    );
+  }
+
   const draftAt = new Map(ctx.drafts.map((d) => [d.path, d.content]));
   // A new member's generated package.json is a CREATE (not a merge like an existing member's),
   // so an orphan file already at that path — a half-deleted member — must block, not be clobbered.
@@ -402,9 +422,13 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     if (occupiedInRepo || occupiedByDraft) conflicts.push(path);
   }
 
-  const deletions = existing
-    ? existing.files.filter((f) => !newPaths.has(f))
-    : [];
+  const deletions = [
+    ...new Set(
+      [...(existing?.files ?? []), ...absorbed.flatMap((e) => e.files)].filter(
+        (f) => !newPaths.has(f),
+      ),
+    ),
+  ];
 
   // ── 3. The lock write — always. files exclude package.json / eden-lock.json (they're merges). ──
   const entry: InstallEntry = {
@@ -436,7 +460,9 @@ export function planInstall(ctx: PlanContext): InstallPlan {
       : {}),
     ...(hasSandboxWork(manifest.sandbox) ? { sandbox: manifest.sandbox } : {}),
   };
-  const nextLock = upsertInstall(ctx.lock, entry);
+  let baseLock = ctx.lock;
+  for (const e of absorbed) baseLock = removeInstall(baseLock, e.id, e.member);
+  const nextLock = upsertInstall(baseLock, entry);
   writes.push({
     path: "eden-lock.json",
     content: serializeLock(nextLock),

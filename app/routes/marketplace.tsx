@@ -13,6 +13,7 @@ import { authkitLoader } from "@workos-inc/authkit-react-router";
 import {
   Bot,
   Hash,
+  Package,
   Plug,
   Sparkles,
   Workflow,
@@ -54,6 +55,7 @@ interface TypeMeta {
  */
 const DISPLAY_ORDER: TemplateType[] = [
   "agent",
+  "bundle",
   "skill",
   "channel",
   "tool",
@@ -68,6 +70,13 @@ const TYPE_META: Record<TemplateType, TypeMeta> = {
     icon: Bot,
     accent: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
     dot: "bg-violet-500",
+  },
+  bundle: {
+    label: "Bundle",
+    plural: "Bundles",
+    icon: Package,
+    accent: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+    dot: "bg-rose-500",
   },
   tool: {
     label: "Tool",

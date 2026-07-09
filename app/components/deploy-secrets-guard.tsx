@@ -175,7 +175,9 @@ export function DeploySecretsGuardDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      {/* Rows: header / scrollable list / footer. minmax(0,1fr) lets the list absorb the height
+          so the header and the Deploy actions stay pinned no matter how many secrets are missing. */}
+      <DialogContent className="grid-rows-[auto_minmax(0,1fr)_auto] sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{COPY.deployDialogTitle}</DialogTitle>
           <DialogDescription>
@@ -184,7 +186,7 @@ export function DeploySecretsGuardDialog({
             set. Fix them here, or deploy anyway — the agent will run without them.
           </DialogDescription>
         </DialogHeader>
-        <ul className="space-y-2">
+        <ul className="min-h-0 space-y-2 overflow-y-auto">
           {missing.map((m) => (
             <GuardRow
               key={m.name}

@@ -31,6 +31,7 @@ const target: Target = {
   url: "https://agent.example.test",
   version: "v1",
   environmentName: "production",
+  gitSha: "sha_1",
 };
 
 function session(over: Partial<PlaygroundSession> = {}): PlaygroundSession {
@@ -191,6 +192,115 @@ describe("loadPlaygroundEntriesFromEve", () => {
       ],
     });
     expect(entries[1].steps).toHaveLength(1);
+  });
+
+  it("strips the model directive from user text and attributes turns to it (dynamic agent)", async () => {
+    const at = new Date().toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        streamResponse([
+          {
+            type: "session.started",
+            data: { runtime: { modelId: "dynamic:anthropic/claude-sonnet-5" } },
+            meta: { at },
+          },
+          { type: "turn.started", data: { turnId: "turn_0" }, meta: { at } },
+          {
+            type: "message.received",
+            data: { turnId: "turn_0", message: "what model are you?" },
+            meta: { at },
+          },
+          {
+            type: "message.completed",
+            data: { turnId: "turn_0", message: "The default one." },
+            meta: { at },
+          },
+          { type: "turn.started", data: { turnId: "turn_1" }, meta: { at } },
+          {
+            type: "message.received",
+            data: {
+              turnId: "turn_1",
+              message:
+                "<!-- eden:model openai/gpt-5.1 ctx=400000 -->\n\nand now?",
+            },
+            meta: { at },
+          },
+          {
+            type: "message.completed",
+            data: { turnId: "turn_1", message: "A different one." },
+            meta: { at },
+          },
+        ]),
+      ),
+    );
+
+    const entries = await loadPlaygroundEntriesFromEve({
+      session: session({ streamIndex: 7 }),
+      target,
+    });
+
+    expect(entries).toMatchObject([
+      { role: "user", text: "what model are you?" },
+      {
+        role: "assistant",
+        text: "The default one.",
+        modelId: "anthropic/claude-sonnet-5",
+      },
+      // The directive never shows in the transcript…
+      { role: "user", text: "and now?" },
+      // …but attributes the turn to the model that actually served it.
+      {
+        role: "assistant",
+        text: "A different one.",
+        modelId: "openai/gpt-5.1",
+      },
+    ]);
+  });
+
+  it("ignores model directives when the deployed agent's model is static", async () => {
+    const at = new Date().toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        streamResponse([
+          {
+            type: "session.started",
+            data: { runtime: { modelId: "anthropic/claude-sonnet-5" } },
+            meta: { at },
+          },
+          { type: "turn.started", data: { turnId: "turn_0" }, meta: { at } },
+          {
+            type: "message.received",
+            data: {
+              turnId: "turn_0",
+              message: "<!-- eden:model openai/gpt-5.1 -->\n\nand now?",
+            },
+            meta: { at },
+          },
+          {
+            type: "message.completed",
+            data: { turnId: "turn_0", message: "Still the static model." },
+            meta: { at },
+          },
+        ]),
+      ),
+    );
+
+    const entries = await loadPlaygroundEntriesFromEve({
+      session: session({ streamIndex: 4 }),
+      target,
+    });
+
+    // A static agent can't switch — attribution must not claim the directive's model.
+    expect(entries).toMatchObject([
+      { role: "user", text: "and now?" },
+      {
+        role: "assistant",
+        text: "Still the static model.",
+        modelId: "anthropic/claude-sonnet-5",
+      },
+    ]);
   });
 
   it("surfaces a stopped or timed-out turn instead of an empty assistant reply", async () => {

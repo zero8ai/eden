@@ -1,13 +1,17 @@
 /**
  * agent.ts model read/write — pins the authored forms in the wild. Eden writes OpenRouter
  * provider wiring by default so provider-prefixed model ids don't accidentally route through
- * Eve's default Vercel AI Gateway path.
+ * Eve's default Vercel AI Gateway path, and wraps the model in `defineDynamic` so the
+ * playground's per-conversation model directive works (the chosen model is the fallback).
  */
 import { describe, expect, it } from "vitest";
 
 import {
   ensureOpenRouterDependency,
+  hasDynamicModel,
   readModel,
+  readModelContextWindow,
+  scaffoldAgentModule,
   setModel,
 } from "~/eve/agentModule";
 
@@ -47,16 +51,82 @@ describe("readModel", () => {
   it("reads a plain string literal", () => {
     expect(readModel(PLAIN)).toBe("anthropic/claude-sonnet-5");
   });
+  it("reads the defineDynamic fallback of an Eden-written module", () => {
+    expect(readModel(scaffoldAgentModule("anthropic/claude-sonnet-5"))).toBe(
+      "anthropic/claude-sonnet-5",
+    );
+  });
+  it("reads a user-authored gateway-string fallback", () => {
+    const source = `import { defineAgent, defineDynamic } from 'eve';\nexport default defineAgent({\n  model: defineDynamic({ fallback: 'anthropic/claude-sonnet-5', events: {} }),\n});\n`;
+    expect(readModel(source)).toBe("anthropic/claude-sonnet-5");
+  });
 });
 
+describe("hasDynamicModel", () => {
+  it("detects the dynamic wrapper Eden writes", () => {
+    expect(hasDynamicModel(scaffoldAgentModule("anthropic/claude-sonnet-5"))).toBe(true);
+    expect(hasDynamicModel(setModel(WRAPPED, "z-ai/glm-5.2"))).toBe(true);
+  });
+  it("is false for static modules — a static build ignores model directives", () => {
+    expect(hasDynamicModel(WRAPPED)).toBe(false);
+    expect(hasDynamicModel(LEGACY_WRAPPED)).toBe(false);
+    expect(hasDynamicModel(PLAIN)).toBe(false);
+  });
+  it("is false for a missing module", () => {
+    expect(hasDynamicModel(null)).toBe(false);
+    expect(hasDynamicModel(undefined)).toBe(false);
+    expect(hasDynamicModel("")).toBe(false);
+  });
+});
+
+describe("readModelContextWindow", () => {
+  it("reads the declared tokens, with or without numeric separators", () => {
+    expect(readModelContextWindow(WRAPPED)).toBe(200_000);
+    expect(readModelContextWindow("modelContextWindowTokens: 1000000,")).toBe(1_000_000);
+  });
+  it("is null when the prop is absent", () => {
+    expect(readModelContextWindow(PLAIN)).toBeNull();
+  });
+});
+
+/** Structural invariants of the dynamic model wrapper Eden writes. */
+function expectDynamicShape(source: string, model: string) {
+  expect(source).toContain(
+    `fallback: openrouter.chatModel('${model}')`,
+  );
+  expect(source.match(/model\s*:\s*defineDynamic\s*\(/g)).toHaveLength(1);
+  expect(source.match(/function edenSelectedModel/g)).toHaveLength(1);
+  expect(source).toMatch(/import\s*\{[^}]*\bdefineDynamic\b[^}]*\}\s*from\s*['"]eve['"]/);
+  expect(source).toContain("'step.started'");
+  expect(readModel(source)).toBe(model);
+}
+
 describe("setModel", () => {
-  it("replaces INSIDE the provider call — never injects a duplicate model prop", () => {
+  it("upgrades a static provider call to the dynamic wrapper — never a duplicate model prop", () => {
     const next = setModel(WRAPPED, "z-ai/glm-5.2", {
       contextWindowTokens: 131_072,
     });
-    expect(next).toContain(`model: openrouter.chatModel('z-ai/glm-5.2')`);
+    expectDynamicShape(next, "z-ai/glm-5.2");
     expect(next).toContain("modelContextWindowTokens: 131072");
-    expect(next.match(/\bmodel\s*:/g)).toHaveLength(1);
+    expect(next.match(/\bmodel\s*:\s*openrouter\.chatModel\(['"`]/g)).toBeNull();
+  });
+
+  it("retargets the fallback in place on re-save (idempotent wiring)", () => {
+    const first = setModel(WRAPPED, "z-ai/glm-5.2");
+    const second = setModel(first, "openai/gpt-5.1", {
+      contextWindowTokens: 400_000,
+    });
+    expectDynamicShape(second, "openai/gpt-5.1");
+    expect(second).toContain("modelContextWindowTokens: 400000");
+    // No duplicated helper, import, or resolver from repeated saves.
+    expect(second.match(/EDEN_MODEL_DIRECTIVE/g)?.length).toBe(2); // const + one use
+  });
+
+  it("rewires a user-authored gateway-string fallback to OpenRouter", () => {
+    const source = `import { defineAgent, defineDynamic } from 'eve';\n\nexport default defineAgent({\n  model: defineDynamic({ fallback: 'anthropic/claude-sonnet-5', events: {} }),\n});\n`;
+    const next = setModel(source, "z-ai/glm-5.2");
+    expect(next).toContain("fallback: openrouter.chatModel('z-ai/glm-5.2')");
+    expect(next).toContain("@ai-sdk/openai-compatible");
     expect(readModel(next)).toBe("z-ai/glm-5.2");
   });
 
@@ -64,8 +134,29 @@ describe("setModel", () => {
     const next = setModel(LEGACY_WRAPPED, "z-ai/glm-5.2");
     expect(next).toContain("@ai-sdk/openai-compatible");
     expect(next).not.toContain("@openrouter/ai-sdk-provider");
-    expect(next).toContain(`model: openrouter.chatModel('z-ai/glm-5.2')`);
-    expect(readModel(next)).toBe("z-ai/glm-5.2");
+    expectDynamicShape(next, "z-ai/glm-5.2");
+  });
+
+  it("migrates a legacy factory with trailing commas / multiline formatting", () => {
+    // As authored in the wild (eden-spike-agent): prettier adds a trailing comma, which the
+    // old factory regex missed — leaving an orphan createOpenRouter call with no import.
+    const legacy = `import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { defineAgent } from "eve";
+
+const openrouter = createOpenRouter({
+  apiKey: process.env.OPENROUTER_API_KEY ?? "",
+});
+
+export default defineAgent({
+  model: openrouter("anthropic/claude-sonnet-4.5"),
+});
+`;
+    const next = setModel(legacy, "z-ai/glm-5.2");
+    expect(next).not.toContain("createOpenRouter");
+    expect(next).toContain(
+      "const openrouter = createOpenAICompatible({ name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY ?? '' });",
+    );
+    expectDynamicShape(next, "z-ai/glm-5.2");
   });
 
   it("converts a plain string literal to OpenRouter provider wiring", () => {
@@ -78,10 +169,8 @@ describe("setModel", () => {
     expect(next).toContain(
       `const openrouter = createOpenAICompatible({ name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY ?? '' });`,
     );
-    expect(next).toContain(`model: openrouter.chatModel('openai/gpt-5.1')`);
+    expectDynamicShape(next, "openai/gpt-5.1");
     expect(next).toContain("modelContextWindowTokens: 400000");
-    expect(readModel(next)).toBe("openai/gpt-5.1");
-    expect(next.match(/\bmodel\s*:/g)).toHaveLength(1);
   });
 
   it("still injects into defineAgent({...}) when no model exists", () => {
@@ -89,14 +178,13 @@ describe("setModel", () => {
       `import { defineAgent } from 'eve';\nexport default defineAgent({\n});\n`,
       "anthropic/claude-haiku-4-5",
     );
-    expect(readModel(next)).toBe("anthropic/claude-haiku-4-5");
-    expect(next).toContain("model: openrouter.chatModel('anthropic/claude-haiku-4-5')");
+    expectDynamicShape(next, "anthropic/claude-haiku-4-5");
   });
 
   it("scaffolds OpenRouter wiring when no agent module exists", () => {
     const next = setModel("", "anthropic/claude-sonnet-5");
     expect(next).toContain("@ai-sdk/openai-compatible");
-    expect(next).toContain("model: openrouter.chatModel('anthropic/claude-sonnet-5')");
+    expectDynamicShape(next, "anthropic/claude-sonnet-5");
     expect(next).toContain("modelContextWindowTokens: 200000");
   });
 });
@@ -147,5 +235,42 @@ describe("ensureOpenRouterDependency", () => {
       eve: "latest",
       zod: "^4.4.3",
     });
+  });
+
+  it("bumps an eve pin too old for defineDynamic (< 0.22)", () => {
+    // A 0.x caret can never reach 0.22 — the generated agent.ts would import a
+    // non-existent export and fail the build gate.
+    const next = ensureOpenRouterDependency(
+      JSON.stringify(
+        {
+          dependencies: {
+            "@openrouter/ai-sdk-provider": "^2.10.0",
+            eve: "^0.18.1",
+            zod: "^3.23.0",
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    expect(JSON.parse(next).dependencies.eve).toBe("^0.22.0");
+  });
+
+  it("leaves resolvable or absent eve specs alone", () => {
+    for (const eve of ["latest", "*", ">=0.20.0", "^0.22.0", "^1.0.0", undefined]) {
+      const pkg =
+        JSON.stringify(
+          {
+            dependencies: {
+              "@ai-sdk/openai-compatible": "^3.0.5",
+              ...(eve === undefined ? {} : { eve }),
+              zod: "^4.4.3",
+            },
+          },
+          null,
+          2,
+        ) + "\n";
+      expect(ensureOpenRouterDependency(pkg)).toBe(pkg);
+    }
   });
 });

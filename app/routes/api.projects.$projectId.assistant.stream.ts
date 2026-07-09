@@ -71,6 +71,7 @@ export async function action(args: ActionFunctionArgs) {
     url: instance.url,
     version: instance.version ?? "assistant",
     environmentName: "assistant",
+    gitSha: instance.gitSha ?? "",
   };
 
   let session: PlaygroundSession | null = playgroundSessionId

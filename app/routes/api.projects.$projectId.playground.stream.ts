@@ -9,10 +9,13 @@ import { data, redirect, type ActionFunctionArgs } from "react-router";
 
 import { liveTargets } from "~/chat/playground.server";
 import { asString, streamTurnResponse } from "~/chat/turn-stream.server";
+import { findModel } from "~/models/catalog.server";
+import { buildModelDirective } from "~/models/model-directive";
 import {
   createPlaygroundSession,
   getPlaygroundSession,
   markPlaygroundSessionRunning,
+  setPlaygroundSessionModel,
   titleFromMessage,
   type PlaygroundSession,
 } from "~/playground/sessions.server";
@@ -44,6 +47,8 @@ export async function action(args: ActionFunctionArgs) {
   const playgroundSessionId = asString(form.get("playgroundSessionId")) || null;
   const message = asString(form.get("message")).trim();
   if (!message) throw data({ error: "Type a message first." }, { status: 400 });
+  // The composer's current model selection; absent = keep the session's stored override.
+  const requestedModelId = asString(form.get("modelId")).trim() || null;
 
   // Only talk to live deployments that belong to THIS agent (tenancy guard) — reject with
   // JSON, not a stream, so the client can surface it.
@@ -97,9 +102,32 @@ export async function action(args: ActionFunctionArgs) {
       releaseId: target.releaseId,
       version: target.version,
       title,
+      modelId: requestedModelId,
     });
+  } else if (requestedModelId && requestedModelId !== playgroundSession.modelId) {
+    // The selector changed since the last turn — remember it on the conversation.
+    await setPlaygroundSessionModel({
+      id: playgroundSession.id,
+      projectId: project.id,
+      agentId: active.id,
+      userId: auth.user.id,
+      modelId: requestedModelId,
+    });
+    playgroundSession = { ...playgroundSession, modelId: requestedModelId };
   }
   await markPlaygroundSessionRunning({ id: playgroundSession.id, target, title });
+
+  // A model override travels as one machine-readable line prepended to the SENT message (eve's
+  // session API has no per-turn model field); the deployed agent's dynamic-model resolver reads
+  // it, and every display surface strips it. The catalog lookup supplies the model's context
+  // window; when the catalog is unreachable the directive simply omits it.
+  const effectiveModel = requestedModelId ?? playgroundSession.modelId;
+  const messagePrefix = effectiveModel
+    ? buildModelDirective({
+        id: effectiveModel,
+        contextWindowTokens: (await findModel(effectiveModel))?.contextWindow ?? undefined,
+      })
+    : null;
 
   return streamTurnResponse({
     projectId: project.id,
@@ -108,5 +136,6 @@ export async function action(args: ActionFunctionArgs) {
     message,
     channel: "playground",
     title,
+    messagePrefix,
   });
 }

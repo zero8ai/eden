@@ -14,6 +14,8 @@ export interface Target {
   url: string;
   version: string;
   environmentName: string;
+  /** The commit the deployment's release was built from — what is ACTUALLY running. */
+  gitSha: string;
 }
 
 /** Every live deployment belonging to this agent (across its environments). */
@@ -32,6 +34,7 @@ export async function liveTargets(agentId: string): Promise<Target[]> {
                 url: d.url,
                 version: d.version,
                 environmentName: env.name,
+                gitSha: d.gitSha,
               },
             ]
           : [],

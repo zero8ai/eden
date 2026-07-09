@@ -24,6 +24,7 @@
  */
 
 import type { ChatInputOption, ChatInputRequest } from "~/chat/types";
+import { effectiveModelId } from "~/models/model-directive";
 
 /** One action (tool call) inside a step, correlated request → result. */
 export interface TurnAction {
@@ -508,7 +509,9 @@ export async function* streamTurn(input: {
           case "session.started": {
             const runtime = data.runtime as Record<string, unknown> | undefined;
             if (runtime && typeof runtime.modelId === "string") {
-              modelId = runtime.modelId;
+              // Dynamic-model agents report `dynamic:<fallback id>` — resolve to the model that
+              // actually serves this turn (the sent message's directive, else the fallback).
+              modelId = effectiveModelId(runtime.modelId, input.message);
               yield { kind: "model", modelId };
             }
             break;

@@ -396,6 +396,18 @@ describe("planInstall — dependency merge policy", () => {
     expect(plan.warnings[0]).toContain("^2.0.0");
     expect(plan.warnings[0]).toContain("^3.0.0");
   });
+
+  it('treats a "latest" pin as satisfying any wanted range (no conflict warning)', () => {
+    // Scaffolded members pin `eve: "latest"`; catalog templates now want `eve: "^0.22.0"` —
+    // "latest" resolves to the newest release, so that must merge silently, not warn.
+    const plan = planInstall(
+      memberCtx({ packageJson: pkg({ wrangler: "latest" }) }),
+    );
+    expect(plan.writes.some((w) => w.path === "agents/pm/package.json")).toBe(
+      false,
+    );
+    expect(plan.warnings).toEqual([]);
+  });
 });
 
 describe("planInstall — conflicts", () => {

@@ -4,6 +4,11 @@ import { inputRequestsOf, type RawEveEvent } from "~/agent/talk.server";
 import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import { db } from "~/db/client.server";
 import { playgroundEvents, playgroundSessions } from "~/db/schema";
+import {
+  parseModelDirective,
+  runtimeModelBase,
+  stripModelDirective,
+} from "~/models/model-directive";
 import type { Target } from "~/chat/playground.server";
 
 export type PlaygroundSession = typeof playgroundSessions.$inferSelect;
@@ -13,6 +18,8 @@ export interface PlaygroundSessionSummary {
   title: string;
   status: string;
   environmentId: string | null;
+  /** Per-conversation model override; null = the deployed default model. */
+  modelId: string | null;
   updatedAt: string;
 }
 
@@ -24,6 +31,7 @@ export function summarizePlaygroundSession(
     title: session.title ?? "New conversation",
     status: session.status,
     environmentId: session.environmentId,
+    modelId: session.modelId,
     updatedAt: session.updatedAt.toISOString(),
   };
 }
@@ -79,6 +87,7 @@ export async function createPlaygroundSession(input: {
   releaseId?: string | null;
   version?: string | null;
   title?: string | null;
+  modelId?: string | null;
 }): Promise<PlaygroundSession> {
   const [row] = await db
     .insert(playgroundSessions)
@@ -92,9 +101,33 @@ export async function createPlaygroundSession(input: {
       lastReleaseId: input.releaseId ?? null,
       lastVersion: input.version ?? null,
       title: input.title ?? null,
+      modelId: input.modelId ?? null,
     })
     .returning();
   return row;
+}
+
+/** Persist the conversation's model override (tenancy-guarded like getPlaygroundSession). */
+export async function setPlaygroundSessionModel(input: {
+  id: string;
+  projectId: string;
+  agentId: string;
+  userId: string;
+  modelId: string | null;
+}): Promise<boolean> {
+  const updated = await db
+    .update(playgroundSessions)
+    .set({ modelId: input.modelId, updatedAt: new Date() })
+    .where(
+      and(
+        eq(playgroundSessions.id, input.id),
+        eq(playgroundSessions.projectId, input.projectId),
+        eq(playgroundSessions.agentId, input.agentId),
+        eq(playgroundSessions.createdBy, input.userId),
+      ),
+    )
+    .returning({ id: playgroundSessions.id });
+  return updated.length > 0;
 }
 
 export async function markPlaygroundSessionRunning(input: {
@@ -600,6 +633,10 @@ function projectEventsToEntries(
   const turns = new Map<string, TurnProjection>();
   const ordered: TurnProjection[] = [];
   let modelId: string | null = null;
+  // Dynamic-model agents report `dynamic:<fallback id>`; the model that actually served a turn
+  // is then the message's directive (if any) over that fallback. Static agents ignore
+  // directives, so attribution must too.
+  let dynamicModel = false;
 
   const turnFor = (turnId: string | null): TurnProjection | null => {
     if (!turnId) return null;
@@ -638,16 +675,28 @@ function projectEventsToEntries(
       case "session.started": {
         const runtime = data.runtime as Record<string, unknown> | undefined;
         if (runtime && typeof runtime.modelId === "string") {
-          modelId = runtime.modelId;
+          const base = runtimeModelBase(runtime.modelId);
+          dynamicModel = base.dynamic;
+          modelId = base.id;
         }
         break;
       }
       case "turn.started":
         if (turn && !turn.modelId) turn.modelId = modelId;
         break;
-      case "message.received":
-        if (turn) turn.userText = textOf(data.message) ?? turn.userText;
+      case "message.received": {
+        if (!turn) break;
+        const raw = textOf(data.message);
+        if (raw === null) break;
+        // The sent message may carry the model directive — attribute the turn to it, and never
+        // show it: the transcript displays the message as the user typed it.
+        if (dynamicModel) {
+          const directive = parseModelDirective(raw);
+          if (directive) turn.modelId = directive.id;
+        }
+        turn.userText = stripModelDirective(raw);
         break;
+      }
       case "step.started":
         turn?.stepStarts.set(sequence, at);
         break;

@@ -197,6 +197,9 @@ export function packageJsonPathForRoot(root: string): string {
 
 /** Do two npm ranges share any version? Unparseable ranges are treated as disjoint (→ warn). */
 function rangesIntersect(a: string, b: string): boolean {
+  // "latest" isn't a semver range but always resolves to the newest release — it satisfies any
+  // wanted range, so scaffolded `eve: "latest"` never reads as a conflict with a template pin.
+  if (a.trim() === "latest" || b.trim() === "latest") return true;
   try {
     return semver.intersects(a, b);
   } catch {

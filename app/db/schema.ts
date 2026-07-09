@@ -717,6 +717,11 @@ export const playgroundSessions = pgTable(
       onDelete: "set null",
     }),
     lastVersion: text("last_version"),
+    /**
+     * Per-conversation model override (an OpenRouter id) applied to subsequent turns via the
+     * playground model directive; null = the deployed default model.
+     */
+    modelId: text("model_id"),
     lastEventAt: timestamp("last_event_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

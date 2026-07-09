@@ -76,16 +76,10 @@ import {
 } from "~/observability/store.server";
 import {
   listDrafts,
-  resolveFileView,
   stageDeletions,
   stageDraft,
 } from "~/drafts/drafts.server";
-import {
-  ensureOpenRouterDependency,
-  readModel,
-  scaffoldAgentModule,
-  setModel,
-} from "~/eve/agentModule";
+import { readModel } from "~/eve/agentModule";
 import { buildAgentConfig } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
 import { fetchAgentSource, readAgentFile } from "~/github/repo.server";
@@ -104,7 +98,7 @@ import {
   type ResolvedTemplate,
 } from "~/marketplace/compose.server";
 import type { TemplateType } from "~/marketplace/manifest";
-import { findModel } from "~/models/catalog.server";
+import { stageModelChange } from "~/models/stage-model.server";
 import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
   agentFromParams,
@@ -572,49 +566,17 @@ export async function action(args: ActionFunctionArgs) {
     if (intent === "set-model") {
       const model = String(form.get("model") ?? "").trim();
       if (!model) return { error: "Pick or enter a model." };
-      const modelInfo = await findModel(model);
       const { active } = await resolveAgentContext(
         project.id,
         String(form.get("agent") ?? "") || null,
       );
-      const path = `${active.root}/agent.ts`;
-      const view = await resolveFileView(project, path);
-      const next = view.content
-        ? setModel(view.content, model, {
-            contextWindowTokens: modelInfo?.contextWindow,
-          })
-        : scaffoldAgentModule(model, {
-            contextWindowTokens: modelInfo?.contextWindow,
-          });
-
-      const pkgPath = packageJsonPathForRoot(active.root);
-      const pkgView = await resolveFileView(project, pkgPath);
-      let packageJson: string;
-      try {
-        packageJson = ensureOpenRouterDependency(pkgView.content);
-      } catch {
-        return {
-          error: `${pkgPath} is not valid JSON — fix it before setting the model.`,
-        };
-      }
-
-      await Promise.all([
-        stageDraft({
-          projectId: project.id,
-          path,
-          content: next,
-          createdBy: auth.user.id,
-        }),
-        packageJson !== pkgView.content
-          ? stageDraft({
-              projectId: project.id,
-              path: pkgPath,
-              content: packageJson,
-              createdBy: auth.user.id,
-            })
-          : Promise.resolve(),
-      ]);
-      return { ok: true as const };
+      const result = await stageModelChange({
+        project,
+        root: active.root,
+        model,
+        createdBy: auth.user.id,
+      });
+      return result.ok ? { ok: true as const } : { error: result.error };
     }
 
     // ── Marketplace installs: update / uninstall stage reviewable repo changes ──

@@ -4,49 +4,49 @@
       "id": "designer",
       "type": "agent",
       "name": "Designer",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "A product designer that turns problems into build-ready design specs and critiques UI work — capturing decisions and feedback in GitHub as committed notes and PR/issue comments.",
-      "hash": "f2b2090347cdcab078535ecbb271b62e326df033"
+      "hash": "c3c40c12e0dd255f545b5d364930d4729087fedb"
     },
     {
       "id": "engineer",
       "type": "agent",
       "name": "Engineer",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-      "hash": "4ba23f8e120be88edb54a2acb3536b84b19e9dbc"
+      "hash": "0b862fa85809a3b5e5eb25e88c09e341b1fd099b"
     },
     {
       "id": "product-manager",
       "type": "agent",
       "name": "Product Manager",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "Draws the real need out of a request in conversation, then captures it as clear, actionable GitHub issues with gh — following each repo's own templates and labels.",
-      "hash": "8ada1a1fc551597fc187e6d423881fff786450ad"
+      "hash": "832512729d0e00848e8faf57f2a910ebb233492e"
     },
     {
       "id": "reviewer",
       "type": "agent",
       "name": "Reviewer",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "Reviews open pull requests — reads the change against its issue, runs the repo's checks, and leaves specific, ranked feedback. Reviews; doesn't merge.",
-      "hash": "472ce204f6981a434be4092f4c1c3376e002d854"
+      "hash": "f581bf51b714ac1843615c31b6c35cd201f0efe8"
     },
     {
       "id": "technical-writer",
       "type": "agent",
       "name": "Technical Writer",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "Writes and maintains a project's documentation — READMEs, guides, references, changelogs — as pull requests, accurate to the code and in the project's own voice.",
-      "hash": "32257297a796636b8f7aa7593b7d26f30ba1eb07"
+      "hash": "ef991a18e68c4778d0f21fc6c320e1ca49c42545"
     },
     {
       "id": "triage-lead",
       "type": "agent",
       "name": "Triage Lead",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "Keeps a GitHub issue backlog healthy — triages, labels, prioritizes, de-duplicates, and assigns work through gh, learning each repo's own taxonomy. Runs on demand or on a schedule.",
-      "hash": "29cfde7837014244455f386697aa9aca397be5ff"
+      "hash": "643f49bac23af3dbeab2f9ff7b8a12cc86a646ef"
     },
     {
       "id": "github-bundle",

@@ -14,6 +14,7 @@ import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlaskConical, Square } from "lucide-react";
 import {
+  Link,
   redirect,
   useFetcher,
   useNavigate,
@@ -45,7 +46,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
+import { ModelSelect } from "~/components/model-select";
+import { hasDynamicModel } from "~/eve/agentModule";
+import { buildAgentConfig } from "~/eve/parse";
+import { getAgentSource } from "~/github/cached.server";
 import { contextPath } from "~/lib/paths";
+import { stageModelSwitchingUpgrade } from "~/models/stage-model.server";
 import {
   backfillPlaygroundEventsFromEve,
   createPlaygroundSession,
@@ -53,6 +59,7 @@ import {
   listPlaygroundSessions,
   playgroundCacheIsComplete,
   reconcilePlaygroundSessionFromEve,
+  setPlaygroundSessionModel,
   summarizePlaygroundSession,
 } from "~/playground/sessions.server";
 import { newPlaygroundSessionPath } from "~/playground/url";
@@ -91,14 +98,41 @@ export const loader = (args: LoaderFunctionArgs) =>
       // Teams have no repo-level Playground — the tab exists only at the member level.
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
 
-      const [targets, sessions] = await Promise.all([
+      const [targets, sessions, defaultModelId] = await Promise.all([
         liveTargets(active.id),
         listPlaygroundSessions({
           projectId: project.id,
           agentId: active.id,
           userId: auth.user!.id,
         }),
+        // The selector's default: the agent's configured model (the defineDynamic fallback).
+        // Best-effort — a repo-read hiccup must not take down the playground.
+        getAgentSource(project.repoInstallationId, {
+          owner: project.repoOwner,
+          repo: project.repoName,
+        })
+          .then((source) => buildAgentConfig(source, active.root).model)
+          .catch(() => null),
       ]);
+      // Whether each target's DEPLOYED build honors the per-conversation model directive —
+      // read agent.ts at the release's commit, not repo HEAD (HEAD may already carry the
+      // dynamic wrapper while the running build predates it). Best-effort: null (unknown) on
+      // a read hiccup, so a GitHub blip never locks the selector by mistake.
+      const dynamicByRef = new Map<string, boolean | null>();
+      await Promise.all(
+        [...new Set(targets.map((target) => target.gitSha))].map(async (ref) => {
+          const supported = await getAgentSource(project.repoInstallationId, {
+            owner: project.repoOwner,
+            repo: project.repoName,
+            ref,
+          })
+            .then((source) =>
+              hasDynamicModel(source.files[`${active.root}/agent.ts`]),
+            )
+            .catch(() => null);
+          dynamicByRef.set(ref, supported);
+        }),
+      );
       const selectedSessionId = args.url.searchParams.get("session");
       let currentSession =
         (selectedSessionId
@@ -173,11 +207,16 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
       return {
         project,
-        targets,
+        targets: targets.map((target) => ({
+          ...target,
+          supportsModelSwitching: dynamicByRef.get(target.gitSha) ?? null,
+        })),
         sessions: sessions.map(summarizePlaygroundSession),
         currentSessionId: currentSession?.id ?? null,
         currentSessionEnvironmentId: currentSession?.environmentId ?? null,
         currentSessionStatus: currentSession?.status ?? null,
+        currentSessionModelId: currentSession?.modelId ?? null,
+        defaultModelId,
         entries,
         historyError,
         lastDeploymentId: currentSession?.lastDeploymentId ?? null,
@@ -216,6 +255,32 @@ export async function action(args: ActionFunctionArgs) {
     });
     throw redirect(newPlaygroundSessionPath(args.url, session.id));
   }
+  // Persist the selector on change (not just on send) so the choice survives a reload.
+  if (String(form.get("intent")) === "set-session-model") {
+    const sessionId = String(form.get("playgroundSessionId") ?? "");
+    const modelId = String(form.get("modelId") ?? "").trim();
+    if (sessionId && modelId) {
+      await setPlaygroundSessionModel({
+        id: sessionId,
+        projectId: project.id,
+        agentId: active.id,
+        userId: auth.user.id,
+        modelId,
+      });
+    }
+    return { ok: true as const };
+  }
+  // Stage the dynamic-model migration for THIS agent (current model kept as the fallback).
+  // The playground offers this when the deployed build is static — a static agent.ts ignores
+  // the per-conversation directive, so the selector would silently no-op. Staged only: the
+  // user still publishes + deploys the change to activate it.
+  if (String(form.get("intent")) === "enable-model-switching") {
+    return stageModelSwitchingUpgrade({
+      project,
+      root: active.root,
+      createdBy: auth.user.id,
+    });
+  }
   return { ok: true as const };
 }
 
@@ -250,6 +315,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     currentSessionId,
     currentSessionEnvironmentId,
     currentSessionStatus,
+    currentSessionModelId,
+    defaultModelId,
     entries,
     historyError,
     lastDeploymentId,
@@ -262,9 +329,18 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const revalidator = useRevalidator();
   const newSessionFetcher = useFetcher<typeof action>();
   const NewSessionForm = newSessionFetcher.Form;
+  const modelFetcher = useFetcher<typeof action>();
+  const enableFetcher = useFetcher<typeof action>();
+  const EnableSwitchingForm = enableFetcher.Form;
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [live, setLive] = useState<LiveTurn | null>(null);
+  // The user's not-yet-persisted selector choice; the stored session override wins otherwise.
+  const [modelOverride, setModelOverride] = useState<string | null>(null);
+  useEffect(() => {
+    setModelOverride(null);
+  }, [currentSessionId]);
+  const selectedModelId = modelOverride ?? currentSessionModelId;
   const [sendError, setSendError] = useState<string | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const stopRequestedRef = useRef(false);
@@ -294,6 +370,15 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           target.environmentId === currentSessionEnvironmentId),
     ) ?? defaultTarget;
   const deploymentId = selectedTarget?.deploymentId ?? "";
+  // The deployed build we're talking to ignores the model directive (static agent.ts) — lock
+  // the selector and offer the staged migration instead of letting it silently no-op. An
+  // unknown flag (null — the release read failed) leaves the selector alone.
+  const modelSwitchingLocked = selectedTarget?.supportsModelSwitching === false;
+  const enableStaged = enableFetcher.data?.ok === true;
+  const enableError =
+    enableFetcher.data && enableFetcher.data.ok === false
+      ? enableFetcher.data.error
+      : null;
 
   const sessionPicker = useMemo(() => {
     if (!currentSessionId || sessions.length === 0) return null;
@@ -369,6 +454,9 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       form.set("deploymentId", deploymentId);
       form.set("agentName", activeAgent);
       if (currentSessionId) form.set("playgroundSessionId", currentSessionId);
+      // The current model selection applies to this and subsequent turns (and is persisted on
+      // the session server-side, so a first-send selection survives the session's creation).
+      if (selectedModelId) form.set("modelId", selectedModelId);
 
       try {
         const controller = new AbortController();
@@ -464,7 +552,27 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       navigate,
       project.id,
       revalidator,
+      selectedModelId,
     ],
+  );
+
+  const changeModel = useCallback(
+    (modelId: string) => {
+      setModelOverride(modelId);
+      // Persist immediately when the conversation already exists; a brand-new conversation has
+      // no row yet — the first send carries the selection and creates it with the override.
+      if (currentSessionId) {
+        modelFetcher.submit(
+          {
+            intent: "set-session-model",
+            playgroundSessionId: currentSessionId,
+            modelId,
+          },
+          { method: "post" },
+        );
+      }
+    },
+    [currentSessionId, modelFetcher],
   );
 
   const stopTurn = useCallback(async () => {
@@ -529,6 +637,14 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const targetPicker = useMemo(
     () => (
       <>
+        <ModelSelect
+          value={selectedModelId ?? defaultModelId}
+          busy={false}
+          disabled={busy || modelSwitchingLocked}
+          placeholder="Deployed model"
+          triggerClassName="h-9 w-auto max-w-56 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted sm:w-auto"
+          onCommit={changeModel}
+        />
         <Select
           value={deploymentId}
           onValueChange={(nextDeploymentId) => {
@@ -566,7 +682,18 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         )}
       </>
     ),
-    [busy, deploymentId, searchParams, setSearchParams, stopTurn, targets],
+    [
+      busy,
+      changeModel,
+      defaultModelId,
+      deploymentId,
+      modelSwitchingLocked,
+      searchParams,
+      selectedModelId,
+      setSearchParams,
+      stopTurn,
+      targets,
+    ],
   );
 
   const headerActions = useMemo(
@@ -693,6 +820,50 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           </ChatTranscript>
 
           <div className="mx-auto w-full max-w-5xl px-4 pb-4 pt-3 sm:px-6">
+            {modelSwitchingLocked && (
+              <Alert className="mb-3">
+                <AlertDescription>
+                  {enableStaged ? (
+                    <span>
+                      Model switching is staged for this agent — publish and
+                      deploy the change from the{" "}
+                      <Link
+                        to={`${base}/deployment`}
+                        className="font-medium underline underline-offset-2"
+                      >
+                        Deployment tab
+                      </Link>{" "}
+                      to activate it.
+                    </span>
+                  ) : (
+                    <span className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                      <span>
+                        This deployment runs a fixed model, so it can&apos;t
+                        switch models per conversation yet.
+                      </span>
+                      <EnableSwitchingForm method="post">
+                        <input
+                          type="hidden"
+                          name="intent"
+                          value="enable-model-switching"
+                        />
+                        <Button
+                          type="submit"
+                          variant="outline"
+                          size="sm"
+                          disabled={enableFetcher.state !== "idle"}
+                        >
+                          Enable model switching
+                        </Button>
+                      </EnableSwitchingForm>
+                      {enableError && (
+                        <span className="text-destructive">{enableError}</span>
+                      )}
+                    </span>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
             <ChatComposer
               placeholder={
                 isTeam

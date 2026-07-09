@@ -6,8 +6,9 @@
  * against an in-memory fake.
  */
 import type { Agent, DataStore, Environment, Project } from "~/data/ports";
-import { ensureTeamEnvironments } from "~/deploy/environments.server";
+import { destroyEnvironmentInfra, ensureTeamEnvironments } from "~/deploy/environments.server";
 import { getRuntime } from "~/seams/index.server";
+import type { DeployTarget } from "~/seams/types";
 
 export type { Agent, Project, Environment } from "~/data/ports";
 
@@ -198,8 +199,9 @@ async function rewriteMemberDraftPaths(
  * roster: a NEW member automatically inherits EVERY team env name — that's the mechanism that
  * keeps a member from existing in one environment but not another. Members that already have all
  * the team names are left untouched (create swallows the drift dup), so the self-heal that runs
- * on every Overview load never disturbs user CRUD. Removed members cascade away; the root
- * member's human-given name survives detection.
+ * on every Overview load never disturbs user CRUD. Removed members get their instance infra
+ * torn down first (containers + world DBs — the row cascade can't do that), then cascade away;
+ * the root member's human-given name survives detection.
  *
  * This is also the SHIP POINT for pending install secrets (PLAN-SECRETS-REWORK §4.4): a
  * new-member install holds its secrets sealed until the member's agents row exists — which
@@ -210,6 +212,7 @@ export async function syncProjectAgents(
   projectId: string,
   roster: { name: string; root: string }[],
   store: DataStore = getRuntime().data,
+  deployTarget?: DeployTarget,
 ): Promise<Agent[]> {
   const existing = await store.agents.listByProject(projectId);
   const existingNames = new Set(existing.map((a) => a.name));
@@ -236,10 +239,30 @@ export async function syncProjectAgents(
     existingNames.add(r.newName);
   }
 
-  const agents = await store.agents.syncRoster(
-    projectId,
-    withPreservedNames(existing, roster),
-  );
+  // Members about to be PRUNED — their directory vanished from the detected tree (a merged
+  // remove-member change request, or a deletion pushed straight to the repo). syncRoster's row
+  // cascade takes their environments, deployments and secrets, but rows can't stop docker
+  // containers or drop world DBs — and after the cascade those ids are the ONLY handle on that
+  // infra. Tear it down FIRST, best-effort, exactly like deleteTeamEnvironment. Renamed rows
+  // were mapped in place above, so a landed rename never reads as a removal here.
+  const finalRoster = withPreservedNames(existing, roster);
+  if (roster.length > 0) {
+    const keep = new Set(finalRoster.map((m) => m.name));
+    const renamedIds = new Set(renames.map((r) => r.id));
+    const pruned = existing.filter(
+      (a) => a.kind === "member" && !renamedIds.has(a.id) && !keep.has(a.name),
+    );
+    if (pruned.length > 0) {
+      const target = deployTarget ?? getRuntime().deployTarget;
+      for (const member of pruned) {
+        for (const env of await store.environments.listByAgent(member.id)) {
+          await destroyEnvironmentInfra(env.id, { store, deployTarget: target });
+        }
+      }
+    }
+  }
+
+  const agents = await store.agents.syncRoster(projectId, finalRoster);
   // A new member inherits the team's full env set here — this converge is what guarantees no
   // member is left existing in one environment but not another.
   await ensureTeamEnvironments(projectId, { store });

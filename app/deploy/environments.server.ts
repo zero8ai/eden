@@ -169,6 +169,34 @@ export async function renameTeamEnvironment(
 }
 
 /**
+ * Tear down ONE environment row's runtime infra: every deployment's container (`destroy` when
+ * the target has it, `stop` otherwise), then the env's Workflow world DB. All best-effort — a
+ * half-torn-down instance never blocks the row delete that follows. Shared by env delete and
+ * the roster prune (member removal): both delete rows whose ids are the ONLY handle on this
+ * infra, so infra always goes first.
+ */
+export async function destroyEnvironmentInfra(
+  environmentId: string,
+  deps: EnvironmentDeps = envDeps(),
+): Promise<void> {
+  const { store, deployTarget } = deps;
+  const deployments = await store.deployments.listByEnvironment(environmentId);
+  for (const dep of deployments) {
+    try {
+      if (deployTarget.destroy) await deployTarget.destroy(dep.id);
+      else await deployTarget.stop(dep.id);
+    } catch {
+      // container already gone / target unreachable — the row delete is authoritative
+    }
+  }
+  try {
+    await deployTarget.destroyWorld?.(environmentId);
+  } catch {
+    // best-effort — a leftover world DB never blocks the delete
+  }
+}
+
+/**
  * Delete an environment NAME across the whole team. Refuses when it's the team's only env name
  * (a team needs ≥1). Converges the roster first (so drift can't leave a member env-less), then
  * per member row: tear down every deployment's infra, drop the env's Workflow world, delete the
@@ -195,21 +223,8 @@ export async function deleteTeamEnvironment(
   let deleted = 0;
   for (const env of targets) {
     // Infra first: after the row delete the deployment ids are gone and nothing could find the
-    // containers/databases again. Best-effort — a half-torn-down instance must not block delete.
-    const deployments = await store.deployments.listByEnvironment(env.id);
-    for (const dep of deployments) {
-      try {
-        if (deployTarget.destroy) await deployTarget.destroy(dep.id);
-        else await deployTarget.stop(dep.id);
-      } catch {
-        // container already gone / target unreachable — the row delete is authoritative
-      }
-    }
-    try {
-      await deployTarget.destroyWorld?.(env.id);
-    } catch {
-      // best-effort — a leftover world DB never blocks the environment delete
-    }
+    // containers/databases again.
+    await destroyEnvironmentInfra(env.id, { store, deployTarget });
     // After the converge no member is env-less, so deleteById can't hit its last-env refusal;
     // a false here means drift we don't care about — treat it as a no-op, don't throw.
     if (await store.environments.deleteById(env.id)) deleted++;

@@ -1,6 +1,6 @@
 {
-  "id": "727bd8c1-b779-495c-878b-c2e7205655e2",
-  "prevId": "3460fb6d-b726-4c83-8309-1e2bf8cdb924",
+  "id": "34f5158a-3eb9-4069-bb0b-1da542f5cba1",
+  "prevId": "727bd8c1-b779-495c-878b-c2e7205655e2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1652,6 +1652,12 @@
         },
         "last_version": {
           "name": "last_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "model_id": {
+          "name": "model_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false

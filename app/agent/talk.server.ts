@@ -85,6 +85,13 @@ export interface TurnResult {
   error: string | null;
 }
 
+/** The raw Eve durable-stream event (type + data + meta), as parsed from an NDJSON line. */
+export interface RawEveEvent {
+  type: string;
+  data: Record<string, unknown>;
+  meta?: { at?: string };
+}
+
 /**
  * Live events yielded while a turn runs. Every stream ends with exactly one `done`, on every
  * path (success, failure, timeout, unreachable agent) — consumers can rely on it.
@@ -96,6 +103,8 @@ export type TalkEvent =
       sessionId: string;
       continuationToken: string | null;
       streamIndex: number;
+      /** The raw event at this `streamIndex`, for the durable transcript cache. */
+      rawEvent: RawEveEvent;
     }
   | { kind: "turn"; turnId: string }
   | { kind: "model"; modelId: string }
@@ -479,9 +488,15 @@ export async function* streamTurn(input: {
           continue; // not a JSON line — skip
         }
         streamIndex += 1;
-        yield { kind: "progress", sessionId, continuationToken, streamIndex };
         const type = String(evt.type ?? "");
         const data = evt.data ?? {};
+        yield {
+          kind: "progress",
+          sessionId,
+          continuationToken,
+          streamIndex,
+          rawEvent: { type, data, meta: evt.meta },
+        };
         const at = evt.meta?.at ? Date.parse(evt.meta.at) : Date.now();
         const stepIndex =
           typeof data.stepIndex === "number" ? data.stepIndex : 0;

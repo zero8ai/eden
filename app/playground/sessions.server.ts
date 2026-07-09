@@ -5,8 +5,8 @@ import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import { db } from "~/db/client.server";
 import { playgroundSessions } from "~/db/schema";
 import {
-  DYNAMIC_MODEL_ID_PREFIX,
   parseModelDirective,
+  runtimeModelBase,
   stripModelDirective,
 } from "~/models/model-directive";
 import type { Target } from "~/chat/playground.server";
@@ -550,10 +550,9 @@ function projectEventsToEntries(
       case "session.started": {
         const runtime = data.runtime as Record<string, unknown> | undefined;
         if (runtime && typeof runtime.modelId === "string") {
-          dynamicModel = runtime.modelId.startsWith(DYNAMIC_MODEL_ID_PREFIX);
-          modelId = dynamicModel
-            ? runtime.modelId.slice(DYNAMIC_MODEL_ID_PREFIX.length)
-            : runtime.modelId;
+          const base = runtimeModelBase(runtime.modelId);
+          dynamicModel = base.dynamic;
+          modelId = base.id;
         }
         break;
       }

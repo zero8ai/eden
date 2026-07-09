@@ -101,4 +101,16 @@ describe("effectiveModelId", () => {
       ),
     ).toBe("openai/gpt-5.1");
   });
+
+  it("strips the gateway provider segment from a live-model fallback id", () => {
+    // A live openrouter.chatModel fallback is reported as dynamic:openrouter/<id> — the
+    // fallback-served turn must display the same bare id directive-served turns do.
+    expect(effectiveModelId("dynamic:openrouter/anthropic/claude-haiku-4.5", "hi")).toBe(
+      "anthropic/claude-haiku-4.5",
+    );
+    // A model under OpenRouter's own vendor namespace survives the single-segment strip.
+    expect(effectiveModelId("dynamic:openrouter/openrouter/auto", "hi")).toBe(
+      "openrouter/auto",
+    );
+  });
 });

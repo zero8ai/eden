@@ -62,6 +62,28 @@ export function stripModelDirective(text: string): string {
 }
 
 /**
+ * Eden's generated wiring names its provider "openrouter", and eve formats a live fallback
+ * model's id as `<provider>/<modelId>` — so a dynamic agent reports
+ * `dynamic:openrouter/anthropic/claude-…`. Strip that provider segment so fallback-served
+ * turns display the same bare OpenRouter id directive-served turns do.
+ */
+const GATEWAY_PROVIDER_PREFIX = "openrouter/";
+
+/** Split eve's reported runtime id into the displayable base id + the dynamic-model flag. */
+export function runtimeModelBase(runtimeModelId: string): {
+  id: string;
+  dynamic: boolean;
+} {
+  const dynamic = runtimeModelId.startsWith(DYNAMIC_MODEL_ID_PREFIX);
+  if (!dynamic) return { id: runtimeModelId, dynamic };
+  let id = runtimeModelId.slice(DYNAMIC_MODEL_ID_PREFIX.length);
+  if (id.startsWith(GATEWAY_PROVIDER_PREFIX)) {
+    id = id.slice(GATEWAY_PROVIDER_PREFIX.length);
+  }
+  return { id, dynamic };
+}
+
+/**
  * The model that actually served a turn, from eve's reported runtime id + the sent message.
  * Static agents report a plain id (directives had no effect — ignore them); dynamic agents
  * report `dynamic:<fallback>`, overridden per turn by the message's directive.
@@ -70,7 +92,7 @@ export function effectiveModelId(
   runtimeModelId: string,
   sentMessage: string,
 ): string {
-  if (!runtimeModelId.startsWith(DYNAMIC_MODEL_ID_PREFIX)) return runtimeModelId;
-  const fallback = runtimeModelId.slice(DYNAMIC_MODEL_ID_PREFIX.length);
-  return parseModelDirective(sentMessage)?.id ?? fallback;
+  const base = runtimeModelBase(runtimeModelId);
+  if (!base.dynamic) return base.id;
+  return parseModelDirective(sentMessage)?.id ?? base.id;
 }

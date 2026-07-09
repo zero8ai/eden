@@ -6,7 +6,7 @@
       "name": "Designer",
       "version": "0.2.0",
       "description": "A product designer that turns problems into build-ready design specs and critiques UI work — capturing decisions and feedback in GitHub as committed notes and PR/issue comments.",
-      "hash": "4dd44bfd33be03c1e250d9c2036c49bf7f3b8845"
+      "hash": "f2b2090347cdcab078535ecbb271b62e326df033"
     },
     {
       "id": "engineer",
@@ -14,7 +14,7 @@
       "name": "Engineer",
       "version": "0.3.0",
       "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-      "hash": "64312421ded2961a0c324657ef22386c21e25db4"
+      "hash": "4ba23f8e120be88edb54a2acb3536b84b19e9dbc"
     },
     {
       "id": "product-manager",
@@ -22,7 +22,7 @@
       "name": "Product Manager",
       "version": "0.2.0",
       "description": "Draws the real need out of a request in conversation, then captures it as clear, actionable GitHub issues with gh — following each repo's own templates and labels.",
-      "hash": "6b29bf7ac86a051f36f934aefe07898e05ab69d2"
+      "hash": "8ada1a1fc551597fc187e6d423881fff786450ad"
     },
     {
       "id": "reviewer",
@@ -30,7 +30,7 @@
       "name": "Reviewer",
       "version": "0.2.0",
       "description": "Reviews open pull requests — reads the change against its issue, runs the repo's checks, and leaves specific, ranked feedback. Reviews; doesn't merge.",
-      "hash": "aa30754b8ee0442487f82b5be225812f05fe65fa"
+      "hash": "472ce204f6981a434be4092f4c1c3376e002d854"
     },
     {
       "id": "technical-writer",
@@ -38,7 +38,7 @@
       "name": "Technical Writer",
       "version": "0.2.0",
       "description": "Writes and maintains a project's documentation — READMEs, guides, references, changelogs — as pull requests, accurate to the code and in the project's own voice.",
-      "hash": "61cea233b0b2c28156dba6d8893f4aac9d833934"
+      "hash": "32257297a796636b8f7aa7593b7d26f30ba1eb07"
     },
     {
       "id": "triage-lead",
@@ -46,7 +46,7 @@
       "name": "Triage Lead",
       "version": "0.2.0",
       "description": "Keeps a GitHub issue backlog healthy — triages, labels, prioritizes, de-duplicates, and assigns work through gh, learning each repo's own taxonomy. Runs on demand or on a schedule.",
-      "hash": "f1b2332f7843aaba6eba91819aea72df6b1a38ba"
+      "hash": "29cfde7837014244455f386697aa9aca397be5ff"
     },
     {
       "id": "discord",
@@ -159,14 +159,6 @@
       "version": "0.1.0",
       "description": "How to groom a backlog — decide what an incoming issue is, how urgent it is, and what happens to it next.",
       "hash": "e6ab4b70189ca9938f477c414c77f07c55e9d503"
-    },
-    {
-      "id": "working-with-github",
-      "type": "skill",
-      "name": "Working with GitHub",
-      "version": "0.2.0",
-      "description": "How to work a GitHub repository from the terminal with gh and git — authenticating as the agent's GitHub App, finding the right repo, branching and pushing, opening and updating pull requests, reviewing and merging, and storing CI secrets and workflows.",
-      "hash": "beddf0eab546573765c72e7deb8fe0ae3b012f83"
     },
     {
       "id": "writing-a-github-issue",

@@ -34,10 +34,11 @@ lecture instead of thinking, and the rigid script breaks the moment reality diff
    out one workflow, spelling that workflow out *is* the role — do it. Just don't reach for a
    scripted workflow when a role and a substrate would do.
 
-2. **Name the tools; leave credentials to the skill.** State what the agent works through —
-   once. "Reach GitHub with `gh`; authenticating and finding the repo is your
-   `working-with-github` skill." Not a tour of `gh` subcommands, and no secret names or
-   auth mechanics in the agent prompt — the capability skill owns those.
+2. **Name the tools; don't script the mechanics.** State what the agent works through —
+   once. "Reach GitHub with `gh` and `git`." Not a tour of `gh` subcommands, and no secret
+   names or auth mechanics in the agent prompt. The model already knows how to drive these
+   tools, and every agent uses them differently; the channel that grants the credential owns
+   setup, and the environment carries it.
 
 3. **No proper nouns.** Don't hardcode repository names, label taxonomies, project boards, or
    a fixed workflow. Tell the agent to *discover* its scope from the credential it was given.

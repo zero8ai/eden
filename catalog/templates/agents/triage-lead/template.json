@@ -7,8 +7,7 @@
   "eve": ">=0.1.0",
   "model": "z-ai/glm-5.2",
   "includes": [
-    { "type": "skill", "id": "triaging-issues" },
-    { "type": "skill", "id": "working-with-github" }
+    { "type": "skill", "id": "triaging-issues" }
   ],
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.5",

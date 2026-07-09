@@ -78,8 +78,10 @@ services:
       - eden-letsencrypt:/etc/letsencrypt
       - eden-certbot-webroot:/var/www/certbot
 
-  # One-off schema migrations: `docker compose run --rm migrate`.
+  # One-off schema migrations: `docker compose run --rm --build migrate`.
   # Uses the build stage (dev deps + drizzle/ live there), not the runtime image.
+  # `--build` is required: this service is behind the `tools` profile, so `up --build`
+  # skips it — without it, `run` reuses a stale image and silently skips new migrations.
   migrate:
     profiles: ["tools"]
     build:

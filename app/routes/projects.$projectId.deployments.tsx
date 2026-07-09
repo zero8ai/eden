@@ -222,6 +222,8 @@ interface DeploymentData {
     enabled: boolean;
     origin: string;
     routePath: string;
+    /** The agent's App slug (its @name) once created — links the card to GitHub's install picker. */
+    appSlug: string | null;
   };
 }
 
@@ -432,6 +434,7 @@ export const loader = (args: LoaderFunctionArgs) =>
             enabled: hasGithubSetup,
             origin: publicOrigin(args.request),
             routePath: GITHUB_MENTIONS_ROUTE,
+            appSlug: null,
           },
         };
       }
@@ -489,6 +492,21 @@ export const loader = (args: LoaderFunctionArgs) =>
       } catch {
         missingSecrets = []; // secrets store unavailable — never block the pipeline view
       }
+      // The App's @name once the guided flow (or manual setup) stored it — the setup card
+      // links it to GitHub's install picker so additional accounts/orgs are one click away.
+      let githubAppSlug: string | null = null;
+      if (hasGithubSetup) {
+        try {
+          githubAppSlug = await getRuntime().secrets.get({
+            projectId: project.id,
+            agentId: active.id,
+            environmentId: null,
+            key: "GITHUB_APP_SLUG",
+          });
+        } catch {
+          githubAppSlug = null; // secrets store unavailable — the card just omits the link
+        }
+      }
       return {
         project,
         roster: roster.map((a) => ({ name: a.name })),
@@ -521,6 +539,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           enabled: hasGithubSetup,
           origin: publicOrigin(args.request),
           routePath: GITHUB_MENTIONS_ROUTE,
+          appSlug: githubAppSlug,
         },
       };
     },
@@ -2155,9 +2174,30 @@ function GitHubSetupHelp({
             secrets on this agent, and sends you to GitHub to pick the
             repositories it should watch.
           </p>
+          {setup.appSlug && (
+            <p>
+              <span className="font-medium">
+                App created: <code>@{setup.appSlug}</code>.
+              </span>{" "}
+              Add repositories — or install it on another account or organization —
+              from{" "}
+              <a
+                href={`https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`}
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2"
+              >
+                its install page
+              </a>
+              . Run it once per account; each installation grants only the
+              repositories you pick there.
+            </p>
+          )}
           <div>
-            <Button asChild size="sm">
-              <Link to={createUrl(envs[0]?.env.id)}>Create GitHub App</Link>
+            <Button asChild size="sm" variant={setup.appSlug ? "outline" : "default"}>
+              <Link to={createUrl(envs[0]?.env.id)}>
+                {setup.appSlug ? "Recreate GitHub App" : "Create GitHub App"}
+              </Link>
             </Button>
           </div>
           {envs.length > 0 ? (

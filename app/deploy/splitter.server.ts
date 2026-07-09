@@ -44,7 +44,9 @@ function readCookie(req: http.IncomingMessage, env: string): string | null {
 }
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
-  const match = req.url?.match(/^\/e\/([0-9a-f-]{36})(\/.*)?$/);
+  // Environment ids are 12-char [a-z] nanoids (`~/lib/id`); the 36-char [0-9a-f-] form
+  // keeps pre-nanoid UUID rows routable.
+  const match = req.url?.match(/^\/e\/([a-z0-9-]{12,36})(\/.*)?$/);
   if (!match) {
     res.writeHead(404).end("Unknown environment. Use /e/<environmentId>/…");
     return;

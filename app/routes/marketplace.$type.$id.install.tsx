@@ -72,8 +72,13 @@ import {
   type ResolvedInclude,
 } from "~/marketplace/compose.server";
 import {
+  findAppCredentialConflict,
+  listAppCredentialRows,
+} from "~/github/app-manifest.server";
+import {
   planInstallSecretOps,
   writePendingSecret,
+  type InstallSecretOp,
 } from "~/project/secrets.server";
 import { listSharedSecrets, setAttachment } from "~/seams/oss/secret-store";
 import { decodeKey, fingerprint, seal } from "~/seams/oss/secretbox";
@@ -384,6 +389,47 @@ export async function action(args: ActionFunctionArgs) {
       };
     }
 
+    // Secrets are PLANNED before anything is staged so a refused install stages nothing.
+    let secretOps: InstallSecretOp[] = [];
+    if ((template.manifest.secrets?.length ?? 0) > 0) {
+      let sharedNames: string[] = [];
+      try {
+        sharedNames = (await listSharedSecrets(project.id)).map((s) => s.key);
+      } catch {
+        sharedNames = [];
+      }
+      secretOps = planInstallSecretOps({
+        secrets: template.manifest.secrets ?? [],
+        form,
+        sharedNames,
+      });
+
+      // Issue #26: a GitHub App is an agent's @mention identity — two agents in one project
+      // sharing a slug/App ID is ambiguous (one webhook URL per App). The manifest flow can't
+      // produce this, but the manual fallback lets the same credentials be pasted twice.
+      const setValue = (name: string) => {
+        const op = secretOps.find((o) => o.kind === "set" && o.name === name);
+        return op?.kind === "set" ? op.value : undefined;
+      };
+      const slug = setValue("GITHUB_APP_SLUG");
+      const appId = setValue("GITHUB_APP_ID");
+      if (slug || appId) {
+        const conflict = findAppCredentialConflict(
+          await listAppCredentialRows(project.id),
+          secretAgent?.id ?? null,
+          { slug, appId },
+        );
+        if (conflict) {
+          return {
+            error:
+              `Another agent in this project ("${conflict.agentName}") already uses this GitHub App ` +
+              `(${conflict.key} matches). Every agent needs its own GitHub App — create one for this ` +
+              "agent with the guided flow on its Deployment tab, or paste different credentials.",
+          };
+        }
+      }
+    }
+
     for (const write of plan.writes) {
       await stageDraft({
         projectId: project.id,
@@ -398,21 +444,11 @@ export async function action(args: ActionFunctionArgs) {
       );
     }
 
-    // Secrets step (§9): one enabled step for every template kind. The pure planner decides
-    // each secret's fate from the form (shared-attach / value / skip); values never persist
-    // anywhere but the sealed stores.
-    if ((template.manifest.secrets?.length ?? 0) > 0) {
-      let sharedNames: string[] = [];
-      try {
-        sharedNames = (await listSharedSecrets(project.id)).map((s) => s.key);
-      } catch {
-        sharedNames = [];
-      }
-      const ops = planInstallSecretOps({
-        secrets: template.manifest.secrets ?? [],
-        form,
-        sharedNames,
-      });
+    // Secrets step (§9): one enabled step for every template kind. The pure planner decided
+    // each secret's fate from the form above (shared-attach / value / skip); values never
+    // persist anywhere but the sealed stores.
+    if (secretOps.length > 0) {
+      const ops = secretOps;
       if (secretAgent) {
         // Member install: the agent row exists — write agent-wide values (sandbox set
         // atomically) and attachment rows directly.
@@ -833,6 +869,20 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
+                  {["GITHUB_APP_ID", "GITHUB_APP_SLUG"].every((n) =>
+                    preview.secrets.some((s) => s.name === n),
+                  ) && (
+                    <Alert>
+                      <AlertTitle>Skip the copy-paste</AlertTitle>
+                      <AlertDescription>
+                        These are a GitHub App&rsquo;s credentials — you can leave
+                        them blank here. After staging the install, use{" "}
+                        <span className="font-medium">Create GitHub App</span> on
+                        the agent&rsquo;s Deployment tab and Eden will register
+                        the App on GitHub and fill in all four automatically.
+                      </AlertDescription>
+                    </Alert>
+                  )}
                   {preview.secrets.map((s) => (
                     <InstallSecretField
                       key={s.name}

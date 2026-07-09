@@ -2,21 +2,21 @@
   "id": "working-with-github",
   "type": "skill",
   "name": "Working with GitHub",
-  "description": "How to work a GitHub repository from the terminal with gh and git — authenticating, finding the right repo, branching and pushing, opening and updating pull requests, reviewing and merging, and storing CI secrets and workflows.",
-  "version": "0.1.0",
+  "description": "How to work a GitHub repository from the terminal with gh and git — authenticating (the agent's GitHub App, or a personal token), finding the right repo, branching and pushing, opening and updating pull requests, reviewing and merging, and storing CI secrets and workflows.",
+  "version": "0.2.0",
   "eve": ">=0.1.0",
   "files": ["skills/working-with-github.md"],
   "sandbox": {
     "bootstrap": [
-      "apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git jq && rm -rf /var/lib/apt/lists/*",
+      "apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git jq openssl && rm -rf /var/lib/apt/lists/*",
       "command -v gh >/dev/null || (apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && mkdir -p -m 755 /etc/apt/keyrings && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" > /etc/apt/sources.list.d/github-cli.list && apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/*)"
     ],
-    "revalidationKey": "github-skill-sandbox@2026-07-08"
+    "revalidationKey": "github-skill-sandbox@2026-07-09"
   },
   "secrets": [
     {
       "name": "GITHUB_TOKEN",
-      "description": "GitHub token for the repositories this agent works in — gh reads it from the sandbox shell environment. Scope it to what the agent's job needs: repo read/write to push branches and open pull requests, and, if the agent reviews or merges, pull request and Actions-secret access too.",
+      "description": "Personal GitHub token — the FALLBACK credential. Leave unset when the agent has the GitHub channel: its App credentials (GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY) mint short-lived installation tokens scoped to the repos the App is installed on, attributed to the agent's own bot identity. If set, scope it to what the agent's job needs: repo read/write to push branches and open pull requests, and, if the agent reviews or merges, pull request and Actions-secret access too.",
       "sandbox": true
     }
   ]

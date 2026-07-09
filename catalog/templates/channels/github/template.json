@@ -11,21 +11,25 @@
     {
       "name": "GITHUB_APP_ID",
       "description": "The GitHub App's numeric App ID. Set automatically by Create GitHub App on the Deployment tab.",
-      "sandbox": true
+      "sandbox": true,
+      "provisioned": true
     },
     {
       "name": "GITHUB_APP_PRIVATE_KEY",
       "description": "The GitHub App's private key (full PEM contents) — authenticates as the app to post replies and mint short-lived installation tokens for doing work. Set automatically by Create GitHub App.",
-      "sandbox": true
+      "sandbox": true,
+      "provisioned": true
     },
     {
       "name": "GITHUB_WEBHOOK_SECRET",
-      "description": "The webhook secret configured on the App — eve verifies the inbound webhook signature against it. Set automatically by Create GitHub App."
+      "description": "The webhook secret configured on the App — eve verifies the inbound webhook signature against it. Set automatically by Create GitHub App.",
+      "provisioned": true
     },
     {
       "name": "GITHUB_APP_SLUG",
       "description": "The App's slug — the @name mentioned to trigger the agent. Set automatically by Create GitHub App (GitHub derives it from the final App name).",
-      "sandbox": true
+      "sandbox": true,
+      "provisioned": true
     }
   ]
 }

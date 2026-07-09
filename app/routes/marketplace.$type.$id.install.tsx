@@ -133,7 +133,12 @@ interface PreviewData {
   conflicts: string[];
   warnings: string[];
   deps: DependencyDecision[];
-  secrets: Array<{ name: string; description?: string; sandbox?: boolean }>;
+  secrets: Array<{
+    name: string;
+    description?: string;
+    sandbox?: boolean;
+    provisioned?: boolean;
+  }>;
   isUpdate: boolean;
   /** Templates bundled by reference (composition) — rendered as a "Bundled from the catalog" card. */
   includes: ResolvedInclude[];
@@ -550,6 +555,12 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
 
   const backTo = `/marketplace/${type}/${manifest.id}`;
   const hasConflicts = (preview?.conflicts.length ?? 0) > 0;
+  // Provisioned secrets are set by a guided Eden flow (e.g. Create GitHub App) — the wizard
+  // never collects them, so the form only renders inputs for the user-supplied ones.
+  const userSecrets = (preview?.secrets ?? []).filter((s) => !s.provisioned);
+  const provisionedSecrets = (preview?.secrets ?? []).filter(
+    (s) => s.provisioned,
+  );
   const targetChosen = newMemberTemplate ? !!newMemberName : !!selectedMember;
   const canSubmit =
     !!selectedProjectId && targetChosen && !hasConflicts && !singleAgentInvalid;
@@ -863,34 +874,36 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                     Secrets
                   </CardTitle>
                   <CardDescription>
-                    {newMemberTemplate
-                      ? `This agent needs ${preview.secrets.length} secret${preview.secrets.length === 1 ? "" : "s"}. Enter them now — they'll be attached when the member ships. Values are encrypted write-only.`
-                      : "Stored per-agent, agent-wide. Values are encrypted write-only. Leave blank to set later in Settings."}
+                    {userSecrets.length === 0
+                      ? "Eden sets this template's secrets for you — nothing to enter here."
+                      : newMemberTemplate
+                        ? `This agent needs ${userSecrets.length} secret${userSecrets.length === 1 ? "" : "s"}. Enter them now — they'll be attached when the member ships. Values are encrypted write-only.`
+                        : "Stored per-agent, agent-wide. Values are encrypted write-only. Leave blank to set later in Settings."}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
-                  {["GITHUB_APP_ID", "GITHUB_APP_SLUG"].every((n) =>
-                    preview.secrets.some((s) => s.name === n),
-                  ) && (
+                  {provisionedSecrets.length > 0 && (
                     <Alert>
-                      <AlertTitle>Skip the copy-paste</AlertTitle>
+                      <AlertTitle>Set automatically by Eden</AlertTitle>
                       <AlertDescription>
-                        These are a GitHub App&rsquo;s credentials — you can leave
-                        them blank here. After staging the install, use{" "}
-                        <span className="font-medium">Create GitHub App</span> on
-                        the agent&rsquo;s Deployment tab and Eden will register
-                        the App on GitHub and fill in all four automatically.
+                        <span className="font-mono text-xs">
+                          {provisionedSecrets.map((s) => s.name).join(", ")}
+                        </span>{" "}
+                        — Eden sets{" "}
+                        {provisionedSecrets.length === 1 ? "this" : "these"}{" "}
+                        automatically during guided setup on the agent&rsquo;s
+                        Deployment tab after install. No copy-paste needed.
                       </AlertDescription>
                     </Alert>
                   )}
-                  {preview.secrets.map((s) => (
+                  {userSecrets.map((s) => (
                     <InstallSecretField
                       key={s.name}
                       secret={s}
                       sharedExists={sharedNames.includes(s.name)}
                     />
                   ))}
-                  {newMemberTemplate && (
+                  {newMemberTemplate && userSecrets.length > 0 && (
                     <p className="text-xs text-muted-foreground">
                       {COPY.installDeferral}
                     </p>

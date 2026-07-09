@@ -86,6 +86,27 @@ describe("planInstallSecretOps (§9 three-way choice)", () => {
       { kind: "set", name: "GITHUB_TOKEN", value: "gh", sandbox: true },
     ]);
   });
+
+  it("a provisioned secret is always a skip — even when the form carries a value", () => {
+    // The wizard renders no input for a provisioned secret, but defense in depth: a crafted
+    // form value/mode (or a shared secret of the same name) must never override the skip.
+    const ops = planInstallSecretOps({
+      secrets: [
+        { name: "GITHUB_APP_ID", sandbox: true, provisioned: true },
+        { name: "GITHUB_TOKEN" },
+      ],
+      form: formOf({
+        "secretmode:GITHUB_APP_ID": "value",
+        "secret:GITHUB_APP_ID": "12345",
+        "secret:GITHUB_TOKEN": "gh",
+      }),
+      sharedNames: ["GITHUB_APP_ID"],
+    });
+    expect(ops).toEqual([
+      { kind: "skip", name: "GITHUB_APP_ID" },
+      { kind: "set", name: "GITHUB_TOKEN", value: "gh", sandbox: false },
+    ]);
+  });
 });
 
 describe("migratePendingSecrets — the ship point (§4.4)", () => {

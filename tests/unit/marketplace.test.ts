@@ -70,6 +70,16 @@ describe("manifest schema", () => {
     ).toThrow();
   });
 
+  it("preserves a secret's provisioned flag (set by a guided Eden flow, not the wizard)", () => {
+    const parsed = parseManifest({
+      ...VALID,
+      secrets: [{ name: "GITHUB_APP_ID", sandbox: true, provisioned: true }],
+    });
+    expect(parsed.secrets).toEqual([
+      { name: "GITHUB_APP_ID", sandbox: true, provisioned: true },
+    ]);
+  });
+
   it("accepts optional fields via the schema directly", () => {
     const parsed = templateManifestSchema.parse({
       ...VALID,

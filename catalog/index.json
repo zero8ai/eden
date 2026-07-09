@@ -62,7 +62,7 @@
       "name": "GitHub",
       "version": "0.2.0",
       "description": "Talk to this agent by @mentioning it in GitHub issue and pull-request comments — a GitHub App with webhook signature verification via eve's githubChannel.",
-      "hash": "c41ab3372ec3069af2105274667cc2ba2ba88c09"
+      "hash": "530407920c180a7a1c92ed8f4ca32d89f8b475af"
     },
     {
       "id": "linear",

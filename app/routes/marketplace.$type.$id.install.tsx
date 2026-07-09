@@ -891,8 +891,8 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                         </span>{" "}
                         — Eden sets{" "}
                         {provisionedSecrets.length === 1 ? "this" : "these"}{" "}
-                        automatically during guided setup on the agent&rsquo;s
-                        Deployment tab after install. No copy-paste needed.
+                        during guided setup on the agent&rsquo;s Deployment tab
+                        after install.
                       </AlertDescription>
                     </Alert>
                   )}

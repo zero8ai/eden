@@ -49,8 +49,6 @@ interface GitHubAppNewData {
   projectName: string;
   form: {
     manifestJson: string;
-    /** Same manifest with GitHub's `public` flag set — installable beyond the owner account. */
-    publicManifestJson: string;
     state: string;
     appName: string;
     webhookUrl: string;
@@ -133,9 +131,6 @@ export const loader = (args: LoaderFunctionArgs) =>
         projectName: project.name,
         form: {
           manifestJson: JSON.stringify(manifest),
-          publicManifestJson: JSON.stringify(
-            buildAppManifest({ ...manifestInput, publicApp: true }),
-          ),
           state,
           appName: manifest.name,
           webhookUrl,
@@ -154,7 +149,6 @@ export function meta() {
 export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
   const { error, backUrl, agentName, form } = loaderData;
   const [organization, setOrganization] = useState("");
-  const [multiAccount, setMultiAccount] = useState(false);
 
   // Pure string concat mirroring manifestSubmitUrl (a .server module can't reach the client
   // bundle). The org variant registers the App under a GitHub organization instead of the
@@ -193,13 +187,12 @@ export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Webhook className={`size-4 shrink-0 ${accentText.brand}`} aria-hidden />
-              One screen on GitHub, zero copy-paste
+              Create the App on GitHub
             </CardTitle>
             <CardDescription>
-              GitHub will show a single confirmation page — the app name is editable there
-              (it must be unique across all of GitHub). Approve it and Eden stores the
-              App&rsquo;s credentials as {agentName}&rsquo;s secrets automatically, then sends
-              you to pick the repositories the App should watch.
+              GitHub shows a confirmation page — the app name is editable there and must be
+              unique across GitHub. Approve it, and Eden stores the App&rsquo;s credentials as{" "}
+              {agentName}&rsquo;s secrets and sends you to pick the repositories it watches.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -233,11 +226,7 @@ export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
             )}
 
             <form method="post" action={submitUrl} className="space-y-4">
-              <input
-                type="hidden"
-                name="manifest"
-                value={multiAccount ? form.publicManifestJson : form.manifestJson}
-              />
+              <input type="hidden" name="manifest" value={form.manifestJson} />
               <div className="space-y-1.5">
                 <Label htmlFor="organization">GitHub organization (optional)</Label>
                 <Input
@@ -248,40 +237,17 @@ export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
                   className="w-full font-mono sm:w-72"
                 />
                 <p className="text-xs text-muted-foreground">
-                  A <em>private</em> App can only be installed on the account that owns it.
-                  Leave blank to create it on your personal GitHub account (personal repos),
-                  or name an organization you own to keep its repos in reach instead.
+                  Leave blank to create the App under your personal account, or name an
+                  organization you own to create it there. Either way you choose which
+                  repositories it can reach when you install it.
                 </p>
-              </div>
-              <div className="space-y-1.5">
-                <label className="flex items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={multiAccount}
-                    onChange={(e) => setMultiAccount(e.target.checked)}
-                    className="mt-0.5 size-4 accent-primary"
-                  />
-                  <span>
-                    <span className="font-medium">
-                      Installable on multiple accounts (public App)
-                    </span>
-                    <span className="block text-xs text-muted-foreground">
-                      For repos spanning your personal account and organizations: after
-                      creating the App, run its install step once per account. Each
-                      installation grants only the repositories you pick there — but anyone
-                      with the App&rsquo;s link can install it on <em>their</em> repos and
-                      start @mentioning the agent, so leave this off unless you need it.
-                    </span>
-                  </span>
-                </label>
               </div>
               <Button type="submit">Continue to GitHub</Button>
             </form>
 
             <p className="text-xs text-muted-foreground">
-              Prefer to do it by hand? The manual steps (create an App, paste four secrets)
-              are in the GitHub channel template&rsquo;s setup notes — this flow just
-              automates them.
+              Prefer to set it up by hand? The manual steps are in the GitHub channel&rsquo;s
+              setup notes.
             </p>
           </CardContent>
         </Card>

@@ -2,8 +2,7 @@
  * Per-agent GitHub App Manifest flow (issue #26).
  *
  * The GitHub channel is a per-agent GitHub App — the agent's @mention identity AND its
- * working credential on the repos the App is installed on. Instead of walking the user
- * through GitHub's app-registration form and four copy-pastes, Eden submits a
+ * working credential on the repos the App is installed on. Eden submits a
  * [manifest](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest)
  * to GitHub, GitHub redirects back with a one-hour single-use `code`, and one
  * `POST /app-manifests/{code}/conversions` returns everything the channel needs
@@ -56,13 +55,6 @@ export interface AppManifestInput {
   /** After the user installs the App on repos, GitHub sends them here. */
   setupUrl: string;
   description?: string;
-  /**
-   * GitHub's `public` flag: a private App can only be installed on the account that OWNS it;
-   * a public one can be installed on any account by whoever has its link (each installation
-   * still grants only the repos that installer picks). Needed when one agent's repos span a
-   * personal account and one or more orgs. Default private — least exposure.
-   */
-  publicApp?: boolean;
 }
 
 /**
@@ -72,7 +64,7 @@ export interface AppManifestInput {
  *
  * - `issues`/`pull_requests` write — the conversational loop (read mentions, post replies).
  * - `contents` write — the App doubles as the agent's DO-WORK credential (clone, branch,
- *   push) on the repos it's installed on, superseding the personal `GITHUB_TOKEN` (§issue 26).
+ *   push) on the repos it's installed on; it is the agent's only GitHub credential.
  * - `metadata` read is implied by any grant but stated for clarity.
  */
 export function buildAppManifest(input: AppManifestInput) {
@@ -83,7 +75,10 @@ export function buildAppManifest(input: AppManifestInput) {
     redirect_url: input.redirectUrl,
     setup_url: input.setupUrl,
     description: input.description ?? "",
-    public: input.publicApp === true,
+    // Public so one App can be installed across every account the agent works — the owner's
+    // personal account and any org — from a single link. Each installation is still scoped to
+    // the repositories its installer picks.
+    public: true,
     default_permissions: {
       metadata: "read",
       contents: "write",

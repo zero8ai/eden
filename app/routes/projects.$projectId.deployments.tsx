@@ -2152,8 +2152,8 @@ function DiscordSetupHelp({
 
 /**
  * GitHub channel setup (issue #26): the agent listens through its OWN GitHub App. The primary
- * path is the one-click Manifest flow (Eden registers the App, stores the four secrets, and
- * sends the user to pick repos); the webhook URLs are shown for the manual fallback.
+ * path is the Manifest flow (Eden registers the App, stores the four secrets, and sends the
+ * user to pick repos); the webhook URLs are shown for the manual fallback.
  */
 function GitHubSetupHelp({
   envs,
@@ -2185,12 +2185,11 @@ function GitHubSetupHelp({
       <CardContent>
         <div className="space-y-3 text-sm">
           <p>
-            This agent talks GitHub through its own GitHub App — its{" "}
+            This agent talks to GitHub through its own GitHub App — its{" "}
             <code>@mention</code> identity in issues and pull requests, and its
-            credential for working the repositories you install it on. Create the
-            App with one click; Eden registers it from a manifest, stores its four
-            secrets on this agent, and sends you to GitHub to pick the
-            repositories it should watch.
+            credential for the repositories you install it on. Create it below;
+            Eden registers the App, stores its secrets, and sends you to GitHub to
+            pick the repositories it watches.
           </p>
           {setup.appSlug && (
             <div className="space-y-2">

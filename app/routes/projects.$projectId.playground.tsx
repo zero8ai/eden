@@ -47,13 +47,16 @@ import {
 } from "~/components/ui/select";
 import { contextPath } from "~/lib/paths";
 import {
+  backfillPlaygroundEventsFromEve,
   createPlaygroundSession,
-  loadPlaygroundEntriesFromEve,
+  loadPlaygroundEntriesFromCache,
   listPlaygroundSessions,
+  playgroundCacheIsComplete,
   reconcilePlaygroundSessionFromEve,
   summarizePlaygroundSession,
 } from "~/playground/sessions.server";
 import { newPlaygroundSessionPath } from "~/playground/url";
+import { hasActiveTurn } from "~/chat/turn-stream.server";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -114,29 +117,59 @@ export const loader = (args: LoaderFunctionArgs) =>
         : null;
       let entries: ChatEntry[] = [];
       let historyError: string | null = null;
-      if (currentSession?.externalSessionId) {
-        if (historyTarget) {
+      if (currentSession) {
+        // Recover a session whose drain died with the Eden process (restart/redeploy mid-turn):
+        // stuck "running", or marked "failed" even though Eve actually finished. Reconciling
+        // settles the status from Eve AND persists the tail events into the transcript cache, so
+        // the recovered final reply is part of the cache read below — not just a status flip.
+        // A turn actively streaming in this process is skipped, so the 2s reconnect poll never
+        // re-opens an Eve stream for a healthy running session.
+        if (
+          (currentSession.status === "running" ||
+            currentSession.status === "failed") &&
+          historyTarget &&
+          !hasActiveTurn(currentSession.id)
+        ) {
           try {
-            if (
-              currentSession.status === "running" ||
-              currentSession.status === "failed"
-            ) {
-              currentSession = await reconcilePlaygroundSessionFromEve({
-                session: currentSession,
-                target: historyTarget,
-              });
-            }
-            entries = await loadPlaygroundEntriesFromEve({
+            currentSession = await reconcilePlaygroundSessionFromEve({
               session: currentSession,
               target: historyTarget,
             });
-          } catch (error) {
-            historyError = `Couldn't reload Eve session history: ${(error as Error).message}`;
+          } catch {
+            // Eve unreachable (e.g. the instance is also gone) — leave status as-is; a later load retries.
           }
-        } else {
-          historyError =
-            "This session's environment does not have a live deployment to replay Eve history from.";
         }
+
+        // Legacy backfill: a session that predates the cache has consumed events (its cursor
+        // advanced) that the cache doesn't cover from the first index. Replay them from Eve once
+        // and PERSIST them, so the cache becomes complete and stays the transcript's sole source.
+        // (Merely "cache non-empty" isn't a safe gate — one new turn on a legacy session would
+        // cache only the new events and hide all pre-cache history forever.) New sessions never
+        // take this path.
+        if (
+          currentSession.externalSessionId &&
+          !(await playgroundCacheIsComplete(currentSession))
+        ) {
+          if (historyTarget) {
+            try {
+              await backfillPlaygroundEventsFromEve({
+                session: currentSession,
+                target: historyTarget,
+              });
+            } catch (error) {
+              historyError = `Couldn't reload Eve session history: ${(error as Error).message}`;
+            }
+          } else {
+            historyError =
+              "This session's environment does not have a live deployment to replay Eve history from.";
+          }
+        }
+
+        // The transcript comes from Eden's durable cache — a DB read, not a replay of Eve's whole
+        // event log from index 0. It's complete (the drain persists every event as it arrives,
+        // plus the reconcile/backfill above), fast regardless of length, and works even when the
+        // instance is gone.
+        entries = await loadPlaygroundEntriesFromCache(currentSession);
       }
       return {
         project,
@@ -193,6 +226,12 @@ export function meta() {
 /** Local mirror of an in-flight turn, driven by the NDJSON stream. */
 interface LiveTurn {
   playgroundSessionId: string | null;
+  /**
+   * How many loader entries existed when this turn was launched. Anything the loader appends
+   * past this boundary IS this turn (persisted by the drain mid-flight) — `shownEntries` hides
+   * it while `live` still renders the turn, without touching earlier entries.
+   */
+  baseEntryCount: number;
   userText: string;
   text: string;
   steps: ChatStep[];
@@ -282,12 +321,37 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     );
   }, [base, currentSessionId, navigate, sessions]);
 
+  // The client-streamed `live` turn and the loader's cached transcript can briefly hold the SAME
+  // turn at once: the reconnect fix persists events as they stream, so any revalidation while
+  // `live` is active (turn completion, or recovering from a dropped stream) pulls that turn into
+  // `entries` while `live` is still rendering it — the user message and reply appear twice until
+  // `live` clears (a refresh, which drops `live`, is why it "fixes itself"). Entries only ever
+  // append within a session, so everything past the count recorded at launch
+  // (`live.baseEntryCount`) is the in-flight turn's cached copy — hide exactly that. (Matching by
+  // turn position, not message text: a repeated message like "continue" must not slice off the
+  // earlier identical turn.)
+  const shownEntries = useMemo<ChatEntry[]>(() => {
+    if (!live) return entries;
+    // A session switch mid-turn shows the other session's transcript untouched.
+    if (
+      live.playgroundSessionId &&
+      currentSessionId &&
+      live.playgroundSessionId !== currentSessionId
+    ) {
+      return entries;
+    }
+    return entries.length > live.baseEntryCount
+      ? entries.slice(0, live.baseEntryCount)
+      : entries;
+  }, [currentSessionId, entries, live]);
+
   const send = useCallback(
     async (message: string) => {
       setSendError(null);
       stopRequestedRef.current = false;
       setLive({
         playgroundSessionId: currentSessionId,
+        baseEntryCount: entries.length,
         userText: message,
         text: "",
         steps: [],
@@ -396,6 +460,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       base,
       currentSessionId,
       deploymentId,
+      entries.length,
       navigate,
       project.id,
       revalidator,
@@ -583,17 +648,17 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       ) : (
         <>
           <ChatTranscript
-            dep={`${entries.length}:${entries.at(-1)?.text.length ?? 0}:${entries.at(-1)?.steps?.length ?? 0}:${currentSessionStatus ?? ""}:${live ? live.text.length + live.steps.length + live.inputRequests.length : 0}`}
+            dep={`${shownEntries.length}:${shownEntries.at(-1)?.text.length ?? 0}:${shownEntries.at(-1)?.steps?.length ?? 0}:${currentSessionStatus ?? ""}:${live ? live.text.length + live.steps.length + live.inputRequests.length : 0}`}
             forceScrollDep={live?.userText}
             lead={transcriptLead}
           >
-            {entries.length === 0 && !live && !remoteBusy && (
+            {shownEntries.length === 0 && !live && !remoteBusy && (
               <p className="py-8 text-center text-sm text-muted-foreground">
                 Say something to the agent — the conversation keeps its context
                 across turns.
               </p>
             )}
-            {(entries as ChatEntry[]).map((e, i) =>
+            {shownEntries.map((e, i) =>
               e.role === "user" ? (
                 <UserBubble key={e.id} text={e.text} />
               ) : (
@@ -602,15 +667,17 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
                   entry={e}
                   // Only the newest turn's pending requests are answerable.
                   onAnswer={
-                    i === entries.length - 1 && !live ? send : undefined
+                    i === shownEntries.length - 1 && !live ? send : undefined
                   }
                   busy={busy}
-                  running={replayingRunningSession && i === entries.length - 1}
+                  running={
+                    replayingRunningSession && i === shownEntries.length - 1
+                  }
                 />
               ),
             )}
             {replayingRunningSession &&
-              entries.at(-1)?.role !== "assistant" && (
+              shownEntries.at(-1)?.role !== "assistant" && (
                 <StepsCard
                   steps={[]}
                   idPrefix="running-session"

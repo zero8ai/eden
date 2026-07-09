@@ -1,9 +1,9 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, max, min } from "drizzle-orm";
 
-import { inputRequestsOf } from "~/agent/talk.server";
+import { inputRequestsOf, type RawEveEvent } from "~/agent/talk.server";
 import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import { db } from "~/db/client.server";
-import { playgroundSessions } from "~/db/schema";
+import { playgroundEvents, playgroundSessions } from "~/db/schema";
 import type { Target } from "~/chat/playground.server";
 
 export type PlaygroundSession = typeof playgroundSessions.$inferSelect;
@@ -172,6 +172,117 @@ export async function savePlaygroundSessionCursor(input: {
     .where(eq(playgroundSessions.id, input.id));
 }
 
+/**
+ * Append raw Eve stream events to the durable transcript cache. Called by the turn-stream drain as
+ * events arrive, so the transcript survives client disconnect AND instance death. The (session,
+ * streamIndex) PK makes this idempotent: a re-drained index (e.g. a retried turn) is a no-op, so
+ * callers can flush optimistically without tracking exactly what's already stored.
+ */
+export async function savePlaygroundEvents(
+  sessionId: string,
+  events: Array<{ streamIndex: number } & RawEveEvent>,
+): Promise<void> {
+  if (events.length === 0) return;
+  await db
+    .insert(playgroundEvents)
+    .values(
+      events.map((e) => ({
+        sessionId,
+        streamIndex: e.streamIndex,
+        type: e.type,
+        data: e.data,
+        meta: e.meta ?? null,
+      })),
+    )
+    .onConflictDoNothing();
+}
+
+/**
+ * Highest streamIndex already in the transcript cache for a session (0 if none). No production
+ * caller today — the DB integration test (tests/integration/playground-cache.db.test.ts) uses it
+ * to assert what the cache covers.
+ */
+export async function cachedStreamIndex(sessionId: string): Promise<number> {
+  const [row] = await db
+    .select({ value: max(playgroundEvents.streamIndex) })
+    .from(playgroundEvents)
+    .where(eq(playgroundEvents.sessionId, sessionId));
+  return row?.value ?? 0;
+}
+
+/**
+ * Whether the transcript cache covers this session's history from its FIRST event. False for a
+ * legacy session whose cursor advanced before the cache existed: its earliest cached row (if any)
+ * starts past index 1, so everything before it is missing — merely "cache non-empty" is not
+ * enough, or one new turn on a legacy session would permanently hide all pre-cache history.
+ */
+export async function playgroundCacheIsComplete(
+  session: PlaygroundSession,
+): Promise<boolean> {
+  // No history consumed yet — nothing the cache could be missing.
+  if (session.streamIndex <= 0) return true;
+  const [row] = await db
+    .select({ value: min(playgroundEvents.streamIndex) })
+    .from(playgroundEvents)
+    .where(eq(playgroundEvents.sessionId, session.id));
+  // The drain assigns index 1 to a session's first event, so coverage-from-the-start means the
+  // cache's lowest index is exactly 1 (contiguity above it is the drain's invariant).
+  return row?.value === 1;
+}
+
+/**
+ * One-time backfill for a legacy session (created before the transcript cache): replay every
+ * event the cursor has consumed from Eve's durable log and persist it into `playground_events`,
+ * making the cache complete from index 1. Idempotent — indices are positional (Eve's log starts
+ * at our index 1) and the (session, streamIndex) PK turns re-inserted rows into no-ops — so
+ * overlapping with rows the drain already cached is safe.
+ */
+export async function backfillPlaygroundEventsFromEve(input: {
+  session: PlaygroundSession;
+  target: Target;
+  timeoutMs?: number;
+}): Promise<void> {
+  if (!input.session.externalSessionId || input.session.streamIndex <= 0) {
+    return;
+  }
+  const events = await readEveSessionEvents({
+    baseUrl: input.target.url,
+    limit: input.session.streamIndex,
+    sessionId: input.session.externalSessionId,
+    timeoutMs: input.timeoutMs,
+  });
+  await savePlaygroundEvents(
+    input.session.id,
+    events.map((event, i) => ({ streamIndex: i + 1, ...event })),
+  );
+}
+
+/**
+ * Rebuild a session's transcript from Eden's durable cache — no Eve replay. The cached rows are the
+ * raw Eve events, so the same `projectEventsToEntries` used by the Eve-replay path reconstructs
+ * identical `ChatEntry[]`.
+ */
+export async function loadPlaygroundEntriesFromCache(
+  session: PlaygroundSession,
+): Promise<ChatEntry[]> {
+  const rows = await db
+    .select({
+      type: playgroundEvents.type,
+      data: playgroundEvents.data,
+      meta: playgroundEvents.meta,
+    })
+    .from(playgroundEvents)
+    .where(eq(playgroundEvents.sessionId, session.id))
+    .orderBy(playgroundEvents.streamIndex);
+  if (rows.length === 0) return [];
+  const events: EveStreamEvent[] = rows.map((r) => ({
+    type: r.type,
+    data: (r.data ?? {}) as Record<string, unknown>,
+    meta: (r.meta ?? undefined) as { at?: string } | undefined,
+  }));
+  return projectEventsToEntries(events, session);
+}
+
 export async function markPlaygroundSessionStopped(input: {
   id: string;
   target: Target;
@@ -232,6 +343,20 @@ export async function reconcilePlaygroundSessionFromEve(input: {
     timeoutMs: input.timeoutMs ?? 1_500,
   });
   if (tail.events.length === 0) return input.session;
+
+  // Persist the tail into the durable transcript cache BEFORE advancing the cursor. The cache is
+  // the transcript's source of truth, and the next turn drains Eve starting at the advanced
+  // cursor — so any event the cursor passes without being cached here would never be seen again
+  // (the recovered final reply would silently vanish). Indices continue the drain's scheme
+  // (cursor N ⇒ next event is N+1), so an overlapping drain or a re-reconcile is an idempotent
+  // no-op via the (session, streamIndex) PK.
+  await savePlaygroundEvents(
+    input.session.id,
+    tail.events.map((event, i) => ({
+      streamIndex: input.session.streamIndex + 1 + i,
+      ...event,
+    })),
+  );
 
   const nextStreamIndex = input.session.streamIndex + tail.events.length;
   const nextStatus =

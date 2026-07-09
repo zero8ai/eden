@@ -56,6 +56,13 @@ export interface AppManifestInput {
   /** After the user installs the App on repos, GitHub sends them here. */
   setupUrl: string;
   description?: string;
+  /**
+   * GitHub's `public` flag: a private App can only be installed on the account that OWNS it;
+   * a public one can be installed on any account by whoever has its link (each installation
+   * still grants only the repos that installer picks). Needed when one agent's repos span a
+   * personal account and one or more orgs. Default private — least exposure.
+   */
+  publicApp?: boolean;
 }
 
 /**
@@ -76,7 +83,7 @@ export function buildAppManifest(input: AppManifestInput) {
     redirect_url: input.redirectUrl,
     setup_url: input.setupUrl,
     description: input.description ?? "",
-    public: false,
+    public: input.publicApp === true,
     default_permissions: {
       metadata: "read",
       contents: "write",

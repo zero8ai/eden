@@ -53,6 +53,20 @@ describe("buildAppManifest", () => {
       default_events: ["issue_comment", "pull_request_review_comment"],
     });
   });
+
+  it("publicApp flips ONLY GitHub's public flag (multi-account installs), nothing in the grant", () => {
+    const input = {
+      name: "triage-acme",
+      homepageUrl: "https://eden.example/repos/p1/deployment",
+      webhookUrl: "https://eden.example/e/envabcdefghij/eve/v1/github",
+      redirectUrl: "https://eden.example/github/apps/callback",
+      setupUrl: "https://eden.example/repos/p1/deployment",
+      description: "triage — an Eden agent.",
+    };
+    const privateApp = buildAppManifest(input);
+    const publicApp = buildAppManifest({ ...input, publicApp: true });
+    expect(publicApp).toEqual({ ...privateApp, public: true });
+  });
 });
 
 describe("defaultAppName", () => {

@@ -49,6 +49,8 @@ interface GitHubAppNewData {
   projectName: string;
   form: {
     manifestJson: string;
+    /** Same manifest with GitHub's `public` flag set — installable beyond the owner account. */
+    publicManifestJson: string;
     state: string;
     appName: string;
     webhookUrl: string;
@@ -114,14 +116,15 @@ export const loader = (args: LoaderFunctionArgs) =>
         manifestStateKey(),
       );
 
-      const manifest = buildAppManifest({
+      const manifestInput = {
         name: defaultAppName(agent.name, project.slug ?? project.name),
         homepageUrl: deploymentUrl,
         webhookUrl,
         redirectUrl: `${origin}/github/apps/callback`,
         setupUrl: deploymentUrl,
         description: `${agent.name} — an Eden agent. @mention it in issues and pull-request comments.`,
-      });
+      };
+      const manifest = buildAppManifest(manifestInput);
 
       return {
         error: null,
@@ -130,6 +133,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         projectName: project.name,
         form: {
           manifestJson: JSON.stringify(manifest),
+          publicManifestJson: JSON.stringify(
+            buildAppManifest({ ...manifestInput, publicApp: true }),
+          ),
           state,
           appName: manifest.name,
           webhookUrl,
@@ -148,6 +154,7 @@ export function meta() {
 export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
   const { error, backUrl, agentName, form } = loaderData;
   const [organization, setOrganization] = useState("");
+  const [multiAccount, setMultiAccount] = useState(false);
 
   // Pure string concat mirroring manifestSubmitUrl (a .server module can't reach the client
   // bundle). The org variant registers the App under a GitHub organization instead of the
@@ -226,7 +233,11 @@ export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
             )}
 
             <form method="post" action={submitUrl} className="space-y-4">
-              <input type="hidden" name="manifest" value={form.manifestJson} />
+              <input
+                type="hidden"
+                name="manifest"
+                value={multiAccount ? form.publicManifestJson : form.manifestJson}
+              />
               <div className="space-y-1.5">
                 <Label htmlFor="organization">GitHub organization (optional)</Label>
                 <Input
@@ -237,9 +248,32 @@ export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
                   className="w-full font-mono sm:w-72"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Leave blank to create the App on your personal GitHub account, or name an
-                  organization you administer to own it there.
+                  A <em>private</em> App can only be installed on the account that owns it.
+                  Leave blank to create it on your personal GitHub account (personal repos),
+                  or name an organization you own to keep its repos in reach instead.
                 </p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={multiAccount}
+                    onChange={(e) => setMultiAccount(e.target.checked)}
+                    className="mt-0.5 size-4 accent-primary"
+                  />
+                  <span>
+                    <span className="font-medium">
+                      Installable on multiple accounts (public App)
+                    </span>
+                    <span className="block text-xs text-muted-foreground">
+                      For repos spanning your personal account and organizations: after
+                      creating the App, run its install step once per account. Each
+                      installation grants only the repositories you pick there — but anyone
+                      with the App&rsquo;s link can install it on <em>their</em> repos and
+                      start @mentioning the agent, so leave this off unless you need it.
+                    </span>
+                  </span>
+                </label>
               </div>
               <Button type="submit">Continue to GitHub</Button>
             </form>

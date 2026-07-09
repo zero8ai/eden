@@ -73,6 +73,14 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
   const { user, template } = loaderData;
   const { manifest, files } = template;
   const deps = Object.entries(manifest.dependencies ?? {});
+  // Issue #47: provisioned secrets (GITHUB_APP_ID and friends) are Eden's concern, set by the
+  // Create GitHub App guided flow on the Deployment tab — never something the user provides. Keep
+  // them out of the "Secrets you provide" list; if EVERY secret is provisioned, the card is dropped
+  // entirely (the Setup card already tells the user to run Create GitHub App).
+  const secrets = manifest.secrets ?? [];
+  const userSecrets = secrets.filter((s) => !s.provisioned);
+  const provisionedSecrets = secrets.filter((s) => s.provisioned);
+  const showSecretsCard = userSecrets.length > 0 || provisionedSecrets.length === 0;
 
   return (
     <AppShell userEmail={user.email}>
@@ -174,18 +182,21 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
         )}
 
         <div className="grid gap-6 sm:grid-cols-2">
+          {/* Issue #47: only "Secrets you provide" (non-provisioned). When every secret is
+              provisioned, this card is dropped and the npm card stands alone in the grid. */}
+          {showSecretsCard && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Required secrets</CardTitle>
+              <CardTitle className="text-base">Secrets you provide</CardTitle>
               <CardDescription>
                 Values go to the secrets store, never the repo. The install wizard
-                creates per-environment placeholders.
+                collects them.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {manifest.secrets && manifest.secrets.length > 0 ? (
+              {userSecrets.length > 0 ? (
                 <ul className="space-y-2 text-sm">
-                  {manifest.secrets.map((s) => (
+                  {userSecrets.map((s) => (
                     <li key={s.name}>
                       <span className="font-mono text-xs">{s.name}</span>
                       {s.description && (
@@ -199,8 +210,23 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
               ) : (
                 <p className="text-sm text-muted-foreground">None.</p>
               )}
+              {provisionedSecrets.length > 0 && (
+                <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">
+                    Configured automatically:
+                  </span>{" "}
+                  <span className="font-mono">
+                    {provisionedSecrets.map((s) => s.name).join(", ")}
+                  </span>{" "}
+                  — Eden sets{" "}
+                  {provisionedSecrets.length === 1 ? "this" : "these"} via guided
+                  setup on the agent&rsquo;s Deployment tab. You never provide{" "}
+                  {provisionedSecrets.length === 1 ? "it" : "them"}.
+                </p>
+              )}
             </CardContent>
           </Card>
+          )}
 
           <Card>
             <CardHeader>

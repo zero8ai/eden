@@ -16,8 +16,14 @@ import {
   type FileViewDeps,
 } from "~/drafts/drafts.server";
 import { stageDraft } from "~/drafts/drafts.server";
+import { readAgentFile } from "~/github/repo.server";
 import type { ProposedChange } from "~/github/write.server";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
+
+// The publish normalization reads repo files (package.json / package-lock.json) to detect a
+// stale lockfile — stub the GitHub read so no test touches the network.
+vi.mock("~/github/repo.server", () => ({ readAgentFile: vi.fn() }));
+const readAgentFileMock = vi.mocked(readAgentFile);
 
 let store: FakeStore;
 const PROJECT = {
@@ -41,6 +47,8 @@ beforeEach(() => {
   store.seedProject({ id: PROJECT.id, orgId: "org_1" });
   // Drafts key by roster member (Milestone 5.5) — a single-agent repo is a team of one.
   store.seedAgent({ id: "agent_1", projectId: PROJECT.id });
+  readAgentFileMock.mockReset();
+  readAgentFileMock.mockResolvedValue(null);
 });
 
 describe("staging", () => {
@@ -288,6 +296,105 @@ describe("publish gate (build check)", () => {
     expect(propose.mock.calls[0][2].files).toEqual([
       { path: "package.json", content: checkedPackage.content },
     ]);
+  });
+
+  it("stages the stale package-lock.json for deletion when a dependency rewrite changes package.json", async () => {
+    const repoPackage =
+      JSON.stringify(
+        {
+          dependencies: {
+            "@openrouter/ai-sdk-provider": "^2.10.0",
+            eve: "latest",
+            zod: "^3.23.0",
+          },
+        },
+        null,
+        2,
+      ) + "\n";
+    // The repo has a committed lockfile built for the OLD dependencies — `npm ci` in the
+    // build gate would hard-fail on the rewritten package.json.
+    readAgentFileMock.mockImplementation(async (_inst, _repo, path) => {
+      if (path === "package.json") return repoPackage;
+      if (path === "package-lock.json") return '{"lockfileVersion": 3}';
+      return null;
+    });
+    await stageDraft(
+      {
+        projectId: PROJECT.id,
+        path: "agent/agent.ts",
+        content: "export default defineAgent({ model: openrouter.chatModel('m/x') });",
+      },
+      store,
+    );
+    const check = vi.fn().mockResolvedValue({ ok: true });
+    const propose = vi.fn().mockResolvedValue(proposed);
+
+    await publishDrafts(
+      { project: PROJECT, paths: ["agent/agent.ts"] },
+      store,
+      propose,
+      check,
+    );
+
+    const overlay = check.mock.calls[0][0].overlay as {
+      path: string;
+      content: string | null;
+    }[];
+    expect(overlay.find((f) => f.path === "package-lock.json")).toEqual({
+      path: "package-lock.json",
+      content: null,
+    });
+    // The published change-set deletes the lock too, so the deployed image's `npm ci`
+    // doesn't hit the same mismatch.
+    expect(propose.mock.calls[0][2].files).toContainEqual({
+      path: "package-lock.json",
+      content: null,
+    });
+  });
+
+  it("keeps the lockfile when the published package.json matches the repo's", async () => {
+    const repoPackage =
+      JSON.stringify(
+        {
+          dependencies: {
+            "@ai-sdk/openai-compatible": "^3.0.5",
+            eve: "latest",
+            zod: "^4.4.3",
+          },
+        },
+        null,
+        2,
+      ) + "\n";
+    readAgentFileMock.mockImplementation(async (_inst, _repo, path) => {
+      if (path === "package.json") return repoPackage;
+      if (path === "package-lock.json") return '{"lockfileVersion": 3}';
+      return null;
+    });
+    await stageDraft(
+      {
+        projectId: PROJECT.id,
+        path: "agent/agent.ts",
+        content: "export default defineAgent({ model: openrouter.chatModel('m/x') });",
+      },
+      store,
+    );
+    const check = vi.fn().mockResolvedValue({ ok: true });
+
+    await publishDrafts(
+      { project: PROJECT, paths: ["agent/agent.ts"] },
+      store,
+      vi.fn().mockResolvedValue(proposed),
+      check,
+    );
+
+    const overlay = check.mock.calls[0][0].overlay as {
+      path: string;
+      content: string | null;
+    }[];
+    expect(overlay.some((f) => f.path === "package-lock.json")).toBe(false);
+    // The package overlay rides along (pre-existing behavior) but is byte-identical to the
+    // repo's — which is exactly why the lock stays.
+    expect(overlay.find((f) => f.path === "package.json")?.content).toBe(repoPackage);
   });
 
   it("stages shared root files unattributed, and a mixed selection checks the repo root", async () => {

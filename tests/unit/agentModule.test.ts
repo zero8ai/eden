@@ -108,6 +108,28 @@ describe("setModel", () => {
     expectDynamicShape(next, "z-ai/glm-5.2");
   });
 
+  it("migrates a legacy factory with trailing commas / multiline formatting", () => {
+    // As authored in the wild (eden-spike-agent): prettier adds a trailing comma, which the
+    // old factory regex missed — leaving an orphan createOpenRouter call with no import.
+    const legacy = `import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { defineAgent } from "eve";
+
+const openrouter = createOpenRouter({
+  apiKey: process.env.OPENROUTER_API_KEY ?? "",
+});
+
+export default defineAgent({
+  model: openrouter("anthropic/claude-sonnet-4.5"),
+});
+`;
+    const next = setModel(legacy, "z-ai/glm-5.2");
+    expect(next).not.toContain("createOpenRouter");
+    expect(next).toContain(
+      "const openrouter = createOpenAICompatible({ name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY ?? '' });",
+    );
+    expectDynamicShape(next, "z-ai/glm-5.2");
+  });
+
   it("converts a plain string literal to OpenRouter provider wiring", () => {
     const next = setModel(PLAIN, "openai/gpt-5.1", {
       contextWindowTokens: 400_000,

@@ -16,11 +16,11 @@ export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 200_000;
 
 /** A curated OpenRouter shortlist for the picker; the UI also allows a free-text override. */
 export const SUGGESTED_MODELS = [
-  "anthropic/claude-opus-4-8",
+  "anthropic/claude-opus-4.8",
   "anthropic/claude-sonnet-5",
-  "anthropic/claude-haiku-4-5",
+  "anthropic/claude-haiku-4.5",
   "openai/gpt-5.1",
-  "google/gemini-3-pro",
+  "google/gemini-3.1-pro-preview",
   "z-ai/glm-5.2",
   "moonshotai/kimi-k2.7-code",
 ] as const;
@@ -52,7 +52,7 @@ const OPENROUTER_FACTORY =
 const LEGACY_OPENROUTER_IMPORT =
   /import\s+\{\s*createOpenRouter\s*\}\s+from\s+['"]@openrouter\/ai-sdk-provider['"];\n?/;
 const LEGACY_OPENROUTER_FACTORY =
-  /const\s+openrouter\s*=\s*createOpenRouter\(\s*\{\s*apiKey\s*:\s*process\.env\.OPENROUTER_API_KEY\s*\?\?\s*(['"`])[^'"`]*\1\s*\}\s*\);\n?/;
+  /const\s+openrouter\s*=\s*createOpenRouter\(\s*\{\s*apiKey\s*:\s*process\.env\.OPENROUTER_API_KEY\s*\?\?\s*(['"`])[^'"`]*\1\s*,?\s*\}\s*,?\s*\)\s*;?\n?/;
 
 function openRouterModelCall(model: string): string {
   return `openrouter.chatModel('${model}')`;

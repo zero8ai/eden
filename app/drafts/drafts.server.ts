@@ -260,7 +260,6 @@ async function normalizeOpenRouterPackageDrafts(input: {
     const root = agentRootForAgentModule(file.path);
     if (root && usesOpenRouter(file.content)) roots.add(root);
   }
-  if (roots.size === 0) return [...byPath.values()];
 
   const repo = { owner: input.project.repoOwner, repo: input.project.repoName };
   for (const root of roots) {
@@ -275,6 +274,21 @@ async function normalizeOpenRouterPackageDrafts(input: {
     if (normalized !== base || !selected) {
       byPath.set(pkgPath, { path: pkgPath, content: normalized });
     }
+  }
+
+  // An Eden dependency rewrite makes the repo's committed package-lock.json stale, and both
+  // the build gate and the deployed image run `npm ci`, which hard-fails on any lock mismatch.
+  // Stage the lock's deletion alongside the changed package.json so the build falls back to
+  // `npm install` (Eden never authors lockfiles, so it can't regenerate one).
+  for (const file of [...byPath.values()]) {
+    if (!file.path.endsWith("package.json") || typeof file.content !== "string") continue;
+    if (!file.content.includes(OPENROUTER_PROVIDER_PACKAGE)) continue;
+    const lockPath = file.path.replace(/package\.json$/, "package-lock.json");
+    if (byPath.has(lockPath)) continue;
+    const repoPkg = await readAgentFile(input.project.repoInstallationId, repo, file.path);
+    if (repoPkg === file.content) continue; // dependencies unchanged — the lock is still valid
+    const lock = await readAgentFile(input.project.repoInstallationId, repo, lockPath);
+    if (lock !== null) byPath.set(lockPath, { path: lockPath, content: null });
   }
 
   return [...byPath.values()];

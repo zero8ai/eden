@@ -1,9 +1,0 @@
-{
-  "id": "triaging-issues",
-  "type": "skill",
-  "name": "Triaging issues",
-  "description": "How to groom a backlog — decide what an incoming issue is, how urgent it is, and what happens to it next.",
-  "version": "0.1.0",
-  "eve": ">=0.1.0",
-  "files": ["skills/triaging-issues.md"]
-}

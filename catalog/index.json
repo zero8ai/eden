@@ -57,14 +57,6 @@
       "hash": "fcfeb9fec37e3017f8f0410923f36dbc5934596e"
     },
     {
-      "id": "design-critique",
-      "type": "skill",
-      "name": "Design critique",
-      "version": "0.1.0",
-      "description": "How to critique a design against its intent — hierarchy, consistency, the unhappy states, accessibility, and copy.",
-      "hash": "c7116a3a026df48cf6f4443407fa32089a451ad2"
-    },
-    {
       "id": "github-app-auth",
       "type": "skill",
       "name": "GitHub App auth",
@@ -79,38 +71,6 @@
       "version": "0.1.0",
       "description": "How to judge whether a change is correct, safe, and ready — and give feedback that helps the author.",
       "hash": "3c5b4f5f15181b176ff913bd290be271d28d7ddb"
-    },
-    {
-      "id": "technical-writing",
-      "type": "skill",
-      "name": "Technical writing",
-      "version": "0.1.0",
-      "description": "How to write documentation that gets a reader to an outcome — leading with what they came for and cutting the rest.",
-      "hash": "bfa240a80f9c8559bd192a59e6401de714b573b3"
-    },
-    {
-      "id": "triaging-issues",
-      "type": "skill",
-      "name": "Triaging issues",
-      "version": "0.1.0",
-      "description": "How to groom a backlog — decide what an incoming issue is, how urgent it is, and what happens to it next.",
-      "hash": "e6ab4b70189ca9938f477c414c77f07c55e9d503"
-    },
-    {
-      "id": "writing-a-github-issue",
-      "type": "skill",
-      "name": "Writing a GitHub issue",
-      "version": "0.1.0",
-      "description": "How to turn a request, bug, or idea into a GitHub issue someone can act on without asking you anything.",
-      "hash": "1a77fe3908cbccc0692b9781fe457fd4454ca196"
-    },
-    {
-      "id": "writing-a-prd",
-      "type": "skill",
-      "name": "Writing a PRD",
-      "version": "0.1.0",
-      "description": "A playbook for writing product requirements documents that lead with the decision.",
-      "hash": "cb89a337281c3122d3bb67d9f7e835d742f38b47"
     },
     {
       "id": "discord-send-message",

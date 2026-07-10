@@ -130,8 +130,22 @@ export const templateManifestSchema = z
       }),
     )
     .optional(),
-  /** Declared external connections (future use — reserved by the format now). */
-  connections: z.array(z.string().min(1)).optional(),
+  /**
+   * Auth-brokered connection descriptor (issue #30) — ONLY valid on a `connection` template
+   * (enforced in the superRefine below). It drives the install wizard's Connect step: Eden runs
+   * an operator-brokered OAuth flow for `provider`, requesting `scopes`, and stores the resulting
+   * grant so deploy can inject it. `kind` is `"oauth2"` for now (the only brokered flow).
+   *
+   * `principalType` is deliberately omitted: Phase 1 grants are APP-scoped (one shared grant per
+   * agent, captured at install). It joins here when user-scoped connections land.
+   */
+  auth: z
+    .object({
+      provider: slug,
+      kind: z.literal("oauth2"),
+      scopes: z.array(z.string().min(1)).min(1),
+    })
+    .optional(),
   /** Sandbox setup installed alongside this template, merged by Eden into the agent sandbox. */
   sandbox: sandboxSetupSchema.optional(),
   /** Suggested model, for agent-type templates. */
@@ -180,6 +194,15 @@ export const templateManifestSchema = z
         code: z.ZodIssueCode.custom,
         path: ["includes"],
         message: "a bundle with no files must include at least one template",
+      });
+    }
+    // `auth` is a connection-template concern only — a brokered OAuth grant belongs to a
+    // connector, not to a tool/skill/agent/etc. (bundles carry auth by INCLUDING a connection).
+    if (m.auth && m.type !== "connection") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["auth"],
+        message: "auth is only valid on a connection template",
       });
     }
   });

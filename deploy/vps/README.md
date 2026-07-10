@@ -70,9 +70,9 @@ docker run --rm hello-world     # verify
 ## 3. Clone Eden
 
 ```bash
-sudo mkdir -p /opt/eden && sudo chown $USER /opt/eden
-git clone https://github.com/<your-fork-or-org>/eden.git /opt/eden
-cd /opt/eden
+mkdir -p ~/apps
+git clone https://github.com/<your-fork-or-org>/eden.git ~/apps/eden
+cd ~/apps/eden
 ```
 
 ## 4. Configure the environment
@@ -126,7 +126,7 @@ The compose file is gitignored so you can tweak it — start from the tracked te
 copy-and-tweak pattern as `env.example` above):
 
 ```bash
-cd /opt/eden
+cd ~/apps/eden
 cp deploy/vps/docker-compose.example.yml deploy/vps/docker-compose.yml
 docker compose -f deploy/vps/docker-compose.yml up -d --build eden  # brings up postgres too
 docker compose -f deploy/vps/docker-compose.yml run --rm --build migrate  # apply DB schema
@@ -156,7 +156,7 @@ hang.
 Point the site config at your domain:
 
 ```bash
-cd /opt/eden
+cd ~/apps/eden
 sed -i 's/eden.example.com/<your-domain>/g' deploy/vps/nginx-eden.conf
 ```
 
@@ -198,7 +198,7 @@ curl -sI https://<your-domain> | head -1   # expect HTTP/2 200 (or a 30x to /log
 it's containerized. Add it with `crontab -e`:
 
 ```
-17 3 * * 1 cd /opt/eden/deploy/vps && docker compose run --rm certbot renew --quiet && docker exec eden-nginx nginx -s reload
+17 3 * * 1 cd ~/apps/eden/deploy/vps && docker compose run --rm certbot renew --quiet && docker exec eden-nginx nginx -s reload
 ```
 
 ## 7. First login & smoke test
@@ -230,7 +230,7 @@ sandbox `bootstrap()` shows up there).
 **Updating Eden**
 
 ```bash
-cd /opt/eden && git pull
+cd ~/apps/eden && git pull
 docker compose -f deploy/vps/docker-compose.yml up -d --build
 docker compose -f deploy/vps/docker-compose.yml run --rm --build migrate
 ```

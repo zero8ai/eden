@@ -98,8 +98,28 @@ function validateManifest(where, m) {
       }
   }
 
-  if (m.connections !== undefined && !Array.isArray(m.connections)) {
-    fail(where, "connections must be an array of strings");
+  // auth (issue #30): a brokered OAuth connector descriptor — connection templates only.
+  if (m.auth !== undefined) {
+    if (!m.auth || typeof m.auth !== "object" || Array.isArray(m.auth)) {
+      fail(where, "auth must be an object { provider, kind, scopes }");
+    } else {
+      if (m.type !== "connection") {
+        fail(where, "auth is only valid on a connection template");
+      }
+      if (!KEBAB.test(m.auth.provider ?? "")) {
+        fail(where, `auth.provider "${m.auth.provider}" is not a kebab-case slug`);
+      }
+      if (m.auth.kind !== "oauth2") {
+        fail(where, `auth.kind "${m.auth.kind}" must be "oauth2"`);
+      }
+      if (
+        !Array.isArray(m.auth.scopes) ||
+        m.auth.scopes.length === 0 ||
+        m.auth.scopes.some((s) => typeof s !== "string" || s.length === 0)
+      ) {
+        fail(where, "auth.scopes must be a non-empty array of non-empty strings");
+      }
+    }
   }
   if (m.sandbox !== undefined) {
     if (

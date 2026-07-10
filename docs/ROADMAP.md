@@ -116,7 +116,10 @@ Drawn from deliberately-punted items and the open questions in [`PRD.md`](./PRD.
 
 - ⬜ Remaining install targets: **new standalone repo** and **subagent of an agent** (member +
   new-team-member are the shipped two).
-- ⬜ **Connections** wiring (the manifest reserves `connections`; nothing consumes it yet).
+- 🟡 **Connections** — install-time auth-brokered connectors (issue #30). Phase 1 ships the
+  Google Sheets connector: the manifest's `auth` descriptor drives an Eden-brokered OAuth flow in
+  the install wizard, the grant is sealed in Postgres, and deploy injects it so eve's OpenAPI
+  connection self-refreshes tokens. Follow-ups: user-scoped grants and more providers.
 - ⬜ Rung-2 **publish to marketplace** — extract a live-tested tool/agent into a catalog PR.
 - ⬜ **Team templates** — a scaffold referencing agent templates plus a wiring spec.
 - ⬜ Third-party template **trust & safety** (review/signing) before non-first-party publishing.

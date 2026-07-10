@@ -18,11 +18,13 @@ import {
   findInstall,
   parseLock,
   removeInstall,
+  requiredScopesByProvider,
   serializeLock,
   upsertInstall,
   type EdenLock,
   type InstallEntry,
 } from "~/marketplace/lock";
+import type { ResolvedAuth } from "~/marketplace/compose.server";
 import type { CatalogTemplate } from "~/seams/types";
 
 const REGISTRY = "fixture";
@@ -258,6 +260,179 @@ describe("planInstall — lock secrets snapshot (§4.5)", () => {
     };
     const lock = parseLock(legacy);
     expect(lock.installs[0].secrets).toBeUndefined();
+  });
+});
+
+/** A connection template with an OAuth descriptor — resolves to `auths` (issue #30). */
+const sheetsConnTpl: CatalogTemplate & { auths?: ResolvedAuth[] } = {
+  manifest: {
+    id: "google-sheets",
+    type: "connection",
+    name: "Google Sheets",
+    description: "Read and write spreadsheets.",
+    version: "0.1.0",
+    eve: ">=0.1.0",
+    files: ["connections/google-sheets.ts"],
+    auth: {
+      provider: "google",
+      kind: "oauth2",
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    },
+  },
+  files: { "connections/google-sheets.ts": "export default {};\n" },
+  auths: [
+    {
+      templateId: "google-sheets",
+      provider: "google",
+      kind: "oauth2",
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    },
+  ],
+};
+
+describe("planInstall — lock auth snapshot (issue #30)", () => {
+  it("records the resolved template's auths (provider/kind/scopes) in the lock entry", () => {
+    const plan = planInstall(
+      memberCtx({
+        template: sheetsConnTpl,
+        target: { kind: "member", memberName: "pm", root: "agents/pm/agent" },
+      }),
+    );
+    const lockWrite = plan.writes.find((w) => w.path === "eden-lock.json")!;
+    const entry = findInstall(
+      parseLock(JSON.parse(lockWrite.content)),
+      "google-sheets",
+      "pm",
+    )!;
+    expect(entry.auth).toEqual([
+      {
+        provider: "google",
+        kind: "oauth2",
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+      },
+    ]);
+  });
+
+  it("falls back to a plain template's manifest.auth when no resolved auths are present", () => {
+    const { auths: _drop, ...plain } = sheetsConnTpl;
+    const plan = planInstall(
+      memberCtx({
+        template: plain,
+        target: { kind: "member", memberName: "pm", root: "agents/pm/agent" },
+      }),
+    );
+    const lockWrite = plan.writes.find((w) => w.path === "eden-lock.json")!;
+    const entry = findInstall(
+      parseLock(JSON.parse(lockWrite.content)),
+      "google-sheets",
+      "pm",
+    )!;
+    expect(entry.auth).toEqual([
+      {
+        provider: "google",
+        kind: "oauth2",
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+      },
+    ]);
+  });
+
+  it("omits the auth field for templates that declare none", () => {
+    const plan = planInstall(memberCtx());
+    const lockWrite = plan.writes.find((w) => w.path === "eden-lock.json")!;
+    const entry = findInstall(
+      parseLock(JSON.parse(lockWrite.content)),
+      "cloudflare-deploy",
+      "pm",
+    )!;
+    expect(entry.auth).toBeUndefined();
+  });
+});
+
+describe("requiredScopesByProvider (issue #30)", () => {
+  const authEntry = (
+    over: Partial<InstallEntry> & { auth?: InstallEntry["auth"] },
+  ): InstallEntry => ({
+    id: "x",
+    type: "connection",
+    name: "X",
+    version: "0.1.0",
+    hash: "h",
+    registry: REGISTRY,
+    member: null,
+    files: [],
+    ...over,
+  });
+
+  it("unions and dedupes scopes across installs for the same member/provider, sorted", () => {
+    const lock: EdenLock = {
+      version: 1,
+      installs: [
+        authEntry({
+          id: "a",
+          member: "pm",
+          auth: [
+            {
+              provider: "google",
+              kind: "oauth2",
+              scopes: [
+                "https://www.googleapis.com/auth/spreadsheets",
+                "openid",
+              ],
+            },
+          ],
+        }),
+        authEntry({
+          id: "b",
+          member: "pm",
+          auth: [
+            {
+              provider: "google",
+              kind: "oauth2",
+              scopes: ["openid", "https://www.googleapis.com/auth/drive"],
+            },
+          ],
+        }),
+      ],
+    };
+    expect(requiredScopesByProvider(lock, "pm")).toEqual(
+      new Map([
+        [
+          "google",
+          [
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/spreadsheets",
+            "openid",
+          ],
+        ],
+      ]),
+    );
+  });
+
+  it("filters by member — a different member's scopes don't leak in", () => {
+    const lock: EdenLock = {
+      version: 1,
+      installs: [
+        authEntry({
+          member: "pm",
+          auth: [{ provider: "google", kind: "oauth2", scopes: ["a"] }],
+        }),
+        authEntry({
+          member: "eng",
+          auth: [{ provider: "google", kind: "oauth2", scopes: ["b"] }],
+        }),
+      ],
+    };
+    expect(requiredScopesByProvider(lock, "pm")).toEqual(
+      new Map([["google", ["a"]]]),
+    );
+  });
+
+  it("is empty when installs carry no auth snapshot (old locks)", () => {
+    const lock: EdenLock = {
+      version: 1,
+      installs: [authEntry({ member: "pm" })],
+    };
+    expect(requiredScopesByProvider(lock, "pm").size).toBe(0);
   });
 });
 

@@ -8,6 +8,13 @@
       "when": 1783678327062,
       "tag": "0000_known_marten_broadcloak",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1783665400000,
+      "tag": "0033_perpetual_inhumans",
+      "breakpoints": true
     }
   ]
 }

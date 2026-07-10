@@ -23,7 +23,7 @@ import { ZOD_PACKAGE, ZOD_VERSION } from "~/eve/agentModule";
 import type { CatalogTemplate } from "~/seams/types";
 import { isTemplateSlug, type TemplateManifest } from "./manifest";
 import { templateContentHash } from "./hash.server";
-import type { ResolvedInclude } from "./compose.server";
+import type { ResolvedAuth, ResolvedInclude } from "./compose.server";
 import {
   findInstall,
   removeInstall,
@@ -63,6 +63,26 @@ function hasSandboxWork(
       Object.keys(setup.env ?? {}).length > 0 ||
       setup.revalidationKey),
   );
+}
+
+/**
+ * The OAuth connection descriptors to snapshot into the lock for this install (issue #30). Prefer
+ * the resolved template's `auths` (parent + every included connector, deduped by provider), dropping
+ * the `templateId` provenance the lock doesn't need. A plain (non-resolved) template has no `auths`,
+ * so fall back to its single `manifest.auth` descriptor as a one-element array.
+ */
+function authSnapshot(
+  template: PlanContext["template"],
+): Array<{ provider: string; kind: "oauth2"; scopes: string[] }> {
+  if (template.auths && template.auths.length > 0) {
+    return template.auths.map((a) => ({
+      provider: a.provider,
+      kind: a.kind,
+      scopes: a.scopes,
+    }));
+  }
+  const auth = template.manifest.auth;
+  return auth ? [{ provider: auth.provider, kind: auth.kind, scopes: auth.scopes }] : [];
 }
 
 function renderSandboxAddon(setup: SandboxSetup): string {
@@ -144,7 +164,16 @@ export interface PlanContext {
    * and its `includes` provenance is recorded in the lock. A plain `CatalogTemplate` (no includes)
    * still works — the hash is computed and no includes are recorded.
    */
-  template: CatalogTemplate & { hash?: string; includes?: ResolvedInclude[] };
+  template: CatalogTemplate & {
+    hash?: string;
+    includes?: ResolvedInclude[];
+    /**
+     * OAuth connection descriptors the resolved template must broker (issue #30) — the parent's
+     * own `auth` plus every include's, deduped by provider. Snapshotted into the lock so a
+     * Reconnect can rebuild the required scopes. Absent for plain (non-resolved) templates.
+     */
+    auths?: ResolvedAuth[];
+  };
   /** Locator string recorded in the lock — "fixture" or "github:owner/repo@ref". */
   registry: string;
   /** Every repo-relative path currently on the default branch (conflict detection). */
@@ -462,6 +491,11 @@ export function planInstall(ctx: PlanContext): InstallPlan {
         }
       : {}),
     ...(hasSandboxWork(manifest.sandbox) ? { sandbox: manifest.sandbox } : {}),
+    // Snapshot required OAuth scopes per provider so a Reconnect can request the right set forever
+    // (issue #30) — a grant row's stored scopes are only a record of what was granted, never the
+    // request template. Prefer the resolved template's `auths` (parent + every included connector,
+    // deduped by provider); fall back to a plain template's single `manifest.auth` descriptor.
+    ...(authSnapshot(template).length > 0 ? { auth: authSnapshot(template) } : {}),
   };
   let baseLock = ctx.lock;
   for (const e of absorbed) baseLock = removeInstall(baseLock, e.id, e.member);

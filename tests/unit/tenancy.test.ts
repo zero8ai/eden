@@ -71,6 +71,7 @@ describe("agent context", () => {
       {
         orgId: ORG_A,
         name: "My Team",
+        layout: "team",
         roster: [{ name: "deployer", root: "agents/deployer/agent" }],
       },
       store,
@@ -79,11 +80,11 @@ describe("agent context", () => {
     const ctx = await resolveAgentContext(project.id, null, store);
 
     expect(ctx.isTeam).toBe(true);
-    expect(ctx.active.name).toBe("deployer");
+    expect(ctx.active?.name).toBe("deployer");
   });
 
   it("syncs a stale single-agent roster from the repo's team layout", async () => {
-    const project = await createProject({ orgId: ORG_A, name: "My Team" }, store);
+    const project = await createProject({ orgId: ORG_A, name: "My Team", layout: "team" }, store);
 
     const ctx = await resolveSyncedAgentContext(
       project.id,
@@ -95,6 +96,48 @@ describe("agent context", () => {
     expect(ctx.isTeam).toBe(true);
     expect(ctx.roster.map((a) => ({ name: a.name, root: a.root }))).toEqual([
       { name: "deployer", root: "agents/deployer/agent" },
+    ]);
+  });
+
+  it("persists team classification with an explicitly empty roster", async () => {
+    const project = await createProject(
+      { orgId: ORG_A, name: "Empty Team", layout: "team", roster: [] },
+      store,
+    );
+
+    const ctx = await resolveAgentContext(project.id, null, store);
+    expect(project.layout).toBe("team");
+    expect(ctx).toMatchObject({ isTeam: true, roster: [], active: null });
+  });
+
+  it("syncs to zero only when the empty-team marker proves the read is genuine", async () => {
+    const project = await createProject(
+      {
+        orgId: ORG_A,
+        name: "My Team",
+        layout: "team",
+        roster: [{ name: "deployer", root: "agents/deployer/agent" }],
+      },
+      store,
+    );
+    await store.agents.createAssistant({
+      projectId: project.id,
+      name: "assistant",
+      root: ".eden/assistant",
+    });
+
+    const markerless = await resolveSyncedAgentContext(project.id, null, [], store);
+    expect(markerless.roster.map((a) => a.name)).toEqual(["deployer"]);
+
+    const empty = await resolveSyncedAgentContext(
+      project.id,
+      null,
+      ["agents/README.md"],
+      store,
+    );
+    expect(empty).toMatchObject({ isTeam: true, roster: [], active: null });
+    expect((await store.agents.listByProject(project.id)).map((a) => a.kind)).toEqual([
+      "assistant",
     ]);
   });
 });

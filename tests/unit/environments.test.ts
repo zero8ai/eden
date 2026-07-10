@@ -218,6 +218,53 @@ describe("deleteTeamEnvironment", () => {
 });
 
 describe("member removal (roster prune) tears down infra", () => {
+  it("explicitly removing the final member tears down infra while the assistant survives", async () => {
+    const project = await createProject(
+      { orgId: ORG, name: "Team", layout: "team", roster: [TEAM[0]] },
+      store,
+    );
+    const [alpha] = (await store.agents.listByProject(project.id)).filter(
+      (a) => a.kind === "member",
+    );
+    await store.agents.createAssistant({
+      projectId: project.id,
+      name: "assistant",
+      root: ".eden/assistant",
+    });
+    const [environment] = await store.environments.listByAgent(alpha.id);
+    const target = fakeDeployTarget({ health: { status: "live", url: "http://x" } });
+    const release = await createRelease(
+      { projectId: project.id, agentId: alpha.id, gitSha: "d".repeat(40) },
+      store,
+    );
+    const deployment = await deployRelease(
+      { environmentId: environment.id, releaseId: release.id },
+      { store, deployTarget: target, secrets: fakeSecrets() },
+    );
+    const destroyed: string[] = [];
+    const destroyedWorlds: string[] = [];
+
+    const roster = await syncProjectAgents(
+      project.id,
+      [],
+      store,
+      {
+        ...target,
+        destroy: async (id) => { destroyed.push(id); },
+        destroyWorld: async (id) => { destroyedWorlds.push(id); },
+      },
+      { allowEmpty: true },
+    );
+
+    expect(roster.filter((a) => a.kind === "member")).toEqual([]);
+    expect(destroyed).toEqual([deployment.id]);
+    expect(destroyedWorlds).toEqual([environment.id]);
+    expect((await store.agents.listByProject(project.id)).map((a) => a.kind)).toEqual([
+      "assistant",
+    ]);
+    expect(await store.environments.findById(environment.id)).toBeNull();
+  });
+
   it("a removed member's instances and worlds are torn down before the roster prune", async () => {
     const project = await createProject({ orgId: ORG, name: "Team", roster: TEAM }, store);
     store.seedProject({ id: project.id, orgId: ORG, repoOwner: "acme", repoName: "a" });

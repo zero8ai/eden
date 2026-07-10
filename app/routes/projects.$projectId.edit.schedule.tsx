@@ -42,6 +42,7 @@ import {
   agentFromParams,
   agentParamRedirect,
   memberFromPath,
+  requireActiveAgent,
   resolveAgentContext,
 } from "~/project/agent-context.server";
 import {
@@ -92,6 +93,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         resolveFileView(project, path),
         resolveAgentContext(project.id, paramAgent ?? memberFromPath(path)),
       ]);
+      requireActiveAgent(active, project.id);
       const parsed = view.content ? parseScheduleFile(view.content) : null;
       return {
         project,

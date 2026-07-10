@@ -55,7 +55,7 @@ import {
   listInstallationRepos,
   type InstallationRepo,
 } from "~/github/repo.server";
-import { detectAgentRoots, isEveRepo } from "~/eve/parse";
+import { detectAgentRoots, hasTeamLayout, isEveRepo } from "~/eve/parse";
 import { slugifyResourceName } from "~/eve/templates";
 import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/connect";
@@ -164,17 +164,18 @@ export async function action(args: ActionFunctionArgs) {
     const owner = String(form.get("owner") ?? "").trim();
     const name = String(form.get("name") ?? "").trim();
     const layout = form.get("layout") === "team" ? ("team" as const) : ("single" as const);
-    // Both branches ask the same two questions: repository name + agent name.
-    const agentName = slugifyResourceName(String(form.get("agentName") ?? ""));
+    const agentName = layout === "single"
+      ? slugifyResourceName(String(form.get("agentName") ?? ""))
+      : "";
     if (!owner || !name) return { error: "Owner and repository name are required." };
-    if (!agentName) return { error: "Agent name is required." };
+    if (layout === "single" && !agentName) return { error: "Agent name is required." };
     try {
       const model = await getWorkspaceAssistantModel(org.id).catch(() => null);
       const repo = await createEveRepo(installationId, {
         owner,
         name,
         layout,
-        agentName,
+        ...(layout === "single" ? { agentName } : {}),
         model: model ?? undefined,
       });
       const project = await createProject({
@@ -184,10 +185,11 @@ export async function action(args: ActionFunctionArgs) {
         repoName: repo.repo,
         repoInstallationId: installationId,
         defaultBranch: repo.defaultBranch,
+        layout,
         // The scaffold's roster is known without re-reading the repo (§7.9).
         roster:
           layout === "team"
-            ? [{ name: agentName, root: `agents/${agentName}/agent` }]
+            ? []
             : [{ name: agentName, root: "agent" }],
       });
       throw redirect(`/repos/${project.id}`);
@@ -212,7 +214,7 @@ export async function action(args: ActionFunctionArgs) {
   }
   if (!isEveRepo(source.paths)) {
     return {
-      error: `${owner}/${repo} doesn't look like an eve project — no \`agent/\` directory (or team \`agents/<member>/agent/\` layout) found.`,
+      error: `${owner}/${repo} doesn't look like an eve project — no \`agent/\` directory, team members, or \`agents/README.md\` empty-team marker found.`,
     };
   }
 
@@ -223,6 +225,7 @@ export async function action(args: ActionFunctionArgs) {
     repoName: repo,
     repoInstallationId: installationId,
     defaultBranch: source.ref || defaultBranch,
+    layout: hasTeamLayout(source.paths) ? "team" : "single",
     // Detected roster: one member per agent root (single repos are a team of one).
     roster: detectAgentRoots(source.paths).map((r) => ({ name: r.name, root: r.root })),
   });
@@ -421,7 +424,6 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                     </span>
                   </label>
                 </div>
-                {/* Same two questions in both branches: repository name, agent name. */}
                 <div className="space-y-1.5">
                   <Label htmlFor="name">Repository name</Label>
                   <div className="flex items-center gap-2">
@@ -450,10 +452,8 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                     .
                   </p>
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="agentName">
-                    {layout === "team" ? "First agent's name" : "Agent's name"}
-                  </Label>
+                {layout === "single" && <div className="space-y-1.5">
+                  <Label htmlFor="agentName">Agent's name</Label>
                   <Input
                     id="agentName"
                     name="agentName"
@@ -461,20 +461,10 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                     className="w-full font-mono sm:w-72"
                   />
                   <p className="text-xs text-muted-foreground">
-                    {layout === "team" ? (
-                      <>
-                        The first team member, scaffolded at{" "}
-                        <span className="font-mono">agents/&lt;name&gt;/</span>. Add more
-                        members from the team page after creation.
-                      </>
-                    ) : (
-                      <>
-                        Your agent's name. Its code lives at{" "}
-                        <span className="font-mono">agent/</span> in the repository.
-                      </>
-                    )}
+                    Your agent's name. Its code lives at{" "}
+                    <span className="font-mono">agent/</span> in the repository.
                   </p>
-                </div>
+                </div>}
                 <Button type="submit" disabled={busyData != null}>
                   {busyIntent === "create" ? "Creating & opening…" : "Create & scaffold"}
                 </Button>

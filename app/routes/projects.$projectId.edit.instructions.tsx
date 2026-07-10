@@ -30,6 +30,7 @@ import { contextPath } from "~/lib/paths";
 import {
   agentFromParams,
   agentParamRedirect,
+  requireActiveAgent,
   resolveAgentContext,
 } from "~/project/agent-context.server";
 import type { Route } from "./+types/projects.$projectId.edit.instructions";
@@ -64,6 +65,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         project.id,
         agentName,
       );
+      requireActiveAgent(active, project.id);
       const path = `${active.root}/instructions.md`;
 
       // Show the latest intended value: staged draft → open change request → repo.
@@ -114,6 +116,7 @@ export async function action(args: ActionFunctionArgs) {
     project.id,
     String(form.get("agent") ?? "") || null,
   );
+  requireActiveAgent(active, project.id);
 
   try {
     await stageDraft({

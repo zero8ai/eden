@@ -12,7 +12,7 @@ import { authkitLoader } from "@workos-inc/authkit-react-router";
 import type { LoaderFunctionArgs } from "react-router";
 
 import { listDrafts } from "~/drafts/drafts.server";
-import { resolveAgentContext } from "~/project/agent-context.server";
+import { requireActiveAgent, resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject } from "~/project/guard.server";
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -31,6 +31,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       const drafts = await listDrafts(project.id);
       if (!agentName) return { count: drafts.length };
       const { active } = await resolveAgentContext(project.id, agentName);
+      requireActiveAgent(active, project.id);
       return {
         count: drafts.filter(
           (d) => d.agentId === active.id || d.agentId === null,

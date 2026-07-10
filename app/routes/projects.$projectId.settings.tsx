@@ -36,6 +36,7 @@ import {
 import semver from "semver";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
+import { EmptyTeamState } from "~/components/empty-team-state";
 import { ModelSelect } from "~/components/model-select";
 import {
   AgentNav,
@@ -80,7 +81,7 @@ import {
   stageDraft,
 } from "~/drafts/drafts.server";
 import { readModel } from "~/eve/agentModule";
-import { buildAgentConfig } from "~/eve/parse";
+import { buildAgentConfig, EMPTY_TEAM_MARKER } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
 import { fetchAgentSource, readAgentFile } from "~/github/repo.server";
 import { proposeChange, type FileChange } from "~/github/write.server";
@@ -103,6 +104,7 @@ import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
   agentFromParams,
   agentParamRedirect,
+  requireActiveAgent,
   resolveAgentContext,
   resolveSyncedAgentContext,
 } from "~/project/agent-context.server";
@@ -153,7 +155,7 @@ interface SettingsView {
   level: NavLevel;
   showMember: boolean;
   showRepo: boolean;
-  /** Member: whether the active member can be removed (team, not the last member). */
+  /** Member: whether the active member can be removed from a team. */
   canRemoveMember: boolean;
   /** Member: whether the active agent can be renamed (any member/single-agent, self view). */
   canRenameMember: boolean;
@@ -335,6 +337,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         agentName,
         source.paths,
       );
+      if (agentName && !active) throw redirect(`/repos/${project.id}`);
       const level: NavLevel = agentName ? "member" : isTeam ? "repo" : "single";
       const showMember = level !== "repo";
       const showRepo = level !== "member";
@@ -377,14 +380,14 @@ export const loader = (args: LoaderFunctionArgs) =>
       const base: SettingsView = {
         project,
         roster: roster.map((a) => ({ name: a.name })),
-        activeAgent: active.name,
+        activeAgent: active?.name ?? "",
         isTeam,
         level,
         showMember,
         showRepo,
-        canRemoveMember: showMember && isTeam && active.root !== "agent",
-        canRenameMember: showMember,
-        pendingName: showMember ? active.pendingName : null,
+        canRemoveMember: showMember && isTeam && active?.root !== "agent",
+        canRenameMember: showMember && active !== null,
+        pendingName: showMember ? active?.pendingName ?? null : null,
         model: null,
         modelInherited: false,
         hasAgentModule: false,
@@ -407,14 +410,14 @@ export const loader = (args: LoaderFunctionArgs) =>
           level === "repo"
             ? () => true
             : (member) =>
-                member === active.name || (member === null && !isTeam),
+                member === active?.name || (member === null && !isTeam),
         ),
         tokens: [],
         teamMembers: [],
         teamLinks: [],
       };
 
-      if (showMember) {
+      if (showMember && active) {
         const [envs, orgDefaultModel] = await Promise.all([
           listAgentEnvironments(active.id),
           getWorkspaceAssistantModel(project.orgId).catch(() => null),
@@ -570,6 +573,7 @@ export async function action(args: ActionFunctionArgs) {
         project.id,
         String(form.get("agent") ?? "") || null,
       );
+      requireActiveAgent(active, project.id);
       const result = await stageModelChange({
         project,
         root: active.root,
@@ -598,6 +602,7 @@ export async function action(args: ActionFunctionArgs) {
         member,
         source.paths,
       );
+      requireActiveAgent(active, project.id);
       const draftPaths = drafts.map((d) => ({
         path: d.path,
         content: d.content,
@@ -706,6 +711,7 @@ export async function action(args: ActionFunctionArgs) {
           project.id,
           String(form.get("agent") ?? "") || null,
         );
+        requireActiveAgent(active, project.id);
         const envs = await listAgentEnvironments(active.id);
         agentId = active.id;
         environmentId = resolveScope(
@@ -766,9 +772,6 @@ export async function action(args: ActionFunctionArgs) {
       if (!member || member.root === "agent") {
         return { error: "Only team members (agents/<name>/) can be removed." };
       }
-      if (roster.length <= 1) {
-        return { error: "A team needs at least one member." };
-      }
       const source = await fetchAgentSource(project.repoInstallationId, repo);
       const memberDir = `agents/${name}/`;
       const files: FileChange[] = source.paths.flatMap((p) =>
@@ -776,6 +779,12 @@ export async function action(args: ActionFunctionArgs) {
       );
       if (files.length === 0)
         return { error: `No files found under ${memberDir}.` };
+      if (!source.paths.includes(EMPTY_TEAM_MARKER)) {
+        files.push({
+          path: EMPTY_TEAM_MARKER,
+          content: "# Agents\n\nAdd each team member under `agents/<member>/` as a complete eve project.\n",
+        });
+      }
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
         branch: `eden/remove-member-${name}`,
@@ -808,6 +817,7 @@ export async function action(args: ActionFunctionArgs) {
         project.id,
         String(form.get("agent") ?? "") || null,
       );
+      requireActiveAgent(active, project.id);
       if (newName === active.name) {
         return { error: "That's already this agent's name." };
       }
@@ -1065,6 +1075,12 @@ export default function Settings({
             Review and publish it from the Deployment tab.
           </AlertDescription>
         </Alert>
+      )}
+
+      {isTeam && roster.length === 0 && (
+        <div className="mb-10">
+          <EmptyTeamState overviewHref={`/repos/${project.id}`} />
+        </div>
       )}
 
       <div className="space-y-10">

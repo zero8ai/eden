@@ -76,6 +76,20 @@ export function makeFakeStore(): FakeStore {
   const auditEntries: { action: string; target?: string | null; orgId: string }[] = [];
   let forcedCollisions = 0;
 
+  const cascadeAgent = (agentId: string) => {
+    agents.delete(agentId);
+    for (const [environmentId, environment] of environments) {
+      if (environment.agentId !== agentId) continue;
+      environments.delete(environmentId);
+      for (const [deploymentId, deployment] of deployments) {
+        if (deployment.environmentId === environmentId) deployments.delete(deploymentId);
+      }
+    }
+    for (const [releaseId, release] of releases) {
+      if (release.agentId === agentId) releases.delete(releaseId);
+    }
+  };
+
   return {
     auditEntries,
 
@@ -85,6 +99,7 @@ export function makeFakeStore(): FakeStore {
         orgId: p.orgId,
         name: p.name ?? "Agent",
         slug: p.slug ?? "agent",
+        layout: p.layout ?? "single",
         repoOwner: p.repoOwner ?? null,
         repoName: p.repoName ?? null,
         repoInstallationId: p.repoInstallationId ?? null,
@@ -133,13 +148,13 @@ export function makeFakeStore(): FakeStore {
           .filter((a) => a.projectId === projectId)
           .sort((a, b) => a.name.localeCompare(b.name));
       },
-      async syncRoster(projectId, roster) {
+      async syncRoster(projectId, roster, options) {
         if (roster.length > 0) {
           const keep = new Set(roster.map((m) => m.name));
           for (const [aid, a] of agents) {
             // Only prune tree-detected members; internal rows (assistant) survive sync.
             if (a.projectId === projectId && a.kind === "member" && !keep.has(a.name))
-              agents.delete(aid);
+              cascadeAgent(aid);
           }
           for (const m of roster) {
             const existing = [...agents.values()].find(
@@ -160,6 +175,10 @@ export function makeFakeStore(): FakeStore {
                 updatedAt: new Date(seq),
               });
             }
+          }
+        } else if (options?.allowEmpty) {
+          for (const [aid, a] of agents) {
+            if (a.projectId === projectId && a.kind === "member") cascadeAgent(aid);
           }
         }
         return [...agents.values()]
@@ -455,6 +474,7 @@ export function makeFakeStore(): FakeStore {
           orgId: input.orgId,
           name: input.name,
           slug: input.slug,
+          layout: input.layout ?? "single",
           repoOwner: input.repoOwner ?? null,
           repoName: input.repoName ?? null,
           repoInstallationId: input.repoInstallationId ?? null,

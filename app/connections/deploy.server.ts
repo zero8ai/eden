@@ -10,6 +10,11 @@
  * container that can never authenticate. A transient refresh failure throws too (deploys should be
  * repeatable), but leaves the grant active.
  *
+ * When the caller supplies the installed connectors' required scopes (issue #69), it ALSO validates
+ * scope COVERAGE: an active grant whose granted scopes don't cover what the installs require would
+ * 403 at runtime, so the deploy fails honestly with a "reconnect" message instead. The grant stays
+ * active (it isn't dead — just under-scoped), so it is NOT marked expired.
+ *
  * The persistence + config touchpoints are injectable (`ConnectionDeployDeps`) so the decision
  * logic is unit-testable with fakes; the default wiring hits Postgres + operator env.
  */
@@ -17,6 +22,7 @@ import type { SecretScope } from "~/seams/types";
 import { getGoogleOAuthConfig, type GoogleOAuthConfig } from "./config.server";
 import {
   InvalidGrantError,
+  missingScopes,
   refreshAccessToken as realRefreshAccessToken,
 } from "./google.server";
 import {
@@ -32,7 +38,7 @@ export interface ConnectionDeployDeps {
     agentId: string;
     provider: string;
   }) => Promise<{
-    grant: { id: string; status: GrantStatus };
+    grant: { id: string; status: GrantStatus; scopes: string };
     refreshToken: string;
   } | null>;
   markGrantStatus: (id: string, status: GrantStatus) => Promise<void>;
@@ -60,6 +66,7 @@ export async function connectionGrantEnv(
   scope: SecretScope,
   fetchImpl: typeof fetch = fetch,
   deps: ConnectionDeployDeps = defaultDeps(),
+  requiredScopes: string | null = null,
 ): Promise<Record<string, string>> {
   const config = deps.getConfig();
   if (!config) return {};
@@ -87,6 +94,19 @@ export async function connectionGrantEnv(
       );
     }
     throw error;
+  }
+
+  // Scope-coverage validation (issue #69): the grant is alive, but if its granted scopes don't
+  // cover what the installed connectors require, the container would 403 at runtime. Fail the
+  // deploy honestly. The grant is active (not dead), so it is NOT marked expired here.
+  if (requiredScopes) {
+    const missing = missingScopes(requiredScopes, found.grant.scopes);
+    if (missing.length > 0) {
+      throw new Error(
+        `The Google connection for this agent is missing required permission(s): ${missing.join(", ")}. ` +
+          "Reconnect it from the agent's Deployment tab (leave all requested permissions checked), then redeploy.",
+      );
+    }
   }
 
   return {

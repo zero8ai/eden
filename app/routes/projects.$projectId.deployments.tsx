@@ -953,6 +953,12 @@ export default function Deployment({
   const [params] = useSearchParams();
   const justReleased = params.get("released");
   const justInstalled = params.get("installed");
+  // Connection connect/reconnect outcome (issue #69): the Google callback redirects back here with
+  // `connected` and, when the agent was live, a `redeploy` result the auto-redeploy produced.
+  const connected = params.get("connected");
+  const redeploy = params.get("redeploy");
+  const redeployError = params.get("redeployError");
+  const connectedLabel = connected === "google" ? "Google" : connected;
 
   // Progress: re-fetch faster while any deployment is queued/building. A slower
   // baseline poll runs regardless, so a deploy STARTED after this page loaded is
@@ -1011,6 +1017,43 @@ export default function Deployment({
           </AlertDescription>
         </Alert>
       )}
+
+      {connected &&
+        (redeploy === "error" ? (
+          <Alert variant="destructive" className="mb-6">
+            <AlertTitle>
+              {connectedLabel} connected, but the redeploy couldn&apos;t be started
+            </AlertTitle>
+            <AlertDescription className="whitespace-pre-wrap">
+              {redeployError}. The connection is saved — redeploy the current version manually from
+              the version history below.
+            </AlertDescription>
+          </Alert>
+        ) : redeploy === "queued" ? (
+          <Alert className="mb-6">
+            <AlertTitle>{connectedLabel} connected — applying the new credentials</AlertTitle>
+            <AlertDescription>
+              The running version is redeploying so the new credentials take effect. Watch the
+              Environments card below for progress.
+            </AlertDescription>
+          </Alert>
+        ) : redeploy === "staged" ? (
+          <Alert className="mb-6">
+            <AlertTitle>{connectedLabel} connected</AlertTitle>
+            <AlertDescription>
+              You have staged changes, so the running version wasn&apos;t redeployed automatically.
+              Ship your staged changes to deploy them with the new credentials, or redeploy the
+              current version from the version history below.
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <Alert className="mb-6">
+            <AlertTitle>{connectedLabel} connected</AlertTitle>
+            <AlertDescription>
+              The connection is saved. Deploy this agent to start using it.
+            </AlertDescription>
+          </Alert>
+        ))}
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">

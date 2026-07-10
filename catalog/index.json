@@ -9,14 +9,6 @@
       "hash": "0b862fa85809a3b5e5eb25e88c09e341b1fd099b"
     },
     {
-      "id": "discord-bundle",
-      "type": "bundle",
-      "name": "Discord",
-      "version": "0.1.0",
-      "description": "Everything an agent needs to talk on Discord: the Discord channel (one-click connect via Eden's shared app and a slash command named after the agent) and the outbound send-message tool.",
-      "hash": "ff9ce5bcbb3603b4667d066abdf217dc8445f252"
-    },
-    {
       "id": "github-bundle",
       "type": "bundle",
       "name": "GitHub",
@@ -39,46 +31,6 @@
       "version": "0.2.0",
       "description": "Talk to this agent by @mentioning it in GitHub issue and pull-request comments — a GitHub App with webhook signature verification via eve's githubChannel.",
       "hash": "530407920c180a7a1c92ed8f4ca32d89f8b475af"
-    },
-    {
-      "id": "linear",
-      "type": "channel",
-      "name": "Linear",
-      "version": "0.1.0",
-      "description": "Assign and @mention this agent in Linear — it works as a Linear agent, posting Agent Activities on delegated sessions via eve's linearChannel with webhook signature verification.",
-      "hash": "51bf1e41c76117e1ef87a5e2757f8d7c44c68ae3"
-    },
-    {
-      "id": "microsoft-teams",
-      "type": "channel",
-      "name": "Microsoft Teams",
-      "version": "0.1.0",
-      "description": "Talk to this agent from Microsoft Teams — inbound Bot Framework JWT validation and replies over the Bot Connector API via eve's teamsChannel.",
-      "hash": "63dbf1553963dc06ff417478206b1b8961f8d06f"
-    },
-    {
-      "id": "slack",
-      "type": "channel",
-      "name": "Slack",
-      "version": "0.1.0",
-      "description": "Talk to this agent from Slack — app mentions and direct messages with buttons and select menus, credentials brokered by a Vercel Connect connector via eve's slackChannel.",
-      "hash": "f4120950f1c654504e062512251a7fc09a1058f4"
-    },
-    {
-      "id": "telegram",
-      "type": "channel",
-      "name": "Telegram",
-      "version": "0.1.0",
-      "description": "Talk to this agent from Telegram — direct messages and group @mentions with inbound signature verification, replies, and typing indicators via eve's telegramChannel.",
-      "hash": "f9630f0cc2aa178fe5cd7f0370f1320e2699ad37"
-    },
-    {
-      "id": "twilio",
-      "type": "channel",
-      "name": "Twilio (SMS)",
-      "version": "0.1.0",
-      "description": "Talk to this agent over SMS through Twilio — inbound signature verification and outbound replies via eve's twilioChannel, with the allowed sender and from-number read from env.",
-      "hash": "6696c610b9291779a5ceaa29e36e760e04445f46"
     },
     {
       "id": "agent-browser",

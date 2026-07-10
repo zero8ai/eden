@@ -35,7 +35,7 @@ export const drizzleDataStore: DataStore = {
         .where(eq(agents.projectId, projectId))
         .orderBy(asc(agents.name));
     },
-    async syncRoster(projectId, roster) {
+    async syncRoster(projectId, roster, options) {
       return db.transaction(async (tx) => {
         if (roster.length > 0) {
           await tx
@@ -56,6 +56,10 @@ export const drizzleDataStore: DataStore = {
                 roster.map((m) => m.name),
               ),
             ),
+          );
+        } else if (options?.allowEmpty) {
+          await tx.delete(agents).where(
+            and(eq(agents.projectId, projectId), eq(agents.kind, "member")),
           );
         }
         // Never delete the whole roster: an empty detection (e.g. a truncated tree read)

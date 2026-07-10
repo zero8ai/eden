@@ -71,7 +71,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         peekAssistantInstance(project.id),
         listAgents(project.id),
       ]);
-      const isTeam = roster.some((a) => a.root !== "agent");
+      const isTeam = project.layout === "team";
 
       let entries: ChatEntry[] = [];
       let historyError: string | null = null;

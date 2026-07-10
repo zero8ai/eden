@@ -15,7 +15,7 @@ import { listAgents, syncProjectAgents } from "~/db/queries.server";
 import { getRuntime } from "~/seams/index.server";
 import { ensureReleasesForCommit, findProjectByRepo } from "~/deploy/controller.server";
 import { refreshTeammatesForRosterChange } from "~/deploy/teammate-refresh.server";
-import { ASSISTANT_CONFIG_ROOT, detectAgentRoots } from "~/eve/parse";
+import { ASSISTANT_CONFIG_ROOT, detectAgentRoots, hasTeamLayout } from "~/eve/parse";
 import { enqueue } from "~/jobs/queue.server";
 import {
   invalidateRepoChanges,
@@ -123,7 +123,10 @@ export async function action({ request }: ActionFunctionArgs) {
         ref: payload.pull_request.merge_commit_sha,
       });
       const before = await listAgents(project.id);
-      const after = await syncProjectAgents(project.id, detectAgentRoots(source.paths));
+      const detected = detectAgentRoots(source.paths);
+      const after = await syncProjectAgents(project.id, detected, undefined, undefined, {
+        allowEmpty: project.layout === "team" && hasTeamLayout(source.paths) && detected.length === 0,
+      });
       // D7: a merge that added/removed a member must refresh the OTHER members' running
       // instances so their EDEN_TEAMMATES reflects the new roster (image reuse, no rebuild).
       await refreshTeammatesForRosterChange({

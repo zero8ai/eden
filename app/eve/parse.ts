@@ -22,6 +22,14 @@ export const AGENT_ROOT = "agent";
 export const ASSISTANT_CONFIG_ROOT = ".eden/assistant";
 /** Root directory that marks a team monorepo (PRD §7.9): `agents/<member>/agent/...`. */
 export const TEAM_ROOT = "agents";
+/** Committed sentinel that distinguishes a valid empty team from a truncated tree read. */
+export const EMPTY_TEAM_MARKER = `${TEAM_ROOT}/README.md`;
+
+/** Detect the team repository shape even when it currently has no members. */
+export function hasTeamLayout(paths: string[]): boolean {
+  if (paths.some((p) => p === AGENT_ROOT || p.startsWith(`${AGENT_ROOT}/`))) return false;
+  return paths.includes(EMPTY_TEAM_MARKER) || detectAgentRoots(paths).length > 0;
+}
 
 export interface AgentSource {
   /** Every file path in the repo, repo-relative, forward-slashed. */
@@ -67,7 +75,7 @@ export function detectAgentRoots(paths: string[]): AgentRoot[] {
 
 /** True when the repo looks like an eve project — single-agent or team layout. */
 export function isEveRepo(paths: string[]): boolean {
-  return detectAgentRoots(paths).length > 0;
+  return detectAgentRoots(paths).length > 0 || hasTeamLayout(paths);
 }
 
 /**

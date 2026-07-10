@@ -12,6 +12,7 @@ import {
 } from "~/playground/sessions.server";
 import {
   agentFromParams,
+  requireActiveAgent,
   resolveAgentContext,
 } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
@@ -34,6 +35,7 @@ export async function action(args: ActionFunctionArgs) {
   const agentName =
     agentFromParams(args.params) ?? asString(form.get("agentName"));
   const { active } = await resolveAgentContext(project.id, agentName);
+  requireActiveAgent(active, project.id);
   const playgroundSessionId = asString(form.get("playgroundSessionId"));
   if (!playgroundSessionId) {
     throw data({ error: "No playground session to stop." }, { status: 400 });

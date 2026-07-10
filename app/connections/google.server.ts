@@ -36,6 +36,41 @@ export function missingScopes(requested: string, granted: string): string[] {
   return requestedList.filter((s) => !grantedSet.has(s));
 }
 
+/**
+ * The four states a Deployment-tab Connections row can be in (issue #30). The card is now the ONE
+ * place a connector's OAuth account is connected/reconnected — installs no longer gate on it — so a
+ * row exists for every provider the lock REQUIRES, even before any grant.
+ *  - "not-connected": no grant yet → primary Connect button (requests the lock-required scopes).
+ *  - "connected": active grant that covers the required scopes → subtle Reconnect link.
+ *  - "under-scoped": active grant missing required scopes (would 403 at runtime) → primary Reconnect.
+ *  - "inactive": grant expired/revoked → status badge + Reconnect.
+ */
+export type ConnectionRowState =
+  | "not-connected"
+  | "connected"
+  | "under-scoped"
+  | "inactive";
+
+/**
+ * Derive a Connections-card row's state from its lock-required scopes and current grant (issue #30).
+ * Pure so the route computes it in the loader and ships a plain string to the client — deployments.tsx
+ * is a route with client code, so the server-only scope comparison stays out of the render path. A
+ * null/absent `requiredScopes` (old locks with no snapshot) is treated as covered.
+ */
+export function connectionRowState(input: {
+  hasGrant: boolean;
+  grantStatus: string | null;
+  requiredScopes: string | null;
+  grantScopes: string;
+}): ConnectionRowState {
+  if (!input.hasGrant) return "not-connected";
+  if (input.grantStatus !== "active") return "inactive";
+  if (!input.requiredScopes) return "connected";
+  return missingScopes(input.requiredScopes, input.grantScopes).length === 0
+    ? "connected"
+    : "under-scoped";
+}
+
 /* ─────────────────────────── state token (pure given key) ─────────────────────────── */
 
 export interface GoogleConnectState {

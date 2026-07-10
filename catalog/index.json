@@ -22,7 +22,7 @@
       "name": "Google Sheets",
       "version": "0.1.0",
       "description": "Everything an agent needs to work with Google Sheets: the connector (install → Connect Google → read/write spreadsheets) plus a usage skill teaching A1 notation, read-before-write, and the values vs batchUpdate operations. Recommended way to add Sheets.",
-      "hash": "cc4903732d27b9dcad0a6c3f1258830345f9f3a2"
+      "hash": "f97d55af3e40a0baf96133757fff9c1c65cca5f2"
     },
     {
       "id": "discord",
@@ -45,8 +45,8 @@
       "type": "connection",
       "name": "Google Sheets",
       "version": "0.1.0",
-      "description": "Read and write Google Sheets from this agent. Install, click Connect Google to authorize your account, and the agent gets google_sheets__* tools (read/append/update cells, metadata, batch updates) via eve's OpenAPI connection — access tokens self-refresh at runtime.",
-      "hash": "9a9b767c2d46fad87e89773e423feeb34346018f"
+      "description": "Read and write Google Sheets from this agent. Install it, then click Connect Google on the agent's Deployment tab to authorize your account, and the agent gets google_sheets__* tools (read/append/update cells, metadata, batch updates) via eve's OpenAPI connection — access tokens self-refresh at runtime.",
+      "hash": "b61e02ca88830503a6b5e7dd94635044846c949c"
     },
     {
       "id": "agent-browser",

@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONNECT_STATE_TTL_MS,
   InvalidGrantError,
+  connectionRowState,
   exchangeCode,
   googleAuthorizeUrl,
   missingScopes,
@@ -44,12 +45,77 @@ describe("missingScopes", () => {
     expect(missingScopes("", `${SHEETS}`)).toEqual([]);
   });
 
-  it("flags an identity-only grant as not covering a spreadsheets connector (the install-gate case)", () => {
+  it("flags an identity-only grant as not covering a spreadsheets connector", () => {
     // Mirrors the real under-scoped fixture: a grant stored with identity scopes only must NOT be
-    // treated as covering a connector that needs spreadsheets — the install gate blocks on this.
+    // treated as covering a connector that needs spreadsheets — the Deployment-tab Connections card
+    // derives an "under-scoped" row from exactly this (issue #30).
     expect(
       missingScopes(SHEETS, "https://www.googleapis.com/auth/userinfo.email openid"),
     ).toEqual([SHEETS]);
+  });
+});
+
+describe("connectionRowState (issue #30)", () => {
+  const SHEETS = "https://www.googleapis.com/auth/spreadsheets";
+  const IDENTITY = "https://www.googleapis.com/auth/userinfo.email openid";
+
+  it("is not-connected when the lock requires a provider but no grant exists yet", () => {
+    // The freshly-installed-connector case: the wizard no longer connects, so the card must still
+    // offer Connect with the lock-required scopes.
+    expect(
+      connectionRowState({
+        hasGrant: false,
+        grantStatus: null,
+        requiredScopes: SHEETS,
+        grantScopes: "",
+      }),
+    ).toBe("not-connected");
+  });
+
+  it("is connected when an active grant covers the required scopes", () => {
+    expect(
+      connectionRowState({
+        hasGrant: true,
+        grantStatus: "active",
+        requiredScopes: SHEETS,
+        grantScopes: `${SHEETS} openid email`,
+      }),
+    ).toBe("connected");
+  });
+
+  it("is under-scoped when an active grant misses a required scope", () => {
+    expect(
+      connectionRowState({
+        hasGrant: true,
+        grantStatus: "active",
+        requiredScopes: SHEETS,
+        grantScopes: IDENTITY,
+      }),
+    ).toBe("under-scoped");
+  });
+
+  it("treats a null/absent required set as covered (old locks with no snapshot)", () => {
+    expect(
+      connectionRowState({
+        hasGrant: true,
+        grantStatus: "active",
+        requiredScopes: null,
+        grantScopes: IDENTITY,
+      }),
+    ).toBe("connected");
+  });
+
+  it("is inactive for an expired or revoked grant regardless of scopes", () => {
+    for (const grantStatus of ["expired", "revoked"]) {
+      expect(
+        connectionRowState({
+          hasGrant: true,
+          grantStatus,
+          requiredScopes: SHEETS,
+          grantScopes: `${SHEETS} openid email`,
+        }),
+      ).toBe("inactive");
+    }
   });
 });
 

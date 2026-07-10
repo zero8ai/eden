@@ -3,9 +3,9 @@
  *
  * A real eve instance, not an in-process loop: the composer POSTs to the
  * streaming resource route (api.projects.$projectId.assistant.stream) and this component reads the
- * same NDJSON turn feed the playground uses. Conversation history rebuilds from Eve's durable
- * stream on load (reusing playgroundSessions), so a mid-run reload re-attaches. First use shows a
- * provisioning state while the instance builds/deploys.
+ * same NDJSON turn feed the playground uses. Eden's durable event cache is the transcript source;
+ * the owning Eve instance is consulted only for bounded recovery and legacy backfill. First use
+ * shows a provisioning state while the instance builds/deploys.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { Loader2, Sparkles } from "lucide-react";
@@ -25,6 +25,7 @@ import {
   ensureAssistantInstance,
   peekAssistantInstance,
 } from "~/assistant/instance.server";
+import { hasActiveTurn, TURN_IDLE_TIMEOUT_MS } from "~/chat/turn-stream.server";
 import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import {
   AssistantBubble,
@@ -51,11 +52,21 @@ import {
 import { listAgents } from "~/db/queries.server";
 import { contextPath } from "~/lib/paths";
 import {
+  cacheCoversCompletedLiveTurn,
+  liveTurnIsForDifferentSession,
+} from "~/playground/handoff";
+import {
+  backfillPlaygroundEventsFromEve,
   createPlaygroundSession,
   listPlaygroundSessions,
-  loadPlaygroundEntriesFromEve,
+  loadPlaygroundEntriesFromCache,
+  playgroundCacheIsComplete,
+  reconcilePlaygroundSessionFromEve,
+  settleAbandonedPlaygroundSession,
   summarizePlaygroundSession,
 } from "~/playground/sessions.server";
+import { findSessionOwnerTarget } from "~/playground/ownership";
+import { shouldSettleAbandonedSession } from "~/playground/settle";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.assistant";
 
@@ -65,7 +76,11 @@ export const loader = (args: LoaderFunctionArgs) =>
     async ({ auth }) => {
       const project = requireRepo(
         await requireProject(
-          { user: auth.user, organizationId: auth.organizationId, role: auth.role },
+          {
+            user: auth.user,
+            organizationId: auth.organizationId,
+            role: auth.role,
+          },
           args.params.projectId,
           { request: args.request },
         ),
@@ -80,6 +95,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       let historyError: string | null = null;
       let currentSessionId: string | null = null;
       let currentSessionStatus: string | null = null;
+      let currentSessionOwnerLive: boolean | null = null;
       let sessions: ReturnType<typeof summarizePlaygroundSession>[] = [];
 
       if (snapshot.agentId) {
@@ -88,26 +104,83 @@ export const loader = (args: LoaderFunctionArgs) =>
           agentId: snapshot.agentId,
           userId: auth.user!.id,
         });
-        sessions = rows.map(summarizePlaygroundSession);
         const selected = args.url.searchParams.get("session");
-        const currentSession =
-          (selected ? rows.find((s) => s.id === selected) : null) ?? rows[0] ?? null;
-        currentSessionId = currentSession?.id ?? null;
-        currentSessionStatus = currentSession?.status ?? null;
-        if (currentSession?.externalSessionId) {
-          if (snapshot.target) {
+        let currentSession =
+          (selected ? rows.find((s) => s.id === selected) : null) ??
+          rows[0] ??
+          null;
+        if (currentSession) {
+          const historyTarget = findSessionOwnerTarget(
+            currentSession,
+            snapshot.target ? [snapshot.target] : [],
+          );
+          const ownerDeploymentLive = historyTarget !== null;
+          currentSessionOwnerLive = ownerDeploymentLive;
+
+          // Recover a drain that died with Eden only from the exact assistant instance that owns
+          // the Eve session. A replacement instance does not know the old external session id.
+          if (
+            (currentSession.status === "running" ||
+              currentSession.status === "failed") &&
+            historyTarget &&
+            !hasActiveTurn(currentSession.id)
+          ) {
             try {
-              entries = await loadPlaygroundEntriesFromEve({
+              currentSession = await reconcilePlaygroundSessionFromEve({
                 session: currentSession,
-                target: snapshot.target,
+                target: historyTarget,
               });
-            } catch (error) {
-              historyError = `Couldn't reload the assistant's history: ${(error as Error).message}`;
+            } catch {
+              // A later load can retry while the owner remains live.
             }
-          } else {
-            historyError = "History replays once the assistant is running again.";
           }
+
+          if (
+            shouldSettleAbandonedSession({
+              status: currentSession.status,
+              activeTurnInProcess: hasActiveTurn(currentSession.id),
+              ownerDeploymentLive,
+              msSinceLastActivity:
+                Date.now() - currentSession.updatedAt.getTime(),
+              idleTimeoutMs: TURN_IDLE_TIMEOUT_MS,
+            })
+          ) {
+            currentSession =
+              await settleAbandonedPlaygroundSession(currentSession);
+          }
+
+          // Sessions created before the durable event cache may be missing their oldest rows.
+          // Backfill once, but only from the exact owning instance; never ask a replacement about
+          // an unknown Eve session because that endpoint can hang indefinitely.
+          if (
+            currentSession.externalSessionId &&
+            !(await playgroundCacheIsComplete(currentSession))
+          ) {
+            if (historyTarget) {
+              try {
+                await backfillPlaygroundEventsFromEve({
+                  session: currentSession,
+                  target: historyTarget,
+                });
+              } catch (error) {
+                historyError = `Couldn't recover all of the assistant's older history: ${(error as Error).message}`;
+              }
+            } else {
+              historyError =
+                "This conversation's original assistant instance is no longer available. Eden is showing the history it cached, but older history may be missing. Start a new conversation to continue.";
+            }
+          }
+
+          // Cached rows render regardless of instance health, including when the owner is gone.
+          entries = await loadPlaygroundEntriesFromCache(currentSession);
+          currentSessionId = currentSession.id;
+          currentSessionStatus = currentSession.status;
         }
+        sessions = rows.map((session) =>
+          summarizePlaygroundSession(
+            currentSession?.id === session.id ? currentSession : session,
+          ),
+        );
       }
 
       return {
@@ -118,6 +191,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         sessions,
         currentSessionId,
         currentSessionStatus,
+        currentSessionOwnerLive,
         entries,
         historyError,
         isTeam,
@@ -155,7 +229,9 @@ export async function action(args: ActionFunctionArgs) {
       agentId: agent.id,
       userId: auth.user.id,
     });
-    throw redirect(`/repos/${project.id}/assistant?session=${encodeURIComponent(session.id)}`);
+    throw redirect(
+      `/repos/${project.id}/assistant?session=${encodeURIComponent(session.id)}`,
+    );
   }
   return { ok: true as const };
 }
@@ -165,6 +241,9 @@ export function meta() {
 }
 
 interface LiveTurn {
+  playgroundSessionId: string | null;
+  /** Loader entry boundary at send time, used to hide the cached copy during handoff. */
+  baseEntryCount: number;
   userText: string;
   text: string;
   steps: ChatStep[];
@@ -184,6 +263,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
     sessions,
     currentSessionId,
     currentSessionStatus,
+    currentSessionOwnerLive,
     entries,
     historyError,
     isTeam,
@@ -198,6 +278,23 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
   const ProvisionForm = provisionFetcher.Form;
 
   const [live, setLive] = useState<LiveTurn | null>(null);
+  // A turn from another selected session is never rendered here. For the current session, keep a
+  // completed/errored live turn until the DB status settles AND its cached assistant side arrives;
+  // a cached user-only prefix is not enough to replace the final browser-side reply.
+  const liveSessionMismatch = live
+    ? liveTurnIsForDifferentSession(live.playgroundSessionId, currentSessionId)
+    : false;
+  const liveCoveredByCache =
+    live !== null &&
+    cacheCoversCompletedLiveTurn({
+      liveSessionId: live.playgroundSessionId,
+      currentSessionId,
+      currentSessionStatus,
+      liveDone: live.done,
+      baseEntryCount: live.baseEntryCount,
+      entries,
+    });
+  const visibleLive = liveSessionMismatch || liveCoveredByCache ? null : live;
   const [sendError, setSendError] = useState<string | null>(null);
 
   const remoteBusy = currentSessionStatus === "running";
@@ -208,12 +305,14 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
   const provisioning =
     instanceStatus === "provisioning" || provisionFetcher.state !== "idle";
   const busy = (live !== null && !live.done) || remoteBusy || provisioning;
-  const replayingRunningSession = remoteBusy && !live;
+  const replayingRunningSession = remoteBusy && !visibleLive;
 
   // Poll while provisioning or replaying a running turn — the loader re-derives state each time.
   useEffect(() => {
     if (!provisioning && !replayingRunningSession) return;
-    const id = window.setInterval(() => void revalidator.revalidate(), 2_500);
+    const id = window.setInterval(() => {
+      if (revalidator.state === "idle") void revalidator.revalidate();
+    }, 2_500);
     return () => window.clearInterval(id);
   }, [provisioning, replayingRunningSession, revalidator]);
 
@@ -222,6 +321,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
     return (
       <Select
         value={currentSessionId}
+        disabled={busy}
         onValueChange={(id) =>
           navigate(`${base}/assistant?session=${encodeURIComponent(id)}`)
         }
@@ -241,12 +341,30 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         </SelectContent>
       </Select>
     );
-  }, [base, currentSessionId, navigate, sessions]);
+  }, [base, busy, currentSessionId, navigate, sessions]);
+
+  // The cache can include the in-flight turn before its browser stream has handed off. Hide only
+  // the entries appended after send time while the live view renders that same turn.
+  const shownEntries = useMemo<ChatEntry[]>(() => {
+    if (!visibleLive) return entries;
+    if (
+      visibleLive.playgroundSessionId &&
+      currentSessionId &&
+      visibleLive.playgroundSessionId !== currentSessionId
+    ) {
+      return entries;
+    }
+    return entries.length > visibleLive.baseEntryCount
+      ? entries.slice(0, visibleLive.baseEntryCount)
+      : entries;
+  }, [currentSessionId, entries, visibleLive]);
 
   const send = useCallback(
     async (message: string) => {
       setSendError(null);
       setLive({
+        playgroundSessionId: currentSessionId,
+        baseEntryCount: entries.length,
         userText: message,
         text: "",
         steps: [],
@@ -269,12 +387,15 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           body: form,
         });
         if (!res.ok || !res.body) {
-          const detail = (await res.json().catch(() => null)) as
-            | { error?: string; provisioning?: boolean }
-            | null;
-          if (detail?.provisioning || res.status === 409) {
+          const detail = (await res.json().catch(() => null)) as {
+            error?: string;
+            provisioning?: boolean;
+          } | null;
+          if (detail?.provisioning) {
             setLive(null);
-            setSendError("Your assistant is starting up — it'll be ready in a moment.");
+            setSendError(
+              "Your assistant is starting up — it'll be ready in a moment.",
+            );
             await revalidator.revalidate();
             return;
           }
@@ -299,31 +420,47 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
             } catch {
               continue;
             }
-            if (evt.type === "done" && evt.playgroundSessionId) {
+            if (
+              (evt.type === "session" || evt.type === "done") &&
+              evt.playgroundSessionId
+            ) {
               nextSessionId = evt.playgroundSessionId;
             }
             apply(evt);
           }
         }
+        // A transport can close without the terminal event. Settle the live view before
+        // revalidating, then let the derived cache handoff hide it only when rows have arrived.
+        setLive((prev) =>
+          prev && !prev.done ? { ...prev, activity: null, done: true } : prev,
+        );
         await revalidator.revalidate();
         if (!currentSessionId && nextSessionId) {
-          navigate(`${base}/assistant?session=${encodeURIComponent(nextSessionId)}`, {
-            replace: true,
-          });
+          navigate(
+            `${base}/assistant?session=${encodeURIComponent(nextSessionId)}`,
+            {
+              replace: true,
+            },
+          );
         }
-        setLive(null);
       } catch (error) {
         setLive((prev) =>
           prev
-            ? { ...prev, error: `Lost the live stream: ${(error as Error).message}`, activity: null, done: true }
+            ? {
+                ...prev,
+                error: `Lost the live stream: ${(error as Error).message}`,
+                activity: null,
+                done: true,
+              }
             : prev,
         );
-        setSendError("The live view dropped — the reply may still have been recorded.");
+        setSendError(
+          "The live view dropped — the reply may still have been recorded.",
+        );
         await revalidator.revalidate();
-        setLive(null);
       }
     },
-    [base, currentSessionId, navigate, project.id, revalidator],
+    [base, currentSessionId, entries.length, navigate, project.id, revalidator],
   );
 
   const headerActions = useMemo(
@@ -358,8 +495,8 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           <Alert className="mb-4">
             <AlertTitle>Setting up your assistant…</AlertTitle>
             <AlertDescription>
-              eden is building and starting your assistant instance. This takes a minute the
-              first time — the page updates automatically.
+              eden is building and starting your assistant instance. This takes
+              a minute the first time — the page updates automatically.
             </AlertDescription>
           </Alert>
         )}
@@ -392,7 +529,12 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
       })}
     >
       <div className="mx-auto w-full max-w-5xl px-4 pt-8 sm:px-6">
-        <AgentNav base={base} level={isTeam ? "repo" : "single"} roster={roster} className="mb-0" />
+        <AgentNav
+          base={base}
+          level={isTeam ? "repo" : "single"}
+          roster={roster}
+          className="mb-0"
+        />
         {isTeam && roster.length === 0 && (
           <div className="mt-6">
             <EmptyTeamState overviewHref={`/repos/${project.id}`} />
@@ -401,70 +543,106 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
       </div>
 
       <ChatTranscript
-        dep={`${entries.length}:${entries.at(-1)?.text.length ?? 0}:${entries.at(-1)?.steps?.length ?? 0}:${currentSessionStatus ?? ""}:${instanceStatus}:${live ? live.text.length + live.steps.length + live.inputRequests.length : 0}`}
-        forceScrollDep={live?.userText}
+        dep={`${shownEntries.length}:${shownEntries.at(-1)?.text.length ?? 0}:${shownEntries.at(-1)?.steps?.length ?? 0}:${currentSessionStatus ?? ""}:${instanceStatus}:${visibleLive ? visibleLive.text.length + visibleLive.steps.length + visibleLive.inputRequests.length : 0}`}
+        forceScrollDep={visibleLive?.userText}
         lead={transcriptLead}
       >
-        {(failed || idle) && entries.length === 0 && !live && !provisioning && (
-          <div className="py-6">
-            <Alert variant={failed ? "destructive" : undefined}>
-              <AlertTitle>
-                {failed ? "The assistant failed to start" : "Your assistant isn't running yet"}
-              </AlertTitle>
-              <AlertDescription className="space-y-3">
-                <p>
+        {(failed || idle) &&
+          shownEntries.length === 0 &&
+          !visibleLive &&
+          !provisioning && (
+            <div className="py-6">
+              <Alert variant={failed ? "destructive" : undefined}>
+                <AlertTitle>
                   {failed
-                    ? "The last attempt to start the assistant failed. Try starting it again."
-                    : "Start it once and it stays available. It builds and deploys as its own eve instance."}
-                </p>
-                <ProvisionForm method="post">
-                  <input type="hidden" name="intent" value="provision" />
-                  <Button type="submit" size="sm" disabled={provisionFetcher.state !== "idle"}>
-                    {failed ? "Try again" : "Set up the assistant"}
-                  </Button>
-                </ProvisionForm>
-              </AlertDescription>
-            </Alert>
-          </div>
-        )}
-
-        {provisioning && !live && (
-          <div className="py-6">
-            <ProvisioningCard stage={provisionStage} startedAt={provisionStartedAt} />
-          </div>
-        )}
-
-        {entries.length === 0 && !live && !remoteBusy && !idle && !failed && !provisioning && (
-          <div className="py-8 text-center">
-            <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <Sparkles className="size-6" aria-hidden />
+                    ? "The assistant failed to start"
+                    : "Your assistant isn't running yet"}
+                </AlertTitle>
+                <AlertDescription className="space-y-3">
+                  <p>
+                    {failed
+                      ? "The last attempt to start the assistant failed. Try starting it again."
+                      : "Start it once and it stays available. It builds and deploys as its own eve instance."}
+                  </p>
+                  <ProvisionForm method="post">
+                    <input type="hidden" name="intent" value="provision" />
+                    <Button
+                      type="submit"
+                      size="sm"
+                      disabled={provisionFetcher.state !== "idle"}
+                    >
+                      {failed ? "Try again" : "Set up the assistant"}
+                    </Button>
+                  </ProvisionForm>
+                </AlertDescription>
+              </Alert>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Say what you want built. The assistant keeps context across turns.
-            </p>
+          )}
+
+        {provisioning && !visibleLive && (
+          <div className="py-6">
+            <ProvisioningCard
+              stage={provisionStage}
+              startedAt={provisionStartedAt}
+            />
           </div>
         )}
 
-        {(entries as ChatEntry[]).map((e, i) =>
+        {shownEntries.length === 0 &&
+          !visibleLive &&
+          !remoteBusy &&
+          !idle &&
+          !failed &&
+          !provisioning && (
+            <div className="py-8 text-center">
+              <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <Sparkles className="size-6" aria-hidden />
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Say what you want built. The assistant keeps context across
+                turns.
+              </p>
+            </div>
+          )}
+
+        {shownEntries.map((e, i) =>
           e.role === "user" ? (
             <UserBubble key={e.id} text={e.text} />
           ) : (
             <AgentEntry
               key={e.id}
               entry={e}
-              onAnswer={i === entries.length - 1 && !live ? send : undefined}
+              onAnswer={
+                i === shownEntries.length - 1 && !visibleLive ? send : undefined
+              }
               busy={busy}
-              running={replayingRunningSession && i === entries.length - 1}
+              running={replayingRunningSession && i === shownEntries.length - 1}
             />
           ),
         )}
-        {replayingRunningSession && entries.at(-1)?.role !== "assistant" && (
-          <StepsCard steps={[]} idPrefix="running-session" activity="Still working…" />
-        )}
-        {live && (
+        {replayingRunningSession &&
+          shownEntries.at(-1)?.role !== "assistant" && (
+            <StepsCard
+              steps={[]}
+              idPrefix="running-session"
+              activity="Still working…"
+            />
+          )}
+        {currentSessionStatus === "failed" &&
+          !visibleLive &&
+          shownEntries.at(-1)?.role === "user" && (
+            <AssistantBubble>
+              <p className="text-sm text-muted-foreground">
+                {currentSessionOwnerLive
+                  ? "This turn was interrupted before it finished. Send the message again to retry."
+                  : "This turn was interrupted when its assistant instance was replaced. Start a new conversation to continue."}
+              </p>
+            </AssistantBubble>
+          )}
+        {visibleLive && (
           <>
-            <UserBubble text={live.userText} />
-            <LiveBubble live={live} />
+            <UserBubble text={visibleLive.userText} />
+            <LiveBubble live={visibleLive} />
           </>
         )}
       </ChatTranscript>
@@ -487,6 +665,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
 }
 
 type StreamEvent =
+  | { type: "session"; playgroundSessionId: string }
   | { type: "model"; modelId: string }
   | { type: "thinking" }
   | { type: "action"; toolName: string; summary: string | null }
@@ -507,24 +686,41 @@ type StreamEvent =
 
 function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
   switch (evt.type) {
+    case "session":
+      return { ...prev, playgroundSessionId: evt.playgroundSessionId };
     case "model":
       return { ...prev, modelId: evt.modelId };
     case "thinking":
       return { ...prev, activity: "Thinking…" };
     case "action":
-      return { ...prev, activity: evt.summary ? `${evt.toolName}: ${evt.summary}` : evt.toolName };
+      return {
+        ...prev,
+        activity: evt.summary
+          ? `${evt.toolName}: ${evt.summary}`
+          : evt.toolName,
+      };
     case "text":
       return { ...prev, text: evt.text };
     case "step":
-      return { ...prev, steps: [...prev.steps, evt.step], activity: "Thinking…" };
+      return {
+        ...prev,
+        steps: [...prev.steps, evt.step],
+        activity: "Thinking…",
+      };
     case "input":
-      return { ...prev, inputRequests: [...prev.inputRequests, ...evt.requests], activity: null };
+      return {
+        ...prev,
+        inputRequests: [...prev.inputRequests, ...evt.requests],
+        activity: null,
+      };
     case "done":
       return {
         ...prev,
         text: evt.reply ?? prev.text,
         inputRequests:
-          evt.inputRequests && evt.inputRequests.length > 0 ? evt.inputRequests : prev.inputRequests,
+          evt.inputRequests && evt.inputRequests.length > 0
+            ? evt.inputRequests
+            : prev.inputRequests,
         error: evt.error,
         modelId: evt.modelId ?? prev.modelId,
         activity: null,
@@ -564,7 +760,8 @@ function ProvisioningCard({
     }
     const start = new Date(startedAt).getTime();
     if (Number.isNaN(start)) return;
-    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    const tick = () =>
+      setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
     tick();
     const id = window.setInterval(tick, 1_000);
     return () => window.clearInterval(id);
@@ -582,8 +779,9 @@ function ProvisioningCard({
         )}
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
-        It builds and deploys as its own eve instance. The first build can take a few minutes —
-        this stays in sync automatically, so you can leave the page and come back.
+        It builds and deploys as its own eve instance. The first build can take
+        a few minutes — this stays in sync automatically, so you can leave the
+        page and come back.
       </p>
     </div>
   );
@@ -602,7 +800,9 @@ function LiveBubble({ live }: { live: LiveTurn }) {
         <AssistantBubble>
           {live.modelId && (
             <span className="mb-1.5 flex items-center gap-1.5">
-              <span className="font-mono text-xs text-muted-foreground">{live.modelId}</span>
+              <span className="font-mono text-xs text-muted-foreground">
+                {live.modelId}
+              </span>
             </span>
           )}
           {live.error ? (
@@ -613,7 +813,11 @@ function LiveBubble({ live }: { live: LiveTurn }) {
           <InputRequestsBlock requests={live.inputRequests} busy />
         </AssistantBubble>
       )}
-      <StepsCard steps={live.steps} idPrefix="live" activity={live.done ? null : live.activity} />
+      <StepsCard
+        steps={live.steps}
+        idPrefix="live"
+        activity={live.done ? null : live.activity}
+      />
     </div>
   );
 }
@@ -638,7 +842,9 @@ function AgentEntry({
               {entry.version}
             </Badge>
             {entry.modelId && (
-              <span className="font-mono text-xs text-muted-foreground">{entry.modelId}</span>
+              <span className="font-mono text-xs text-muted-foreground">
+                {entry.modelId}
+              </span>
             )}
           </span>
         )}
@@ -652,7 +858,11 @@ function AgentEntry({
           <MarkdownText text={entry.text || "(empty reply)"} />
         ) : null}
         {entry.inputRequests && (
-          <InputRequestsBlock requests={entry.inputRequests} onAnswer={onAnswer} busy={busy} />
+          <InputRequestsBlock
+            requests={entry.inputRequests}
+            onAnswer={onAnswer}
+            busy={busy}
+          />
         )}
       </AssistantBubble>
       <StepsCard

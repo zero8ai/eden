@@ -1,14 +1,13 @@
 /**
  * Playground — persistent Eve sessions with a live deployment of this agent.
  *
- * Eden stores only the app-owned Eve session cursor/listing. The transcript is rebuilt from
- * Eve's durable event stream on load, so Eve/Workflow World remains the source of truth for
- * conversation history.
+ * Eden's durable event cache is the transcript source. Eve is consulted only for a bounded
+ * reconcile or one-time legacy backfill, and only on the deployment that owns the session.
  *
  * Turns STREAM: the composer POSTs to the streaming resource route
  * (api.projects.$projectId.playground.stream) and this component reads back an NDJSON feed of
  * the turn — live reply text, current activity, and completed steps — so long agent turns show
- * progress instead of one spinner. On completion it revalidates and replays Eve history.
+ * progress instead of one spinner. On completion it revalidates the cached transcript.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -54,6 +53,10 @@ import { getAgentSource } from "~/github/cached.server";
 import { contextPath } from "~/lib/paths";
 import { stageModelSwitchingUpgrade } from "~/models/stage-model.server";
 import {
+  cacheCoversCompletedLiveTurn,
+  liveTurnIsForDifferentSession,
+} from "~/playground/handoff";
+import {
   backfillPlaygroundEventsFromEve,
   createPlaygroundSession,
   loadPlaygroundEntriesFromCache,
@@ -65,11 +68,9 @@ import {
   summarizePlaygroundSession,
 } from "~/playground/sessions.server";
 import { shouldSettleAbandonedSession } from "~/playground/settle";
+import { findSessionOwnerTarget } from "~/playground/ownership";
 import { newPlaygroundSessionPath } from "~/playground/url";
-import {
-  hasActiveTurn,
-  TURN_IDLE_TIMEOUT_MS,
-} from "~/chat/turn-stream.server";
+import { hasActiveTurn, TURN_IDLE_TIMEOUT_MS } from "~/chat/turn-stream.server";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -129,18 +130,20 @@ export const loader = (args: LoaderFunctionArgs) =>
       // a read hiccup, so a GitHub blip never locks the selector by mistake.
       const dynamicByRef = new Map<string, boolean | null>();
       await Promise.all(
-        [...new Set(targets.map((target) => target.gitSha))].map(async (ref) => {
-          const supported = await getAgentSource(project.repoInstallationId, {
-            owner: project.repoOwner,
-            repo: project.repoName,
-            ref,
-          })
-            .then((source) =>
-              hasDynamicModel(source.files[`${active.root}/agent.ts`]),
-            )
-            .catch(() => null);
-          dynamicByRef.set(ref, supported);
-        }),
+        [...new Set(targets.map((target) => target.gitSha))].map(
+          async (ref) => {
+            const supported = await getAgentSource(project.repoInstallationId, {
+              owner: project.repoOwner,
+              repo: project.repoName,
+              ref,
+            })
+              .then((source) =>
+                hasDynamicModel(source.files[`${active.root}/agent.ts`]),
+              )
+              .catch(() => null);
+            dynamicByRef.set(ref, supported);
+          },
+        ),
       );
       const selectedSessionId = args.url.searchParams.get("session");
       let currentSession =
@@ -150,16 +153,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         sessions[0] ??
         null;
       const historyTarget = currentSession
-        ? (targets.find(
-            (target) => target.environmentId === currentSession.environmentId,
-          ) ??
-          targets.find(
-            (target) => target.deploymentId === currentSession.lastDeploymentId,
-          ) ??
-          null)
+        ? findSessionOwnerTarget(currentSession, targets)
         : null;
       let entries: ChatEntry[] = [];
       let historyError: string | null = null;
+      let currentSessionOwnerLive: boolean | null = null;
       if (currentSession) {
         // Recover a session whose drain died with the Eden process (restart/redeploy mid-turn):
         // stuck "running", or marked "failed" even though Eve actually finished. Reconciling
@@ -171,9 +169,8 @@ export const loader = (args: LoaderFunctionArgs) =>
         // Only worth asking Eve while the deployment that RAN the turn is still live: a fresh
         // instance never saw the session, and Eve hangs (not 404s) session-stream requests for
         // unknown sessions, so the read would just burn its timeout every load (#73).
-        const ownerDeploymentLive = targets.some(
-          (target) => target.deploymentId === currentSession!.lastDeploymentId,
-        );
+        const ownerDeploymentLive = historyTarget !== null;
+        currentSessionOwnerLive = ownerDeploymentLive;
         if (
           (currentSession.status === "running" ||
             currentSession.status === "failed") &&
@@ -230,7 +227,7 @@ export const loader = (args: LoaderFunctionArgs) =>
             }
           } else {
             historyError =
-              "This session's environment does not have a live deployment to replay Eve history from.";
+              "This conversation's original deployment is no longer available. Eden is showing the history it cached, but older history may be missing. Start a new conversation to continue.";
           }
         }
 
@@ -250,6 +247,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         currentSessionId: currentSession?.id ?? null,
         currentSessionEnvironmentId: currentSession?.environmentId ?? null,
         currentSessionStatus: currentSession?.status ?? null,
+        currentSessionOwnerLive,
         currentSessionModelId: currentSession?.modelId ?? null,
         defaultModelId,
         entries,
@@ -351,6 +349,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     currentSessionId,
     currentSessionEnvironmentId,
     currentSessionStatus,
+    currentSessionOwnerLive,
     currentSessionModelId,
     defaultModelId,
     entries,
@@ -371,22 +370,23 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [live, setLive] = useState<LiveTurn | null>(null);
-  // A settled live turn hands off to its persisted copy: clear `live` only once the loader's
-  // entries actually cover the turn (or the user moved to another session). Clearing before the
-  // cached copy exists is how a sent message could vanish outright — turn errors early, nothing
-  // persisted, live view dropped anyway (#73).
-  useEffect(() => {
-    if (!live?.done) return;
-    if (
-      live.playgroundSessionId &&
-      currentSessionId &&
-      live.playgroundSessionId !== currentSessionId
-    ) {
-      setLive(null);
-      return;
-    }
-    if (entries.length > live.baseEntryCount) setLive(null);
-  }, [currentSessionId, entries.length, live]);
+  // A turn from another selected session is never rendered here. For the current session, keep a
+  // completed/errored live turn until the DB status settles AND its cached assistant side arrives;
+  // a cached user-only prefix is not enough to replace the final browser-side reply.
+  const liveSessionMismatch = live
+    ? liveTurnIsForDifferentSession(live.playgroundSessionId, currentSessionId)
+    : false;
+  const liveCoveredByCache =
+    live !== null &&
+    cacheCoversCompletedLiveTurn({
+      liveSessionId: live.playgroundSessionId,
+      currentSessionId,
+      currentSessionStatus,
+      liveDone: live.done,
+      baseEntryCount: live.baseEntryCount,
+      entries,
+    });
+  const visibleLive = liveSessionMismatch || liveCoveredByCache ? null : live;
   // The user's not-yet-persisted selector choice; the stored session override wins otherwise.
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   useEffect(() => {
@@ -399,7 +399,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const remoteBusy = currentSessionStatus === "running";
   const busy = (live !== null && !live.done) || remoteBusy;
   const creatingSession = newSessionFetcher.state !== "idle";
-  const replayingRunningSession = remoteBusy && !live;
+  const replayingRunningSession = remoteBusy && !visibleLive;
 
   useEffect(() => {
     if (!replayingRunningSession) return;
@@ -413,8 +413,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   }, [replayingRunningSession, revalidator]);
 
   const defaultTarget =
-    targets.find((t) => t.environmentId === currentSessionEnvironmentId) ??
     targets.find((t) => t.deploymentId === lastDeploymentId) ??
+    targets.find((t) => t.environmentId === currentSessionEnvironmentId) ??
     targets[0];
   const requestedDeploymentId = searchParams.get("deployment");
   const selectedTarget =
@@ -440,6 +440,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     return (
       <Select
         value={currentSessionId}
+        disabled={busy}
         onValueChange={(id) =>
           navigate(`${base}/playground?session=${encodeURIComponent(id)}`)
         }
@@ -459,7 +460,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         </SelectContent>
       </Select>
     );
-  }, [base, currentSessionId, navigate, sessions]);
+  }, [base, busy, currentSessionId, navigate, sessions]);
 
   // The client-streamed `live` turn and the loader's cached transcript can briefly hold the SAME
   // turn at once: the reconnect fix persists events as they stream, so any revalidation while
@@ -471,19 +472,19 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   // turn position, not message text: a repeated message like "continue" must not slice off the
   // earlier identical turn.)
   const shownEntries = useMemo<ChatEntry[]>(() => {
-    if (!live) return entries;
+    if (!visibleLive) return entries;
     // A session switch mid-turn shows the other session's transcript untouched.
     if (
-      live.playgroundSessionId &&
+      visibleLive.playgroundSessionId &&
       currentSessionId &&
-      live.playgroundSessionId !== currentSessionId
+      visibleLive.playgroundSessionId !== currentSessionId
     ) {
       return entries;
     }
-    return entries.length > live.baseEntryCount
-      ? entries.slice(0, live.baseEntryCount)
+    return entries.length > visibleLive.baseEntryCount
+      ? entries.slice(0, visibleLive.baseEntryCount)
       : entries;
-  }, [currentSessionId, entries, live]);
+  }, [currentSessionId, entries, visibleLive]);
 
   const send = useCallback(
     async (message: string) => {
@@ -560,7 +561,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           }
         }
         // Stream ended — the server has persisted the cursor. Settle the live view (a stream
-        // can close without a "done" event) and revalidate; the handoff effect clears `live`
+        // can close without a "done" event) and revalidate; the derived handoff hides `live`
         // once the revalidated entries cover this turn. If persistence failed, the live copy
         // stays on screen instead of the turn vanishing.
         setLive((prev) =>
@@ -636,7 +637,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   );
 
   const stopTurn = useCallback(async () => {
-    const playgroundSessionId = live?.playgroundSessionId ?? currentSessionId;
+    const playgroundSessionId =
+      visibleLive?.playgroundSessionId ?? currentSessionId;
     if (!playgroundSessionId || !deploymentId) return;
     setSendError(null);
 
@@ -688,7 +690,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     activeAgent,
     currentSessionId,
     deploymentId,
-    live?.playgroundSessionId,
+    visibleLive?.playgroundSessionId,
     project.id,
     revalidator,
   ]);
@@ -783,9 +785,18 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           icon={FlaskConical}
           accent="blue"
           title={isTeam ? `Playground — ${activeAgent}` : "Playground"}
-          description="Talk to a live deployment of this agent. Conversation history reloads from Eve's durable session stream."
+          description="Talk to a live deployment of this agent. Conversation history is saved in Eden and survives instance replacement."
           actions={headerActions}
         />
+        {targets.length === 0 && (
+          <Alert className="mb-4">
+            <AlertTitle>No live deployment to talk to</AlertTitle>
+            <AlertDescription>
+              Cached conversation history is still available. Deploy this agent
+              first (Deployment tab) to start a new conversation.
+            </AlertDescription>
+          </Alert>
+        )}
         {historyError && (
           <Alert variant="destructive" className="mb-4">
             <AlertDescription>{historyError}</AlertDescription>
@@ -798,7 +809,14 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         )}
       </>
     ),
-    [activeAgent, headerActions, historyError, isTeam, sendError],
+    [
+      activeAgent,
+      headerActions,
+      historyError,
+      isTeam,
+      sendError,
+      targets.length,
+    ],
   );
 
   return (
@@ -822,134 +840,120 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         />
       </div>
 
-      {targets.length === 0 ? (
-        <div className="mx-auto w-full max-w-5xl px-4 pt-8 sm:px-6">
-          <Alert>
-            <AlertTitle>No live deployment to talk to</AlertTitle>
-            <AlertDescription>
-              Deploy this agent first (Deployment tab), then come back here to
-              try it.
-            </AlertDescription>
-          </Alert>
-        </div>
-      ) : (
-        <>
-          <ChatTranscript
-            dep={`${shownEntries.length}:${shownEntries.at(-1)?.text.length ?? 0}:${shownEntries.at(-1)?.steps?.length ?? 0}:${currentSessionStatus ?? ""}:${live ? live.text.length + live.steps.length + live.inputRequests.length : 0}`}
-            forceScrollDep={live?.userText}
-            lead={transcriptLead}
-          >
-            {shownEntries.length === 0 && !live && !remoteBusy && (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                Say something to the agent — the conversation keeps its context
-                across turns.
-              </p>
-            )}
-            {shownEntries.map((e, i) =>
-              e.role === "user" ? (
-                <UserBubble key={e.id} text={e.text} />
-              ) : (
-                <AgentEntry
-                  key={e.id}
-                  entry={e}
-                  // Only the newest turn's pending requests are answerable.
-                  onAnswer={
-                    i === shownEntries.length - 1 && !live ? send : undefined
-                  }
-                  busy={busy}
-                  running={
-                    replayingRunningSession && i === shownEntries.length - 1
-                  }
-                />
-              ),
-            )}
-            {replayingRunningSession &&
-              shownEntries.at(-1)?.role !== "assistant" && (
-                <StepsCard
-                  steps={[]}
-                  idPrefix="running-session"
-                  activity="Still working…"
-                />
-              )}
-            {/* A turn the loader settled as unrecoverable (deployment replaced mid-turn, or the
-                stream went silent past its budget) — say so instead of ending on the user's
-                message with no explanation. */}
-            {currentSessionStatus === "failed" &&
-              !live &&
-              shownEntries.at(-1)?.role === "user" && (
-                <AssistantBubble>
-                  <p className="text-sm text-muted-foreground">
-                    This turn was interrupted before it finished — the
-                    deployment it was running on is no longer live. Send a new
-                    message to continue the conversation.
-                  </p>
-                </AssistantBubble>
-              )}
-            {live && (
-              <>
-                <UserBubble text={live.userText} />
-                <LiveBubble live={live} />
-              </>
-            )}
-          </ChatTranscript>
-
-          <div className="mx-auto w-full max-w-5xl px-4 pb-4 pt-3 sm:px-6">
-            {modelSwitchingLocked && (
-              <Alert className="mb-3">
-                <AlertDescription>
-                  {enableStaged ? (
-                    <span>
-                      Model switching is staged for this agent — publish and
-                      deploy the change from the{" "}
-                      <Link
-                        to={`${base}/deployment`}
-                        className="font-medium underline underline-offset-2"
-                      >
-                        Deployment tab
-                      </Link>{" "}
-                      to activate it.
-                    </span>
-                  ) : (
-                    <span className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                      <span>
-                        This deployment runs a fixed model, so it can&apos;t
-                        switch models per conversation yet.
-                      </span>
-                      <EnableSwitchingForm method="post">
-                        <input
-                          type="hidden"
-                          name="intent"
-                          value="enable-model-switching"
-                        />
-                        <Button
-                          type="submit"
-                          variant="outline"
-                          size="sm"
-                          disabled={enableFetcher.state !== "idle"}
-                        >
-                          Enable model switching
-                        </Button>
-                      </EnableSwitchingForm>
-                      {enableError && (
-                        <span className="text-destructive">{enableError}</span>
-                      )}
-                    </span>
-                  )}
-                </AlertDescription>
-              </Alert>
-            )}
-            <ChatComposer
-              placeholder={
-                isTeam
-                  ? `Say something to ${activeAgent}...`
-                  : "Say something to the agent..."
+      <ChatTranscript
+        dep={`${shownEntries.length}:${shownEntries.at(-1)?.text.length ?? 0}:${shownEntries.at(-1)?.steps?.length ?? 0}:${currentSessionStatus ?? ""}:${visibleLive ? visibleLive.text.length + visibleLive.steps.length + visibleLive.inputRequests.length : 0}`}
+        forceScrollDep={visibleLive?.userText}
+        lead={transcriptLead}
+      >
+        {shownEntries.length === 0 && !visibleLive && !remoteBusy && (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            Say something to the agent — the conversation keeps its context
+            across turns.
+          </p>
+        )}
+        {shownEntries.map((e, i) =>
+          e.role === "user" ? (
+            <UserBubble key={e.id} text={e.text} />
+          ) : (
+            <AgentEntry
+              key={e.id}
+              entry={e}
+              // Only the newest turn's pending requests are answerable.
+              onAnswer={
+                i === shownEntries.length - 1 && !visibleLive ? send : undefined
               }
               busy={busy}
-              onSend={send}
-              controls={targetPicker}
+              running={replayingRunningSession && i === shownEntries.length - 1}
             />
-          </div>
-        </>
+          ),
+        )}
+        {replayingRunningSession &&
+          shownEntries.at(-1)?.role !== "assistant" && (
+            <StepsCard
+              steps={[]}
+              idPrefix="running-session"
+              activity="Still working…"
+            />
+          )}
+        {/* A turn the loader settled as unrecoverable (deployment replaced mid-turn, or the
+                stream went silent past its budget) — say so instead of ending on the user's
+                message with no explanation. */}
+        {currentSessionStatus === "failed" &&
+          !visibleLive &&
+          shownEntries.at(-1)?.role === "user" && (
+            <AssistantBubble>
+              <p className="text-sm text-muted-foreground">
+                {currentSessionOwnerLive
+                  ? "This turn was interrupted before it finished. Send the message again to retry."
+                  : "This turn was interrupted before it finished — the deployment that owns this conversation is no longer live. Start a new conversation to continue."}
+              </p>
+            </AssistantBubble>
+          )}
+        {visibleLive && (
+          <>
+            <UserBubble text={visibleLive.userText} />
+            <LiveBubble live={visibleLive} />
+          </>
+        )}
+      </ChatTranscript>
+
+      {targets.length > 0 && (
+        <div className="mx-auto w-full max-w-5xl px-4 pb-4 pt-3 sm:px-6">
+          {modelSwitchingLocked && (
+            <Alert className="mb-3">
+              <AlertDescription>
+                {enableStaged ? (
+                  <span>
+                    Model switching is staged for this agent — publish and
+                    deploy the change from the{" "}
+                    <Link
+                      to={`${base}/deployment`}
+                      className="font-medium underline underline-offset-2"
+                    >
+                      Deployment tab
+                    </Link>{" "}
+                    to activate it.
+                  </span>
+                ) : (
+                  <span className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                    <span>
+                      This deployment runs a fixed model, so it can&apos;t
+                      switch models per conversation yet.
+                    </span>
+                    <EnableSwitchingForm method="post">
+                      <input
+                        type="hidden"
+                        name="intent"
+                        value="enable-model-switching"
+                      />
+                      <Button
+                        type="submit"
+                        variant="outline"
+                        size="sm"
+                        disabled={enableFetcher.state !== "idle"}
+                      >
+                        Enable model switching
+                      </Button>
+                    </EnableSwitchingForm>
+                    {enableError && (
+                      <span className="text-destructive">{enableError}</span>
+                    )}
+                  </span>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+          <ChatComposer
+            placeholder={
+              isTeam
+                ? `Say something to ${activeAgent}...`
+                : "Say something to the agent..."
+            }
+            busy={busy}
+            onSend={send}
+            controls={targetPicker}
+          />
+        </div>
       )}
     </AppShell>
   );

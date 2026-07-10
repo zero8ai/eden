@@ -2,14 +2,12 @@ import { withAuth } from "@workos-inc/authkit-react-router";
 import { data, redirect, type ActionFunctionArgs } from "react-router";
 
 import { liveTargets } from "~/chat/playground.server";
-import {
-  asString,
-  cancelActiveTurn,
-} from "~/chat/turn-stream.server";
+import { asString, cancelActiveTurn } from "~/chat/turn-stream.server";
 import {
   getPlaygroundSession,
   markPlaygroundSessionStopped,
 } from "~/playground/sessions.server";
+import { findSessionOwnerTarget } from "~/playground/ownership";
 import {
   agentFromParams,
   requireActiveAgent,
@@ -55,38 +53,23 @@ export async function action(args: ActionFunctionArgs) {
   }
 
   const targets = await liveTargets(active.id);
-  const target =
-    targets.find((t) => t.environmentId === session.environmentId) ??
-    targets.find((t) => t.deploymentId === session.lastDeploymentId) ??
-    null;
-  if (!target) {
-    throw data(
-      {
-        error:
-          "This session's live deployment is not available, so eden cannot stop the active Eve turn.",
-      },
-      { status: 400 },
-    );
-  }
+  const target = findSessionOwnerTarget(session, targets);
 
   // Only ask Eve to cancel while the deployment that RAN the turn is still live. After a
   // redeploy the turn died with its instance, and the replacement instance never saw the
   // session — Eve hangs (not 404s) requests about unknown sessions, so a cancel there can only
   // time out and used to make Stop fail on exactly the sessions that most need it (#73).
-  const ownerDeploymentLive = targets.some(
-    (t) => t.deploymentId === session.lastDeploymentId,
-  );
   const eveCancel =
-    session.externalSessionId && ownerDeploymentLive
+    session.externalSessionId && target
       ? await cancelEveTurn({
           baseUrl: target.url,
           sessionId: session.externalSessionId,
         })
       : {
           ok: true as const,
-          detail: ownerDeploymentLive
+          detail: target
             ? "No Eve session id was recorded yet."
-            : "The deployment that ran this turn is gone — nothing left to cancel on Eve.",
+            : "The deployment that ran this turn is gone — Eden settled the conversation without contacting its replacement.",
         };
 
   if (!eveCancel.ok) {
@@ -99,7 +82,7 @@ export async function action(args: ActionFunctionArgs) {
   }
 
   const localCanceled = cancelActiveTurn(session.id);
-  if (!localCanceled && session.externalSessionId) {
+  if (!localCanceled && session.externalSessionId && target) {
     // The turn's AbortController lives in the process that streamed it. In a
     // multi-replica deployment the stream may be on another instance, so the
     // local abort is a no-op here (Eve was still cancelled above). Log it so

@@ -1,4 +1,4 @@
-import { and, desc, eq, max, min } from "drizzle-orm";
+import { and, desc, eq, max, min, ne } from "drizzle-orm";
 
 import { inputRequestsOf, type RawEveEvent } from "~/agent/talk.server";
 import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
@@ -174,7 +174,14 @@ export async function savePlaygroundSessionProgress(input: {
       lastEventAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(playgroundSessions.id, input.id));
+    // Stop wins races with the detached drain. Once the user has deliberately stopped a turn,
+    // an already-queued progress save must not flip the row back to `running`.
+    .where(
+      and(
+        eq(playgroundSessions.id, input.id),
+        ne(playgroundSessions.status, "stopped"),
+      ),
+    );
 }
 
 export async function savePlaygroundSessionCursor(input: {
@@ -202,7 +209,14 @@ export async function savePlaygroundSessionCursor(input: {
       lastEventAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(playgroundSessions.id, input.id));
+    // The drain can reach its final cursor save after /stop has settled the row. Preserve the
+    // user's terminal `stopped` state instead of racing it back to `waiting` or `failed`.
+    .where(
+      and(
+        eq(playgroundSessions.id, input.id),
+        ne(playgroundSessions.status, "stopped"),
+      ),
+    );
 }
 
 /**
@@ -318,17 +332,20 @@ export async function loadPlaygroundEntriesFromCache(
 
 export async function markPlaygroundSessionStopped(input: {
   id: string;
-  target: Target;
+  target?: Target | null;
   title?: string | null;
 }): Promise<void> {
   await db
     .update(playgroundSessions)
     .set({
-      environmentId: input.target.environmentId,
-      worldKey: input.target.environmentId,
-      lastDeploymentId: input.target.deploymentId,
-      lastReleaseId: input.target.releaseId,
-      lastVersion: input.target.version,
+      // A stopped session may outlive the deployment that owns its Eve session. In that case,
+      // settle Eden's row without assigning the replacement deployment as the owner: doing so
+      // would make a later continuation send the old external session id to the wrong Eve.
+      environmentId: input.target?.environmentId,
+      worldKey: input.target?.environmentId,
+      lastDeploymentId: input.target?.deploymentId,
+      lastReleaseId: input.target?.releaseId,
+      lastVersion: input.target?.version,
       title: input.title ?? undefined,
       // Distinct from "failed": a deliberate stop shouldn't get the timed-out
       // recovery hint in the replay, and shouldn't be reconciled back to "failed"

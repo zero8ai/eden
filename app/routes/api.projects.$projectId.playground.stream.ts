@@ -19,6 +19,7 @@ import {
   titleFromMessage,
   type PlaygroundSession,
 } from "~/playground/sessions.server";
+import { canContinueSessionOnTarget } from "~/playground/ownership";
 import {
   resolveAgentContext,
   agentFromParams,
@@ -81,16 +82,15 @@ export async function action(args: ActionFunctionArgs) {
     );
   }
   if (
-    playgroundSession?.externalSessionId &&
-    playgroundSession.environmentId &&
-    playgroundSession.environmentId !== target.environmentId
+    playgroundSession &&
+    !canContinueSessionOnTarget(playgroundSession, target.deploymentId)
   ) {
     throw data(
       {
         error:
-          "That Eve session belongs to a different environment. Start a new conversation for this deployment.",
+          "This conversation belongs to a different deployment that was replaced or is no longer selected. Start a new conversation to continue.",
       },
-      { status: 400 },
+      { status: 409 },
     );
   }
   const title = playgroundSession?.title ? null : titleFromMessage(message);
@@ -106,7 +106,10 @@ export async function action(args: ActionFunctionArgs) {
       title,
       modelId: requestedModelId,
     });
-  } else if (requestedModelId && requestedModelId !== playgroundSession.modelId) {
+  } else if (
+    requestedModelId &&
+    requestedModelId !== playgroundSession.modelId
+  ) {
     // The selector changed since the last turn — remember it on the conversation.
     await setPlaygroundSessionModel({
       id: playgroundSession.id,
@@ -117,7 +120,11 @@ export async function action(args: ActionFunctionArgs) {
     });
     playgroundSession = { ...playgroundSession, modelId: requestedModelId };
   }
-  await markPlaygroundSessionRunning({ id: playgroundSession.id, target, title });
+  await markPlaygroundSessionRunning({
+    id: playgroundSession.id,
+    target,
+    title,
+  });
 
   // A model override travels as one machine-readable line prepended to the SENT message (eve's
   // session API has no per-turn model field); the deployed agent's dynamic-model resolver reads
@@ -127,7 +134,8 @@ export async function action(args: ActionFunctionArgs) {
   const messagePrefix = effectiveModel
     ? buildModelDirective({
         id: effectiveModel,
-        contextWindowTokens: (await findModel(effectiveModel))?.contextWindow ?? undefined,
+        contextWindowTokens:
+          (await findModel(effectiveModel))?.contextWindow ?? undefined,
       })
     : null;
 

@@ -284,16 +284,23 @@ export function scaffoldAgentModule(
 }
 
 /**
- * True when a declared eve range can resolve to >= 0.22.0 (`defineDynamic`'s first release).
+ * True when a declared eve range GUARANTEES >= 0.22.0 (`defineDynamic`'s first release).
  * Absent specs pass — a team member's package.json may inherit eve from the repo root, and a
- * repo without eve anywhere was never going to build. Non-numeric specs ("latest", "*",
- * ">=…", tags, urls) pass too — npm resolves those to a modern eve.
+ * repo without eve anywhere was never going to build. URL-ish specs (git/file/github forks)
+ * pass — they're deliberate user overrides Eden must not clobber (D3). Floating specs
+ * ("latest", "*", dist-tags, floorless ranges) FAIL even though npm would resolve them to a
+ * modern eve today: agent images build behind a Docker layer cache keyed on package.json
+ * bytes, so a floating spec stays frozen at whatever version the first build installed
+ * (a prod repo's "latest" was stuck at 0.20.0). Rewriting to EVE_MIN_VERSION both guarantees
+ * the API and changes the bytes, which busts the stale install layer.
  */
 function eveSupportsDefineDynamic(spec: string | undefined): boolean {
   if (typeof spec !== "string") return true;
-  const pinned = spec.trim().match(/^[~^=v]?(\d+)\.(\d+)/);
-  if (!pinned) return true;
-  return Number(pinned[1]) > 0 || Number(pinned[2]) >= 22;
+  const s = spec.trim();
+  if (s.includes(":") || s.includes("/")) return true;
+  const floor = s.match(/^(?:>=|[~^=v])?\s*(\d+)(?:\.(\d+))?(?:\.\d+)?(?:[-.].*)?$/);
+  if (!floor) return false;
+  return Number(floor[1]) > 0 || Number(floor[2] ?? 0) >= 22;
 }
 
 export function ensureOpenRouterDependency(packageJson: string | null): string {

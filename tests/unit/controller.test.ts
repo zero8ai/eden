@@ -887,3 +887,77 @@ describe("Google connection env injection (issue #30)", () => {
     expect(env.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("broker_token");
   });
 });
+
+describe("deploy-time scope-coverage validation (issue #69)", () => {
+  const LOCK = JSON.stringify({
+    version: 1,
+    installs: [
+      {
+        id: "sheets",
+        type: "connection",
+        name: "Sheets",
+        version: "1.0.0",
+        hash: "h",
+        registry: "fixture",
+        member: null,
+        files: ["agent/tools/sheets.ts"],
+        auth: [
+          {
+            provider: "google",
+            kind: "oauth2",
+            scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+          },
+        ],
+      },
+    ],
+  });
+
+  beforeEach(() => {
+    // agentLock only runs when the project has full repo coordinates.
+    store.seedProject({
+      id: PROJECT,
+      orgId: ORG,
+      repoOwner: "acme",
+      repoName: "agent",
+      repoInstallationId: "inst_1",
+    });
+  });
+
+  it("passes the lock's required google scopes through to connectionGrantEnv", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "aa".repeat(20) }, store);
+    const seen: (string | null | undefined)[] = [];
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" } }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+        agentLock: async () => LOCK,
+        connectionGrantEnv: async (_scope, requiredScopes) => {
+          seen.push(requiredScopes);
+          return {};
+        },
+      },
+    );
+    expect(seen).toEqual(["https://www.googleapis.com/auth/spreadsheets"]);
+  });
+
+  it("fails the deploy when connectionGrantEnv rejects an under-scoped grant", async () => {
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "bb".repeat(20) }, store);
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" } }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+        agentLock: async () => LOCK,
+        connectionGrantEnv: async (_scope, requiredScopes) => {
+          if (requiredScopes) throw new Error("missing required permission(s): spreadsheets");
+          return {};
+        },
+      },
+    );
+    expect(dep.status).toBe("failed");
+    expect(dep.errorDetail).toContain("missing required permission");
+  });
+});

@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   getGoogleOAuthConfig: vi.fn(),
   listAgents: vi.fn(),
   listDrafts: vi.fn(),
+  redeployAfterConnect: vi.fn(),
   requireProject: vi.fn(),
   upsertGrant: vi.fn(),
 }));
@@ -43,6 +44,10 @@ vi.mock("~/connections/grants.server", () => ({
 vi.mock("~/connections/oauth-state.server", () => ({
   consumeOAuthStateNonce: mocks.consumeOAuthStateNonce,
   createOAuthStateNonce: mocks.createOAuthStateNonce,
+}));
+
+vi.mock("~/connections/redeploy.server", () => ({
+  redeployAfterConnect: mocks.redeployAfterConnect,
 }));
 
 vi.mock("~/connections/google.server", async (importOriginal) => {
@@ -138,6 +143,9 @@ describe("Google routes with Better Auth", () => {
     });
     mocks.listAgents.mockReset().mockResolvedValue([AGENT]);
     mocks.listDrafts.mockReset().mockResolvedValue([]);
+    mocks.redeployAfterConnect
+      .mockReset()
+      .mockResolvedValue({ status: "not-deployed" });
     mocks.requireProject.mockReset().mockResolvedValue(PROJECT);
     mocks.upsertGrant.mockReset().mockResolvedValue(undefined);
   });
@@ -368,7 +376,9 @@ describe("Google routes with Better Auth", () => {
     }
 
     expect(redirectResponse?.status).toBe(302);
-    expect(redirectResponse?.headers.get("location")).toBe("/dashboard");
+    expect(redirectResponse?.headers.get("location")).toBe(
+      "/dashboard?connected=google",
+    );
     expect(mocks.exchangeCode).toHaveBeenCalledWith({
       config: {
         clientId: "google-client",
@@ -393,5 +403,10 @@ describe("Google routes with Better Auth", () => {
         action: "connection.connect",
       }),
     );
+    expect(mocks.redeployAfterConnect).toHaveBeenCalledWith({
+      projectId: PROJECT.id,
+      agentId: AGENT.id,
+      createdBy: mocks.auth.user.id,
+    });
   });
 });

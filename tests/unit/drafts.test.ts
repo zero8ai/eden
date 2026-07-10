@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   discardDrafts,
+  findOrphanedDrafts,
   getDraft,
   listDrafts,
   publishDrafts,
@@ -16,6 +17,7 @@ import {
   type FileViewDeps,
 } from "~/drafts/drafts.server";
 import { stageDraft } from "~/drafts/drafts.server";
+import type { DraftChange } from "~/data/ports";
 import { readAgentFile } from "~/github/repo.server";
 import type { ProposedChange } from "~/github/write.server";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
@@ -678,6 +680,143 @@ RUN npm ci
       vi.fn().mockResolvedValue({ ok: true, skipped: true }),
     );
     expect(change.pullRequestNumber).toBe(7);
+  });
+});
+
+describe("orphaned drafts (issue #67)", () => {
+  it("blocks an orphaned lone package.json belonging to a deleted member", async () => {
+    // A team whose roster no longer has cloudflare-dev, but a stale package.json draft lingers.
+    store.seedAgent({
+      id: "agent_engineer",
+      projectId: PROJECT.id,
+      name: "engineer",
+      root: "agents/engineer/agent",
+    });
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agents/cloudflare-dev/package.json", content: "{}" },
+      store,
+    );
+    const propose = vi.fn().mockResolvedValue(proposed);
+    const check = vi.fn().mockResolvedValue({ ok: true });
+    const listRepoPaths = vi.fn().mockResolvedValue([]);
+
+    await expect(
+      publishDrafts(
+        { project: PROJECT, paths: ["agents/cloudflare-dev/package.json"] },
+        store,
+        propose,
+        check,
+        listRepoPaths,
+      ),
+    ).rejects.toThrow(/no longer part of this team/);
+
+    // No build, no PR — and the draft stays staged so the user can discard it.
+    expect(check).not.toHaveBeenCalled();
+    expect(propose).not.toHaveBeenCalled();
+    expect(await listDrafts(PROJECT.id, store)).toHaveLength(1);
+  });
+
+  it("does not flag a genuine new-member install (agent-dir draft backs the root)", async () => {
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agents/deployer/agent/instructions.md", content: "# deployer" },
+      store,
+    );
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agents/deployer/package.json", content: "{}" },
+      store,
+    );
+    await stageDraft({ projectId: PROJECT.id, path: "eden-lock.json", content: "{}" }, store);
+    const propose = vi.fn().mockResolvedValue(proposed);
+    const check = vi.fn().mockResolvedValue({ ok: true });
+    const listRepoPaths = vi.fn().mockResolvedValue([]);
+
+    await publishDrafts(
+      {
+        project: PROJECT,
+        paths: [
+          "agents/deployer/agent/instructions.md",
+          "agents/deployer/package.json",
+          "eden-lock.json",
+        ],
+      },
+      store,
+      propose,
+      check,
+      listRepoPaths,
+    );
+
+    expect(check).toHaveBeenCalled(); // reaches the build gate, not blocked as orphaned
+    expect(propose).toHaveBeenCalledOnce();
+  });
+
+  it("does not flag a member absent from a stale roster but present in the repo tree", async () => {
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agents/analyst/package.json", content: "{}" },
+      store,
+    );
+    const propose = vi.fn().mockResolvedValue(proposed);
+    const check = vi.fn().mockResolvedValue({ ok: true });
+    // The repo already has analyst's agent code — the roster is merely stale.
+    const listRepoPaths = vi
+      .fn()
+      .mockResolvedValue(["agents/analyst/agent/agent.ts", "agents/analyst/package.json"]);
+
+    await publishDrafts(
+      { project: PROJECT, paths: ["agents/analyst/package.json"] },
+      store,
+      propose,
+      check,
+      listRepoPaths,
+    );
+
+    expect(propose).toHaveBeenCalledOnce();
+  });
+});
+
+describe("findOrphanedDrafts (pure)", () => {
+  const draft = (path: string, content: string | null = "x"): DraftChange => ({
+    id: "d",
+    projectId: "p",
+    agentId: null,
+    path,
+    content,
+    baseSha: null,
+    createdBy: null,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  });
+
+  it("flags a lone package.json with no roster, repo, or sibling backing", () => {
+    const d = draft("agents/cloudflare-dev/package.json", "{}");
+    expect(findOrphanedDrafts([], [], [d])).toEqual([d]);
+  });
+
+  it("is empty when the member is in the roster", () => {
+    const d = draft("agents/cloudflare-dev/package.json", "{}");
+    expect(
+      findOrphanedDrafts([{ root: "agents/cloudflare-dev/agent" }], [], [d]),
+    ).toEqual([]);
+  });
+
+  it("is empty when the repo tree backs the member", () => {
+    const d = draft("agents/analyst/package.json", "{}");
+    expect(findOrphanedDrafts([], ["agents/analyst/agent/agent.ts"], [d])).toEqual([]);
+  });
+
+  it("is empty when a sibling agent-dir draft (re)creates the member", () => {
+    const pkg = draft("agents/x/package.json", "{}");
+    const code = draft("agents/x/agent/agent.ts", "//");
+    expect(findOrphanedDrafts([], [], [pkg, code])).toEqual([]);
+  });
+
+  it("never flags non-member paths (agent/, root package.json, lock, .eden)", () => {
+    const drafts = [
+      draft("agent/agent.ts"),
+      draft("package.json", "{}"),
+      draft("eden-lock.json", "{}"),
+      draft(".eden/assistant/instructions.md"),
+    ];
+    expect(findOrphanedDrafts([], [], drafts)).toEqual([]);
   });
 });
 

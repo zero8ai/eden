@@ -1,5 +1,5 @@
 ---
-description: Use when reviewing a pull request — checking the change out locally and judging it along two axes: standards (does it follow the repo's conventions?) and spec (does it do what the issue asked?).
+description: "Use when reviewing a pull request — checking the change out locally and judging it along two axes: standards (does it follow the repo's conventions?) and spec (does it do what the issue asked?)."
 ---
 
 # Reviewing a pull request

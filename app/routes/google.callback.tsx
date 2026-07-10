@@ -23,6 +23,7 @@ import {
   verifyConnectState,
 } from "~/connections/google.server";
 import { upsertGrant } from "~/connections/grants.server";
+import { redeployAfterConnect } from "~/connections/redeploy.server";
 import { listAgents } from "~/db/queries.server";
 import { publicOrigin } from "~/lib/ingress";
 import { noindexMeta } from "~/lib/seo";
@@ -30,6 +31,19 @@ import { safeReturnTo } from "~/lib/signed-state.server";
 import { requireProject } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
 import type { Route } from "./+types/google.callback";
+
+/**
+ * Append query params to a same-origin relative path (`backUrl` is already validated by
+ * `safeReturnTo`). Parsed against a dummy base so `URL`/`URLSearchParams` do the encoding; only the
+ * path + search are returned, so the dummy origin never leaks into the redirect.
+ */
+function withParams(backUrl: string, params: Record<string, string>): string {
+  const url = new URL(backUrl, "http://x");
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
+  return url.pathname + url.search;
+}
 
 export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
@@ -130,7 +144,29 @@ export const loader = (args: LoaderFunctionArgs) =>
         meta: { provider: "google", accountEmail, scopes: grant.scope || state.scopes },
       });
 
-      throw redirect(backUrl);
+      // Auto-redeploy (issue #69): the grant only reaches the RUNNING container on the next deploy,
+      // so the connect action itself redeploys every live environment (image reused, fresh grant
+      // re-injected). The helper never throws — queue errors come back as an "error" outcome — but
+      // wrap defensively so an unexpected reject can never lose the just-saved grant.
+      let outcome: Awaited<ReturnType<typeof redeployAfterConnect>>;
+      try {
+        outcome = await redeployAfterConnect({
+          projectId: project.id,
+          agentId: agent.id,
+          createdBy: auth.user.id,
+        });
+      } catch {
+        throw redirect(withParams(backUrl, { connected: "google" }));
+      }
+
+      const params: Record<string, string> = { connected: "google" };
+      if (outcome.status === "redeployed") params.redeploy = "queued";
+      else if (outcome.status === "staged") params.redeploy = "staged";
+      else if (outcome.status === "error") {
+        params.redeploy = "error";
+        params.redeployError = outcome.message.slice(0, 200);
+      }
+      throw redirect(withParams(backUrl, params));
     },
     { ensureSignedIn: true },
   );

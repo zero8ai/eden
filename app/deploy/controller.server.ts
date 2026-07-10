@@ -16,6 +16,7 @@
  * the tooling error, so the control plane and UI work end-to-end without real infra.
  */
 import type { DataStore, Deployment, Release } from "~/data/ports";
+import { overlayLock, requiredScopesByProvider } from "~/marketplace/lock";
 import { enqueue } from "~/jobs/queue.server";
 import { getRuntime } from "~/seams/index.server";
 import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
@@ -39,9 +40,23 @@ export interface DeployDeps {
   /**
    * Env for the agent's active auth-brokered connection grant (issue #30): the operator Google
    * client creds + the sealed refresh token, so the shipped eve connection self-refreshes tokens.
-   * `{}` when there's no grant; THROWS (failing the deploy) when the grant is dead.
+   * `{}` when there's no grant; THROWS (failing the deploy) when the grant is dead or (when
+   * `requiredScopes` is supplied) under-scoped for the installed connectors (issue #69).
    */
-  connectionGrantEnv?: (scope: SecretScope) => Promise<Record<string, string>>;
+  connectionGrantEnv?: (
+    scope: SecretScope,
+    requiredScopes?: string | null,
+  ) => Promise<Record<string, string>>;
+  /**
+   * Committed `eden-lock.json` content at a release's commit, for deploy-time scope-coverage
+   * validation (issue #69). null when absent/unfetchable — coverage is then skipped.
+   */
+  agentLock?: (input: {
+    installationId: string;
+    owner: string;
+    repo: string;
+    ref: string;
+  }) => Promise<string | null>;
 }
 
 function deployDeps(): DeployDeps {
@@ -54,8 +69,15 @@ function deployDeps(): DeployDeps {
       import("~/org/workspace.server").then((m) => m.getWorkspaceModelKey(orgId)),
     sandboxExposedNames: (scope) =>
       import("~/seams/oss/secret-store").then((m) => m.listSandboxExposedNames(scope)),
-    connectionGrantEnv: (scope) =>
-      import("~/connections/deploy.server").then((m) => m.connectionGrantEnv(scope)),
+    connectionGrantEnv: (scope, requiredScopes) =>
+      import("~/connections/deploy.server").then((m) =>
+        m.connectionGrantEnv(scope, fetch, undefined, requiredScopes),
+      ),
+    agentLock: ({ installationId, owner, repo, ref }) =>
+      import("~/github/repo.server")
+        .then((m) => m.fetchAgentSource(installationId, { owner, repo, ref }))
+        .then((s) => s.files["eden-lock.json"] ?? null)
+        .catch(() => null),
   };
 }
 
@@ -373,7 +395,29 @@ export async function deployRelease(
     // actually brokers the connection: like the Discord block above, anti-shadowing runs ONLY when
     // there's injection env — so a self-hoster's manually-set GOOGLE_OAUTH_* (their own client +
     // token, no broker) passes through untouched. No-op when there's no grant / no operator config.
-    const grantEnv = deps.connectionGrantEnv ? await deps.connectionGrantEnv(scope) : {};
+    // Deploy-time scope coverage (issue #69): the committed lock at THIS release's commit names the
+    // scopes the installed connectors require. Best-effort — a lock-fetch hiccup must never block a
+    // deploy, and coverage is simply skipped (the grant liveness check still runs). Attribution
+    // matches the loader's: a team member is keyed by name, the single-agent root by null.
+    let requiredGoogleScopes: string | null = null;
+    try {
+      if (deps.agentLock && project?.repoOwner && project.repoName && project.repoInstallationId) {
+        const lockJson = await deps.agentLock({
+          installationId: project.repoInstallationId,
+          owner: project.repoOwner,
+          repo: project.repoName,
+          ref: release.gitSha,
+        });
+        const lock = overlayLock(lockJson, []);
+        const member = isTeamMember && agent ? agent.name : null;
+        requiredGoogleScopes = requiredScopesByProvider(lock, member).get("google")?.join(" ") ?? null;
+      }
+    } catch {
+      requiredGoogleScopes = null; // best-effort: never block a deploy on a lock-fetch hiccup
+    }
+    const grantEnv = deps.connectionGrantEnv
+      ? await deps.connectionGrantEnv(scope, requiredGoogleScopes)
+      : {};
     if (Object.keys(grantEnv).length > 0) {
       for (const key of [
         "GOOGLE_OAUTH_CLIENT_ID",

@@ -71,7 +71,7 @@ import { proposeChange } from "~/github/write.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
-import { timeAgo } from "~/lib/time";
+import { RelativeTime } from "~/components/localized-values";
 import { cn } from "~/lib/utils";
 import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
@@ -578,7 +578,7 @@ export default function ProjectDetail({
                 className="align-middle"
               />{" "}
               on {running[0].envName}
-              {" · "}updated {timeAgo(running[0].at)}
+              {" · "}updated <RelativeTime value={running[0].at} />
               {/* `url` is instance-internal — its presence just gates the playground link. */}
               {running[0].url && (
                 <>

@@ -21,6 +21,7 @@ import {
 import { useFetcher } from "react-router";
 import { Copy, Eye, EyeOff, KeyRound, Lock, MoreHorizontal } from "lucide-react";
 
+import { RelativeTime } from "~/components/localized-values";
 import { SectionHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -143,23 +144,6 @@ export interface SecretsCardProps {
 
 // ── Small shared pieces ──────────────────────────────────────────────────────
 
-/** "Set 12d ago" — coarse relative time; exact time in the title attribute. */
-export function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "";
-  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (s < 60) return "just now";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  const mo = Math.floor(d / 30);
-  if (mo < 12) return `${mo}mo ago`;
-  return `${Math.floor(mo / 12)}y ago`;
-}
-
 /** Auto-uppercase a name as typed: spaces/dashes → underscores, lowercase → upper (§7). */
 export function normalizeSecretName(raw: string): string {
   return raw.toUpperCase().replace(/[ -]+/g, "_").replace(/[^A-Z0-9_]/g, "");
@@ -208,8 +192,8 @@ function MetaLine({
 }) {
   return (
     <span className="flex items-center gap-1 text-xs text-muted-foreground">
-      <span title={new Date(updatedAt).toLocaleString()}>
-        Set {relativeTime(updatedAt)}
+      <span>
+        Set <RelativeTime value={updatedAt} />
       </span>
       <span aria-hidden>·</span>
       {fingerprint ? (

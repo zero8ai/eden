@@ -9,6 +9,7 @@
  */
 import { sessionLoader } from "~/auth/session.server";
 import { Activity, Inbox } from "lucide-react";
+import type { ReactNode } from "react";
 import {
   Link,
   redirect,
@@ -24,6 +25,10 @@ import {
   repoCrumbs,
   type Accent,
 } from "~/components/shell";
+import {
+  LocalizedDateTime,
+  LocalizedNumber,
+} from "~/components/localized-values";
 import { Badge } from "~/components/ui/badge";
 import {
   Card,
@@ -281,10 +286,14 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
         />
         <StatCard
           label="Tokens"
-          value={stats.tokens.toLocaleString()}
+          value={<LocalizedNumber value={stats.tokens} />}
           accent="brand"
           sub={
-            baseline ? `all: ${baseline.tokens.toLocaleString()}` : undefined
+            baseline ? (
+              <>
+                all: <LocalizedNumber value={baseline.tokens} />
+              </>
+            ) : undefined
           }
         />
       </div>
@@ -417,8 +426,8 @@ function StatCard({
   accent,
 }: {
   label: string;
-  value: string;
-  sub?: string;
+  value: ReactNode;
+  sub?: ReactNode;
   tone?: "bad";
   /** Tints the metric number for a categorical/semantic accent (ignored when tone==="bad"). */
   accent?: Accent;
@@ -589,7 +598,7 @@ function RunTableRow({
         </div>
       </TableCell>
       <TableCell className="align-top text-muted-foreground">
-        {new Date(run.startedAt).toLocaleString()}
+        <LocalizedDateTime value={run.startedAt} />
       </TableCell>
     </TableRow>
   );

@@ -7,6 +7,7 @@ import {
   resolveActiveWorkspace,
 } from "~/auth/workspace.server";
 import { AppShell, PageHeader, accentText } from "~/components/shell";
+import { LocalizedDate } from "~/components/localized-values";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
@@ -23,13 +24,6 @@ import { auth as betterAuth } from "~/lib/auth.server";
 import { publicAuthErrorMessage } from "~/lib/auth-error.server";
 import { recordAudit } from "~/managed/audit.server";
 import type { Route } from "./+types/org.members";
-
-const invitationDate = new Intl.DateTimeFormat("en-AU", {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-  timeZone: "UTC",
-});
 
 export const loader = (args: Route.LoaderArgs) =>
   sessionLoader(
@@ -366,8 +360,7 @@ export default function Members({
                     <span>
                       <span className="font-medium">{invitation.email}</span>
                       <span className="ml-2 text-muted-foreground">
-                        expires{" "}
-                        {invitationDate.format(new Date(invitation.expiresAt))}
+                        expires <LocalizedDate value={invitation.expiresAt} />
                       </span>
                     </span>
                     {canManage && (

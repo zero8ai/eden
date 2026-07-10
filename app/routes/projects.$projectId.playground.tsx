@@ -36,6 +36,7 @@ import {
   UserBubble,
 } from "~/components/chat";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
+import { LocalizedDate } from "~/components/localized-values";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -942,12 +943,18 @@ function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
   }
 }
 
-function formatSessionLabel(title: string, updatedAt: string): string {
+function formatSessionLabel(title: string, updatedAt: string) {
   const date = new Date(updatedAt);
-  const dateLabel = Number.isNaN(date.getTime())
-    ? ""
-    : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  return dateLabel ? `${title} · ${dateLabel}` : title;
+  if (Number.isNaN(date.getTime())) return title;
+  return (
+    <>
+      {title} ·{" "}
+      <LocalizedDate
+        value={date}
+        options={{ month: "short", day: "numeric" }}
+      />
+    </>
+  );
 }
 
 /**

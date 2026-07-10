@@ -9,7 +9,8 @@ import { useMemo, useRef, useState } from "react";
 import { Link, useFetcher } from "react-router";
 import { Copy, Eye, EyeOff, KeyRound, Lock, MoreHorizontal } from "lucide-react";
 
-import { COPY, SECRET_NAME_RE, normalizeSecretName, relativeTime } from "~/components/secrets-card";
+import { COPY, SECRET_NAME_RE, normalizeSecretName } from "~/components/secrets-card";
+import { RelativeTime } from "~/components/localized-values";
 import { SectionHeader } from "~/components/shell";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -179,8 +180,8 @@ function SharedRow({
         </div>
       </div>
       <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span title={new Date(row.updatedAt).toLocaleString()}>
-          Set {relativeTime(row.updatedAt)}
+        <span>
+          Set <RelativeTime value={row.updatedAt} />
         </span>
         <span aria-hidden>·</span>
         {row.fingerprint ? (

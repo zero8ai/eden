@@ -14,6 +14,10 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import {
+  LocalizedDateTime,
+  LocalizedNumber,
+} from "~/components/localized-values";
 import { ModelSelect } from "~/components/model-select";
 import { AppShell, PageHeader, accentText } from "~/components/shell";
 import { Button } from "~/components/ui/button";
@@ -64,12 +68,6 @@ interface OrgSettingsView {
   /** Better Auth organization:update permission for the active workspace. */
   canManage: boolean;
 }
-
-const auditDate = new Intl.DateTimeFormat("en-AU", {
-  dateStyle: "medium",
-  timeStyle: "short",
-  timeZone: "UTC",
-});
 
 async function canManageWorkspace(
   organizationId: string,
@@ -350,10 +348,14 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
             <CardDescription>
               Tokens used (last 30 days):{" "}
               <span className={`font-medium ${accentText.indigo}`}>
-                {used.toLocaleString()}
+                <LocalizedNumber value={used} />
               </span>
-              {limit?.monthlyTokenCap != null &&
-                ` / ${limit.monthlyTokenCap.toLocaleString()}`}
+              {limit?.monthlyTokenCap != null && (
+                <>
+                  {" / "}
+                  <LocalizedNumber value={limit.monthlyTokenCap} />
+                </>
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -427,7 +429,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                       )}
                     </span>
                     <span className="text-muted-foreground">
-                      {auditDate.format(new Date(a.createdAt))}
+                      <LocalizedDateTime value={a.createdAt} />
                     </span>
                   </li>
                 ))}

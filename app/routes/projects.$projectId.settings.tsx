@@ -37,6 +37,7 @@ import semver from "semver";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
 import { EmptyTeamState } from "~/components/empty-team-state";
+import { LocalizedDate } from "~/components/localized-values";
 import { ModelSelect } from "~/components/model-select";
 import {
   AgentNav,
@@ -1413,10 +1414,12 @@ function IngestSection({
         <ul className="mb-4 space-y-1 text-sm text-muted-foreground">
           {tokens.map((t) => (
             <li key={t.id}>
-              {t.name} · created {new Date(t.createdAt).toLocaleDateString()}
-              {t.lastUsedAt
-                ? ` · last used ${new Date(t.lastUsedAt).toLocaleDateString()}`
-                : " · never used"}
+              {t.name} · created <LocalizedDate value={t.createdAt} />
+              {t.lastUsedAt ? (
+                <>
+                  {" · "}last used <LocalizedDate value={t.lastUsedAt} />
+                </>
+              ) : " · never used"}
             </li>
           ))}
         </ul>

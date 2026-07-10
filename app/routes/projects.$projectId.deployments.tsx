@@ -159,7 +159,7 @@ import {
   DeploySecretsGuardDialog,
   type GuardMissingSecret,
 } from "~/components/deploy-secrets-guard";
-import { timeAgo } from "~/lib/time";
+import { RelativeTime } from "~/components/localized-values";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -1329,7 +1329,7 @@ function StagedChangesCard({
                     </Badge>
                   )}
                   <span className="shrink-0 text-xs text-muted-foreground">
-                    {timeAgo(d.updatedAt)}
+                    <RelativeTime value={d.updatedAt} />
                   </span>
                   <ConfirmDialog
                     trigger={
@@ -1686,7 +1686,7 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                           </Badge>
                         )}
                         <span className="shrink-0 text-xs text-muted-foreground">
-                          {timeAgo(d.updatedAt)}
+                          <RelativeTime value={d.updatedAt} />
                         </span>
                         <ConfirmDialog
                           trigger={
@@ -1912,7 +1912,7 @@ function TeamEnvMemberRow({
               {running.gitSha.slice(0, 7)}
             </code>
             <span className="text-muted-foreground">
-              deployed {timeAgo(running.createdAt)}
+              deployed <RelativeTime value={running.createdAt} />
             </span>
           </>
         ) : (
@@ -2034,7 +2034,7 @@ function TeamVersionHistory({
                   {v.changelog}
                 </span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {timeAgo(v.createdAt)}
+                  <RelativeTime value={v.createdAt} />
                 </span>
                 <TeamDeployControl
                   version={v}
@@ -2256,7 +2256,7 @@ function EnvironmentsCard({
                         {running.gitSha.slice(0, 7)}
                       </code>
                       <span className="text-muted-foreground">
-                        deployed {timeAgo(running.createdAt)}
+                        deployed <RelativeTime value={running.createdAt} />
                       </span>
                       {/* `url` isn't the link target (it's an instance-internal address) — its
                           presence is the "there's a reachable instance to talk to" signal gating
@@ -2677,7 +2677,7 @@ function VersionHistory({
                   {r.changelog}
                 </span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {timeAgo(r.createdAt)}
+                  <RelativeTime value={r.createdAt} />
                 </span>
                 {canAct && (
                   <DeployControl

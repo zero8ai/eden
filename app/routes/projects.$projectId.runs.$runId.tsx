@@ -19,6 +19,7 @@ import {
 } from "react-router";
 
 import { RunTranscript, type StepView } from "~/components/run-steps";
+import { LocalizedDateTime } from "~/components/localized-values";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -224,7 +225,9 @@ export default function RunTranscriptRoute({
       )}
       <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         {run.channel && <span>Channel: {run.channel}</span>}
-        <span>Started: {new Date(run.startedAt).toLocaleString()}</span>
+        <span>
+          Started: <LocalizedDateTime value={run.startedAt} />
+        </span>
         {release && (
           <span>
             The exact system prompt is reconstructable from the repo at this

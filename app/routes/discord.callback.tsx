@@ -8,7 +8,7 @@
  * registers the agent's guild command, records the connection, and sends the user back to the
  * Deployment tab. Mirrors the GitHub App manifest callback's readable-error (`fail`) pattern.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { MessageSquare } from "lucide-react";
 import { Link, redirect, type LoaderFunctionArgs } from "react-router";
 
@@ -35,7 +35,7 @@ import { getRuntime } from "~/seams/index.server";
 import type { Route } from "./+types/discord.callback";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const url = new URL(args.request.url);
@@ -69,14 +69,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
 
       // Tenancy: the signed state names the project, but the SESSION must own it too.
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId ?? null,
-          role: auth.role ?? null,
-        },
-        state.projectId,
-      );
+      const project = await requireProject(auth, state.projectId);
       const roster = (await listAgents(project.id)).filter(
         (a) => a.kind === "member",
       );

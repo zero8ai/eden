@@ -19,7 +19,10 @@ export default [
   // Recruit — the marketplace (PRD §7.8, M6). Browse (index.json) + a template detail page.
   route("marketplace", "routes/marketplace.tsx"),
   route("marketplace/:type/:id", "routes/marketplace.$type.$id.tsx"),
-  route("marketplace/:type/:id/install", "routes/marketplace.$type.$id.install.tsx"),
+  route(
+    "marketplace/:type/:id/install",
+    "routes/marketplace.$type.$id.install.tsx",
+  ),
   route("org/settings", "routes/org.settings.tsx"),
   // Shared workspaces (issue #56): the members/invite page, the multi-workspace chooser +
   // switch endpoint, and the shell switcher's data route.
@@ -40,10 +43,7 @@ export default [
     "routes/projects.$projectId.deployments.tsx",
     "member-deployment",
   ),
-  route(
-    "repos/:projectId/settings",
-    "routes/projects.$projectId.settings.tsx",
-  ),
+  route("repos/:projectId/settings", "routes/projects.$projectId.settings.tsx"),
   memberRoute(
     "/settings",
     "routes/projects.$projectId.settings.tsx",
@@ -78,7 +78,11 @@ export default [
     "routes/projects.$projectId.assistant.config.tsx",
   ),
   // The assistant is project-level now; the old member-level tab 301s to the repo-level page.
-  memberRoute("/assistant", "routes/shims.member-assistant.tsx", "member-assistant"),
+  memberRoute(
+    "/assistant",
+    "routes/shims.member-assistant.tsx",
+    "member-assistant",
+  ),
   route(
     "repos/:projectId/resources/:category",
     "routes/projects.$projectId.resources.$category.tsx",
@@ -160,6 +164,9 @@ export default [
   // tools + boot entrypoint call GET|POST /api/assistant/<action> with a Bearer assistant token.
   route("api/assistant/:action", "routes/api.assistant.$action.ts"),
   route("api/models", "routes/api.models.tsx"),
+  // Better Auth's documented React Router resource route. The splat forwards every
+  // /api/auth/* request to the single server auth instance.
+  route("api/auth/*", "routes/api.auth.$.ts"),
   // Legacy URLs from before the repositories rename — 301 into /repos/.
   route("projects/:projectId/*", "routes/legacy.projects.tsx", {
     id: "legacy-projects-splat",
@@ -167,7 +174,12 @@ export default [
   route("projects/:projectId", "routes/legacy.projects.tsx", {
     id: "legacy-projects",
   }),
-  route("callback", "routes/callback.tsx"),
+  route(
+    "accept-invitation/:invitationId",
+    "routes/accept-invitation.$invitationId.tsx",
+  ),
   route("login", "routes/login.tsx"),
   route("signup", "routes/signup.tsx"),
+  route("forgot-password", "routes/forgot-password.tsx"),
+  route("reset-password", "routes/reset-password.tsx"),
 ] satisfies RouteConfig;

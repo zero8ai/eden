@@ -8,7 +8,7 @@
  * TypeScript schedules (`<name>.ts`, defineSchedule with a run() handler) always open in the
  * code editor. Save stages a draft like every other editor.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { CalendarClock } from "lucide-react";
 import { useState } from "react";
 import {
@@ -64,19 +64,13 @@ function schedulePath(raw: string): string | null {
 const DEFAULT_CRON = "0 9 * * 1-5";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const project = requireRepo(
-        await requireProject(
-          {
-            user: auth.user,
-            organizationId: auth.organizationId,
-            role: auth.role,
-          },
-          args.params.projectId,
-          { request: args.request },
-        ),
+        await requireProject(auth, args.params.projectId, {
+          request: args.request,
+        }),
       );
       // The member is the path segment when present (member-level route); otherwise the
       // schedule file's path implies it. Legacy ?agent= links 301 into the member path.
@@ -116,17 +110,10 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
 
   const form = await args.request.formData();
@@ -253,7 +240,10 @@ function ScheduleForm({
       <div className="max-w-2xl space-y-6">
         <div className="space-y-1.5">
           <Label className="flex items-center gap-1.5">
-            <CalendarClock className={`size-3.5 ${accentText.amber}`} aria-hidden />
+            <CalendarClock
+              className={`size-3.5 ${accentText.amber}`}
+              aria-hidden
+            />
             Runs
           </Label>
           <CronField value={cron} onChange={setCron} />

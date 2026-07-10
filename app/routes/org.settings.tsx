@@ -1,8 +1,9 @@
 /**
  * Org governance (managed mode — PRD §7.5, ARCH §3.8). Spend cap + kill-switch, month-to-date
- * token usage, and the operational audit log. Org-scoped; roles/SSO are delegated to WorkOS.
+ * token usage, and the operational audit log. Workspace membership is managed by Better Auth's
+ * organization plugin.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { Building2, Cpu, Gauge, ScrollText, ShieldAlert } from "lucide-react";
 import {
   Form,
@@ -25,8 +26,11 @@ import {
 } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
-import { syncTenant, type Org } from "~/auth/tenant.server";
-import { ensureWorkspace } from "~/auth/workspace.server";
+import {
+  ensureWorkspace,
+  resolveActiveWorkspace,
+  type WorkspaceInfo,
+} from "~/auth/workspace.server";
 import { listAudit, recordAudit } from "~/managed/audit.server";
 import {
   getWorkspaceAssistantModel,
@@ -47,7 +51,7 @@ import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/org.settings";
 
 interface OrgSettingsView {
-  org: Org | null;
+  org: WorkspaceInfo | null;
   mode: EdenMode;
   limit: SpendLimit | null;
   used: number;
@@ -59,16 +63,13 @@ interface OrgSettingsView {
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<OrgSettingsView> => {
       // Close the org-less hole: provision/adopt/choose a workspace before syncing.
       await ensureWorkspace(args.request, auth);
-      const { org } = await syncTenant({
-        user: auth.user,
-        organizationId: auth.organizationId,
-        role: auth.role,
-      });
+      const active = await resolveActiveWorkspace(auth);
+      const org = active?.org;
       if (!org) {
         return {
           org: null,
@@ -80,13 +81,14 @@ export const loader = (args: LoaderFunctionArgs) =>
           assistantModel: null,
         };
       }
-      const [limit, used, audit, hasModelKey, assistantModel] = await Promise.all([
-        getSpendLimit(org.id),
-        tokensUsedSince(org.id),
-        listAudit(org.id, 50),
-        hasWorkspaceModelKey(org.id),
-        getWorkspaceAssistantModel(org.id),
-      ]);
+      const [limit, used, audit, hasModelKey, assistantModel] =
+        await Promise.all([
+          getSpendLimit(org.id),
+          tokensUsedSince(org.id),
+          listAudit(org.id, 50),
+          hasWorkspaceModelKey(org.id),
+          getWorkspaceAssistantModel(org.id),
+        ]);
       return {
         org,
         mode: getRuntime().mode,
@@ -101,13 +103,10 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
-  const { org } = await syncTenant({
-    user: auth.user,
-    organizationId: auth.organizationId ?? null,
-    role: auth.role ?? null,
-  });
+  const active = await resolveActiveWorkspace(auth);
+  const org = active?.org;
   if (!org) return { error: "No organization." };
 
   const form = await args.request.formData();
@@ -116,7 +115,9 @@ export async function action(args: ActionFunctionArgs) {
   const intent = String(form.get("intent") ?? "");
   if (intent === "set-model-key" || intent === "clear-model-key") {
     const value =
-      intent === "set-model-key" ? String(form.get("modelKey") ?? "").trim() : "";
+      intent === "set-model-key"
+        ? String(form.get("modelKey") ?? "").trim()
+        : "";
     if (intent === "set-model-key" && !value) {
       return { error: "Paste an OpenRouter API key." };
     }
@@ -142,7 +143,8 @@ export async function action(args: ActionFunctionArgs) {
   }
 
   const capRaw = String(form.get("monthlyTokenCap") ?? "").trim();
-  const monthlyTokenCap = capRaw === "" ? null : Math.max(0, Number(capRaw) || 0);
+  const monthlyTokenCap =
+    capRaw === "" ? null : Math.max(0, Number(capRaw) || 0);
   const killSwitch = form.get("killSwitch") === "on";
 
   await setSpendLimit(org.id, { monthlyTokenCap, killSwitch });
@@ -156,14 +158,12 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [
-    { title: "Org settings · eden" },
-    ...noindexMeta,
-  ];
+  return [{ title: "Org settings · eden" }, ...noindexMeta];
 }
 
 export default function OrgSettings({ loaderData }: Route.ComponentProps) {
-  const { user, org, mode, limit, used, audit, hasModelKey, assistantModel } = loaderData;
+  const { user, org, mode, limit, used, audit, hasModelKey, assistantModel } =
+    loaderData;
   const modelFetcher = useFetcher<typeof action>();
 
   if (!org) {
@@ -190,8 +190,8 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
         title="Settings"
         description={
           <>
-            Mode: <span className="font-mono">{mode}</span>. Roles &amp; SSO are
-            managed in WorkOS.
+            Mode: <span className="font-mono">{mode}</span>. Authentication and
+            organization roles are managed by Better Auth.
           </>
         }
       />
@@ -206,9 +206,9 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
             </CardTitle>
             <CardDescription>
               OpenRouter is the default model provider. eden injects this key as{" "}
-              <span className="font-mono">OPENROUTER_API_KEY</span> for deployments,
-              and the default model below is used by the authoring assistant and by
-              agents that do not have their own model set.
+              <span className="font-mono">OPENROUTER_API_KEY</span> for
+              deployments, and the default model below is used by the authoring
+              assistant and by agents that do not have their own model set.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -216,8 +216,11 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
               <Form method="post" className="flex flex-wrap items-center gap-3">
                 <input type="hidden" name="intent" value="clear-model-key" />
                 <p className="text-sm">
-                  OpenRouter key: <span className="font-medium">configured</span>{" "}
-                  <span className="text-muted-foreground">(write-only; value never shown)</span>
+                  OpenRouter key:{" "}
+                  <span className="font-medium">configured</span>{" "}
+                  <span className="text-muted-foreground">
+                    (write-only; value never shown)
+                  </span>
                 </p>
                 <Button type="submit" variant="outline" size="sm">
                   Remove key
@@ -334,7 +337,10 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <ScrollText className={`size-4 ${accentText.indigo}`} aria-hidden />
+              <ScrollText
+                className={`size-4 ${accentText.indigo}`}
+                aria-hidden
+              />
               Audit log
             </CardTitle>
           </CardHeader>

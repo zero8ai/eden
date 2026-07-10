@@ -9,15 +9,12 @@
  * The Install button is rendered DISABLED on purpose: it is the seam for phase 2 (the install
  * wizard + change-set materialization). Wiring it up is the next milestone phase, not this one.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { data, Link, type LoaderFunctionArgs } from "react-router";
 
 import { MarkdownText } from "~/components/chat";
 import { CodeEditor } from "~/components/code-editor";
-import {
-  TYPE_META,
-  TypeBadge,
-} from "~/components/marketplace-type-badge";
+import { TYPE_META, TypeBadge } from "~/components/marketplace-type-badge";
 import { AppShell, PageHeader } from "~/components/shell";
 import { Button } from "~/components/ui/button";
 import {
@@ -27,20 +24,27 @@ import {
   CardHeader,
   CardTitle,
 } from "~/components/ui/card";
-import { TEMPLATE_TYPES, isTemplateSlug, type TemplateType } from "~/marketplace/manifest";
+import {
+  TEMPLATE_TYPES,
+  isTemplateSlug,
+  type TemplateType,
+} from "~/marketplace/manifest";
 import { getRuntime } from "~/seams/index.server";
-import { syncTenant } from "~/auth/tenant.server";
-import { ensureWorkspace } from "~/auth/workspace.server";
+import {
+  ensureWorkspace,
+  resolveActiveWorkspace,
+} from "~/auth/workspace.server";
 import type { Route } from "./+types/marketplace.$type.$id";
 
 /** Narrow a URL param to a TemplateType, 404-ing on anything else (unknown type = no such page). */
 function parseType(param: string | undefined): TemplateType {
-  if (TEMPLATE_TYPES.includes(param as TemplateType)) return param as TemplateType;
+  if (TEMPLATE_TYPES.includes(param as TemplateType))
+    return param as TemplateType;
   throw data("Unknown template type", { status: 404 });
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const type = parseType(args.params.type);
@@ -49,7 +53,8 @@ export const loader = (args: LoaderFunctionArgs) =>
       // id into a filesystem path, so a non-slug id is a path-traversal attempt, not a miss.
       if (!isTemplateSlug(id)) throw data("Unknown template", { status: 404 });
       await ensureWorkspace(args.request, auth);
-      const { org } = await syncTenant(auth);
+      const active = await resolveActiveWorkspace(auth);
+      const org = active?.org;
       try {
         // Detail deliberately shows the UNRESOLVED template (catalog.template, not
         // resolveTemplate): the manifest's own `files`/`secrets`/`includes` as authored. The
@@ -60,8 +65,13 @@ export const loader = (args: LoaderFunctionArgs) =>
       } catch (error) {
         // A missing template (or unreachable catalog) is a 404 for this URL — nothing to show.
         // The underlying error stays server-side: fixture failures name filesystem paths.
-        console.warn(`[marketplace] template ${type}/${id} failed to load:`, error);
-        throw data(`Template ${type}/${id} isn't in the catalog.`, { status: 404 });
+        console.warn(
+          `[marketplace] template ${type}/${id} failed to load:`,
+          error,
+        );
+        throw data(`Template ${type}/${id} isn't in the catalog.`, {
+          status: 404,
+        });
       }
     },
     { ensureSignedIn: true },
@@ -82,7 +92,8 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
   const secrets = manifest.secrets ?? [];
   const userSecrets = secrets.filter((s) => !s.provisioned);
   const provisionedSecrets = secrets.filter((s) => s.provisioned);
-  const showSecretsCard = userSecrets.length > 0 || provisionedSecrets.length === 0;
+  const showSecretsCard =
+    userSecrets.length > 0 || provisionedSecrets.length === 0;
 
   return (
     <AppShell userEmail={user.email}>
@@ -187,47 +198,47 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
           {/* Issue #47: only "Secrets you provide" (non-provisioned). When every secret is
               provisioned, this card is dropped and the npm card stands alone in the grid. */}
           {showSecretsCard && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Secrets you provide</CardTitle>
-              <CardDescription>
-                Values go to the secrets store, never the repo. The install wizard
-                collects them.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {userSecrets.length > 0 ? (
-                <ul className="space-y-2 text-sm">
-                  {userSecrets.map((s) => (
-                    <li key={s.name}>
-                      <span className="font-mono text-xs">{s.name}</span>
-                      {s.description && (
-                        <span className="block text-xs text-muted-foreground">
-                          {s.description}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-sm text-muted-foreground">None.</p>
-              )}
-              {provisionedSecrets.length > 0 && (
-                <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">
-                    Configured automatically:
-                  </span>{" "}
-                  <span className="font-mono">
-                    {provisionedSecrets.map((s) => s.name).join(", ")}
-                  </span>{" "}
-                  — Eden sets{" "}
-                  {provisionedSecrets.length === 1 ? "this" : "these"} via guided
-                  setup on the agent&rsquo;s Deployment tab. You never provide{" "}
-                  {provisionedSecrets.length === 1 ? "it" : "them"}.
-                </p>
-              )}
-            </CardContent>
-          </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Secrets you provide</CardTitle>
+                <CardDescription>
+                  Values go to the secrets store, never the repo. The install
+                  wizard collects them.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {userSecrets.length > 0 ? (
+                  <ul className="space-y-2 text-sm">
+                    {userSecrets.map((s) => (
+                      <li key={s.name}>
+                        <span className="font-mono text-xs">{s.name}</span>
+                        {s.description && (
+                          <span className="block text-xs text-muted-foreground">
+                            {s.description}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-muted-foreground">None.</p>
+                )}
+                {provisionedSecrets.length > 0 && (
+                  <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">
+                      Configured automatically:
+                    </span>{" "}
+                    <span className="font-mono">
+                      {provisionedSecrets.map((s) => s.name).join(", ")}
+                    </span>{" "}
+                    — Eden sets{" "}
+                    {provisionedSecrets.length === 1 ? "this" : "these"} via
+                    guided setup on the agent&rsquo;s Deployment tab. You never
+                    provide {provisionedSecrets.length === 1 ? "it" : "them"}.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
           )}
 
           <Card>
@@ -256,32 +267,32 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
 
         {/* A pure-composition bundle ships no files of its own — hide the empty section. */}
         {manifest.files.length > 0 && (
-        <div>
-          <h2 className="mb-3 text-base font-semibold tracking-tight">
-            Files{" "}
-            <span className="text-sm font-normal text-muted-foreground">
-              ({manifest.files.length})
-            </span>
-          </h2>
-          <div className="space-y-2">
-            {manifest.files.map((path) => (
-              <details
-                key={path}
-                className="group overflow-hidden rounded-lg ring-1 ring-foreground/10"
-              >
-                <summary className="flex cursor-pointer items-center gap-2 px-4 py-2.5 text-sm font-medium hover:bg-accent/50">
-                  <span className="text-muted-foreground transition-transform group-open:rotate-90">
-                    ›
-                  </span>
-                  <span className="font-mono text-xs">{path}</span>
-                </summary>
-                <div className="border-t bg-muted/30 p-3">
-                  <FileBody path={path} content={files[path] ?? ""} />
-                </div>
-              </details>
-            ))}
+          <div>
+            <h2 className="mb-3 text-base font-semibold tracking-tight">
+              Files{" "}
+              <span className="text-sm font-normal text-muted-foreground">
+                ({manifest.files.length})
+              </span>
+            </h2>
+            <div className="space-y-2">
+              {manifest.files.map((path) => (
+                <details
+                  key={path}
+                  className="group overflow-hidden rounded-lg ring-1 ring-foreground/10"
+                >
+                  <summary className="flex cursor-pointer items-center gap-2 px-4 py-2.5 text-sm font-medium hover:bg-accent/50">
+                    <span className="text-muted-foreground transition-transform group-open:rotate-90">
+                      ›
+                    </span>
+                    <span className="font-mono text-xs">{path}</span>
+                  </summary>
+                  <div className="border-t bg-muted/30 p-3">
+                    <FileBody path={path} content={files[path] ?? ""} />
+                  </div>
+                </details>
+              ))}
+            </div>
           </div>
-        </div>
         )}
       </div>
     </AppShell>
@@ -307,7 +318,13 @@ function FileBody({ path, content }: { path: string; content: string }) {
   return <CodeEditor path={path} value={content} readOnly />;
 }
 
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+function Fact({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div>
       <div className="text-xs text-muted-foreground">{label}</div>

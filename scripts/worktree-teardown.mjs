@@ -215,14 +215,6 @@ async function main() {
   if (!existsSync(worktreePath)) die(`worktree not found at ${worktreePath}`);
 
   const paths = tunnelPaths(root, WORKTREE_ROOT_DIR);
-  let removedEntry;
-  try {
-    removedEntry = readJson(paths.registry, {})[feat.dir];
-  } catch (err) {
-    console.warn(
-      `worktree-teardown: failed to read ${paths.registry} before removal: ${err.message}`,
-    );
-  }
 
   const removeResult = run([
     "git",
@@ -280,12 +272,6 @@ async function main() {
         );
       }
     }
-  }
-
-  if (removedEntry?.tunnelHost) {
-    console.log(
-      `worktree-teardown: WorkOS callback https://${removedEntry.tunnelHost}/callback cannot be deleted by the current CLI/API; it remains registered but is inert`,
-    );
   }
 
   console.log(

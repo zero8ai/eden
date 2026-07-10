@@ -9,7 +9,7 @@
  * a crash: the loader catches it and the page renders a friendly empty-state explaining the
  * EDEN_CATALOG_REPO pointer and the fixture fallback.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import {
   Bot,
   Hash,
@@ -32,8 +32,10 @@ import {
 } from "~/components/ui/card";
 import { TEMPLATE_TYPES, type TemplateType } from "~/marketplace/manifest";
 import { getRuntime } from "~/seams/index.server";
-import { syncTenant } from "~/auth/tenant.server";
-import { ensureWorkspace } from "~/auth/workspace.server";
+import {
+  ensureWorkspace,
+  resolveActiveWorkspace,
+} from "~/auth/workspace.server";
 import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/marketplace";
 
@@ -117,14 +119,19 @@ const TYPE_META: Record<TemplateType, TypeMeta> = {
 };
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       await ensureWorkspace(args.request, auth);
-      const { org } = await syncTenant(auth);
+      const active = await resolveActiveWorkspace(auth);
+      const org = active?.org;
       try {
         const index = await getRuntime().catalog.index();
-        return { org, templates: index.templates, catalogError: null as string | null };
+        return {
+          org,
+          templates: index.templates,
+          catalogError: null as string | null,
+        };
       } catch (error) {
         // Unreachable catalog is an expected state — render an empty-state, don't 500.
         return {
@@ -138,10 +145,7 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export function meta() {
-  return [
-    { title: "Marketplace · eden" },
-    ...noindexMeta,
-  ];
+  return [{ title: "Marketplace · eden" }, ...noindexMeta];
 }
 
 export default function Marketplace({ loaderData }: Route.ComponentProps) {
@@ -170,9 +174,10 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
           <CardHeader className="items-center py-12 text-center">
             <CardTitle className="text-lg">Catalog unavailable</CardTitle>
             <CardDescription className="max-w-lg">
-              eden couldn&rsquo;t reach the template catalog. In development it reads
-              the in-repo <span className="font-mono">marketplace/</span> seed; in
-              production set <span className="font-mono">EDEN_CATALOG_REPO</span> to an
+              eden couldn&rsquo;t reach the template catalog. In development it
+              reads the in-repo <span className="font-mono">marketplace/</span>{" "}
+              seed; in production set{" "}
+              <span className="font-mono">EDEN_CATALOG_REPO</span> to an
               &ldquo;owner/repo&rdquo; pointer at the catalog.
             </CardDescription>
             <p className="mt-3 max-w-lg font-mono text-xs text-muted-foreground">
@@ -206,7 +211,8 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
               <CardHeader className="items-center py-12 text-center">
                 <CardTitle className="text-lg">Nothing here yet</CardTitle>
                 <CardDescription>
-                  No templates in this category. Check back as the catalog grows.
+                  No templates in this category. Check back as the catalog
+                  grows.
                 </CardDescription>
               </CardHeader>
             </Card>
@@ -226,13 +232,18 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
                         <Icon className="size-3.5" />
                       </span>
                       <h2 className="text-sm font-medium">{meta.plural}</h2>
-                      <span className="text-xs text-muted-foreground">{counts[t]}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {counts[t]}
+                      </span>
                     </div>
                     <div className="grid gap-4 sm:grid-cols-2">
                       {templates
                         .filter((tpl) => tpl.type === t)
                         .map((tpl) => (
-                          <TemplateCard key={`${tpl.type}/${tpl.id}`} tpl={tpl} />
+                          <TemplateCard
+                            key={`${tpl.type}/${tpl.id}`}
+                            tpl={tpl}
+                          />
                         ))}
                     </div>
                   </section>
@@ -297,7 +308,11 @@ function TypeBadge({ type }: { type: TemplateType }) {
 }
 
 /** One catalog entry as a card, linking to its detail page. */
-function TemplateCard({ tpl }: { tpl: Route.ComponentProps["loaderData"]["templates"][number] }) {
+function TemplateCard({
+  tpl,
+}: {
+  tpl: Route.ComponentProps["loaderData"]["templates"][number];
+}) {
   return (
     <Link
       to={`/marketplace/${tpl.type}/${tpl.id}`}
@@ -310,8 +325,12 @@ function TemplateCard({ tpl }: { tpl: Route.ComponentProps["loaderData"]["templa
             <CardTitle className="truncate text-base">{tpl.name}</CardTitle>
             <TypeBadge type={tpl.type} />
           </div>
-          <CardDescription className="line-clamp-2">{tpl.description}</CardDescription>
-          <p className="mt-1 font-mono text-xs text-muted-foreground">v{tpl.version}</p>
+          <CardDescription className="line-clamp-2">
+            {tpl.description}
+          </CardDescription>
+          <p className="mt-1 font-mono text-xs text-muted-foreground">
+            v{tpl.version}
+          </p>
         </CardHeader>
       </Card>
     </Link>

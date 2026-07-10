@@ -9,10 +9,7 @@
  *
  * Set the GitHub App's "Setup URL" to `<host>/connect` so step 2 lands here.
  */
-import {
-  authkitLoader,
-  withAuth,
-} from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import {
   Form,
   Link,
@@ -39,8 +36,11 @@ import {
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { createProject } from "~/db/queries.server";
-import { syncTenant, type Org } from "~/auth/tenant.server";
-import { ensureWorkspace } from "~/auth/workspace.server";
+import {
+  ensureWorkspace,
+  resolveActiveWorkspace,
+  type WorkspaceInfo,
+} from "~/auth/workspace.server";
 import { getInstallUrl } from "~/github/client.server";
 import { createEveRepo } from "~/github/create.server";
 import {
@@ -75,21 +75,18 @@ type GithubConnectState =
   | { state: "unconfigured"; message: string };
 
 interface ConnectView {
-  org: Org | null;
+  org: WorkspaceInfo | null;
   github: GithubConnectState;
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<ConnectView> => {
       // First org-less login: provision the user's workspace and replay (redirect).
       await ensureWorkspace(args.request, auth);
-      const { org } = await syncTenant({
-        user: auth.user,
-        organizationId: auth.organizationId,
-        role: auth.role,
-      });
+      const active = await resolveActiveWorkspace(auth);
+      const org = active?.org;
       if (!org) return { org: null, github: { state: "no-org" as const } };
 
       const url = new URL(args.request.url);
@@ -108,13 +105,16 @@ export const loader = (args: LoaderFunctionArgs) =>
         const known = await listKnownInstallations(org.id);
         const candidates = [
           ...(fromRedirect ? [fromRedirect] : []),
-          ...known.map((k) => k.installationId).filter((id) => id !== fromRedirect),
+          ...known
+            .map((k) => k.installationId)
+            .filter((id) => id !== fromRedirect),
         ];
         for (const installationId of candidates) {
           try {
             const repos = await listInstallationRepos(installationId);
             const accountLogin =
-              known.find((k) => k.installationId === installationId)?.accountLogin ?? null;
+              known.find((k) => k.installationId === installationId)
+                ?.accountLogin ?? null;
             return {
               org,
               github: {
@@ -144,15 +144,13 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
 
-  const { org } = await syncTenant({
-    user: auth.user,
-    organizationId: auth.organizationId ?? null,
-    role: auth.role ?? null,
-  });
-  if (!org) return { error: "You must belong to an organization to connect a repo." };
+  const active = await resolveActiveWorkspace(auth);
+  const org = active?.org;
+  if (!org)
+    return { error: "You must belong to an organization to connect a repo." };
 
   const form = await args.request.formData();
   const installationId = String(form.get("installationId") ?? "");
@@ -163,12 +161,16 @@ export async function action(args: ActionFunctionArgs) {
   if (intent === "create") {
     const owner = String(form.get("owner") ?? "").trim();
     const name = String(form.get("name") ?? "").trim();
-    const layout = form.get("layout") === "team" ? ("team" as const) : ("single" as const);
-    const agentName = layout === "single"
-      ? slugifyResourceName(String(form.get("agentName") ?? ""))
-      : "";
-    if (!owner || !name) return { error: "Owner and repository name are required." };
-    if (layout === "single" && !agentName) return { error: "Agent name is required." };
+    const layout =
+      form.get("layout") === "team" ? ("team" as const) : ("single" as const);
+    const agentName =
+      layout === "single"
+        ? slugifyResourceName(String(form.get("agentName") ?? ""))
+        : "";
+    if (!owner || !name)
+      return { error: "Owner and repository name are required." };
+    if (layout === "single" && !agentName)
+      return { error: "Agent name is required." };
     try {
       const model = await getWorkspaceAssistantModel(org.id).catch(() => null);
       const repo = await createEveRepo(installationId, {
@@ -187,10 +189,7 @@ export async function action(args: ActionFunctionArgs) {
         defaultBranch: repo.defaultBranch,
         layout,
         // The scaffold's roster is known without re-reading the repo (§7.9).
-        roster:
-          layout === "team"
-            ? []
-            : [{ name: agentName, root: "agent" }],
+        roster: layout === "team" ? [] : [{ name: agentName, root: "agent" }],
       });
       throw redirect(`/repos/${project.id}`);
     } catch (error) {
@@ -210,7 +209,9 @@ export async function action(args: ActionFunctionArgs) {
   try {
     source = await fetchAgentSource(installationId, { owner, repo });
   } catch (error) {
-    return { error: `Could not read ${owner}/${repo}: ${(error as Error).message}` };
+    return {
+      error: `Could not read ${owner}/${repo}: ${(error as Error).message}`,
+    };
   }
   if (!isEveRepo(source.paths)) {
     return {
@@ -227,7 +228,10 @@ export async function action(args: ActionFunctionArgs) {
     defaultBranch: source.ref || defaultBranch,
     layout: hasTeamLayout(source.paths) ? "team" : "single",
     // Detected roster: one member per agent root (single repos are a team of one).
-    roster: detectAgentRoots(source.paths).map((r) => ({ name: r.name, root: r.root })),
+    roster: detectAgentRoots(source.paths).map((r) => ({
+      name: r.name,
+      root: r.root,
+    })),
   });
 
   // We just read the source to validate — warm the cache so the first project load is instant.
@@ -237,21 +241,25 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [
-    { title: "New repository · eden" },
-    ...noindexMeta,
-  ];
+  return [{ title: "New repository · eden" }, ...noindexMeta];
 }
 
-export default function Connect({ loaderData, actionData }: Route.ComponentProps) {
+export default function Connect({
+  loaderData,
+  actionData,
+}: Route.ComponentProps) {
   const { org, github } = loaderData;
   const navigation = useNavigation();
   // Busy is per-FORM, not global: only the clicked button changes label, and it stays busy
   // through the whole navigation (action + redirect + next page's loader) — the redirect
   // target reads the repo from GitHub, which takes a beat; going idle early reads as broken.
   const busyData = navigation.state !== "idle" ? navigation.formData : null;
-  const busyIntent = busyData ? String(busyData.get("intent") ?? "connect") : null;
-  const busyRepo = busyData ? `${busyData.get("owner")}/${busyData.get("repo")}` : null;
+  const busyIntent = busyData
+    ? String(busyData.get("intent") ?? "connect")
+    : null;
+  const busyRepo = busyData
+    ? `${busyData.get("owner")}/${busyData.get("repo")}`
+    : null;
   const [layout, setLayout] = useState<"single" | "team">("single");
 
   return (
@@ -286,14 +294,17 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Download className={`size-4 shrink-0 ${accentText.brand}`} aria-hidden />
+              <Download
+                className={`size-4 shrink-0 ${accentText.brand}`}
+                aria-hidden
+              />
               Install the GitHub App
             </CardTitle>
             <CardDescription>
-              Install eden on the account that owns your eve repository, then pick
-              the repo to connect. You control which repositories it can access —
-              selecting none is fine too, if you only want eden to create new repos
-              for you.
+              Install eden on the account that owns your eve repository, then
+              pick the repo to connect. You control which repositories it can
+              access — selecting none is fine too, if you only want eden to
+              create new repos for you.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -309,7 +320,10 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <FolderGit2 className={`size-4 shrink-0 ${accentText.brand}`} aria-hidden />
+                <FolderGit2
+                  className={`size-4 shrink-0 ${accentText.brand}`}
+                  aria-hidden
+                />
                 Connect an existing repository
               </CardTitle>
               <CardDescription>
@@ -320,9 +334,9 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
             <CardContent>
               {github.repos.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  No repositories are shared with the app yet — that&rsquo;s fine
-                  if you only want eden to create repos for you. Create a new
-                  repository below, or{" "}
+                  No repositories are shared with the app yet — that&rsquo;s
+                  fine if you only want eden to create repos for you. Create a
+                  new repository below, or{" "}
                   <a
                     href={github.installUrl}
                     className="font-medium underline underline-offset-4"
@@ -349,10 +363,18 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                         )}
                       </div>
                       <Form method="post">
-                        <input type="hidden" name="installationId" value={github.installationId} />
+                        <input
+                          type="hidden"
+                          name="installationId"
+                          value={github.installationId}
+                        />
                         <input type="hidden" name="owner" value={r.owner} />
                         <input type="hidden" name="repo" value={r.repo} />
-                        <input type="hidden" name="defaultBranch" value={r.defaultBranch} />
+                        <input
+                          type="hidden"
+                          name="defaultBranch"
+                          value={r.defaultBranch}
+                        />
                         <Button
                           size="sm"
                           variant="secondary"
@@ -374,19 +396,28 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Plus className={`size-4 shrink-0 ${accentText.emerald}`} aria-hidden />
+                <Plus
+                  className={`size-4 shrink-0 ${accentText.emerald}`}
+                  aria-hidden
+                />
                 Create a new repository
               </CardTitle>
               <CardDescription>
-                Creates a repository in your organization and scaffolds it — a single
-                agent (<span className="font-mono">agent/</span>) or a team of agents
-                (<span className="font-mono">agents/&lt;member&gt;/agent/</span>).
+                Creates a repository in your organization and scaffolds it — a
+                single agent (<span className="font-mono">agent/</span>) or a
+                team of agents (
+                <span className="font-mono">agents/&lt;member&gt;/agent/</span>
+                ).
               </CardDescription>
             </CardHeader>
             <CardContent>
               <Form method="post" className="space-y-4">
                 <input type="hidden" name="intent" value="create" />
-                <input type="hidden" name="installationId" value={github.installationId} />
+                <input
+                  type="hidden"
+                  name="installationId"
+                  value={github.installationId}
+                />
                 <div className="grid gap-3 sm:grid-cols-2">
                   <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-4 has-[:checked]:border-primary has-[:checked]:bg-muted/40">
                     <input
@@ -398,7 +429,9 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                       className="mt-1 accent-primary"
                     />
                     <span>
-                      <span className="block text-sm font-medium">Single agent</span>
+                      <span className="block text-sm font-medium">
+                        Single agent
+                      </span>
                       <span className="block text-xs text-muted-foreground">
                         One agent, one runtime. The repo root holds{" "}
                         <span className="font-mono">agent/</span>.
@@ -418,8 +451,8 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                       <span className="block text-sm font-medium">Team</span>
                       <span className="block text-xs text-muted-foreground">
                         A monorepo of agents under{" "}
-                        <span className="font-mono">agents/</span> — each member has its
-                        own runtime, channels, schedules, and secrets.
+                        <span className="font-mono">agents/</span> — each member
+                        has its own runtime, channels, schedules, and secrets.
                       </span>
                     </span>
                   </label>
@@ -431,7 +464,9 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                       id="owner"
                       name="owner"
                       aria-label="GitHub organization"
-                      defaultValue={github.accountLogin ?? github.repos[0]?.owner ?? ""}
+                      defaultValue={
+                        github.accountLogin ?? github.repos[0]?.owner ?? ""
+                      }
                       placeholder="org"
                       className="w-full min-w-0 sm:w-40"
                     />
@@ -452,21 +487,26 @@ export default function Connect({ loaderData, actionData }: Route.ComponentProps
                     .
                   </p>
                 </div>
-                {layout === "single" && <div className="space-y-1.5">
-                  <Label htmlFor="agentName">Agent's name</Label>
-                  <Input
-                    id="agentName"
-                    name="agentName"
-                    placeholder="product-manager"
-                    className="w-full font-mono sm:w-72"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Your agent's name. Its code lives at{" "}
-                    <span className="font-mono">agent/</span> in the repository.
-                  </p>
-                </div>}
+                {layout === "single" && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="agentName">Agent's name</Label>
+                    <Input
+                      id="agentName"
+                      name="agentName"
+                      placeholder="product-manager"
+                      className="w-full font-mono sm:w-72"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Your agent's name. Its code lives at{" "}
+                      <span className="font-mono">agent/</span> in the
+                      repository.
+                    </p>
+                  </div>
+                )}
                 <Button type="submit" disabled={busyData != null}>
-                  {busyIntent === "create" ? "Creating & opening…" : "Create & scaffold"}
+                  {busyIntent === "create"
+                    ? "Creating & opening…"
+                    : "Create & scaffold"}
                 </Button>
               </Form>
             </CardContent>

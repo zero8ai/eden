@@ -6,7 +6,7 @@
  * (no agent param), and runs are recorded on the "assistant" channel. The disconnect-safe drain
  * itself is the shared `streamTurnResponse` helper.
  */
-import { withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth } from "~/auth/session.server";
 import { data, redirect, type ActionFunctionArgs } from "react-router";
 
 import type { Target } from "~/chat/playground.server";
@@ -30,17 +30,10 @@ import {
 import { requireProject, requireRepo } from "~/project/guard.server";
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
   const form = await args.request.formData();
   const playgroundSessionId = asString(form.get("playgroundSessionId")) || null;
@@ -56,7 +49,8 @@ export async function action(args: ActionFunctionArgs) {
       {
         error:
           instance.status === "failed"
-            ? (instance.error ?? "The assistant failed to start. Check the deployment logs.")
+            ? (instance.error ??
+              "The assistant failed to start. Check the deployment logs.")
             : "Your assistant is still starting — try again in a moment.",
         provisioning: instance.status === "provisioning",
       },

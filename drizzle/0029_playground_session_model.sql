@@ -1,1 +1,0 @@
-ALTER TABLE "playground_sessions" ADD COLUMN "model_id" text;

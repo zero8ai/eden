@@ -10,7 +10,7 @@
  * the turn — live reply text, current activity, and completed steps — so long agent turns show
  * progress instead of one spinner. On completion it revalidates and replays Eve history.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlaskConical, Square } from "lucide-react";
 import {
@@ -74,19 +74,13 @@ import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.playground";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const project = requireRepo(
-        await requireProject(
-          {
-            user: auth.user,
-            organizationId: auth.organizationId,
-            role: auth.role,
-          },
-          args.params.projectId,
-          { request: args.request },
-        ),
+        await requireProject(auth, args.params.projectId, {
+          request: args.request,
+        }),
       );
       const agentName = agentFromParams(args.params);
       if (!agentName) {
@@ -123,18 +117,20 @@ export const loader = (args: LoaderFunctionArgs) =>
       // a read hiccup, so a GitHub blip never locks the selector by mistake.
       const dynamicByRef = new Map<string, boolean | null>();
       await Promise.all(
-        [...new Set(targets.map((target) => target.gitSha))].map(async (ref) => {
-          const supported = await getAgentSource(project.repoInstallationId, {
-            owner: project.repoOwner,
-            repo: project.repoName,
-            ref,
-          })
-            .then((source) =>
-              hasDynamicModel(source.files[`${active.root}/agent.ts`]),
-            )
-            .catch(() => null);
-          dynamicByRef.set(ref, supported);
-        }),
+        [...new Set(targets.map((target) => target.gitSha))].map(
+          async (ref) => {
+            const supported = await getAgentSource(project.repoInstallationId, {
+              owner: project.repoOwner,
+              repo: project.repoName,
+              ref,
+            })
+              .then((source) =>
+                hasDynamicModel(source.files[`${active.root}/agent.ts`]),
+              )
+              .catch(() => null);
+            dynamicByRef.set(ref, supported);
+          },
+        ),
       );
       const selectedSessionId = args.url.searchParams.get("session");
       let currentSession =
@@ -233,17 +229,10 @@ export const loader = (args: LoaderFunctionArgs) =>
 
 /** The action creates a new Eden session row; turns go through the stream route. */
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
   const agentName = agentFromParams(args.params);
   const { active, isTeam } = await resolveAgentContext(project.id, agentName);

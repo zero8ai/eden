@@ -14,7 +14,7 @@ directory of files (`instructions.md`, `tools/*.ts`, `skills/*`, `subagents/*`, 
 `schedules/*`, `connections/*`, `agent.ts`) that eve compiles into a portable Nitro application.
 It is powerful, but authoring an agent today means a developer opening a GitHub repo and editing
 TypeScript and Markdown by hand. Product managers — the people who actually know what the agent
-should *do* — cannot participate directly.
+should _do_ — cannot participate directly.
 
 Eden closes that gap. It is a structured, opinionated web interface over an eve repository plus an
 embedded coding assistant, so a non-developer can:
@@ -38,7 +38,7 @@ pool, metering, and billing.
 - **eve's authoring surface is developer-only.** Even the "no code" parts (instructions, skills)
   live in a git repo; the genuinely-code parts (tools are TypeScript with Zod schemas, `agent.ts`
   config, connections) are out of reach for PMs. Vercel's own blog notes non-technical teams built
-  agents — but only *with* engineering support. Eden removes the engineering dependency.
+  agents — but only _with_ engineering support. Eden removes the engineering dependency.
 - **The full capability of eve is never exposed in one place.** There is no visual, guided way to
   see and configure an agent's model, tools, skills, subagents, channels, schedules, approvals,
   connections, secrets, and evals together.
@@ -53,6 +53,7 @@ pool, metering, and billing.
 ## 3. Goals & non-goals
 
 ### Goals
+
 - Expose **100% of eve's agent-configuration surface** through a web UI, backed by real files in a
   git repo (eve's source of truth).
 - Let a PM **create a working, deployed agent end-to-end** without hand-writing code, including
@@ -66,7 +67,8 @@ pool, metering, and billing.
 - Keep the whole thing **self-hostable and open source**.
 
 ### Non-goals (for v1)
-- Being an eve *replacement* or a general low-code app builder. Eden authors eve projects; it does
+
+- Being an eve _replacement_ or a general low-code app builder. Eden authors eve projects; it does
   not invent a new agent runtime.
 - A visual node-graph / flowchart builder for agent logic. eve's model is files + an LLM loop, not a
   DAG; Eden mirrors that.
@@ -77,38 +79,38 @@ pool, metering, and billing.
 
 ## 4. Users & personas
 
-| Persona | Needs from Eden |
-|---|---|
-| **Product Manager (primary)** | Create and iterate on agents: instructions, tools, skills, schedules, channels. Uses the assistant to generate tool code. Ships via a review flow. Cannot write TypeScript. |
+| Persona                       | Needs from Eden                                                                                                                                                                |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Product Manager (primary)** | Create and iterate on agents: instructions, tools, skills, schedules, channels. Uses the assistant to generate tool code. Ships via a review flow. Cannot write TypeScript.    |
 | **Engineer / Platform owner** | Reviews the PRs Eden opens, owns secrets and connections, approves risky tools, self-hosts Eden or manages the managed-service account. Wants git to stay the source of truth. |
-| **Ops / Admin** | Manages members, deployment targets, billing (managed mode), environment/secret governance, and approval policies. |
+| **Ops / Admin**               | Manages members, deployment targets, billing (managed mode), environment/secret governance, and approval policies.                                                             |
 
 ---
 
 ## 5. Background: the eve substrate Eden must fully expose
 
-Eden's UI is a faithful, guided editor over these eve concepts. This inventory *is* the config
+Eden's UI is a faithful, guided editor over these eve concepts. This inventory _is_ the config
 surface Eden must cover.
 
-| eve concept | File / API | What Eden must let a PM do |
-|---|---|---|
-| **Runtime config** | `agent/agent.ts` → `defineAgent({ model, ... })` | Pick model (provider-prefixed string, e.g. `anthropic/claude-sonnet-5`), set runtime options, thinking level, etc. via forms. |
-| **Instructions** | `agent/instructions.md` | Rich Markdown editor for the always-on system prompt, with assistant help and templates. |
-| **Tools** | `agent/tools/*.ts` → `defineTool({ description, inputSchema (Zod), execute, needsApproval, outputSchema, toModelOutput })` | Create/edit tools. The **assistant generates the TypeScript**; PM edits description, inputs, approval policy in a form; test-run in a sandbox. |
-| **Skills** | `agent/skills/*` (Markdown playbooks; installable via skills CLI) | Author/import on-demand skill docs. |
-| **Subagents** | `agent/subagents/*` (own config) + built-in `agent` tool | Define specialist child agents with their own model/instructions/tools. |
-| **Channels** | `agent/channels/*` (HTTP, Slack, Discord, Teams, web, CLI) | Enable/configure entry points; manage route-auth secrets; preview web chat. |
-| **Connections** | `agent/connections/*` (typed external integrations) | Configure typed integrations + credentials (paired with Vercel Connect on Vercel, or generic creds off-Vercel). |
-| **Schedules** | `agent/schedules/*` (crons) | Create recurring jobs (daily report, weekly digest) with a cron UI. |
-| **Sandbox** | `agent/sandbox/*` / `defineSandbox()`; `defaultBackend()` local vs Vercel Sandbox | Choose/configure the sandbox backend (needed both for authored tools and for our own tool test-runs). |
-| **Approvals / HITL** | `needsApproval` on tools (`always()`, `once()`, predicates) | Toggle and configure human-approval gating per tool. |
-| **Evals** | TypeScript eval suites, run locally or vs deployed | Author scored checks; run as a deploy gate (later phase for full UI). |
-| **Env vars / secrets** | project environment variables | Manage secrets per environment (user-defined, M5.7) with encryption and scoping. |
-| **Observability** | Agent Runs (Vercel) / OpenTelemetry via `instrumentation.ts` + the Workflow event log | **First-class pillar (§7.6):** per-agent, per-run transcript + metrics dashboard (inputs, model/tool calls, outputs, errors, tokens, wall-clock). Eden supplies its own runs store/UI on every host, not just Vercel. |
-| **Build/runtime** | `eve build` → `.eve/` (compiled artifacts) + `.output/` (Nitro host); runtime = **Nitro + Workflow SDK**; durability via **Workflow "Worlds"** (Local dev, **Postgres** reference, community Redis/Mongo/Turso/Cloudflare) | Eden drives build + deploy and wires the Workflow World, sandbox backend, and model keys. |
+| eve concept            | File / API                                                                                                                                                                                                                 | What Eden must let a PM do                                                                                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Runtime config**     | `agent/agent.ts` → `defineAgent({ model, ... })`                                                                                                                                                                           | Pick model (provider-prefixed string, e.g. `anthropic/claude-sonnet-5`), set runtime options, thinking level, etc. via forms.                                                                                         |
+| **Instructions**       | `agent/instructions.md`                                                                                                                                                                                                    | Rich Markdown editor for the always-on system prompt, with assistant help and templates.                                                                                                                              |
+| **Tools**              | `agent/tools/*.ts` → `defineTool({ description, inputSchema (Zod), execute, needsApproval, outputSchema, toModelOutput })`                                                                                                 | Create/edit tools. The **assistant generates the TypeScript**; PM edits description, inputs, approval policy in a form; test-run in a sandbox.                                                                        |
+| **Skills**             | `agent/skills/*` (Markdown playbooks; installable via skills CLI)                                                                                                                                                          | Author/import on-demand skill docs.                                                                                                                                                                                   |
+| **Subagents**          | `agent/subagents/*` (own config) + built-in `agent` tool                                                                                                                                                                   | Define specialist child agents with their own model/instructions/tools.                                                                                                                                               |
+| **Channels**           | `agent/channels/*` (HTTP, Slack, Discord, Teams, web, CLI)                                                                                                                                                                 | Enable/configure entry points; manage route-auth secrets; preview web chat.                                                                                                                                           |
+| **Connections**        | `agent/connections/*` (typed external integrations)                                                                                                                                                                        | Configure typed integrations + credentials (paired with Vercel Connect on Vercel, or generic creds off-Vercel).                                                                                                       |
+| **Schedules**          | `agent/schedules/*` (crons)                                                                                                                                                                                                | Create recurring jobs (daily report, weekly digest) with a cron UI.                                                                                                                                                   |
+| **Sandbox**            | `agent/sandbox/*` / `defineSandbox()`; `defaultBackend()` local vs Vercel Sandbox                                                                                                                                          | Choose/configure the sandbox backend (needed both for authored tools and for our own tool test-runs).                                                                                                                 |
+| **Approvals / HITL**   | `needsApproval` on tools (`always()`, `once()`, predicates)                                                                                                                                                                | Toggle and configure human-approval gating per tool.                                                                                                                                                                  |
+| **Evals**              | TypeScript eval suites, run locally or vs deployed                                                                                                                                                                         | Author scored checks; run as a deploy gate (later phase for full UI).                                                                                                                                                 |
+| **Env vars / secrets** | project environment variables                                                                                                                                                                                              | Manage secrets per environment (user-defined, M5.7) with encryption and scoping.                                                                                                                                      |
+| **Observability**      | Agent Runs (Vercel) / OpenTelemetry via `instrumentation.ts` + the Workflow event log                                                                                                                                      | **First-class pillar (§7.6):** per-agent, per-run transcript + metrics dashboard (inputs, model/tool calls, outputs, errors, tokens, wall-clock). Eden supplies its own runs store/UI on every host, not just Vercel. |
+| **Build/runtime**      | `eve build` → `.eve/` (compiled artifacts) + `.output/` (Nitro host); runtime = **Nitro + Workflow SDK**; durability via **Workflow "Worlds"** (Local dev, **Postgres** reference, community Redis/Mongo/Turso/Cloudflare) | Eden drives build + deploy and wires the Workflow World, sandbox backend, and model keys.                                                                                                                             |
 
 **Key portability fact (validated against source):** `eve build` emits a standard **Nitro
-`.output/`** deployable via Nitro presets to *any* supported host. Durability is the open-source
+`.output/`** deployable via Nitro presets to _any_ supported host. Durability is the open-source
 **Workflow SDK**, whose **Worlds** adapter system (event log + compute + queue) has a **Postgres**
 reference implementation for self-hosting and a **Local World** for dev. The sandbox and model layer
 are likewise adapters (local bash/Docker sandbox; direct provider keys off-Vercel). **eve is not
@@ -151,9 +153,9 @@ Eden has seven pillars. v1 delivers the first five; **Recruit** and **Teams** fo
 - **GitHub App** (not just OAuth) so Eden can create repos, read/write files, open PRs, manage
   branches, and receive webhooks on the user's behalf, scoped to selected repos.
 - **Two entry paths:**
-  - *Create new:* Eden creates a repo and scaffolds it by running the equivalent of
+  - _Create new:_ Eden creates a repo and scaffolds it by running the equivalent of
     `npx eve@latest init` (an eve project skeleton), commits the initial structure.
-  - *Connect existing:* point Eden at an existing eve repo; Eden validates it is an eve project
+  - _Connect existing:_ point Eden at an existing eve repo; Eden validates it is an eve project
     (`agent/` present), parses the manifest, and hydrates the UI from the files.
 - **Repo model = source of truth.** Eden never keeps a divergent copy of agent config; it reads and
   writes the files. UI state is a projection of the repo (plus in-flight, uncommitted edits on a
@@ -168,11 +170,12 @@ Markdown editors for instructions/skills; a code view for tools/connections).
 
 **Embedded authoring assistant (Pi SDK).** Built by embedding
 [`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)
-as a library — *not* eve. Rationale: Eden itself is a normal web app, not an eve runtime; Pi's SDK
+as a library — _not_ eve. Rationale: Eden itself is a normal web app, not an eve runtime; Pi's SDK
 (`createAgentSession`, custom `defineTool` tools, streaming events, model registry, in-memory or
 persisted sessions) is designed exactly for embedding an agent inside your own app.
 
 The assistant:
+
 - **Writes and edits tool TypeScript** from a PM's natural-language description ("a tool that looks up
   an order by ID in our Postgres and returns status"), producing a valid `defineTool(...)` file with a
   Zod `inputSchema`, description, and `execute` body — then explains it in plain language.
@@ -212,6 +215,7 @@ encrypted at rest and injected at deploy time.
 **container image** of the host.
 
 **`DeployTarget` adapter interface** — one seam, multiple providers. Each adapter knows how to:
+
 1. take the built image/output,
 2. ensure the three stateful dependencies exist — a **Workflow World** (default **Postgres**), a
    **sandbox backend**, and **model API keys / gateway** —
@@ -223,20 +227,22 @@ generic container host (Fly/Railway/Cloudflare/VPS/our cloud) with a Postgres Wo
 sandbox backend. This is the portable path and underpins both OSS-BYO and managed modes.
 
 **Credential-ownership models over the same adapter:**
+
 - **BYO (OSS / self-host):** customer connects their host + their Postgres + their model keys. The
-  instance runs in *their* account; they pay their providers. Eden orchestrates.
-- **Managed (commercial, v1):** *Eden* owns the host, the Postgres World, the sandbox, and pays the
+  instance runs in _their_ account; they pay their providers. Eden orchestrates.
+- **Managed (commercial, v1):** _Eden_ owns the host, the Postgres World, the sandbox, and pays the
   bills; the customer never picks a provider. Eden meters usage and bills the customer (§8).
 
 **Other targets behind the seam (later):** a **Vercel** adapter (zero-config: Workflows store,
 Vercel Sandbox, AI Gateway auto-wire) and additional Worlds (Redis/Turso/Cloudflare).
 
 **Instance & environment management:**
+
 - **Environments are user-defined and per-agent (M5.7).** A new member starts with exactly ONE,
   named `default` — the user renames it and creates/deletes others as their workflow demands
   (someone who wants dev/staging/production makes them; nothing is imposed). Eden enforces one
   invariant: a member always has at least one environment. Environments render as equal peers
-  everywhere; the member's first (creation order) is only the *mechanical* default the Ship
+  everywhere; the member's first (creation order) is only the _mechanical_ default the Ship
   dialog preselects — no environment name or position is special in the UI. Deleting an
   environment always works
   behind an explicit confirm: it stops anything running there, tears down instance state, and
@@ -247,9 +253,10 @@ Vercel Sandbox, AI Gateway auto-wire) and additional Worlds (Redis/Turso/Cloudfl
   and the channel endpoints (HTTP URL, Slack install, cron status).
 
 **Deploy UX (M5.6, vocabulary revised in M5.7) — Ship and Deploy.** Two verbs cover the whole
-deploy surface for a PM: *Ship makes versions; Deploy places them.* A version is **running on**
+deploy surface for a PM: _Ship makes versions; Deploy places them._ A version is **running on**
 zero or more environments (never globally "live" — with peer environments there is no single
 live slot); each environment runs exactly one version.
+
 - **Ship** — the one-click path, on the agent's Overview (where the edit was just made): one
   dialog confirms the target environment (the member's first preselected), then a single
   action publishes all
@@ -270,6 +277,7 @@ live slot); each environment runs exactly one version.
 ### 7.5 Managed commercial offering (v1)
 
 The managed mode turns Eden into a hosted service:
+
 - **Managed credential pool:** Eden-owned provider accounts/infra; customers deploy without bringing
   cloud accounts.
 - **Multi-tenancy & isolation:** each customer's instances run isolated (separate namespaces/DBs;
@@ -287,9 +295,10 @@ Observability is a primary reason teams can trust an agent in production. Eden m
 **The unit of observation.** A **Session** is a durable conversation/task; each triggering input
 (user message, HTTP request, channel event, or a scheduled cron) creates a **Run** (one turn:
 input → agent loop → final output). A Run contains an ordered list of **steps**: model calls, tool
-calls, reasoning, and messages. The dashboard is: *Agent → its Runs → drill into one Run's transcript.*
+calls, reasoning, and messages. The dashboard is: _Agent → its Runs → drill into one Run's transcript._
 
 **Per-Run summary (the list/overview view)** — scannable without opening the transcript:
+
 - trigger/source (channel, cron, HTTP), start time, **wall-clock duration**,
 - **status** (success / error) and error surface,
 - **tokens** (input / output / total) and estimated cost,
@@ -297,6 +306,7 @@ calls, reasoning, and messages. The dashboard is: *Agent → its Runs → drill 
 - the **agent version** it ran against (git commit / build id — see below).
 
 **Per-Run transcript (the detail view)** — progressive disclosure so it isn't overwhelming:
+
 - the **user/input prompt** for that run (runtime data — always recorded),
 - an ordered timeline of steps, each collapsible:
   - **model calls:** the messages sent, the assistant output/reasoning, tokens, latency, model,
@@ -307,9 +317,9 @@ calls, reasoning, and messages. The dashboard is: *Agent → its Runs → drill 
 **System prompt — link, don't (only) snapshot.** Each Run records the **deployed agent version**
 (git commit SHA / build id) it executed under. Because `instructions.md`, tools, and skills all live
 in the repo, Eden reconstructs the exact **system prompt at run time by linking to that commit** —
-no need to duplicate it in the telemetry store (resolving the user's open question). Eden *may* also
+no need to duplicate it in the telemetry store (resolving the user's open question). Eden _may_ also
 snapshot the resolved system prompt for convenience/immutability, but the versioned source is the
-source of truth. The **user input**, tool I/O, tokens, and timing are runtime data and *are* recorded.
+source of truth. The **user input**, tool I/O, tokens, and timing are runtime data and _are_ recorded.
 
 **Where the data comes from.** Two complementary sources (see ARCHITECTURE §3.7): eve's
 **OpenTelemetry** AI-SDK spans (via `agent/instrumentation.ts`) give tokens, model, latency, and
@@ -318,7 +328,8 @@ turn and step. Eden ingests both into its own runs store and renders the UI.
 
 **Cross-cutting requirements:** works for **BYO** deploys by shipping telemetry from the customer's
 instance to Eden's collector over an authenticated OTLP endpoint; **tenant-isolated** in managed
-mode; **access-controlled** via WorkOS roles (transcripts contain sensitive prompt/response data);
+mode; **access-controlled** by active Better Auth organization membership (transcripts contain
+sensitive prompt/response data);
 **retention + redaction** controls; and the deployer-disclosure note eve already flags. Token counts
 here relate to but are distinct from **billing metering** (§7.5): the model gateway is the billing
 source of truth; observability is the per-run detail view.
@@ -327,7 +338,7 @@ source of truth; observability is the per-run detail view.
 
 eve has **no built-in agent-versioning primitive** (validated against source): it is git-native
 (`init` initializes git) and relies on **immutable deployments**. Eden builds a thin product layer
-over that — it does *not* invent a parallel versioning system.
+over that — it does _not_ invent a parallel versioning system.
 
 **A Release = an immutable build of an agent at a git commit.** Because we are already
 branch → PR → merge → deploy, the **merge commit SHA is the canonical, immutable version identity**,
@@ -337,16 +348,17 @@ git + image digests, not engineered. A Release carries: a friendly label (auto-i
 already generates for the PR, author, and timestamp. Environments/deployments point at a Release.
 
 **Why it matters (three payoffs):**
+
 1. **Observability linkage.** Every Run is tagged with its Release/commit (§7.6). A run from two weeks
-   ago reconstructs its *exact* system prompt, tools, and skills from the repo at that commit —
+   ago reconstructs its _exact_ system prompt, tools, and skills from the repo at that commit —
    immutable versioning is what makes the observability system-prompt link truthful.
-2. **Safe iteration / revert.** *Fast rollback* re-points an environment at a previous Release (its
-   image is retained) — near-instant, no rebuild. *Git revert* opens an undo PR so the repo stays
+2. **Safe iteration / revert.** _Fast rollback_ re-points an environment at a previous Release (its
+   image is retained) — near-instant, no rebuild. _Git revert_ opens an undo PR so the repo stays
    honest. PMs can be cavalier because undo is one click.
 3. **Run multiple versions at once (data-plane primitive; product surface deferred in M5.6).** The
    deploy plane can run **more than one Release of the same agent concurrently** behind a
    **weighted, session-sticky traffic splitter** at ingress (a conversation stays pinned to one
-   version for its lifetime). **Revised (M5.6):** the *product* model is now **one live Release per
+   version for its lifetime). **Revised (M5.6):** the _product_ model is now **one live Release per
    environment** — a deploy is a clean cutover that demotes whatever else was live once the new
    instance is healthy, and the weights/split UI is removed. In practice, surfacing N-live as the
    default outcome of ordinary deploys confused users (environments silently accumulated live
@@ -364,9 +376,9 @@ deploys; concurrent-version comparison returns with the multi-version surface. P
 rollout can come later as a policy on top of the splitter + per-version metrics, but it is not
 required for the value.
 
-**Immutability caveat:** a Release pins everything *in the repo* (config, tools, skills, instructions)
+**Immutability caveat:** a Release pins everything _in the repo_ (config, tools, skills, instructions)
 but **not secrets/env vars**, which live outside git and change independently. For faithful
-"what ran then" we version secret *metadata/generation* (never values), and note that a Release is
+"what ran then" we version secret _metadata/generation_ (never values), and note that a Release is
 code+config, not full runtime state.
 
 ### 7.8 Recruit — the marketplace
@@ -379,12 +391,12 @@ that cost: **pre-built, expert-authored templates a customer instantiates instea
 **Templates exist at every level of the hierarchy** — turtles all the way down, mirroring eve's own
 composition model:
 
-| Template type | Installs into | Example |
-|---|---|---|
-| **Tool** | an existing agent's `tools/` | `cloudflare_deploy_worker` — a `defineTool` with Zod schema + execute body |
-| **Skill** | an existing agent's `skills/` | "Writing a PRD" playbook |
-| **Subagent** | an existing agent's `subagents/` | a code-review specialist invoked by a developer agent |
-| **Agent** | a **new top-level agent** (new single-agent repo, or a new member of a team monorepo — §7.9) *or* a subagent of an existing agent | "Cloudflare Deployment Engineer" — instructions + tools + skills, pre-wired |
+| Template type | Installs into                                                                                                                     | Example                                                                     |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| **Tool**      | an existing agent's `tools/`                                                                                                      | `cloudflare_deploy_worker` — a `defineTool` with Zod schema + execute body  |
+| **Skill**     | an existing agent's `skills/`                                                                                                     | "Writing a PRD" playbook                                                    |
+| **Subagent**  | an existing agent's `subagents/`                                                                                                  | a code-review specialist invoked by a developer agent                       |
+| **Agent**     | a **new top-level agent** (new single-agent repo, or a new member of a team monorepo — §7.9) _or_ a subagent of an existing agent | "Cloudflare Deployment Engineer" — instructions + tools + skills, pre-wired |
 
 **A template = files + a manifest.** The manifest (`template.json`) declares: name, type, version,
 description, the **file list**, **npm dependencies**, **required secrets** (by name), **required
@@ -396,7 +408,7 @@ exists — a template is a shortcut for creating the same files a customer could
 `npm install` in the image build — so anything in the target's `package.json` at merge time is
 present at runtime. Template dependencies ride that machinery in two tiers:
 
-- **Light (in-repo files):** multi-file templates land under a directory the template *owns*
+- **Light (in-repo files):** multi-file templates land under a directory the template _owns_
   (namespaced by template id, e.g. `tools/cloudflare-ci/…`) — collisions are impossible and the
   lock file knows exactly which files are whose. The manifest's `dependencies` map is applied as a
   deterministic JSON-merge into the target agent's `package.json` — one more reviewable file in
@@ -410,20 +422,21 @@ present at runtime. Template dependencies ride that machinery in two tiers:
 
 System-level dependencies (apt packages, non-npm binaries) are **out of scope** — templates run in
 the standard eve runtime image and may not mutate it. Most infra CLIs (wrangler included) are npm
-packages, so the realistic cases fit tier one. Uninstall removes the template's files but *leaves*
+packages, so the realistic cases fit tier one. Uninstall removes the template's files but _leaves_
 npm packages (they may be shared with hand-written code); the uninstall PR lists them so the
 reviewer can prune.
 
 **Install = a change-set.** Installing an item:
+
 1. Eden materializes the template's files into the right location on a **working branch** (the
    normal §7.3 flow — review, history, rollback for free).
 2. An **onboarding wizard** walks the customer through the manifest's requirements: "this agent
-   needs `CLOUDFLARE_API_TOKEN` — set it now." Secret *values* go to the secrets store (§7.2), never
+   needs `CLOUDFLARE_API_TOKEN` — set it now." Secret _values_ go to the secrets store (§7.2), never
    the repo; the wizard creates the per-environment placeholders.
 3. The change-set opens a PR; merge ships it like any other edit.
 
-For agent templates the wizard first asks the **install target**: *new top-level agent* or
-*subagent of an existing agent*. This one question is how customers choose between the two team
+For agent templates the wizard first asks the **install target**: _new top-level agent_ or
+_subagent of an existing agent_. This one question is how customers choose between the two team
 fidelities in §7.9 — no separate "team builder" needed for the simple case.
 
 **After install it's just a regular agent.** The customer edits its instructions, removes tools,
@@ -433,22 +446,23 @@ adds skills — the template was a starting point, not a subscription. Files are
 (generalizing the existing `skills-lock.json` pattern): source registry, template id, version,
 content hash. When the upstream template publishes a new version, Eden shows "update available";
 accepting opens a **PR with the diff**. If the customer has locally modified the installed files,
-the PR surfaces the conflict and a human resolves it in review — git review *is* the merge
+the PR surfaces the conflict and a human resolves it in review — git review _is_ the merge
 machinery; Eden does not build three-way merge tooling.
 
 **Distribution — the catalog lives in the eve repo.** v1 is a **first-party curated catalog**: a
 `marketplace/` directory inside the eve OSS repo (owner decision — no separate repo), laid out as
 `marketplace/templates/{tools,skills,subagents,agents}/<id>/` with each template's `template.json`
-+ files. Templates are **not built artifacts** — the only compilation ever happens in the
-customer's repo at install time — so the catalog's CI *validates and indexes* instead of building:
-schema-check every manifest, typecheck each template against its declared eve range, verify the
-manifest file list matches the directory, enforce a version bump when contents change, and
-regenerate a root **`marketplace/index.json`** (id, type, version, description, content hash).
-Eden consumes *only* that index for browse (one cached fetch, no tree walk) and reads a template's
-subtree at install time. The catalog location is a **config pointer** (repo + path + ref) behind a
-`CatalogSource` seam, which also defines what a registry *is* — a repo with this layout and an
-index — so third-party registries later are the same shape with a different pointer. Publishing
-policy, trust/review, and revenue share stay out of scope for v1 (§12).
+
+- files. Templates are **not built artifacts** — the only compilation ever happens in the
+  customer's repo at install time — so the catalog's CI _validates and indexes_ instead of building:
+  schema-check every manifest, typecheck each template against its declared eve range, verify the
+  manifest file list matches the directory, enforce a version bump when contents change, and
+  regenerate a root **`marketplace/index.json`** (id, type, version, description, content hash).
+  Eden consumes _only_ that index for browse (one cached fetch, no tree walk) and reads a template's
+  subtree at install time. The catalog location is a **config pointer** (repo + path + ref) behind a
+  `CatalogSource` seam, which also defines what a registry _is_ — a repo with this layout and an
+  index — so third-party registries later are the same shape with a different pointer. Publishing
+  policy, trust/review, and revenue share stay out of scope for v1 (§12).
 
 **Authoring is back-of-house, gated by CI — no Eden feature required.** Creating a template is a
 coding-agent session (or human PR) in the eve repo: a scaffold script stamps the directory
@@ -458,7 +472,7 @@ PR the catalog and CI + review gate it; rung 2 (later), an in-product **"publish
 flow extracts a customer's live-tested tool/agent from their Eden workspace, generates the manifest
 from what Eden already knows (secrets referenced, deps, eve version), and opens the catalog PR.
 
-**Team templates are deliberately *not* in the marketplace v1.** A team is an Eden-level construct
+**Team templates are deliberately _not_ in the marketplace v1.** A team is an Eden-level construct
 (§7.9); once agent templates and the monorepo convention exist, a team template is trivially a
 scaffold referencing agent templates plus a wiring spec — it can come later without redesign.
 
@@ -482,9 +496,9 @@ schedules, channels, and audit trail.
    examples above all want top-level-agent properties. Peers, not a hierarchy.
 
 The cost objection to N runtimes is already answered by our own architecture: **compute ⟂ state and
-scale-to-zero** (ARCHITECTURE §2.3–2.4) mean an idle teammate is a *stopped container* — ~zero
+scale-to-zero** (ARCHITECTURE §2.3–2.4) mean an idle teammate is a _stopped container_ — ~zero
 CPU/RAM. A five-agent team is five mostly-sleeping containers, not five machines. Density comes from
-concurrent *active* turns, and a team's members are idle almost always.
+concurrent _active_ turns, and a team's members are idle almost always.
 
 **Monorepo convention (convention over discovery).** A repo is either a single agent or a team,
 detected structurally — no dynamic configuration:
@@ -512,7 +526,7 @@ teammates **atomically** — "PM now hands the developer a structured ticket; de
 format" ships as one reviewable change-set. This is the core argument for team-in-one-repo over
 team-as-N-repos.
 
-**Teammate wiring — what makes it a *team*, not a folder of agents.** eve exposes a stable HTTP
+**Teammate wiring — what makes it a _team_, not a folder of agents.** eve exposes a stable HTTP
 contract per agent (`POST /eve/v1/session` + stream). When Eden knows two agents are teammates, it
 **auto-generates a delegation tool in each** — a `defineTool` (e.g. `ask_developer(...)`) that calls
 the peer's channel endpoint, with the route-auth secret injected from the secrets store and the
@@ -526,12 +540,12 @@ PM → developer → deployer renders as **one linked trace** across the teammat
 **"Team" is an Eden construct, not an eve construct.** eve knows nothing about teams; the repo
 convention, the roster, the generated delegation tools, and the linked traces are all Eden's product
 layer. In Eden's data model this introduces an **`agents` entity between `projects` and everything
-downstream** — releases, deployments, runs, schedules, and drafts key by *agent*, not project.
+downstream** — releases, deployments, runs, schedules, and drafts key by _agent_, not project.
 
 > **Decision (2026-07-04): teams are a hard commitment, and the schema lands now.** The
 > `projects → agents` split is not deferred to the Teams milestone — it lands **pre-emptively,
 > while production data is small**, with every existing single-agent repo migrating as a team of
-> one. All new features from this point key by *agent*, never by project, so nothing built in the
+> one. All new features from this point key by _agent_, never by project, so nothing built in the
 > interim deepens the migration.
 
 > **Decision (2026-07-04): environments and secrets scope per agent, for security.** Each team
@@ -573,13 +587,16 @@ downstream** — releases, deployments, runs, schedules, and drafts key by *agen
 ```
 
 **Core components**
+
 - **Web app (React Router 7 / Vite):** UI + control-plane API, built on **React Router 7 framework
   mode** (the `@react-router/dev` Vite plugin — SSR, loaders/actions, nested routing). OSS-deployable;
   managed adds tenancy/billing.
-- **Identity & auth (WorkOS AuthKit):** authentication, **Organizations**, roles, permissions, SSO,
-  and directory sync. Scaffolded via the AuthKit CLI installer (`npx workos@latest install`, which
-  supports React Router) once the app skeleton exists. WorkOS Organizations map directly to Eden tenants, so most managed-mode
-  governance is delegated rather than hand-rolled (see §9).
+- **Identity & auth (Better Auth):** self-hosted email/password authentication plus the organization
+  plugin's organizations, members, invitations, active-organization sessions, and default roles.
+  Better Auth organizations map directly to Eden tenants; users and tenancy live in the same
+  Postgres database as the control plane (see §9). Login is email-first then password; signup is
+  name/email/password with no verification gate. Password resets use Better Auth's standard
+  single-use token flow and transactional email.
 - **GitHub integration service:** app auth, file R/W, PR/branch management, webhook ingestion.
 - **Authoring assistant service:** hosts Pi sessions against a sandboxed working-branch checkout;
   streams tokens/tool events to the UI.
@@ -593,7 +610,7 @@ downstream** — releases, deployments, runs, schedules, and drafts key by *agen
   agent — data-plane capability retained; the product runs one live Release per environment since
   M5.6 (§7.7).
 - **Eden datastore:** projects, repos, environments, instances, releases, members, secrets metadata,
-  runs index, billing — *not* agent config (that lives in the repo).
+  runs index, billing — _not_ agent config (that lives in the repo).
 
 **Data-model note:** agent configuration is **not** duplicated in Eden's DB. The repo is
 authoritative; Eden stores pointers, projections/cache, and operational metadata only. This avoids a
@@ -603,13 +620,13 @@ two-source-of-truth reconciliation problem.
 
 ## 9. Cross-cutting concerns
 
-- **Identity, auth & tenancy (WorkOS AuthKit):** all authentication runs through **WorkOS AuthKit**,
-  installed with `npx workos@latest install` (AI-powered installer: detects the framework, adds the
-  SDK, generates OAuth callback routes + auth middleware, configures redirect URIs/CORS in the WorkOS
-  dashboard, writes `.env.local`, validates the build). A **WorkOS Organization = an Eden tenant**;
-  AuthKit's orgs / roles / permissions / SSO / directory-sync / webhooks provide the managed-mode
-  governance layer, so Eden does not hand-roll org/role/SSO. Requires Node 20+ and a WorkOS account.
-  The same auth is used by the OSS install (single org) and managed (many orgs).
+- **Identity, auth & tenancy (Better Auth):** all human authentication runs through Better Auth's
+  same-origin React Router handler using email/password credentials. A **Better Auth organization is
+  an Eden tenant**; the organization plugin is authoritative for members, invitations, its standard
+  owner/admin/member roles, and `session.activeOrganizationId`. Invitation delivery uses the
+  installation's React Email/Postmark sender and acceptance uses the plugin API. Password reset
+  delivery uses the same sender. The same local auth model serves OSS and managed installations.
+  SSO, email verification, and directory sync are not part of this implementation.
 - **Security & secrets:** encrypted at rest, scoped per environment/instance, never written to repo
   files; least-privilege GitHub App scopes; the assistant runs in an isolated sandbox and cannot
   reach production secrets or hosts.
@@ -637,18 +654,21 @@ two-source-of-truth reconciliation problem.
 ## 11. Phasing
 
 **Milestone 0 — Foundations**
-- React Router 7 (Vite) app skeleton; **auth via WorkOS AuthKit** (`npx workos@latest install`);
-  org/project model built on WorkOS Organizations.
+
+- React Router 7 (Vite) app skeleton; **auth via Better Auth** email/password;
+  org/project model built on the Better Auth organization plugin.
 - GitHub App: connect existing repo, parse eve project, read files.
 - Read-only visualization of an eve agent's full config surface.
 
 **Milestone 1 — Author (no deploy yet)**
+
 - Structured editors for all §5 concepts (write path).
 - Working-branch + PR flow (branch → commit edits → open PR → merge).
 - Embedded Pi assistant: generate/edit tool TypeScript; sandbox test-run; secrets UI.
 - `eve init` for new-repo creation.
 
 **Milestone 2 — Deploy + versioning (default target)**
+
 - Deploy controller + `DeployTarget` adapter interface.
 - **Container + Postgres World** adapter; BYO-credential deploys.
 - **Releases** (immutable = commit SHA + image digest, labels, changelog); version history;
@@ -661,6 +681,7 @@ two-source-of-truth reconciliation problem.
 - Merge-triggers-deploy pipeline; optional PR preview instances.
 
 **Milestone 3 — Observe (run observability, §7.6)**
+
 - Telemetry ingestion: OTel collector (`instrumentation.ts`) + Workflow-event-log reader; authenticated
   OTLP endpoint so **BYO** instances ship runs back to Eden.
 - Runs store + per-agent **Run list** (tokens, wall-clock, status, tool-call/error counts).
@@ -668,20 +689,23 @@ two-source-of-truth reconciliation problem.
   to its deployed git commit/Release to resolve the system prompt.
 - **Compare by version:** group/filter Runs by Release so PMs judge concurrent versions from telemetry
   (emergent "A/B" — no formal experimentation framework; §7.7).
-- Access control (WorkOS roles), retention + redaction controls.
+- Access control (Better Auth organization membership), retention + redaction controls.
 
 **Milestone 4 — Managed commercial mode**
+
 - Managed credential pool + multi-tenant isolation (incl. tenant-isolated telemetry).
 - Metering + plans + usage billing (reconciled with observability token counts).
-- Governance: roles, audit log, spend limits (roles/SSO/directory via WorkOS AuthKit).
+- Governance: Better Auth organization roles and invitations, operational audit log, spend limits.
 
 **Milestone 5 — Breadth**
+
 - Additional `DeployTarget` adapters (Vercel zero-config; Redis/Turso/Cloudflare Worlds).
 - Evals-as-deploy-gate UI; richer observability (traces across subagents, alerting); SSO.
 - Optional **progressive rollout** policy (auto-ramp/auto-rollback on thresholds) over the §7.7
   splitter — only if demand appears; not required for the multi-version value.
 
 **Milestone 5.5 — Agents schema split (committed, do next)**
+
 - Land the `agents` entity under `projects` **now, ahead of Milestones 6–7**: releases, deployments,
   runs, schedules, and drafts re-key by agent. Existing single-agent repos migrate as teams of one;
   the UI stays unchanged for the single-agent case.
@@ -694,6 +718,7 @@ two-source-of-truth reconciliation problem.
   small; deferring means every intervening feature deepens it.
 
 **Milestone 5.6 — Deploy UX: single-live + Ship (shipped)**
+
 - **Single-live cutover:** a deployment that lands live now demotes the environment's every other
   live deployment (controller-enforced; rollback rides the same path, so a failed deploy or
   rollback never takes the serving version down). A one-time data migration reconciled
@@ -718,6 +743,7 @@ two-source-of-truth reconciliation problem.
   deploys, deploy approvals/locks (consistent with §7.7's no-experimentation stance).
 
 **Milestone 5.7 — User-defined environments (shipped)**
+
 - The static seeded trio (production/preview/development) is gone: a new member starts with ONE
   environment named `default`, and environments are ordinary user data — **create, rename,
   delete** from the deploy surface. Rationale: the trio was arbitrary (most agents used only
@@ -728,7 +754,7 @@ two-source-of-truth reconciliation problem.
   preselect. The deploy surface leads with the environments as identical rows (running version,
   in-flight progress, failures) over the version history; version rows are badged with the
   environment names they run on, and the verb is **Deploy to \<env\>** — "live" vocabulary is
-  gone, since with peer environments a version is only ever *running on* specific environments.
+  gone, since with peer environments a version is only ever _running on_ specific environments.
   A data migration made the previously-implicit primary ("production") sort first for existing
   agents; existing environments were otherwise left exactly as they were.
 - **Invariant:** a member always has ≥1 environment (`ensureDefault` seeds `default` only for
@@ -738,13 +764,14 @@ two-source-of-truth reconciliation problem.
   per-instance state (containers + instance databases via the new `DeployTarget.destroy` seam
   method), and cascades away that environment's deployment history and env-scoped secrets.
   Agent-wide secrets and Releases survive.
-- **Teams:** Ship still fans out across members by environment *name* (a shared name like
+- **Teams:** Ship still fans out across members by environment _name_ (a shared name like
   `default` keeps team ships one-click); members lacking the target name are reported in the
   ship banner rather than silently skipped.
 - Deliberately not built: cross-member environment sync ("create staging for every member"),
   per-environment protection rules, environment-scoped roles.
 
 **Milestone 5.8 — IA: two-level hierarchy (shipped)**
+
 - The root defect: ONE tab row (Overview · Changes · Versions · Playground · Runs · Secrets ·
   Assistant) served three scopes, and lied in both directions — Changes and Playground are
   repo-wide but carried the member selector; Versions/Secrets were strictly per-member; tabs
@@ -771,6 +798,7 @@ two-source-of-truth reconciliation problem.
   transcript with member-scoped writes is a known quirk).
 
 **Milestone 5.9 — Performance: GitHub read cache & navigation feedback (shipped)**
+
 - The measured defect: page navigations sat at 2–3s with zero UI feedback. Every GitHub REST
   call costs ~600ms from this machine (Australia), and loaders chained several uncached —
   `fetchAgentSource` alone (repos.get → recursive git tree → per-root file reads) was 1.6–2s per
@@ -783,7 +811,7 @@ two-source-of-truth reconciliation problem.
 - **The rule: loaders read cached, actions read raw.** A stale read composed into a write could
   clobber newer content, so every action and the ship/release pipeline keep the raw functions;
   only the read-only loader surfaces switched. Writes invalidate on success (`proposeChange` /
-  close → changes; merge → changes *and* source, since a merge moves the default branch), and
+  close → changes; merge → changes _and_ source, since a merge moves the default branch), and
   the push/PR webhook re-warms the default-branch source and drops the changes cache so
   github.com-side activity can't leave a stale value behind. Connect warms the cache with the
   source it already read to validate the repo, so the first project load is instant.
@@ -826,6 +854,7 @@ two-source-of-truth reconciliation problem.
   workspace into a catalog PR) — rung 1 (PR the catalog, CI-gated) stands.
 
 **Milestone 6.1 — Runtime: real sandboxes & durable worlds (shipped)**
+
 - **The discovery.** A secrets audit of a live Eden instance found the model's `bash` tool
   couldn't run a single binary — no git, no node, no npm. eve's `defaultBackend()` picks a
   sandbox in priority order (Vercel Sandbox when `process.env.VERCEL` → Docker when a daemon is
@@ -833,13 +862,13 @@ two-source-of-truth reconciliation problem.
   pure-JS bash interpreter with no real binaries). Our instance containers had neither a docker
   CLI nor a daemon, so every agent silently degraded to just-bash. Agents looked alive and could
   do nothing.
-- **Real sandboxes.** The reference image now ships the static Docker CLI *client* (v27.5.1, no
+- **Real sandboxes.** The reference image now ships the static Docker CLI _client_ (v27.5.1, no
   daemon) at `/usr/local/bin/docker` (`eve-image.server.ts`), and the deploy target mounts the
   host's Docker socket into each instance (`deploy.localdocker.server.ts`,
   `-v /var/run/docker.sock:/var/run/docker.sock`). eve's availability probe then passes and
   `defaultBackend()` selects the real Docker backend — the runtime spawns **sibling** sandbox
   containers on the host daemon (docker-outside-of-docker). **No customer-repo change is needed:**
-  availability resolves at first sandbox use. Verified: `docker version` run *inside* an instance
+  availability resolves at first sandbox use. Verified: `docker version` run _inside_ an instance
   built from the new image, with the socket mounted, prints the host daemon version.
 - **Durable worlds.** eve's durability model keeps sessions in the Workflow "world" (Postgres) and
   each durable session's sandbox as a long-lived sibling container (labelled `eve.sandbox`) that
@@ -855,7 +884,7 @@ two-source-of-truth reconciliation problem.
   DB once, on environment/repository teardown, after every per-deployment destroy.
 - **Migration:** old `eden_inst_<deploymentId>` databases are orphaned by design (sessions were
   never durable before this) — no data migration; they can be dropped manually.
-- **Security surface.** The Docker socket grants the *runtime* process host-level Docker control;
+- **Security surface.** The Docker socket grants the _runtime_ process host-level Docker control;
   the trusted surface is the eve framework + repo-authored tool code (reviewed via change-sets).
   The model's `bash` runs INSIDE sandbox containers, which have **no** socket. Two hardening notes
   for the host's docker-compose/container (left to the operator): the control-plane Postgres
@@ -863,21 +892,22 @@ two-source-of-truth reconciliation problem.
   defaults to allow-all (a repo can opt into deny-all via `defineSandbox`).
 - **Deliberately punted:** (1) **sandbox-container GC on environment delete** — stopped sibling
   sandbox containers are currently orphaned; the `eve.sandbox` label makes them findable, so a
-  future `gc` sweep can reap them. *(Partially closed in 6.2: `destroyWorld` now reaps the containers
-  mounting a dead environment's home volume.)* (2) **sandbox egress-policy defaults** — the docker
+  future `gc` sweep can reap them. _(Partially closed in 6.2: `destroyWorld` now reaps the containers
+  mounting a dead environment's home volume.)_ (2) **sandbox egress-policy defaults** — the docker
   backend honors only allow-all / deny-all today; per-destination policy is upstream work.
-  (3) **agent-level persistent home directory** — *shipped in Milestone 6.2 below (the eve-docker shim),
-  NOT the upstream-mounts route once planned here.*
+  (3) **agent-level persistent home directory** — _shipped in Milestone 6.2 below (the eve-docker shim),
+  NOT the upstream-mounts route once planned here._
 
 **Milestone 6.2 — Agent home: persistent `/workspace/home` across sessions (shipped)**
-- **The gap.** 6.1 made *sessions* durable, but eve's sandbox filesystem is per **durable session** —
-  a new session starts from a clean template. There is no per-*agent* home, so anything an agent set
+
+- **The gap.** 6.1 made _sessions_ durable, but eve's sandbox filesystem is per **durable session** —
+  a new session starts from a clean template. There is no per-_agent_ home, so anything an agent set
   up for itself (an SSH key it generated, a package cache, notes-to-self) evaporated the moment eve
   rotated to a fresh session. Agents couldn't accumulate a working environment.
-- **The rejected paths.** (1) *Upstream `mounts` option* — eve's `docker()` backend exposes only
+- **The rejected paths.** (1) _Upstream `mounts` option_ — eve's `docker()` backend exposes only
   `{ image, env, networkPolicy, pullPolicy }`; adding a `mounts` option (what 6.1 had planned) was an
-  **owner decision to reject** rather than carry an eve fork. (2) *Materializing a secret store into
-  the home* — would have made per-agent key setup a standing behavioral obligation of the control
+  **owner decision to reject** rather than carry an eve fork. (2) _Materializing a secret store into
+  the home_ — would have made per-agent key setup a standing behavioral obligation of the control
   plane (provision, rotate, reconcile), the exact two-source-of-truth trap we avoid elsewhere.
 - **The design — an `EVE_DOCKER_PATH` shim.** eve shells out to the docker CLI at `EVE_DOCKER_PATH`.
   The instance image ships a tiny POSIX-sh wrapper at `/usr/local/bin/eve-docker`
@@ -903,6 +933,7 @@ two-source-of-truth reconciliation problem.
   environment.** Everything outside `/workspace/home` remains per-session scratch.
 
 **Milestone 7 — Teams (peer teams, §7.9) (shipped)**
+
 - ✅ The `agents/*` monorepo convention: detection (`detectAgentRoots`), per-member parse,
   per-member build → image → Release → instance.
 - ✅ (Schema split already landed in Milestone 5.5.)
@@ -933,14 +964,16 @@ two-source-of-truth reconciliation problem.
   agent templates plus a wiring spec.
 
 **Milestone 8 — Self-host: single-VPS deployment (shipped)**
+
 - The supported production topology for OSS v1: **one Linux VPS runs everything** — Eden,
   Postgres, agent instances, sandbox containers. Co-residency is a feature of the local-docker
   target (loopback instance URLs), not an accident; multi-host is out of scope.
 - Deliverable is a **runbook, not an installer** (owner decision): `deploy/vps/README.md` walks
   firewall → Docker Engine → clone → env file → compose stack (Postgres + Eden, host networking,
-  socket mount) → nginx + Let's Encrypt (host packages, not Caddy) → GitHub App/WorkOS pointed at
-  the domain → smoke test. Supporting artifacts: production `Dockerfile` (docker CLI + tar in the
-  runtime image), `deploy/vps/docker-compose.yml`, `nginx-eden.conf`, `env.example`.
+  socket mount) → nginx + Let's Encrypt (host packages, not Caddy) → Better Auth/Postmark configuration
+  - GitHub App pointed at the domain → smoke test. Supporting artifacts: production `Dockerfile`
+    (docker CLI + tar in the runtime image), `deploy/vps/docker-compose.yml`, `nginx-eden.conf`,
+    `env.example`.
 - **Acceptance (owner's words):** clone the repo on a fresh VPS, follow the README top to bottom,
   and Eden is up on the domain — connect a repo, ship, and talk to the agent in the playground.
 - **Deprioritized:** the Vercel target (§7.4 "later" adapter) moves behind this and behind a
@@ -948,8 +981,9 @@ two-source-of-truth reconciliation problem.
   M8 hard-codes the topology outside the local-docker target.
 
 **Milestone 8.1 — Sandbox platform: prewarm fix, editable sandbox.ts, secret exposure (shipped)**
+
 - **The bug (confirmed live).** Agent images booted the raw Nitro entry (`node
-  .output/server/index.mjs`), which skips eve's sandbox-template prewarm. Any agent whose sandbox
+.output/server/index.mjs`), which skips eve's sandbox-template prewarm. Any agent whose sandbox
   has a non-null template key — a `bootstrap()` hook, or workspace resources (a `skills/`
   directory counts) — then hit `SandboxTemplateNotProvisionedError` on first bash use, forever:
   eve's docker backend requires the `eve-sbx-tpl-*` template image to pre-exist, `eve build` only
@@ -981,6 +1015,7 @@ two-source-of-truth reconciliation problem.
   start), and session containers are reused, so env changes reach new sessions only.
 
 **Milestone 8.2 — Catalog agents: capabilities via terminal, not bespoke tools (shipped)**
+
 - **The principle.** A catalog agent's capability lives in `instructions.md` (the playbook), its
   permission in sandbox-exposed secrets (env vars in the shell), and its execution in eve's
   standard bash/file tools. No per-agent `tools/` wrappers for things a terminal already does —
@@ -1001,6 +1036,7 @@ two-source-of-truth reconciliation problem.
   Secrets left blank at install get the flag when set later from Settings.
 
 **Milestone 8.3 — Models: OpenRouter end-to-end (shipped)**
+
 - Model choices write `@openrouter/ai-sdk-provider` wiring into `agent.ts` (imports + factory +
   `modelContextWindowTokens`) instead of bare AI Gateway slugs; the picker reads OpenRouter's live
   catalog (`app/models/filter.ts`), ids are OpenRouter-native (`z-ai/glm-5.2`). Workspace settings
@@ -1010,6 +1046,7 @@ two-source-of-truth reconciliation problem.
   in the eden-project memory. (commits `63dd0db`, `2bcc7a8`, `157bc3f`.)
 
 **Milestone 8.4 — Secrets management rework (shipped)**
+
 - Delivered the `docs/PLAN-SECRETS-REWORK.md` spec: fetcher-based CRUD (no more full-page reload
   per mutation — `useFetcher`, optimistic), secret **fingerprints** (know what/when a value was
   set), install-time values for agent templates (no longer disabled "set it later"),
@@ -1019,6 +1056,7 @@ two-source-of-truth reconciliation problem.
   (commit `7da694e`.)
 
 **Milestone 8.5 — Playground: chat surface + human-in-the-loop (shipped)**
+
 - Playground sessions are stored as **Eve cursors** (`71a8c5f`) and stream live, recorded as runs
   in observability (`c8ac0dc`). The playground/assistant became a **ChatGPT-style chat surface**
   (`61388ac`, `69b8016`): viewport-locked layout, stick-to-bottom transcript, tool activity
@@ -1088,13 +1126,13 @@ two-source-of-truth reconciliation problem.
 - **Sandbox** is adapter-based: `defaultBackend()` local bash/Docker; Vercel Sandbox on Vercel.
 - **Models** via provider-prefixed strings; AI Gateway (keyless) on Vercel, direct keys elsewhere.
 - **Tools:** `defineTool({ description, inputSchema: z.object(...), execute(input, ctx), needsApproval,
-  outputSchema?, toModelOutput? })`; `ctx.session`, `ctx.getSandbox()`, `ctx.getSkill(id)`.
+outputSchema?, toModelOutput? })`; `ctx.session`, `ctx.getSandbox()`, `ctx.getSkill(id)`.
 - **HTTP contract:** `POST /eve/v1/session` returns `x-eve-session-id`; stream at
   `/eve/v1/session/<id>/stream`.
 - **Pi coding-agent SDK:** `createAgentSession`, `SessionManager` (in-memory/persist), `ModelRegistry`,
   `AuthStorage`, `customTools` via `defineTool`, streaming `session.subscribe(...)`,
   `session.prompt/steer/followUp` — designed for embedding an agent in your own app.
 
-*Sources: github.com/vercel/eve, vercel.com/docs/eve/concepts, vercel.com/blog/introducing-eve,
+_Sources: github.com/vercel/eve, vercel.com/docs/eve/concepts, vercel.com/blog/introducing-eve,
 vercel.com/blog/a-new-programming-model-for-durable-execution,
-github.com/earendil-works/pi (packages/coding-agent).*
+github.com/earendil-works/pi (packages/coding-agent)._

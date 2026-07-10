@@ -11,7 +11,7 @@
  *    danger zone — Delete repository, a FULL Eden-side teardown (instances stopped and
  *    destroyed, every row cascaded). The GitHub repository itself is never touched.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import {
   AlertTriangle,
   Boxes,
@@ -75,11 +75,7 @@ import {
   createIngestToken,
   listIngestTokens,
 } from "~/observability/store.server";
-import {
-  listDrafts,
-  stageDeletions,
-  stageDraft,
-} from "~/drafts/drafts.server";
+import { listDrafts, stageDeletions, stageDraft } from "~/drafts/drafts.server";
 import { readModel } from "~/eve/agentModule";
 import { buildAgentConfig, EMPTY_TEAM_MARKER } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
@@ -309,19 +305,13 @@ function buildInstalls(
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<SettingsView> => {
       const project = requireRepo(
-        await requireProject(
-          {
-            user: auth.user,
-            organizationId: auth.organizationId,
-            role: auth.role,
-          },
-          args.params.projectId,
-          { request: args.request },
-        ),
+        await requireProject(auth, args.params.projectId, {
+          request: args.request,
+        }),
       );
       const agentName = agentFromParams(args.params);
       if (!agentName) {
@@ -388,7 +378,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         showRepo,
         canRemoveMember: showMember && isTeam && active?.root !== "agent",
         canRenameMember: showMember && active !== null,
-        pendingName: showMember ? active?.pendingName ?? null : null,
+        pendingName: showMember ? (active?.pendingName ?? null) : null,
         model: null,
         modelInherited: false,
         hasAgentModule: false,
@@ -548,17 +538,10 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
   const form = await args.request.formData();
   const intent = String(form.get("intent") ?? "");
@@ -783,7 +766,8 @@ export async function action(args: ActionFunctionArgs) {
       if (!source.paths.includes(EMPTY_TEAM_MARKER)) {
         files.push({
           path: EMPTY_TEAM_MARKER,
-          content: "# Agents\n\nAdd each team member under `agents/<member>/` as a complete eve project.\n",
+          content:
+            "# Agents\n\nAdd each team member under `agents/<member>/` as a complete eve project.\n",
         });
       }
       const change = await proposeChange(project.repoInstallationId, repo, {
@@ -1182,7 +1166,12 @@ function ModelSection({
   );
   return (
     <section>
-      <SectionHeader icon={Cpu} accent="blue" title="Model" badges={modelBadges} />
+      <SectionHeader
+        icon={Cpu}
+        accent="blue"
+        title="Model"
+        badges={modelBadges}
+      />
       <ModelSelect
         value={model}
         busy={fetcher.state !== "idle"}

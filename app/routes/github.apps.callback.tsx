@@ -13,7 +13,7 @@
  * answering one @mention is ambiguous) — possible only via stale/manual credentials, since
  * GitHub enforces global App uniqueness for fresh conversions.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { Webhook } from "lucide-react";
 import { Link, redirect, type LoaderFunctionArgs } from "react-router";
 
@@ -36,14 +36,17 @@ import { getRuntime } from "~/seams/index.server";
 import type { Route } from "./+types/github.apps.callback";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const url = new URL(args.request.url);
       const code = url.searchParams.get("code");
       const stateToken = url.searchParams.get("state");
 
-      const fail = (error: string, backUrl = "/dashboard") => ({ error, backUrl });
+      const fail = (error: string, backUrl = "/dashboard") => ({
+        error,
+        backUrl,
+      });
 
       if (!code || !stateToken) {
         return fail(
@@ -58,15 +61,10 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
 
       // Tenancy: the signed state names the project, but the SESSION must own it too.
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId ?? null,
-          role: auth.role ?? null,
-        },
-        state.projectId,
+      const project = await requireProject(auth, state.projectId);
+      const roster = (await listAgents(project.id)).filter(
+        (a) => a.kind === "member",
       );
-      const roster = (await listAgents(project.id)).filter((a) => a.kind === "member");
       const agent = roster.find((a) => a.id === state.agentId);
       const backUrl = `${contextPath(
         project.id,
@@ -113,7 +111,12 @@ export const loader = (args: LoaderFunctionArgs) =>
       ];
       for (const [key, value, sandboxExposed] of writes) {
         await secrets.set(
-          { projectId: project.id, agentId: agent.id, environmentId: null, key },
+          {
+            projectId: project.id,
+            agentId: agent.id,
+            environmentId: null,
+            key,
+          },
           value,
           { sandboxExposed, updatedBy: auth.user.id },
         );
@@ -124,7 +127,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         actorUserId: auth.user.id,
         action: "github-app.create",
         target: agent.name,
-        meta: { slug: converted.slug, appId: converted.appId, owner: converted.ownerLogin },
+        meta: {
+          slug: converted.slug,
+          appId: converted.appId,
+          owner: converted.ownerLogin,
+        },
       });
 
       // Registration ≠ installation: the App exists but watches nothing yet. Send the user
@@ -139,7 +146,9 @@ export function meta() {
   return [{ title: "GitHub App · eden" }, ...noindexMeta];
 }
 
-export default function GitHubAppCallback({ loaderData }: Route.ComponentProps) {
+export default function GitHubAppCallback({
+  loaderData,
+}: Route.ComponentProps) {
   const { error, backUrl } = loaderData;
   return (
     <AppShell>

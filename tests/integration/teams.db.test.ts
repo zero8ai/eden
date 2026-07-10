@@ -17,21 +17,27 @@ describe.runIf(LIVE)("teams against real Postgres", () => {
   it("roster → environments → releases → secrets → drafts → cascade", async () => {
     const { drizzleDataStore: store } = await import("~/data/drizzle.server");
     const { db } = await import("~/db/client.server");
-    const { orgs, projects } = await import("~/db/schema");
-    const { createProject, listAgentEnvironments, syncProjectAgents } = await import(
-      "~/db/queries.server"
-    );
-    const { createRelease, ensureReleasesForCommit } = await import(
-      "~/deploy/controller.server"
-    );
+    const { organization } = await import("~/db/auth-schema");
+    const { projects } = await import("~/db/schema");
+    const { createProject, listAgentEnvironments, syncProjectAgents } =
+      await import("~/db/queries.server");
+    const { createRelease, ensureReleasesForCommit } =
+      await import("~/deploy/controller.server");
     const { stageDraft, listDrafts } = await import("~/drafts/drafts.server");
-    const { makeLocalSecretsProvider } = await import("~/seams/oss/secrets.local.server");
+    const { makeLocalSecretsProvider } =
+      await import("~/seams/oss/secrets.local.server");
     const { drizzleSecretKV } = await import("~/seams/oss/secret-store");
 
     const ORG = "org_teams_smoke";
-    await db.insert(orgs).values({ id: ORG, name: "smoke" }).onConflictDoNothing();
-    // Re-runs after a failed cleanup: remove any leftover project first.
-    await db.delete(projects).where(eq(projects.orgId, ORG));
+    // Re-runs after a failed cleanup start from a fresh Better Auth organization; its
+    // foreign-key cascade removes any leftover project from the previous attempt.
+    await db.delete(organization).where(eq(organization.id, ORG));
+    await db.insert(organization).values({
+      id: ORG,
+      name: "smoke",
+      slug: "teams-smoke",
+      createdAt: new Date(),
+    });
 
     // 1. Team project: roster created, per-member environments seeded.
     const project = await createProject(
@@ -75,7 +81,10 @@ describe.runIf(LIVE)("teams against real Postgres", () => {
 
       // 3. Releases: one per member per merge commit, idempotent, per-agent numbering.
       const sha = crypto.randomBytes(20).toString("hex");
-      const cut = await ensureReleasesForCommit({ projectId: project.id, gitSha: sha }, store);
+      const cut = await ensureReleasesForCommit(
+        { projectId: project.id, gitSha: sha },
+        store,
+      );
       expect(cut).toHaveLength(2);
       expect(cut.every((r) => r.created)).toBe(true);
       const again = await ensureReleasesForCommit(
@@ -110,7 +119,10 @@ describe.runIf(LIVE)("teams against real Postgres", () => {
       ).toBe("deployer-only");
       expect(await secrets.resolve(scope(qa.id))).toEqual({});
       await secrets.set(
-        { ...scope(deployer.id, deployerEnvs[0].id), key: "CLOUDFLARE_API_TOKEN" },
+        {
+          ...scope(deployer.id, deployerEnvs[0].id),
+          key: "CLOUDFLARE_API_TOKEN",
+        },
         "prod-override",
       );
       expect(
@@ -120,7 +132,11 @@ describe.runIf(LIVE)("teams against real Postgres", () => {
 
       // 5. Drafts: member attribution from the path; shared files unattributed.
       const owned = await stageDraft(
-        { projectId: project.id, path: "agents/qa/agent/tools/check.ts", content: "//" },
+        {
+          projectId: project.id,
+          path: "agents/qa/agent/tools/check.ts",
+          content: "//",
+        },
         store,
       );
       expect(owned.agentId).toBe(qa.id);
@@ -134,7 +150,7 @@ describe.runIf(LIVE)("teams against real Postgres", () => {
       // 6. Cascade cleanup: deleting the project removes roster/envs/releases/secrets/drafts.
       await db.delete(projects).where(eq(projects.id, project.id));
       expect(await store.agents.listByProject(project.id)).toHaveLength(0);
-      await db.delete(orgs).where(eq(orgs.id, ORG));
+      await db.delete(organization).where(eq(organization.id, ORG));
     }
   });
 });

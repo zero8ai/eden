@@ -21,7 +21,6 @@ export function tunnelSettings(env = process.env) {
     name: env.EDEN_TUNNEL_NAME || DEFAULT_TUNNEL_NAME,
     domain: (env.EDEN_TUNNEL_DOMAIN || DEFAULT_TUNNEL_DOMAIN).toLowerCase(),
     cloudflaredBin: env.EDEN_CLOUDFLARED_BIN || "cloudflared",
-    workosBin: env.EDEN_WORKOS_BIN || "workos",
   };
 }
 
@@ -292,30 +291,6 @@ export function renderAndValidateConfig(
 ) {
   atomicWrite(paths.config, renderTunnelConfig(metadata, registry));
   validateTunnelConfig(paths.config, env);
-}
-
-export function registerWorkosRedirect(url, apiKey, env = process.env) {
-  if (!apiKey)
-    throw new Error(
-      "WORKOS_API_KEY is required to register the public callback",
-    );
-  const { workosBin } = tunnelSettings(env);
-  const result = runSync([workosBin, "config", "redirect", "add", url], {
-    env: {
-      ...subprocessBaseEnv(env),
-      WORKOS_MODE: "agent",
-      WORKOS_API_KEY: apiKey,
-    },
-  });
-  const combined = `${result.stdout}\n${result.stderr}`;
-  if (
-    result.code !== 0 &&
-    !/already (?:exists|registered)|duplicate/i.test(combined)
-  ) {
-    throw new Error(
-      `WorkOS callback registration failed: ${result.stderr.trim() || result.stdout.trim()}`,
-    );
-  }
 }
 
 export function processIsRunning(pid) {

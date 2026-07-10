@@ -8,25 +8,21 @@
  * the shared nav without touching each route's loader; the client fetcher revalidates it
  * after every action, which is what keeps the count honest as drafts stage and publish.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import type { LoaderFunctionArgs } from "react-router";
 
 import { listDrafts } from "~/drafts/drafts.server";
-import { requireActiveAgent, resolveAgentContext } from "~/project/agent-context.server";
+import {
+  requireActiveAgent,
+  resolveAgentContext,
+} from "~/project/agent-context.server";
 import { requireProject } from "~/project/guard.server";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId,
-          role: auth.role,
-        },
-        args.params.projectId,
-      );
+      const project = await requireProject(auth, args.params.projectId);
       const agentName = new URL(args.request.url).searchParams.get("agent");
       const drafts = await listDrafts(project.id);
       if (!agentName) return { count: drafts.length };

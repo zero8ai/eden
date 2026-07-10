@@ -29,18 +29,35 @@ docker exec eden-postgres psql -U eden -d <DB_NAME_from_.env.local> -c "..."
 
 ## Authenticated browser session
 
-Login is WorkOS password-only (no Magic Auth) — don't log in interactively.
-Mint a `wos-session` cookie as Playwright storage state and start agent-browser
-with it (script: adapt `mint-session.mjs` from a prior session's scratchpad, or
-the recipe in the user's `eden-browser-verify-auth` memory; symlink
-`node_modules` into the scratchpad so its ESM imports resolve):
+Authentication is local Better Auth email/password. There is no hosted-provider
+login and no session-minting helper: create a disposable user through `/signup`
+on a fresh worktree DB, or sign in through `/login`. Use a named browser session
+so cookies persist between commands:
 
 ```bash
-node mint-session.mjs --org <orgId> --out state.json
-agent-browser --state state.json open "http://localhost:<PORT>/repos/<id>/deployment"
+agent-browser --session eden-<branch> open "http://localhost:<PORT>/signup"
+agent-browser --session eden-<branch> snapshot -i
+# Fill the name/email/password fields from the snapshot, submit, then wait for /dashboard.
+agent-browser --session eden-<branch> wait --url "**/dashboard"
+agent-browser --session eden-<branch> open "http://localhost:<PORT>/repos/<id>/deployment"
 ```
 
-Org id must match the projects' `org_id` in the worktree DB (`select org_id from projects`).
+The login deliberately has two screens: fill email and submit `Continue`, take a fresh snapshot,
+then fill password and submit `Sign in`. The first step must not make an auth request. For reset
+testing, configure `SMTP_URL` and `FROM_EMAIL`, request from `/forgot-password`, follow the Better
+Auth callback URL captured by the local inbox, and verify the consumed link cannot be reused.
+
+For a reusable file, run
+`agent-browser --session eden-<branch> state save /tmp/eden-auth.json` after sign-in. Later, open
+with `agent-browser --state /tmp/eden-auth.json ...`.
+State files contain live session credentials: keep them outside the repo and
+delete them when verification is done.
+
+The workspace id must match the project's `org_id`. Better Auth stores it in
+`organization.id`; the current browser session stores its active value in
+`session.active_organization_id`. For invitation tests use two isolated browser
+sessions (`--session inviter` and `--session invitee`) and obtain the acceptance
+link from the SMTP test inbox configured by `SMTP_URL`.
 
 ## Driving & evidence
 

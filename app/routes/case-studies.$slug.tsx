@@ -1,6 +1,6 @@
 import type { Route } from "./+types/case-studies.$slug";
 import { Link } from "react-router";
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import type { LoaderFunctionArgs } from "react-router";
 
 import { SiteHeader, SiteFooter } from "~/components/marketing/site-chrome";
@@ -11,7 +11,7 @@ import { pageMeta } from "~/lib/seo";
 export async function loader(args: LoaderFunctionArgs) {
   const study = getCaseStudy(args.params.slug ?? "");
   if (!study) throw new Response("Not found", { status: 404 });
-  return authkitLoader(args);
+  return sessionLoader(args);
 }
 
 export function meta({ params }: Route.MetaArgs) {
@@ -164,7 +164,10 @@ export default function CaseStudyDetail({ params }: Route.ComponentProps) {
               </p>
             ))}
           </Reveal>
-          <Reveal delay={120} className="grid gap-8 sm:grid-cols-3 lg:grid-cols-1">
+          <Reveal
+            delay={120}
+            className="grid gap-8 sm:grid-cols-3 lg:grid-cols-1"
+          >
             {study.stats.map((s) => (
               <div key={s.label} className="border-t border-eden-line pt-4">
                 <p className="text-3xl font-medium tracking-[-0.01em]">

@@ -7,7 +7,7 @@
  * stream on load (reusing playgroundSessions), so a mid-run reload re-attaches. First use shows a
  * provisioning state while the instance builds/deploys.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { Loader2, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -59,15 +59,13 @@ import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.assistant";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const project = requireRepo(
-        await requireProject(
-          { user: auth.user, organizationId: auth.organizationId, role: auth.role },
-          args.params.projectId,
-          { request: args.request },
-        ),
+        await requireProject(auth, args.params.projectId, {
+          request: args.request,
+        }),
       );
       const [snapshot, roster] = await Promise.all([
         peekAssistantInstance(project.id),
@@ -90,7 +88,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         sessions = rows.map(summarizePlaygroundSession);
         const selected = args.url.searchParams.get("session");
         const currentSession =
-          (selected ? rows.find((s) => s.id === selected) : null) ?? rows[0] ?? null;
+          (selected ? rows.find((s) => s.id === selected) : null) ??
+          rows[0] ??
+          null;
         currentSessionId = currentSession?.id ?? null;
         currentSessionStatus = currentSession?.status ?? null;
         if (currentSession?.externalSessionId) {
@@ -104,7 +104,8 @@ export const loader = (args: LoaderFunctionArgs) =>
               historyError = `Couldn't reload the assistant's history: ${(error as Error).message}`;
             }
           } else {
-            historyError = "History replays once the assistant is running again.";
+            historyError =
+              "History replays once the assistant is running again.";
           }
         }
       }
@@ -127,17 +128,10 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
   const form = await args.request.formData();
   const intent = String(form.get("intent"));
@@ -154,7 +148,9 @@ export async function action(args: ActionFunctionArgs) {
       agentId: agent.id,
       userId: auth.user.id,
     });
-    throw redirect(`/repos/${project.id}/assistant?session=${encodeURIComponent(session.id)}`);
+    throw redirect(
+      `/repos/${project.id}/assistant?session=${encodeURIComponent(session.id)}`,
+    );
   }
   return { ok: true as const };
 }
@@ -268,12 +264,15 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           body: form,
         });
         if (!res.ok || !res.body) {
-          const detail = (await res.json().catch(() => null)) as
-            | { error?: string; provisioning?: boolean }
-            | null;
+          const detail = (await res.json().catch(() => null)) as {
+            error?: string;
+            provisioning?: boolean;
+          } | null;
           if (detail?.provisioning || res.status === 409) {
             setLive(null);
-            setSendError("Your assistant is starting up — it'll be ready in a moment.");
+            setSendError(
+              "Your assistant is starting up — it'll be ready in a moment.",
+            );
             await revalidator.revalidate();
             return;
           }
@@ -306,18 +305,28 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         }
         await revalidator.revalidate();
         if (!currentSessionId && nextSessionId) {
-          navigate(`${base}/assistant?session=${encodeURIComponent(nextSessionId)}`, {
-            replace: true,
-          });
+          navigate(
+            `${base}/assistant?session=${encodeURIComponent(nextSessionId)}`,
+            {
+              replace: true,
+            },
+          );
         }
         setLive(null);
       } catch (error) {
         setLive((prev) =>
           prev
-            ? { ...prev, error: `Lost the live stream: ${(error as Error).message}`, activity: null, done: true }
+            ? {
+                ...prev,
+                error: `Lost the live stream: ${(error as Error).message}`,
+                activity: null,
+                done: true,
+              }
             : prev,
         );
-        setSendError("The live view dropped — the reply may still have been recorded.");
+        setSendError(
+          "The live view dropped — the reply may still have been recorded.",
+        );
         await revalidator.revalidate();
         setLive(null);
       }
@@ -357,8 +366,8 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           <Alert className="mb-4">
             <AlertTitle>Setting up your assistant…</AlertTitle>
             <AlertDescription>
-              eden is building and starting your assistant instance. This takes a minute the
-              first time — the page updates automatically.
+              eden is building and starting your assistant instance. This takes
+              a minute the first time — the page updates automatically.
             </AlertDescription>
           </Alert>
         )}
@@ -391,7 +400,12 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
       })}
     >
       <div className="mx-auto w-full max-w-5xl px-4 pt-8 sm:px-6">
-        <AgentNav base={base} level={isTeam ? "repo" : "single"} roster={roster} className="mb-0" />
+        <AgentNav
+          base={base}
+          level={isTeam ? "repo" : "single"}
+          roster={roster}
+          className="mb-0"
+        />
         {isTeam && roster.length === 0 && (
           <div className="mt-6">
             <EmptyTeamState overviewHref={`/repos/${project.id}`} />
@@ -408,7 +422,9 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           <div className="py-6">
             <Alert variant={failed ? "destructive" : undefined}>
               <AlertTitle>
-                {failed ? "The assistant failed to start" : "Your assistant isn't running yet"}
+                {failed
+                  ? "The assistant failed to start"
+                  : "Your assistant isn't running yet"}
               </AlertTitle>
               <AlertDescription className="space-y-3">
                 <p>
@@ -418,7 +434,11 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
                 </p>
                 <ProvisionForm method="post">
                   <input type="hidden" name="intent" value="provision" />
-                  <Button type="submit" size="sm" disabled={provisionFetcher.state !== "idle"}>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={provisionFetcher.state !== "idle"}
+                  >
                     {failed ? "Try again" : "Set up the assistant"}
                   </Button>
                 </ProvisionForm>
@@ -429,20 +449,29 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
 
         {provisioning && !live && (
           <div className="py-6">
-            <ProvisioningCard stage={provisionStage} startedAt={provisionStartedAt} />
+            <ProvisioningCard
+              stage={provisionStage}
+              startedAt={provisionStartedAt}
+            />
           </div>
         )}
 
-        {entries.length === 0 && !live && !remoteBusy && !idle && !failed && !provisioning && (
-          <div className="py-8 text-center">
-            <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <Sparkles className="size-6" aria-hidden />
+        {entries.length === 0 &&
+          !live &&
+          !remoteBusy &&
+          !idle &&
+          !failed &&
+          !provisioning && (
+            <div className="py-8 text-center">
+              <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <Sparkles className="size-6" aria-hidden />
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Say what you want built. The assistant keeps context across
+                turns.
+              </p>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Say what you want built. The assistant keeps context across turns.
-            </p>
-          </div>
-        )}
+          )}
 
         {(entries as ChatEntry[]).map((e, i) =>
           e.role === "user" ? (
@@ -458,7 +487,11 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           ),
         )}
         {replayingRunningSession && entries.at(-1)?.role !== "assistant" && (
-          <StepsCard steps={[]} idPrefix="running-session" activity="Still working…" />
+          <StepsCard
+            steps={[]}
+            idPrefix="running-session"
+            activity="Still working…"
+          />
         )}
         {live && (
           <>
@@ -511,19 +544,34 @@ function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
     case "thinking":
       return { ...prev, activity: "Thinking…" };
     case "action":
-      return { ...prev, activity: evt.summary ? `${evt.toolName}: ${evt.summary}` : evt.toolName };
+      return {
+        ...prev,
+        activity: evt.summary
+          ? `${evt.toolName}: ${evt.summary}`
+          : evt.toolName,
+      };
     case "text":
       return { ...prev, text: evt.text };
     case "step":
-      return { ...prev, steps: [...prev.steps, evt.step], activity: "Thinking…" };
+      return {
+        ...prev,
+        steps: [...prev.steps, evt.step],
+        activity: "Thinking…",
+      };
     case "input":
-      return { ...prev, inputRequests: [...prev.inputRequests, ...evt.requests], activity: null };
+      return {
+        ...prev,
+        inputRequests: [...prev.inputRequests, ...evt.requests],
+        activity: null,
+      };
     case "done":
       return {
         ...prev,
         text: evt.reply ?? prev.text,
         inputRequests:
-          evt.inputRequests && evt.inputRequests.length > 0 ? evt.inputRequests : prev.inputRequests,
+          evt.inputRequests && evt.inputRequests.length > 0
+            ? evt.inputRequests
+            : prev.inputRequests,
         error: evt.error,
         modelId: evt.modelId ?? prev.modelId,
         activity: null,
@@ -557,7 +605,8 @@ function ProvisioningCard({
     }
     const start = new Date(startedAt).getTime();
     if (Number.isNaN(start)) return;
-    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    const tick = () =>
+      setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
     tick();
     const id = window.setInterval(tick, 1_000);
     return () => window.clearInterval(id);
@@ -575,8 +624,9 @@ function ProvisioningCard({
         )}
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
-        It builds and deploys as its own eve instance. The first build can take a few minutes —
-        this stays in sync automatically, so you can leave the page and come back.
+        It builds and deploys as its own eve instance. The first build can take
+        a few minutes — this stays in sync automatically, so you can leave the
+        page and come back.
       </p>
     </div>
   );
@@ -595,7 +645,9 @@ function LiveBubble({ live }: { live: LiveTurn }) {
         <AssistantBubble>
           {live.modelId && (
             <span className="mb-1.5 flex items-center gap-1.5">
-              <span className="font-mono text-xs text-muted-foreground">{live.modelId}</span>
+              <span className="font-mono text-xs text-muted-foreground">
+                {live.modelId}
+              </span>
             </span>
           )}
           {live.error ? (
@@ -606,7 +658,11 @@ function LiveBubble({ live }: { live: LiveTurn }) {
           <InputRequestsBlock requests={live.inputRequests} busy />
         </AssistantBubble>
       )}
-      <StepsCard steps={live.steps} idPrefix="live" activity={live.done ? null : live.activity} />
+      <StepsCard
+        steps={live.steps}
+        idPrefix="live"
+        activity={live.done ? null : live.activity}
+      />
     </div>
   );
 }
@@ -631,7 +687,9 @@ function AgentEntry({
               {entry.version}
             </Badge>
             {entry.modelId && (
-              <span className="font-mono text-xs text-muted-foreground">{entry.modelId}</span>
+              <span className="font-mono text-xs text-muted-foreground">
+                {entry.modelId}
+              </span>
             )}
           </span>
         )}
@@ -645,7 +703,11 @@ function AgentEntry({
           <MarkdownText text={entry.text || "(empty reply)"} />
         ) : null}
         {entry.inputRequests && (
-          <InputRequestsBlock requests={entry.inputRequests} onAnswer={onAnswer} busy={busy} />
+          <InputRequestsBlock
+            requests={entry.inputRequests}
+            onAnswer={onAnswer}
+            busy={busy}
+          />
         )}
       </AssistantBubble>
       <StepsCard

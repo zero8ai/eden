@@ -1,1 +1,0 @@
-ALTER TABLE "workspace_settings" ADD COLUMN "assistant_model" text;

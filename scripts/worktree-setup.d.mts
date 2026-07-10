@@ -26,3 +26,4 @@ export function applyEnvOverrides(
   overrides: Record<string, string>,
 ): string;
 export function parseEnvFile(text: string): Record<string, string>;
+export function resolveBetterAuthSecret(existing?: string): string;

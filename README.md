@@ -10,15 +10,15 @@ then [`docs/PRD.md`](./docs/PRD.md) (full product spec) and
 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) (managed-service infra).
 
 **Stack:** React Router 7 (framework mode, SSR) · TypeScript · Tailwind 4 · Drizzle + Postgres ·
-WorkOS AuthKit (auth & tenancy).
+Better Auth (email/password auth + organization tenancy).
 
 ## Local setup
 
 ### Prerequisites
 
-- **Node 20+** (22 recommended)
+- **Node 20.19+** (22 recommended)
 - **Docker** (for local Postgres via Docker Compose)
-- A **WorkOS account** (for auth)
+- A Postmark account for deployed transactional email, or a local SMTP capture service for development
 
 ### 1. Install dependencies
 
@@ -47,14 +47,23 @@ cp .env.example .env.local
 `.env.local` is gitignored. Fill in:
 
 - `DATABASE_URL` — already points at the local Postgres above.
-- **WorkOS keys** — run the installer, which logs into WorkOS, configures the dashboard
-  (redirect URIs, CORS), and writes `WORKOS_*` keys into `.env.local`:
+- `BETTER_AUTH_SECRET` — generate at least 32 bytes of high-entropy secret material with
+  `openssl rand -base64 32`.
+- `BETTER_AUTH_URL` — keep the example value, `http://localhost:5173`, unless you deliberately
+  run Eden on another origin.
+- `POSTMARK_SERVER_TOKEN` and `FROM_EMAIL` — a Postmark server token and verified sender used for
+  password resets and Better Auth organization invitations. For local email capture, set
+  `SMTP_URL` instead; development SMTP takes precedence over Postmark.
 
-  ```bash
-  npx workos@latest install
-  ```
+Authentication is self-hosted in the same Postgres database as Eden. Better Auth exposes its
+same-origin handler under `/api/auth/*`; there is no external auth dashboard or callback to
+configure. Sign-in is email-first and password-second; sign-up asks only for name, email, and
+password. Email verification is intentionally disabled. Password resets use Better Auth's
+single-use, one-hour tokens.
 
-  When prompted for framework, choose **React Router v7 – Framework mode**.
+The checked-in auth setup was created with Better Auth's official `auth@1.6.23 init` flow. Do not
+hand-edit `app/db/auth-schema.ts`; run `npm run auth:generate` to regenerate it from the final
+Better Auth configuration, then use Drizzle to generate the application migration.
 
 ### 4. Run migrations
 
@@ -70,12 +79,11 @@ npm run db:migrate
 npm run dev
 ```
 
-The app is at `http://localhost:5173`. **Use port 5173** — the WorkOS redirect URI is configured
-for `http://localhost:5173/callback`, so signing in on another port will fail the callback. If 5173
-is taken, free it (or update `WORKOS_REDIRECT_URI` in `.env.local` and the WorkOS dashboard to
-match).
+The app is at `http://localhost:5173`. If you use another port or public origin, update
+`BETTER_AUTH_URL` to that exact origin.
 
-Visit `/dashboard` to sign in (it redirects to WorkOS) and see your org-scoped workspace.
+Visit `/signup` to create the first account. Eden creates a personal workspace through Better
+Auth's organization plugin and lands you on the workspace-scoped dashboard.
 
 ### 6. (Optional) Connect a GitHub repo
 
@@ -91,16 +99,18 @@ is configured, `/connect` shows an "unconfigured" notice.
 
 ## Common scripts
 
-| Command | What it does |
-|---|---|
-| `npm run dev` | Dev server with HMR (port 5173) |
-| `npm run build` | Production build |
-| `npm run start` | Serve the production build |
-| `npm run typecheck` | Route typegen + `tsc` |
-| `npm run db:generate` | Generate a SQL migration from `app/db/schema.ts` |
-| `npm run db:migrate` | Apply pending migrations |
-| `npm run db:push` | Push schema directly (dev only, no migration file) |
-| `npm run db:studio` | Open Drizzle Studio |
+| Command                 | What it does                                       |
+| ----------------------- | -------------------------------------------------- |
+| `npm run dev`           | Dev server with HMR (port 5173)                    |
+| `npm run build`         | Production build                                   |
+| `npm run start`         | Serve the production build                         |
+| `npm run typecheck`     | Route typegen + `tsc`                              |
+| `npm run auth:generate` | Regenerate Better Auth schema with its pinned CLI  |
+| `npm run db:generate`   | Generate a SQL migration from `app/db/schema.ts`   |
+| `npm run db:migrate`    | Apply pending migrations                           |
+| `npm run db:push`       | Push schema directly (dev only, no migration file) |
+| `npm run db:studio`     | Open Drizzle Studio                                |
+| `npm run email:dev`     | Preview React Email templates on port 8092         |
 
 ## Project layout
 
@@ -108,11 +118,12 @@ is configured, `/connect` shows an "unconfigured" notice.
 eden/
 ├── app/
 │   ├── routes/           # RR7 routes (home, dashboard, connect, projects.$id, auth)
-│   ├── auth/             # session ↔ tenant sync (WorkOS → control-plane tables)
+│   ├── auth/             # Better Auth session + active-workspace resolution
+│   ├── email/            # React Email templates + transactional senders
 │   ├── db/               # Drizzle schema, server-only client, org-scoped queries
 │   ├── github/           # GitHub App client + repo reads (Connect pillar)
 │   ├── eve/              # pure eve-repo parser → normalized AgentConfig
-│   ├── root.tsx          # AuthKit-wrapped root loader
+│   ├── root.tsx          # root session loader + document shell
 │   └── routes.ts         # route config
 ├── drizzle/              # generated SQL migrations
 ├── docker-compose.example.yml   # local deps (copy to docker-compose.yml)
@@ -126,7 +137,7 @@ eden/
 working production install lives in [`deploy/vps/`](./deploy/vps/): a single runbook
 ([`deploy/vps/README.md`](./deploy/vps/README.md)) plus the compose, nginx, and env templates it
 references. It's a complete, ordered sequence — firewall → Docker → the compose stack (Eden +
-Postgres) → containerized nginx + Let's Encrypt → GitHub App / WorkOS wiring → smoke test. One
+Postgres) → containerized nginx + Let's Encrypt → GitHub App / Postmark wiring → smoke test. One
 Linux box runs everything: Eden, Postgres, and the agent instances it deploys.
 
 **Two ways to run it:**
@@ -140,9 +151,9 @@ Linux box runs everything: Eden, Postgres, and the agent instances it deploys.
 
 **Before you start you'll need** a VPS (Ubuntu 24.04 LTS; 2 vCPU / 4 GB RAM / 40 GB disk minimum)
 and a **domain you control**, with an A record pointing at the VPS — Eden is served from that
-domain, and the GitHub App and WorkOS callbacks require it. (Ours is `eden.zero8.ai`; yours is
+domain, and external GitHub/Discord callbacks require it. (Ours is `eden.zero8.ai`; yours is
 whatever domain you register and point at your box.) The runbook's first section lists the full
-prerequisites, including the WorkOS account, GitHub App, and Anthropic API key.
+prerequisites, including Postmark, a GitHub App, and an Anthropic API key.
 
 `npm run build` emits a standard Node server build under `build/` (client + server); the included
 `Dockerfile` containerizes it with the Docker CLI the deploy target needs. See

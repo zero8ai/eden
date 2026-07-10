@@ -6,15 +6,8 @@
  * rooted at `agents/<member>/agent/`, and roster CRUD — add/remove members land as
  * change-sets (branch → PR) like every other edit; the roster row itself syncs on merge.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import {
-  Bot,
-  Boxes,
-  FileText,
-  Terminal,
-  Users,
-  X,
-} from "lucide-react";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
+import { Bot, Boxes, FileText, Terminal, Users, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
   Link,
@@ -58,12 +51,19 @@ import {
   listReleases,
   type Agent,
 } from "~/db/queries.server";
-import { FreshnessBadge, releaseFreshness } from "~/components/deploy-freshness";
+import {
+  FreshnessBadge,
+  releaseFreshness,
+} from "~/components/deploy-freshness";
 import { listDeployments, queueDeploy } from "~/deploy/controller.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { readModel } from "~/eve/agentModule";
 import { buildAgentConfig } from "~/eve/parse";
-import { RESOURCE_KINDS, sandboxPath, slugifyResourceName } from "~/eve/templates";
+import {
+  RESOURCE_KINDS,
+  sandboxPath,
+  slugifyResourceName,
+} from "~/eve/templates";
 import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
 import { memberScaffold } from "~/github/create.server";
 import { getAgentSource } from "~/github/cached.server";
@@ -153,18 +153,12 @@ interface ProjectView {
 const TEAM_INTRO_COOKIE = "eden-team-intro-dismissed";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<ProjectView> => {
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId,
-          role: auth.role,
-        },
-        args.params.projectId,
-        { request: args.request },
-      );
+      const project = await requireProject(auth, args.params.projectId, {
+        request: args.request,
+      });
 
       if (
         !project.repoInstallationId ||
@@ -209,9 +203,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           source.paths,
         );
 
-        const orgDefaultModel = await getWorkspaceAssistantModel(project.orgId).catch(
-          () => null,
-        );
+        const orgDefaultModel = await getWorkspaceAssistantModel(
+          project.orgId,
+        ).catch(() => null);
         const teamLayout = project.layout === "team";
         // The hierarchy: a team repo LANDS on the team (roster) view; a member's config
         // surface is a drill-in (?agent=<name>). Single-agent repos go straight to their
@@ -220,7 +214,8 @@ export const loader = (args: LoaderFunctionArgs) =>
           teamLayout && !requestedAgent
             ? ("team" as const)
             : ("member" as const);
-        if (view === "member" && !active) throw redirect(`/repos/${project.id}`);
+        if (view === "member" && !active)
+          throw redirect(`/repos/${project.id}`);
         const lock = overlayLock(
           source.files["eden-lock.json"] ?? null,
           drafts.map((d) => ({ path: d.path, content: d.content })),
@@ -233,7 +228,8 @@ export const loader = (args: LoaderFunctionArgs) =>
                   // A staged agent.ts draft wins over the repo value — same rule the
                   // member view follows, so the roster badge never lags a model change.
                   const draft = drafts.find(
-                    (d) => d.path === `${a.root}/agent.ts` && d.content !== null,
+                    (d) =>
+                      d.path === `${a.root}/agent.ts` && d.content !== null,
                   );
                   const model = draft?.content
                     ? (readModel(draft.content) ?? c.model)
@@ -265,9 +261,14 @@ export const loader = (args: LoaderFunctionArgs) =>
         // The model shown inline must reflect the newest intent: a staged agent.ts draft
         // wins over the repo value (same rule the editors follow).
         const config =
-          view === "member" && active ? buildAgentConfig(source, active.root) : null;
+          view === "member" && active
+            ? buildAgentConfig(source, active.root)
+            : null;
         const agentTsDraft = drafts.find(
-          (d) => active && d.path === `${active.root}/agent.ts` && d.content !== null,
+          (d) =>
+            active &&
+            d.path === `${active.root}/agent.ts` &&
+            d.content !== null,
         );
         if (config && agentTsDraft?.content) {
           config.model = readModel(agentTsDraft.content) ?? config.model;
@@ -286,7 +287,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         let ship: ProjectView["ship"] = null;
         // Cache the active member's envs so the member-scope shipped-row lookup reuses them.
         const activeEnvs =
-          view === "member" && active ? await listAgentEnvironments(active.id) : [];
+          view === "member" && active
+            ? await listAgentEnvironments(active.id)
+            : [];
         if (view === "member" && active) {
           // Newest-first releases for this member, so we can flag whether each
           // env is running the latest version (matches the deployment pipeline).
@@ -352,7 +355,8 @@ export const loader = (args: LoaderFunctionArgs) =>
               }),
             )
           ).filter((r): r is ShipStatusRow => r !== null);
-          if (rows.length > 0) ship = { env: shipEnv, rows, skipped: shipSkipped };
+          if (rows.length > 0)
+            ship = { env: shipEnv, rows, skipped: shipSkipped };
         }
 
         return {
@@ -393,17 +397,10 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
 
   const form = await args.request.formData();
@@ -469,10 +466,7 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [
-    { title: "Project · eden" },
-    ...noindexMeta,
-  ];
+  return [{ title: "Project · eden" }, ...noindexMeta];
 }
 
 export default function ProjectDetail({
@@ -726,12 +720,7 @@ function TeamSurface({
   };
 
   if (members.length === 0) {
-    return (
-      <EmptyTeamState
-        overviewHref={base}
-        action={<AddMemberDialog />}
-      />
-    );
+    return <EmptyTeamState overviewHref={base} action={<AddMemberDialog />} />;
   }
 
   return (
@@ -760,7 +749,11 @@ function TeamSurface({
               Teammates can delegate to each other: every member gets an{" "}
               <em>ask-teammate</em> tool wired to the rest of the roster, so the
               team behaves like an organisation, not a folder of agents. Manage
-              who can ask whom under <span className="font-medium text-foreground">Settings → Team collaboration</span>.
+              who can ask whom under{" "}
+              <span className="font-medium text-foreground">
+                Settings → Team collaboration
+              </span>
+              .
             </p>
           </CardContent>
         </Card>
@@ -777,9 +770,7 @@ function TeamSurface({
             <Card className="h-full transition-colors group-hover:border-ring/60">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-2">
-                  <CardTitle className="truncate text-base">
-                    {m.name}
-                  </CardTitle>
+                  <CardTitle className="truncate text-base">{m.name}</CardTitle>
                   <span className="flex shrink-0 items-center gap-1.5">
                     {m.secretsMissing > 0 && (
                       <Badge
@@ -799,19 +790,31 @@ function TeamSurface({
               <CardContent className="pt-0">
                 <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
                   <li className="flex items-center gap-1.5">
-                    <span className="size-1.5 rounded-full bg-blue-500" aria-hidden />
+                    <span
+                      className="size-1.5 rounded-full bg-blue-500"
+                      aria-hidden
+                    />
                     {m.tools} tool{m.tools === 1 ? "" : "s"}
                   </li>
                   <li className="flex items-center gap-1.5">
-                    <span className="size-1.5 rounded-full bg-amber-500" aria-hidden />
+                    <span
+                      className="size-1.5 rounded-full bg-amber-500"
+                      aria-hidden
+                    />
                     {m.skills} skill{m.skills === 1 ? "" : "s"}
                   </li>
                   <li className="flex items-center gap-1.5">
-                    <span className="size-1.5 rounded-full bg-fuchsia-500" aria-hidden />
+                    <span
+                      className="size-1.5 rounded-full bg-fuchsia-500"
+                      aria-hidden
+                    />
                     {m.schedules} schedule{m.schedules === 1 ? "" : "s"}
                   </li>
                   <li className="flex items-center gap-1.5">
-                    <span className="size-1.5 rounded-full bg-emerald-500" aria-hidden />
+                    <span
+                      className="size-1.5 rounded-full bg-emerald-500"
+                      aria-hidden
+                    />
                     {m.channels} channel{m.channels === 1 ? "" : "s"}
                   </li>
                 </ul>
@@ -1240,8 +1243,8 @@ function AgentSurface({
           </p>
         ) : (
           <p className="text-sm text-muted-foreground">
-            Framework default — an isolated shell for the agent&rsquo;s bash
-            and file tools. Customize it to preinstall CLIs at bootstrap or to
+            Framework default — an isolated shell for the agent&rsquo;s bash and
+            file tools. Customize it to preinstall CLIs at bootstrap or to
             forward secrets marked for the sandbox (Settings → Secrets).
           </p>
         )}

@@ -1,6 +1,6 @@
 import type { Route } from "./+types/home";
 import { Link } from "react-router";
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import type { LoaderFunctionArgs } from "react-router";
 
 import { Reveal, Parallax } from "~/components/landing-motion";
@@ -9,7 +9,7 @@ import { ProductMockup } from "~/components/marketing/product-mockup";
 import { caseStudies } from "~/lib/case-studies";
 import { pageMeta } from "~/lib/seo";
 
-export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
+export const loader = (args: LoaderFunctionArgs) => sessionLoader(args);
 
 export function meta({}: Route.MetaArgs) {
   return pageMeta({
@@ -35,7 +35,10 @@ export default function Home({}: Route.ComponentProps) {
       {/* ————— Hero ————— */}
       <section className="mx-auto max-w-6xl px-6 pb-20 pt-20">
         <Parallax speed={0.1}>
-          <Reveal as="p" className="text-sm uppercase tracking-[0.25em] text-eden-faint">
+          <Reveal
+            as="p"
+            className="text-sm uppercase tracking-[0.25em] text-eden-faint"
+          >
             Built on Vercel&rsquo;s eve
           </Reveal>
           <Reveal
@@ -74,11 +77,7 @@ export default function Home({}: Route.ComponentProps) {
             <ProductMockup />
           </Parallax>
         </Reveal>
-        <Reveal
-          as="p"
-          delay={120}
-          className="mt-5 text-sm text-eden-faint"
-        >
+        <Reveal as="p" delay={120} className="mt-5 text-sm text-eden-faint">
           Describe the job in plain words. The assistant writes the code and
           opens it for your review.
         </Reveal>
@@ -145,7 +144,11 @@ export default function Home({}: Route.ComponentProps) {
             },
           ].map((s, i) => (
             <Reveal as="li" key={s.n} delay={i * 110}>
-              <Parallax as="span" speed={0.06 + i * 0.06} className="inline-block text-3xl italic text-eden-numeral">
+              <Parallax
+                as="span"
+                speed={0.06 + i * 0.06}
+                className="inline-block text-3xl italic text-eden-numeral"
+              >
                 {s.n}
               </Parallax>
               <h3 className="mt-3 text-xl font-medium">{s.title}</h3>
@@ -355,10 +358,7 @@ export default function Home({}: Route.ComponentProps) {
         <div className="mt-12 grid gap-8 sm:grid-cols-3">
           {caseStudies.slice(0, 3).map((cs, i) => (
             <Reveal key={cs.slug} delay={i * 100}>
-              <Link
-                to={`/case-studies/${cs.slug}`}
-                className="group block"
-              >
+              <Link to={`/case-studies/${cs.slug}`} className="group block">
                 <div className="overflow-hidden rounded-xl border border-eden-line">
                   <img
                     src={cs.image}
@@ -421,7 +421,9 @@ export default function Home({}: Route.ComponentProps) {
           <Reveal delay={120}>
             <Parallax speed={0.1}>
               <div className="rounded-lg border border-eden-panel-line bg-eden-panel-bg p-6 font-mono text-sm leading-loose text-eden-band-fg">
-                <p className="text-eden-band-muted"># your server, your rules</p>
+                <p className="text-eden-band-muted">
+                  # your server, your rules
+                </p>
                 <p>
                   <span className="text-eden-band-muted">$ </span>
                   git clone github.com/zero8ai/eden

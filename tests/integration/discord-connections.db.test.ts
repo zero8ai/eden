@@ -16,8 +16,8 @@ const LIVE = process.env.EDEN_DB_SMOKE === "1";
 describe.runIf(LIVE)("discord connections against real Postgres", () => {
   it("upserts by (guild, command) and reads back by guild/agent", async () => {
     const { db } = await import("~/db/client.server");
-    const { orgs, users, projects, agents, environments } =
-      await import("~/db/schema");
+    const { organization, user } = await import("~/db/auth-schema");
+    const { projects, agents, environments } = await import("~/db/schema");
     const {
       upsertConnection,
       findConnectionByGuildCommand,
@@ -28,10 +28,23 @@ describe.runIf(LIVE)("discord connections against real Postgres", () => {
 
     const ORG = "org_discord_smoke";
     const USER = "user_discord_smoke";
-    await db.delete(orgs).where(eq(orgs.id, ORG));
-    await db.delete(users).where(eq(users.id, USER));
-    await db.insert(orgs).values({ id: ORG, name: "discord smoke" });
-    await db.insert(users).values({ id: USER, email: "discord@smoke.test" });
+    const now = new Date();
+    await db.delete(organization).where(eq(organization.id, ORG));
+    await db.delete(user).where(eq(user.id, USER));
+    await db.insert(organization).values({
+      id: ORG,
+      name: "discord smoke",
+      slug: "discord-smoke",
+      createdAt: now,
+    });
+    await db.insert(user).values({
+      id: USER,
+      name: "Discord Smoke",
+      email: "discord@smoke.test",
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
     const [project] = await db
       .insert(projects)
       .values({ orgId: ORG, name: "discord", slug: "discord-smoke" })
@@ -118,7 +131,7 @@ describe.runIf(LIVE)("discord connections against real Postgres", () => {
     await deleteConnection(first.id);
     expect(await findConnectionByGuildCommand("guild_1", "triage")).toBeNull();
 
-    await db.delete(orgs).where(eq(orgs.id, ORG));
-    await db.delete(users).where(eq(users.id, USER));
+    await db.delete(organization).where(eq(organization.id, ORG));
+    await db.delete(user).where(eq(user.id, USER));
   });
 });

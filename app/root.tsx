@@ -6,19 +6,20 @@ import {
   ScrollRestoration,
   type LoaderFunctionArgs,
 } from "react-router";
-import { authkitLoader } from "@workos-inc/authkit-react-router";
 
+import { getSessionAuth } from "~/auth/session.server";
 import { ensureSplitterStarted } from "~/deploy/splitter.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import "./app.css";
 
 export { ErrorBoundary } from "~/components/error-boundary";
 
-export const loader = (args: LoaderFunctionArgs) => {
+export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Boot the background singletons with the first server render (per-process guards).
   ensureWorkerStarted();
   ensureSplitterStarted();
-  return authkitLoader(args);
+  const session = await getSessionAuth(request);
+  return { user: session.user };
 };
 
 /**

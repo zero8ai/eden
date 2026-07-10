@@ -6,7 +6,7 @@
  * server and approve, Discord returns to /discord/callback, which registers the agent's slash
  * command. Mirrors the GitHub App manifest flow's start route.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { MessageSquare } from "lucide-react";
 import { Link, data, redirect, type LoaderFunctionArgs } from "react-router";
 
@@ -36,7 +36,7 @@ interface DiscordConnectData {
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<DiscordConnectData> => {
       const url = new URL(args.request.url);
@@ -44,14 +44,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       const agentName = url.searchParams.get("agent") ?? "";
       const envId = url.searchParams.get("env");
 
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId ?? null,
-          role: auth.role ?? null,
-        },
-        projectId,
-      );
+      const project = await requireProject(auth, projectId);
 
       const roster = (await listAgents(project.id)).filter(
         (a) => a.kind === "member",

@@ -1,12 +1,15 @@
 /**
- * Tenant-scoped data access. Every read takes an `orgId` (the WorkOS org from the session) and
+ * Tenant-scoped data access. Every read takes an `orgId` (the Better Auth organization from the session) and
  * filters by it, so a loader physically cannot read another tenant's rows (D2). These are thin
  * wrappers over the DataStore seam (app/data/ports.ts) — the org-scoping and slug-uniqueness
  * logic lives here in one place; the SQL lives in the Drizzle store; both are unit-testable
  * against an in-memory fake.
  */
 import type { Agent, DataStore, Environment, Project } from "~/data/ports";
-import { destroyEnvironmentInfra, ensureTeamEnvironments } from "~/deploy/environments.server";
+import {
+  destroyEnvironmentInfra,
+  ensureTeamEnvironments,
+} from "~/deploy/environments.server";
 import { getRuntime } from "~/seams/index.server";
 import type { DeployTarget } from "~/seams/types";
 
@@ -68,7 +71,9 @@ export async function createProject(
   const { slug: _ignore, roster: rosterInput, ...rest } = input;
   const project = await store.projects.create({ ...rest, slug });
   const roster = rosterInput ?? [...SINGLE_AGENT_ROSTER];
-  await store.agents.syncRoster(project.id, roster, { allowEmpty: rosterInput !== undefined });
+  await store.agents.syncRoster(project.id, roster, {
+    allowEmpty: rosterInput !== undefined,
+  });
   // Team-level env seeding: one converge fans the team env set (just "default" on a fresh
   // project) across every member, instead of per-agent ensureDefault loops.
   await ensureTeamEnvironments(project.id, { store });
@@ -119,7 +124,9 @@ export function withPreservedNames(
 ): { name: string; root: string }[] {
   const rootMember = existing.find((a) => a.root === "agent");
   return detected.map((d) =>
-    d.root === "agent" && rootMember ? { name: rootMember.name, root: d.root } : d,
+    d.root === "agent" && rootMember
+      ? { name: rootMember.name, root: d.root }
+      : d,
   );
 }
 
@@ -145,7 +152,12 @@ export function planPendingRenames(
   clear: string[];
 } {
   const detectedByName = new Map(detected.map((d) => [d.name, d]));
-  const apply: { id: string; oldName: string; newName: string; root: string }[] = [];
+  const apply: {
+    id: string;
+    oldName: string;
+    newName: string;
+    root: string;
+  }[] = [];
   const clear: string[] = [];
   for (const row of existing) {
     if (row.kind !== "member" || !row.pendingName) continue;
@@ -223,7 +235,10 @@ export async function syncProjectAgents(
   // PLACE — otherwise syncRoster would prune the old-named row (cascading its environments,
   // releases, secrets and drafts away) and insert a bare new row. Apply the in-place renames
   // BEFORE syncRoster so its upsert matches the row by its new name and the prune leaves it be.
-  const { apply: renames, clear: staleRenames } = planPendingRenames(existing, roster);
+  const { apply: renames, clear: staleRenames } = planPendingRenames(
+    existing,
+    roster,
+  );
   for (const id of staleRenames) await store.agents.setPendingName(id, null);
   for (const r of renames) {
     await store.agents.rename(r.id, { name: r.newName, root: r.root });
@@ -232,10 +247,18 @@ export async function syncProjectAgents(
     // any still-held pending install secrets → the now-existing agent's real secrets.
     await rewriteMemberDraftPaths(projectId, r.oldName, r.newName, r.id, store);
     try {
-      const { migratePendingSecrets } = await import("~/project/secrets.server");
-      await migratePendingSecrets({ projectId, memberName: r.oldName, agentId: r.id });
+      const { migratePendingSecrets } =
+        await import("~/project/secrets.server");
+      await migratePendingSecrets({
+        projectId,
+        memberName: r.oldName,
+        agentId: r.id,
+      });
     } catch (error) {
-      console.warn(`[secrets] rename migration failed for ${r.oldName}→${r.newName}:`, error);
+      console.warn(
+        `[secrets] rename migration failed for ${r.oldName}→${r.newName}:`,
+        error,
+      );
     }
     // The renamed member is not "created" — its held secrets were handled above.
     existingNames.add(r.newName);
@@ -258,7 +281,10 @@ export async function syncProjectAgents(
       const target = deployTarget ?? getRuntime().deployTarget;
       for (const member of pruned) {
         for (const env of await store.environments.listByAgent(member.id)) {
-          await destroyEnvironmentInfra(env.id, { store, deployTarget: target });
+          await destroyEnvironmentInfra(env.id, {
+            store,
+            deployTarget: target,
+          });
         }
       }
     }
@@ -281,7 +307,10 @@ export async function syncProjectAgents(
         });
       } catch (error) {
         // Never let a secrets hiccup break roster sync; held rows remain for the next sync.
-        console.warn(`[secrets] pending migration failed for ${agent.name}:`, error);
+        console.warn(
+          `[secrets] pending migration failed for ${agent.name}:`,
+          error,
+        );
       }
     }
   }
@@ -328,7 +357,10 @@ export function listAgentEnvironments(
 }
 
 /** List a tenant's projects, newest first. */
-export function listProjects(orgId: string, store: DataStore = getRuntime().data) {
+export function listProjects(
+  orgId: string,
+  store: DataStore = getRuntime().data,
+) {
   return store.projects.listByOrg(orgId);
 }
 
@@ -355,6 +387,9 @@ export async function findProjectAnyOrg(
 }
 
 /** Releases for a project, newest first (D9 version history). */
-export function listReleases(projectId: string, store: DataStore = getRuntime().data) {
+export function listReleases(
+  projectId: string,
+  store: DataStore = getRuntime().data,
+) {
   return store.releases.listByProject(projectId);
 }

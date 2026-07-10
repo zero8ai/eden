@@ -12,7 +12,7 @@
  * installs AS a new team member (team repos only). Deliberately punted here: agent → a new
  * standalone repo, and agent → subagent of an existing agent.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { Boxes, Download, KeyRound, Layers } from "lucide-react";
 import { useState } from "react";
 import {
@@ -27,10 +27,7 @@ import {
 
 import { COPY } from "~/components/secrets-card";
 
-import {
-  TYPE_META,
-  TypeBadge,
-} from "~/components/marketplace-type-badge";
+import { TYPE_META, TypeBadge } from "~/components/marketplace-type-badge";
 import { AppShell, PageHeader, accentText } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -51,8 +48,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
-import { syncTenant } from "~/auth/tenant.server";
-import { ensureWorkspace } from "~/auth/workspace.server";
+import {
+  ensureWorkspace,
+  resolveActiveWorkspace,
+} from "~/auth/workspace.server";
 import type { Agent } from "~/data/ports";
 import { stageDeletions, stageDraft, listDrafts } from "~/drafts/drafts.server";
 import { ZOD_PACKAGE, ZOD_VERSION } from "~/eve/agentModule";
@@ -97,7 +96,8 @@ import type { Route } from "./+types/marketplace.$type.$id.install";
 
 /** Narrow a URL param to a TemplateType, 404-ing on anything else. */
 function parseType(param: string | undefined): TemplateType {
-  if (TEMPLATE_TYPES.includes(param as TemplateType)) return param as TemplateType;
+  if (TEMPLATE_TYPES.includes(param as TemplateType))
+    return param as TemplateType;
   throw data("Unknown template type", { status: 404 });
 }
 
@@ -146,14 +146,15 @@ interface PreviewData {
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const type = parseType(args.params.type);
       const id = args.params.id!;
       if (!isTemplateSlug(id)) throw data("Unknown template", { status: 404 });
       await ensureWorkspace(args.request, auth);
-      const { org } = await syncTenant(auth);
+      const active = await resolveActiveWorkspace(auth);
+      const org = active?.org;
 
       // Resolve composition (includes) up front: the plan, the file preview, the dep/secret
       // merge — everything downstream operates on the flattened template, exactly as it installs.
@@ -162,7 +163,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         template = await resolveTemplate(getRuntime().catalog, type, id);
       } catch (error) {
         console.warn(`[install] template ${type}/${id} failed to load:`, error);
-        throw data(`Template ${type}/${id} isn't in the catalog.`, { status: 404 });
+        throw data(`Template ${type}/${id} isn't in the catalog.`, {
+          status: 404,
+        });
       }
 
       const url = new URL(args.request.url);
@@ -197,18 +200,17 @@ export const loader = (args: LoaderFunctionArgs) =>
       if (!projectId) return base;
 
       // Tenancy: never trust the id — requireProject scopes it to the org.
-      const project = requireRepo(
-        await requireProject(
-          { user: auth.user, organizationId: auth.organizationId, role: auth.role },
-          projectId,
-        ),
-      );
+      const project = requireRepo(await requireProject(auth, projectId));
       const repo = { owner: project.repoOwner, repo: project.repoName };
       const [source, drafts] = await Promise.all([
         getAgentSource(project.repoInstallationId, repo),
         listDrafts(project.id),
       ]);
-      const ctx = await resolveSyncedAgentContext(project.id, null, source.paths);
+      const ctx = await resolveSyncedAgentContext(
+        project.id,
+        null,
+        source.paths,
+      );
       base.projectName = project.name;
       base.isTeam = ctx.isTeam;
       base.roster = ctx.roster.map((a) => ({ name: a.name }));
@@ -223,8 +225,14 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
 
       const registry = catalogLocator();
-      const draftPaths = drafts.map((d) => ({ path: d.path, content: d.content }));
-      const lock = overlayLock(source.files["eden-lock.json"] ?? null, draftPaths);
+      const draftPaths = drafts.map((d) => ({
+        path: d.path,
+        content: d.content,
+      }));
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        draftPaths,
+      );
 
       if (isAgentTemplate(type)) {
         // Agent → new team member. Single-agent repos can't gain a peer member here.
@@ -262,7 +270,11 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
 
       // Tool/skill/subagent → into an existing member.
-      const resolved = resolveMemberTarget(ctx.roster, ctx.isTeam, selectedMember);
+      const resolved = resolveMemberTarget(
+        ctx.roster,
+        ctx.isTeam,
+        selectedMember,
+      );
       if (!resolved) return base;
 
       // The target's current package.json (a staged draft wins) — needed only for the dep
@@ -290,7 +302,8 @@ export const loader = (args: LoaderFunctionArgs) =>
       let currentDeps: Record<string, string> | null = null;
       try {
         currentDeps = packageJson
-          ? ((JSON.parse(packageJson).dependencies as Record<string, string>) ?? {})
+          ? ((JSON.parse(packageJson).dependencies as Record<string, string>) ??
+            {})
           : null;
       } catch {
         currentDeps = null;
@@ -313,7 +326,7 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const type = parseType(args.params.type);
   const id = args.params.id!;
@@ -326,16 +339,7 @@ export async function action(args: ActionFunctionArgs) {
   const projectId = String(form.get("project") ?? "");
 
   try {
-    const project = requireRepo(
-      await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId ?? null,
-          role: auth.role ?? null,
-        },
-        projectId,
-      ),
-    );
+    const project = requireRepo(await requireProject(auth, projectId));
     const repo = { owner: project.repoOwner, repo: project.repoName };
     // ACTIONS read raw — a stale read composed into a write could clobber newer content. The
     // resolver re-flattens composition server-side by construction (never trusting the preview).
@@ -346,22 +350,35 @@ export async function action(args: ActionFunctionArgs) {
     ]);
     const ctx = await resolveSyncedAgentContext(project.id, null, source.paths);
     const registry = catalogLocator();
-    const draftPaths = drafts.map((d) => ({ path: d.path, content: d.content }));
-    const lock = overlayLock(source.files["eden-lock.json"] ?? null, draftPaths);
+    const draftPaths = drafts.map((d) => ({
+      path: d.path,
+      content: d.content,
+    }));
+    const lock = overlayLock(
+      source.files["eden-lock.json"] ?? null,
+      draftPaths,
+    );
 
     let target: InstallTarget;
     let secretAgent: Agent | null = null;
 
     if (isAgentTemplate(type)) {
       if (!ctx.isTeam) {
-        return { error: "Agent templates install as a new team member — this is a single-agent repo." };
+        return {
+          error:
+            "Agent templates install as a new team member — this is a single-agent repo.",
+        };
       }
       const name = String(form.get("newMember") ?? "").trim();
       if (!name) return { error: "Name the new team member." };
       target = { kind: "new-member", name };
     } else {
       const selectedName = String(form.get("member") ?? "");
-      const resolved = resolveMemberTarget(ctx.roster, ctx.isTeam, selectedName);
+      const resolved = resolveMemberTarget(
+        ctx.roster,
+        ctx.isTeam,
+        selectedName,
+      );
       if (!resolved) return { error: "Pick an agent to install into." };
       target = resolved.target;
       secretAgent = resolved.agent;
@@ -446,9 +463,11 @@ export async function action(args: ActionFunctionArgs) {
       });
     }
     if (plan.deletions.length > 0) {
-      await stageDeletions(
-        { projectId: project.id, paths: plan.deletions, createdBy: auth.user.id },
-      );
+      await stageDeletions({
+        projectId: project.id,
+        paths: plan.deletions,
+        createdBy: auth.user.id,
+      });
     }
 
     // Secrets step (§9): one enabled step for every template kind. The pure planner decided
@@ -520,9 +539,7 @@ export async function action(args: ActionFunctionArgs) {
     }
 
     const memberName =
-      target.kind === "new-member"
-        ? null
-        : (target.memberName ?? undefined);
+      target.kind === "new-member" ? null : (target.memberName ?? undefined);
     throw redirect(
       `${contextPath(project.id, memberName ?? undefined)}/deployment?installed=${encodeURIComponent(id)}`,
     );
@@ -536,7 +553,10 @@ export function meta() {
   return [{ title: "Install · Marketplace · eden" }];
 }
 
-export default function InstallWizard({ loaderData, actionData }: Route.ComponentProps) {
+export default function InstallWizard({
+  loaderData,
+  actionData,
+}: Route.ComponentProps) {
   const {
     user,
     type,
@@ -660,9 +680,7 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
 
             {selectedProjectId && !newMemberTemplate && (
               <div className="grid gap-1.5">
-                <Label>
-                  {isTeam ? "Team member" : "Agent"}
-                </Label>
+                <Label>{isTeam ? "Team member" : "Agent"}</Label>
                 <Select
                   value={selectedMember ?? undefined}
                   onValueChange={(name) => go({ member: name })}
@@ -687,8 +705,9 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                 <AlertDescription>
                   <span className="font-medium">{projectName}</span> is a
                   single-agent repository. Agent templates install as a new
-                  member of a <span className="font-medium">team</span> repo. Add
-                  this to a team, or (punted) install it as its own new repo.
+                  member of a <span className="font-medium">team</span> repo.
+                  Add this to a team, or (punted) install it as its own new
+                  repo.
                 </AlertDescription>
               </Alert>
             )}
@@ -727,8 +746,8 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                 Bundled from the catalog
               </CardTitle>
               <CardDescription>
-                These templates are materialized into the target agent as part of
-                this install — you don&rsquo;t install them separately.
+                These templates are materialized into the target agent as part
+                of this install — you don&rsquo;t install them separately.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -758,7 +777,10 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
             <CardHeader>
               <div className="flex items-center gap-2">
                 <CardTitle className="flex items-center gap-2 text-base">
-                  <Download className={`size-4 ${accentText.emerald}`} aria-hidden />
+                  <Download
+                    className={`size-4 ${accentText.emerald}`}
+                    aria-hidden
+                  />
                   What this installs
                 </CardTitle>
                 {preview.isUpdate && <Badge variant="warning">update</Badge>}
@@ -770,8 +792,8 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                   <AlertTitle>Blocked by conflicts</AlertTitle>
                   <AlertDescription>
                     <p className="mb-2">
-                      These target files already exist and aren&rsquo;t from this
-                      template. Resolve them before installing:
+                      These target files already exist and aren&rsquo;t from
+                      this template. Resolve them before installing:
                     </p>
                     <ul className="space-y-1 font-mono text-xs">
                       {preview.conflicts.map((c) => (
@@ -813,7 +835,10 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                         key={f}
                         className="flex items-center gap-2 px-3 py-1.5 font-mono text-xs"
                       >
-                        <span className="text-rose-600 dark:text-rose-400" aria-hidden>
+                        <span
+                          className="text-rose-600 dark:text-rose-400"
+                          aria-hidden
+                        >
                           −
                         </span>
                         <span className="line-through decoration-destructive/60">
@@ -833,7 +858,10 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                       <li key={d.name} className="flex items-center gap-2">
                         <span className="font-mono text-xs">
                           {d.name}
-                          <span className="text-muted-foreground"> {d.range}</span>
+                          <span className="text-muted-foreground">
+                            {" "}
+                            {d.range}
+                          </span>
                         </span>
                         <DepBadge status={d.status} />
                       </li>
@@ -862,9 +890,17 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
         {preview && (
           <Form method="post">
             <input type="hidden" name="intent" value="install" />
-            <input type="hidden" name="project" value={selectedProjectId ?? ""} />
+            <input
+              type="hidden"
+              name="project"
+              value={selectedProjectId ?? ""}
+            />
             {newMemberTemplate ? (
-              <input type="hidden" name="newMember" value={newMemberName ?? ""} />
+              <input
+                type="hidden"
+                name="newMember"
+                value={newMemberName ?? ""}
+              />
             ) : (
               <input type="hidden" name="member" value={selectedMember ?? ""} />
             )}
@@ -875,7 +911,10 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
               <Card className="mb-6">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
-                    <KeyRound className={`size-4 ${accentText.amber}`} aria-hidden />
+                    <KeyRound
+                      className={`size-4 ${accentText.amber}`}
+                      aria-hidden
+                    />
                     Secrets
                   </CardTitle>
                   <CardDescription>
@@ -1042,6 +1081,7 @@ function InstallSecretField({
 
 function DepBadge({ status }: { status: DependencyDecision["status"] }) {
   if (status === "add") return <Badge variant="success">add</Badge>;
-  if (status === "keep") return <Badge variant="outline">already present</Badge>;
+  if (status === "keep")
+    return <Badge variant="outline">already present</Badge>;
   return <Badge variant="destructive">range conflict</Badge>;
 }

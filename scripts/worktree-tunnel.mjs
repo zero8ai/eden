@@ -61,6 +61,27 @@ export function deriveTunnelHost(
   return host;
 }
 
+export function resolveTunnelDomain(metadata, env = process.env) {
+  const hasPersistedDomain =
+    metadata != null && Object.hasOwn(metadata, "domain");
+  const source = hasPersistedDomain
+    ? "persisted tunnel metadata"
+    : env.EDEN_TUNNEL_DOMAIN
+      ? "EDEN_TUNNEL_DOMAIN"
+      : "default tunnel configuration";
+  const domain = hasPersistedDomain
+    ? metadata.domain
+    : tunnelSettings(env).domain;
+  try {
+    // Reuse the hostname derivation validation so every configured domain is
+    // guaranteed to produce a DNS-safe worktree hostname.
+    deriveTunnelHost("worktree", "00000000", domain);
+  } catch (err) {
+    throw new Error(`invalid domain from ${source}: ${err.message}`);
+  }
+  return domain.toLowerCase().replace(/^\.+|\.+$/g, "");
+}
+
 export function enrichPortEntry(
   entry,
   session,

@@ -7,6 +7,7 @@ import {
   generateTunnelShortId,
   parseQuickTunnelUrl,
   renderTunnelConfig,
+  resolveTunnelDomain,
   sanitizeDnsLabel,
 } from "../../scripts/worktree-tunnel.mjs";
 
@@ -43,6 +44,30 @@ describe("worktree tunnel identity", () => {
     const host = deriveTunnelHost("x".repeat(200), "abcdef12");
     expect(host.split(".")[0]).toHaveLength(63);
     expect(host).toMatch(/^x+-abcdef12\.dev\.zero8\.ai$/);
+  });
+
+  test("resolves domain from metadata, environment, then default", () => {
+    expect(
+      resolveTunnelDomain(
+        { domain: "dev.persisted.example" },
+        { EDEN_TUNNEL_DOMAIN: "dev.environment.example" },
+      ),
+    ).toBe("dev.persisted.example");
+    expect(
+      resolveTunnelDomain(null, {
+        EDEN_TUNNEL_DOMAIN: "dev.environment.example",
+      }),
+    ).toBe("dev.environment.example");
+    expect(resolveTunnelDomain(null, {})).toBe("dev.zero8.ai");
+  });
+
+  test("rejects an invalid persisted domain with a clear source", () => {
+    expect(() =>
+      resolveTunnelDomain({ domain: "https://not-a-domain.example" }, {}),
+    ).toThrow(/invalid domain from persisted tunnel metadata/);
+    expect(() => resolveTunnelDomain({ domain: "" }, {})).toThrow(
+      /invalid domain from persisted tunnel metadata/,
+    );
   });
 });
 

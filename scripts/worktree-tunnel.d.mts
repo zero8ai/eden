@@ -18,6 +18,10 @@ export function deriveTunnelHost(
   shortId: string,
   domain?: string,
 ): string;
+export function resolveTunnelDomain(
+  metadata: Partial<TunnelMetadata> | null | undefined,
+  env?: NodeJS.ProcessEnv,
+): string;
 export function enrichPortEntry(
   entry: PortEntry,
   session: string,

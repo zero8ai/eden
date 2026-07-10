@@ -55,8 +55,8 @@ import {
   readJson,
   registerWorkosRedirect,
   renderAndValidateConfig,
+  resolveTunnelDomain,
   tunnelPaths,
-  tunnelSettings,
 } from "./worktree-tunnel.mjs";
 
 const PREFIXES = [
@@ -562,18 +562,17 @@ function main() {
   const registryPath = repoPath(root, WORKTREE_ROOT_DIR, "_ports.json");
   const registry = loadRegistry(registryPath);
   const allocated = allocatePorts(registry, feat.dir);
-  const settings = tunnelSettings();
+  const paths = tunnelPaths(root, WORKTREE_ROOT_DIR);
+  const tunnelMetadata = readJson(paths.metadata, null);
   let ports;
   try {
-    ports = enrichPortEntry(allocated, feat.short, settings.domain);
+    const tunnelDomain = resolveTunnelDomain(tunnelMetadata);
+    ports = enrichPortEntry(allocated, feat.short, tunnelDomain);
   } catch (err) {
     die(`failed to assign tunnel identity: ${err.message}`);
   }
   registry[feat.dir] = ports;
   saveRegistry(registryPath, registry);
-
-  const paths = tunnelPaths(root, WORKTREE_ROOT_DIR);
-  const tunnelMetadata = readJson(paths.metadata, null);
 
   const mainEnvPath = join(root, ".env.local");
   if (!existsSync(mainEnvPath))

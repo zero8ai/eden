@@ -1,0 +1,202 @@
+/**
+ * Google OAuth broker (issue #30) — the pure authorize URL + state shapes and the code/refresh
+ * network calls (with an injected fake fetch). What matters: offline+consent+identity scopes on
+ * the authorize URL, a readable error on a bad exchange, a distinct InvalidGrantError for a dead
+ * refresh token, and same-origin `returnTo` enforcement in the state.
+ */
+import { randomBytes } from "node:crypto";
+import { describe, expect, it } from "vitest";
+
+import {
+  CONNECT_STATE_TTL_MS,
+  InvalidGrantError,
+  exchangeCode,
+  googleAuthorizeUrl,
+  refreshAccessToken,
+  signConnectState,
+  verifyConnectState,
+  type GoogleConnectState,
+} from "~/connections/google.server";
+
+const state: GoogleConnectState = {
+  projectId: "projabcdefgh",
+  agentId: "agntabcdefgh",
+  provider: "google",
+  scopes: "https://www.googleapis.com/auth/spreadsheets",
+  returnTo: "/marketplace/bundle/google-sheets/install?project=projabcdefgh&member=pm",
+  exp: 1_800_000_000_000,
+};
+
+describe("google connect state", () => {
+  const key = randomBytes(32);
+
+  it("round-trips a signed state", () => {
+    const token = signConnectState(state, key);
+    expect(verifyConnectState(token, key, state.exp - 1000)).toEqual(state);
+  });
+
+  it("rejects tamper, wrong key, and expiry", () => {
+    const token = signConnectState(state, key);
+    expect(verifyConnectState(token, randomBytes(32), state.exp - 1000)).toBeNull();
+    expect(verifyConnectState(token, key, state.exp)).toBeNull();
+    expect(verifyConnectState("garbage", key)).toBeNull();
+  });
+
+  it("rejects a state whose returnTo is not same-origin relative", () => {
+    const bad = signConnectState(
+      { ...state, returnTo: "https://evil.example/x" },
+      key,
+    );
+    expect(verifyConnectState(bad, key, state.exp - 1000)).toBeNull();
+    const protoRel = signConnectState({ ...state, returnTo: "//evil" }, key);
+    expect(verifyConnectState(protoRel, key, state.exp - 1000)).toBeNull();
+  });
+
+  it("has a one-hour TTL", () => {
+    expect(CONNECT_STATE_TTL_MS).toBe(60 * 60 * 1000);
+  });
+});
+
+describe("googleAuthorizeUrl", () => {
+  it("adds offline/consent and identity scopes, response_type=code", () => {
+    const url = googleAuthorizeUrl({
+      clientId: "client_1",
+      redirectUri: "https://eden.example/google/callback",
+      state: "st at e",
+      scopes: "https://www.googleapis.com/auth/spreadsheets",
+    });
+    const parsed = new URL(url);
+    expect(parsed.origin + parsed.pathname).toBe(
+      "https://accounts.google.com/o/oauth2/v2/auth",
+    );
+    expect(parsed.searchParams.get("client_id")).toBe("client_1");
+    expect(parsed.searchParams.get("response_type")).toBe("code");
+    expect(parsed.searchParams.get("access_type")).toBe("offline");
+    expect(parsed.searchParams.get("prompt")).toBe("consent");
+    expect(parsed.searchParams.get("redirect_uri")).toBe(
+      "https://eden.example/google/callback",
+    );
+    expect(parsed.searchParams.get("state")).toBe("st at e");
+    const scope = parsed.searchParams.get("scope") ?? "";
+    expect(scope).toContain("https://www.googleapis.com/auth/spreadsheets");
+    expect(scope).toContain("openid");
+    expect(scope).toContain("email");
+  });
+
+  it("does not duplicate an identity scope already requested", () => {
+    const url = googleAuthorizeUrl({
+      clientId: "c",
+      redirectUri: "https://e/google/callback",
+      state: "s",
+      scopes: ["openid", "https://www.googleapis.com/auth/spreadsheets"],
+    });
+    const scope = new URL(url).searchParams.get("scope") ?? "";
+    expect(scope.split(" ").filter((s) => s === "openid")).toHaveLength(1);
+  });
+});
+
+describe("exchangeCode", () => {
+  const config = { clientId: "c", clientSecret: "s" };
+
+  it("returns the tokens on success", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "at",
+          refresh_token: "rt",
+          expires_in: 3599,
+          scope: "https://www.googleapis.com/auth/spreadsheets openid email",
+        }),
+        { status: 200 },
+      )) as typeof fetch;
+    const grant = await exchangeCode(
+      { config, code: "code_1", redirectUri: "https://e/google/callback" },
+      fetchImpl,
+    );
+    expect(grant.accessToken).toBe("at");
+    expect(grant.refreshToken).toBe("rt");
+    expect(grant.expiresIn).toBe(3599);
+  });
+
+  it("throws a readable error on a non-2xx", async () => {
+    const fetchImpl = (async () =>
+      new Response("bad", { status: 400 })) as typeof fetch;
+    await expect(
+      exchangeCode(
+        { config, code: "x", redirectUri: "https://e/google/callback" },
+        fetchImpl,
+      ),
+    ).rejects.toThrow(/Google rejected the token exchange/);
+  });
+
+  it("throws when Google returns no refresh_token", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ access_token: "at", expires_in: 3599 }), {
+        status: 200,
+      })) as typeof fetch;
+    await expect(
+      exchangeCode(
+        { config, code: "x", redirectUri: "https://e/google/callback" },
+        fetchImpl,
+      ),
+    ).rejects.toThrow(/no refresh token/i);
+  });
+
+  it("sends grant_type=authorization_code with the client creds", async () => {
+    let body = "";
+    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      body = String(init?.body ?? "");
+      return new Response(
+        JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: 1 }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    await exchangeCode(
+      { config, code: "code_1", redirectUri: "https://e/google/callback" },
+      fetchImpl,
+    );
+    const params = new URLSearchParams(body);
+    expect(params.get("grant_type")).toBe("authorization_code");
+    expect(params.get("code")).toBe("code_1");
+    expect(params.get("client_id")).toBe("c");
+    expect(params.get("client_secret")).toBe("s");
+  });
+});
+
+describe("refreshAccessToken", () => {
+  const config = { clientId: "c", clientSecret: "s" };
+
+  it("returns a fresh access token on success", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ access_token: "fresh", expires_in: 3599 }), {
+        status: 200,
+      })) as typeof fetch;
+    const out = await refreshAccessToken(
+      { config, refreshToken: "rt" },
+      fetchImpl,
+    );
+    expect(out.accessToken).toBe("fresh");
+    expect(out.expiresIn).toBe(3599);
+  });
+
+  it("throws InvalidGrantError on a 400 invalid_grant (dead grant)", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+      })) as typeof fetch;
+    await expect(
+      refreshAccessToken({ config, refreshToken: "rt" }, fetchImpl),
+    ).rejects.toBeInstanceOf(InvalidGrantError);
+  });
+
+  it("throws a plain error on a transient 500 (not a dead grant)", async () => {
+    const fetchImpl = (async () =>
+      new Response("boom", { status: 500 })) as typeof fetch;
+    const err = await refreshAccessToken(
+      { config, refreshToken: "rt" },
+      fetchImpl,
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(InvalidGrantError);
+  });
+});

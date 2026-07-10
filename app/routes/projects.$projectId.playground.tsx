@@ -61,10 +61,15 @@ import {
   playgroundCacheIsComplete,
   reconcilePlaygroundSessionFromEve,
   setPlaygroundSessionModel,
+  settleAbandonedPlaygroundSession,
   summarizePlaygroundSession,
 } from "~/playground/sessions.server";
+import { shouldSettleAbandonedSession } from "~/playground/settle";
 import { newPlaygroundSessionPath } from "~/playground/url";
-import { hasActiveTurn } from "~/chat/turn-stream.server";
+import {
+  hasActiveTurn,
+  TURN_IDLE_TIMEOUT_MS,
+} from "~/chat/turn-stream.server";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -162,10 +167,18 @@ export const loader = (args: LoaderFunctionArgs) =>
         // the recovered final reply is part of the cache read below — not just a status flip.
         // A turn actively streaming in this process is skipped, so the 2s reconnect poll never
         // re-opens an Eve stream for a healthy running session.
+        //
+        // Only worth asking Eve while the deployment that RAN the turn is still live: a fresh
+        // instance never saw the session, and Eve hangs (not 404s) session-stream requests for
+        // unknown sessions, so the read would just burn its timeout every load (#73).
+        const ownerDeploymentLive = targets.some(
+          (target) => target.deploymentId === currentSession!.lastDeploymentId,
+        );
         if (
           (currentSession.status === "running" ||
             currentSession.status === "failed") &&
           historyTarget &&
+          ownerDeploymentLive &&
           !hasActiveTurn(currentSession.id)
         ) {
           try {
@@ -176,6 +189,24 @@ export const loader = (args: LoaderFunctionArgs) =>
           } catch {
             // Eve unreachable (e.g. the instance is also gone) — leave status as-is; a later load retries.
           }
+        }
+
+        // Still `running` with no drain that could ever finish it (the owning deployment is gone,
+        // or Eve has been silent past the drain's own idle budget)? Settle it to `failed` so the
+        // session stops reading as busy and the 2s reconnect poll ends — otherwise a redeploy
+        // mid-turn leaves the playground "thinking" forever with no way to stop it (#73).
+        if (
+          shouldSettleAbandonedSession({
+            status: currentSession.status,
+            activeTurnInProcess: hasActiveTurn(currentSession.id),
+            ownerDeploymentLive,
+            msSinceLastActivity:
+              Date.now() - currentSession.updatedAt.getTime(),
+            idleTimeoutMs: TURN_IDLE_TIMEOUT_MS,
+          })
+        ) {
+          currentSession =
+            await settleAbandonedPlaygroundSession(currentSession);
         }
 
         // Legacy backfill: a session that predates the cache has consumed events (its cursor
@@ -340,6 +371,22 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [live, setLive] = useState<LiveTurn | null>(null);
+  // A settled live turn hands off to its persisted copy: clear `live` only once the loader's
+  // entries actually cover the turn (or the user moved to another session). Clearing before the
+  // cached copy exists is how a sent message could vanish outright — turn errors early, nothing
+  // persisted, live view dropped anyway (#73).
+  useEffect(() => {
+    if (!live?.done) return;
+    if (
+      live.playgroundSessionId &&
+      currentSessionId &&
+      live.playgroundSessionId !== currentSessionId
+    ) {
+      setLive(null);
+      return;
+    }
+    if (entries.length > live.baseEntryCount) setLive(null);
+  }, [currentSessionId, entries.length, live]);
   // The user's not-yet-persisted selector choice; the stored session override wins otherwise.
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   useEffect(() => {
@@ -357,7 +404,10 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   useEffect(() => {
     if (!replayingRunningSession) return;
     const id = window.setInterval(() => {
-      void revalidator.revalidate();
+      // Skip a tick while the previous revalidation is still in flight — firing anyway cancels
+      // the running loader (visible as a refresh-loop of aborted .data requests when the loader
+      // is slow, e.g. blocked on an unresponsive Eve instance) (#73).
+      if (revalidator.state === "idle") void revalidator.revalidate();
     }, 2_000);
     return () => window.clearInterval(id);
   }, [replayingRunningSession, revalidator]);
@@ -509,8 +559,13 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             apply(evt);
           }
         }
-        // Stream ended — the server has persisted the cursor. Revalidate, then replay Eve
-        // history through the loader.
+        // Stream ended — the server has persisted the cursor. Settle the live view (a stream
+        // can close without a "done" event) and revalidate; the handoff effect clears `live`
+        // once the revalidated entries cover this turn. If persistence failed, the live copy
+        // stays on screen instead of the turn vanishing.
+        setLive((prev) =>
+          prev && !prev.done ? { ...prev, activity: null, done: true } : prev,
+        );
         await revalidator.revalidate();
         if (!currentSessionId && nextSessionId) {
           navigate(
@@ -521,7 +576,6 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           );
         }
         streamAbortRef.current = null;
-        setLive(null);
       } catch (error) {
         streamAbortRef.current = null;
         if (stopRequestedRef.current) {
@@ -544,8 +598,9 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         setSendError(
           "The live view dropped — the reply may still have been recorded.",
         );
+        // No setLive(null): the handoff effect clears it once the revalidated entries include
+        // the turn; until then the errored live view (with the user's message) stays visible.
         await revalidator.revalidate();
-        setLive(null);
       }
     },
     [
@@ -815,6 +870,20 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
                   idPrefix="running-session"
                   activity="Still working…"
                 />
+              )}
+            {/* A turn the loader settled as unrecoverable (deployment replaced mid-turn, or the
+                stream went silent past its budget) — say so instead of ending on the user's
+                message with no explanation. */}
+            {currentSessionStatus === "failed" &&
+              !live &&
+              shownEntries.at(-1)?.role === "user" && (
+                <AssistantBubble>
+                  <p className="text-sm text-muted-foreground">
+                    This turn was interrupted before it finished — the
+                    deployment it was running on is no longer live. Send a new
+                    message to continue the conversation.
+                  </p>
+                </AssistantBubble>
               )}
             {live && (
               <>

@@ -340,6 +340,28 @@ export async function markPlaygroundSessionStopped(input: {
     .where(eq(playgroundSessions.id, input.id));
 }
 
+/**
+ * Settle a `running` session whose turn is unrecoverable (see ~/playground/settle.ts for when
+ * that's provable). Flips it to `failed` so the UI stops treating it as busy; the transcript
+ * keeps whatever the drain persisted before it died. Guarded on `status = 'running'` so a drain
+ * elsewhere that settles concurrently isn't clobbered.
+ */
+export async function settleAbandonedPlaygroundSession(
+  session: PlaygroundSession,
+): Promise<PlaygroundSession> {
+  const [row] = await db
+    .update(playgroundSessions)
+    .set({ status: "failed", updatedAt: new Date() })
+    .where(
+      and(
+        eq(playgroundSessions.id, session.id),
+        eq(playgroundSessions.status, "running"),
+      ),
+    )
+    .returning();
+  return row ?? session;
+}
+
 export function titleFromMessage(message: string): string {
   const collapsed = message.replace(/\s+/g, " ").trim();
   if (collapsed.length <= 80) return collapsed || "New conversation";
@@ -424,6 +446,15 @@ interface EveStreamEvent {
   meta?: { at?: string };
 }
 
+/**
+ * Eve answers a session-stream request's HEADERS immediately when it knows the session — but for
+ * a session id it has never seen (e.g. a fresh instance asked about a pre-redeploy session) it
+ * hangs the request forever instead of 404ing. These reads sit on the playground loader's
+ * critical path, so give the pre-headers phase its own short budget: a healthy instance clears it
+ * in milliseconds, and a hang costs ~3s instead of a 15s page load (#73).
+ */
+const EVE_STREAM_CONNECT_TIMEOUT_MS = 3_000;
+
 async function readEveSessionEvents(input: {
   baseUrl: string;
   sessionId: string;
@@ -432,10 +463,26 @@ async function readEveSessionEvents(input: {
 }): Promise<EveStreamEvent[]> {
   const base = input.baseUrl.replace(/\/+$/, "");
   const timeoutMs = input.timeoutMs ?? 15_000;
-  const res = await fetch(
-    `${base}/eve/v1/session/${input.sessionId}/stream?startIndex=0`,
-    { signal: AbortSignal.timeout(timeoutMs) },
+  const connectController = new AbortController();
+  const connectTimer = setTimeout(
+    () => connectController.abort(),
+    Math.min(timeoutMs, EVE_STREAM_CONNECT_TIMEOUT_MS),
   );
+  let res: Response;
+  try {
+    res = await fetch(
+      `${base}/eve/v1/session/${input.sessionId}/stream?startIndex=0`,
+      {
+        signal: AbortSignal.any([
+          AbortSignal.timeout(timeoutMs),
+          connectController.signal,
+        ]),
+      },
+    );
+  } finally {
+    // Headers arrived (or the fetch failed) — from here only the overall budget applies.
+    clearTimeout(connectTimer);
+  }
   if (!res.ok || !res.body) {
     throw new Error(`Eve stream returned ${res.status}`);
   }
@@ -471,7 +518,12 @@ async function readEveSessionTail(input: {
 }): Promise<{ events: EveStreamEvent[] }> {
   const base = input.baseUrl.replace(/\/+$/, "");
   const fetchController = new AbortController();
-  const fetchTimer = setTimeout(() => fetchController.abort(), 15_000);
+  // Pre-headers budget only — the timer is cleared as soon as the response arrives, and the idle
+  // race below bounds the body reads. See EVE_STREAM_CONNECT_TIMEOUT_MS for why this is short.
+  const fetchTimer = setTimeout(
+    () => fetchController.abort(),
+    EVE_STREAM_CONNECT_TIMEOUT_MS,
+  );
   let res: Response;
   try {
     res = await fetch(

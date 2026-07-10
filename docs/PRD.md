@@ -795,7 +795,8 @@ two-source-of-truth reconciliation problem.
 **Milestone 6 — Recruit (marketplace, §7.8)**
 
 - **Phase 1 — format + catalog + browse (shipped).** The template format (files + a
-  `template.json` manifest: file list, npm dependencies, required secrets/connections, version,
+  `template.json` manifest: file list, npm dependencies, required secrets, an optional
+  auth-brokered connection descriptor (issue #30), version,
   eve range) as a Zod schema that makes path traversal impossible at the schema layer; the
   first-party catalog as a `marketplace/` tree (`catalog/` in-repo) validated + indexed by
   catalog CI (no build step — templates are source; the index carries a content hash per
@@ -821,8 +822,7 @@ two-source-of-truth reconciliation problem.
   is a first-class install target here.
 - **Deliberately punted:** the other two agent-template targets from §7.8 — a **new standalone
   repo** and a **subagent of an existing agent** (member + new-team-member are the shipped two);
-  **connections wiring** (the manifest reserves `connections` but nothing consumes it yet); and
-  the **rung-2 "publish to marketplace" flow** (extracting a live-tested tool/agent from a
+  and the **rung-2 "publish to marketplace" flow** (extracting a live-tested tool/agent from a
   workspace into a catalog PR) — rung 1 (PR the catalog, CI-gated) stands.
 
 **Milestone 6.1 — Runtime: real sandboxes & durable worlds (shipped)**

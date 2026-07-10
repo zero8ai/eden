@@ -36,6 +36,12 @@ export interface DeployDeps {
   workspaceModelKey?: (orgId: string) => Promise<string | null>;
   /** Names of secrets marked "available in the agent's sandbox shell" for a deploy scope. */
   sandboxExposedNames?: (scope: SecretScope) => Promise<string[]>;
+  /**
+   * Env for the agent's active auth-brokered connection grant (issue #30): the operator Google
+   * client creds + the sealed refresh token, so the shipped eve connection self-refreshes tokens.
+   * `{}` when there's no grant; THROWS (failing the deploy) when the grant is dead.
+   */
+  connectionGrantEnv?: (scope: SecretScope) => Promise<Record<string, string>>;
 }
 
 function deployDeps(): DeployDeps {
@@ -48,6 +54,8 @@ function deployDeps(): DeployDeps {
       import("~/org/workspace.server").then((m) => m.getWorkspaceModelKey(orgId)),
     sandboxExposedNames: (scope) =>
       import("~/seams/oss/secret-store").then((m) => m.listSandboxExposedNames(scope)),
+    connectionGrantEnv: (scope) =>
+      import("~/connections/deploy.server").then((m) => m.connectionGrantEnv(scope)),
   };
 }
 
@@ -356,6 +364,27 @@ export async function deployRelease(
       // team relay uses, so single-agent deployments (not team members — no EDEN_TEAM_* above)
       // need one too. The team relay independently authorizes, so this grants no team powers.
       envVars.EDEN_TEAM_TOKEN ??= mintDelegationToken(dep.id);
+    }
+
+    // Auth-brokered connections (issue #30): if this agent has an active Google grant, inject the
+    // operator client creds + sealed refresh token so the shipped eve OpenAPI connection can
+    // self-refresh access tokens at runtime. The provider validates the grant once (a dead grant
+    // THROWS here, failing the deploy with a reconnect message). Eden OWNS these keys only when it
+    // actually brokers the connection: like the Discord block above, anti-shadowing runs ONLY when
+    // there's injection env — so a self-hoster's manually-set GOOGLE_OAUTH_* (their own client +
+    // token, no broker) passes through untouched. No-op when there's no grant / no operator config.
+    const grantEnv = deps.connectionGrantEnv ? await deps.connectionGrantEnv(scope) : {};
+    if (Object.keys(grantEnv).length > 0) {
+      for (const key of [
+        "GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_SECRET",
+        "GOOGLE_OAUTH_REFRESH_TOKEN",
+      ]) {
+        delete envVars[key];
+      }
+      for (const [key, value] of Object.entries(grantEnv)) {
+        envVars[key] = value;
+      }
     }
 
     let imageRef = release.imageRef;

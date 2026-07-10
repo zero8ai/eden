@@ -396,6 +396,10 @@ export async function action(args: ActionFunctionArgs) {
       };
     }
 
+    // Connecting the OAuth account is a DEPLOYMENT concern, not an install one (issue #30): staging
+    // never gates on a grant. A freshly installed connector has no grant yet — the user connects it
+    // from the Deployment tab's Connections card, which the lock snapshot drives.
+
     // Secrets are PLANNED before anything is staged so a refused install stages nothing.
     let secretOps: InstallSecretOp[] = [];
     if ((template.manifest.secrets?.length ?? 0) > 0) {
@@ -566,7 +570,10 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
   );
   const targetChosen = newMemberTemplate ? !!newMemberName : !!selectedMember;
   const canSubmit =
-    !!selectedProjectId && targetChosen && !hasConflicts && !singleAgentInvalid;
+    !!selectedProjectId &&
+    targetChosen &&
+    !hasConflicts &&
+    !singleAgentInvalid;
 
   /** Navigate to this route with an updated query, preserving the rest. */
   const go = (patch: Record<string, string | null>) => {
@@ -918,8 +925,7 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                 Stage install
               </Button>
               <span className="text-sm text-muted-foreground">
-                Stages a change-set — review and publish it on the Deployment
-                tab.
+                Stages a change-set — review and publish it on the Deployment tab.
               </span>
             </div>
           </Form>

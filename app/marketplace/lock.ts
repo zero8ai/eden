@@ -82,6 +82,23 @@ const installEntrySchema = z.object({
       }),
     )
     .optional(),
+  /**
+   * Snapshot of the OAuth connection scopes this install REQUIRES at install time (issue #30;
+   * LOCK_VERSION stays 1 — optional field, old locks parse fine). This is the request template a
+   * Reconnect must use: a grant row's stored `scopes` records only what Google GRANTED last time,
+   * so deriving the reconnect request from it perpetuates stale/narrow scopes forever. Snapshotting
+   * requirements here — exactly like `secrets` — lets surfaces rebuild the correct scope set per
+   * installed connector, surviving template upgrades per-version.
+   */
+  auth: z
+    .array(
+      z.object({
+        provider: z.string().min(1),
+        kind: z.literal("oauth2"),
+        scopes: z.array(z.string().min(1)).min(1),
+      }),
+    )
+    .optional(),
 });
 
 export type InstallEntry = z.infer<typeof installEntrySchema>;
@@ -134,6 +151,36 @@ export function findInstall(
   member: string | null,
 ): InstallEntry | undefined {
   return lock.installs.find((e) => e.id === id && e.member === member);
+}
+
+/**
+ * The OAuth scopes REQUIRED per provider by all installs owned by `member` (issue #30): the union
+ * of every install's `auth` snapshot, deduped and sorted, keyed by provider. A Reconnect must
+ * request THIS set, never a grant row's stored scopes (which record only what was granted before).
+ * Empty for members whose installs carry no `auth` snapshot (old locks, non-connector installs).
+ * Client-safe: pure, no server imports.
+ */
+export function requiredScopesByProvider(
+  lock: EdenLock,
+  member: string | null,
+): Map<string, string[]> {
+  const byProvider = new Map<string, Set<string>>();
+  for (const entry of lock.installs) {
+    if (entry.member !== member) continue;
+    for (const auth of entry.auth ?? []) {
+      let set = byProvider.get(auth.provider);
+      if (!set) {
+        set = new Set<string>();
+        byProvider.set(auth.provider, set);
+      }
+      for (const scope of auth.scopes) set.add(scope);
+    }
+  }
+  const result = new Map<string, string[]>();
+  for (const [provider, set] of byProvider) {
+    result.set(provider, [...set].sort());
+  }
+  return result;
 }
 
 /** Upsert an entry by (id, member): replaces the matching install, else appends. Pure. */

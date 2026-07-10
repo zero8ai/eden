@@ -103,11 +103,53 @@ describe("manifest schema", () => {
       ...VALID,
       dependencies: undefined,
       secrets: undefined,
-      connections: ["some-service"],
       model: "anthropic/claude-sonnet-5",
     });
-    expect(parsed.connections).toEqual(["some-service"]);
     expect(parsed.model).toBe("anthropic/claude-sonnet-5");
+  });
+
+  it("strips the removed `connections` field (no longer part of the format, issue #30)", () => {
+    const parsed = parseManifest({ ...VALID, connections: ["some-service"] });
+    expect((parsed as Record<string, unknown>).connections).toBeUndefined();
+  });
+
+  it("accepts an auth descriptor on a connection template (issue #30)", () => {
+    const parsed = parseManifest({
+      ...VALID,
+      id: "google-sheets",
+      type: "connection",
+      auth: {
+        provider: "google",
+        kind: "oauth2",
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+      },
+    });
+    expect(parsed.auth).toEqual({
+      provider: "google",
+      kind: "oauth2",
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    });
+  });
+
+  it("rejects auth on a non-connection template", () => {
+    expect(() =>
+      parseManifest({
+        ...VALID,
+        type: "tool",
+        auth: { provider: "google", kind: "oauth2", scopes: ["x"] },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects an auth with an empty scopes list", () => {
+    expect(() =>
+      parseManifest({
+        ...VALID,
+        id: "google-sheets",
+        type: "connection",
+        auth: { provider: "google", kind: "oauth2", scopes: [] },
+      }),
+    ).toThrow();
   });
 });
 

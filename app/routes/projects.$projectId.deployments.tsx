@@ -60,7 +60,13 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -123,6 +129,12 @@ import { fetchAgentSource } from "~/github/repo.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
 import { getDiscordAppConfig } from "~/discord/config.server";
 import { listConnectionsForAgent } from "~/discord/connections.server";
+import { getGoogleOAuthConfig } from "~/connections/config.server";
+import {
+  connectionRowState,
+  type ConnectionRowState,
+} from "~/connections/google.server";
+import { listGrantsForAgent } from "~/connections/grants.server";
 import {
   discardConversationCheckoutByBranch,
   isConversationBranch,
@@ -132,7 +144,7 @@ import { ensureWorkerStarted } from "~/jobs/worker.server";
 import { contextPath } from "~/lib/paths";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { cn } from "~/lib/utils";
-import { overlayLock } from "~/marketplace/lock";
+import { overlayLock, requiredScopesByProvider } from "~/marketplace/lock";
 import {
   agentRequiredSecretState,
   cleanupOrphanedPendingSecrets,
@@ -230,6 +242,32 @@ interface DeploymentData {
       environmentId: string;
     }> | null;
   };
+  /**
+   * Member/single view: the connector rows for this agent (issue #30) — the UNION of every provider
+   * the lock REQUIRES and every existing grant, so a freshly installed connector with no grant yet
+   * still shows a Connect button. This card is now the ONE place a connector is connected/reconnected;
+   * installs no longer gate on it. Empty in the team (hint-only) view.
+   */
+  connections: Array<{
+    /** Grant id when connected, else a synthetic `provider:<name>` key for the lock-derived row. */
+    id: string;
+    provider: string;
+    accountEmail: string | null;
+    /** What Google GRANTED last time — a record only, never the Reconnect request template (§#30). */
+    scopes: string;
+    /** Grant status, or null when there's no grant yet (lock-derived row). */
+    status: string | null;
+    /**
+     * The space-joined scopes a Connect/Reconnect must REQUEST for this provider, derived from the
+     * install's lock snapshot (issue #30). Null when the lock carries no snapshot (old locks) — the
+     * card then falls back to the stored grant `scopes`.
+     */
+    requiredScopes: string | null;
+    /** Loader-computed row state — the server-only scope comparison stays out of the render path. */
+    state: ConnectionRowState;
+  }>;
+  /** Whether the operator configured a Google OAuth client — gates the reconnect action. */
+  connectionsConfigured: boolean;
   /** Member/single view: GitHub App setup when the agent has the marketplace GitHub channel. */
   githubSetup: {
     enabled: boolean;
@@ -428,6 +466,8 @@ export const loader = (args: LoaderFunctionArgs) =>
             configured: false,
             connections: null,
           },
+          connections: [],
+          connectionsConfigured: getGoogleOAuthConfig() !== null,
           githubSetup: {
             enabled: false,
             appSlug: null,
@@ -461,11 +501,17 @@ export const loader = (args: LoaderFunctionArgs) =>
         );
       let hasDiscordSetup = activeHasChannelFile("discord");
       let hasGithubSetup = activeHasChannelFile("github");
+      // The effective lock for this agent (drafts overlaid) — drives both the missing-secret guard
+      // and the Connections card's required-scope derivation (issue #30).
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        allDrafts.map((d) => ({ path: d.path, content: d.content })),
+      );
+      // The lock attributes installs to a member name (team) or null (single-agent root) — mirror
+      // lockSecretsForMember's mapping so the required-scope union covers the right installs.
+      const activeMember = isTeam ? active.name : null;
+      const requiredScopes = requiredScopesByProvider(lock, activeMember);
       try {
-        const lock = overlayLock(
-          source.files["eden-lock.json"] ?? null,
-          allDrafts.map((d) => ({ path: d.path, content: d.content })),
-        );
         const [state, shared] = await Promise.all([
           agentRequiredSecretState({
             projectId: project.id,
@@ -510,6 +556,42 @@ export const loader = (args: LoaderFunctionArgs) =>
         } catch {
           discordConnections = null; // store hiccup — the card falls back to the connect button
         }
+      }
+      // Connector rows for this agent (issue #30): the UNION of every provider the lock REQUIRES and
+      // every existing grant. With the install wizard's connect gate gone, a freshly installed
+      // connector has no grant yet — the lock-required provider still gets a row (Connect button), so
+      // this card is the ONE place a connector is connected/reconnected.
+      let connectionGrantRows: DeploymentData["connections"] = [];
+      try {
+        const grants = await listGrantsForAgent(active.id);
+        const grantByProvider = new Map(grants.map((g) => [g.provider, g]));
+        const providers = [
+          ...new Set([...requiredScopes.keys(), ...grantByProvider.keys()]),
+        ].sort();
+        connectionGrantRows = providers.map((provider) => {
+          const grant = grantByProvider.get(provider);
+          const req = requiredScopes.get(provider);
+          // The scopes a Connect/Reconnect must REQUEST, from the install's lock snapshot (issue #30).
+          // Null when the lock has no snapshot for this provider (old locks) → the card falls back to
+          // the grant's stored scopes.
+          const requiredScopeStr = req && req.length > 0 ? req.join(" ") : null;
+          return {
+            id: grant?.id ?? `provider:${provider}`,
+            provider,
+            accountEmail: grant?.accountEmail ?? null,
+            scopes: grant?.scopes ?? "",
+            status: grant?.status ?? null,
+            requiredScopes: requiredScopeStr,
+            state: connectionRowState({
+              hasGrant: grant !== undefined,
+              grantStatus: grant?.status ?? null,
+              requiredScopes: requiredScopeStr,
+              grantScopes: grant?.scopes ?? "",
+            }),
+          };
+        });
+      } catch {
+        connectionGrantRows = []; // store hiccup — the card simply doesn't render
       }
       let githubAppSlug: string | null = null;
       let githubInstallations: AppInstallation[] | null = null;
@@ -563,6 +645,8 @@ export const loader = (args: LoaderFunctionArgs) =>
           configured: discordConfigured,
           connections: discordConnections,
         },
+        connections: connectionGrantRows,
+        connectionsConfigured: getGoogleOAuthConfig() !== null,
         githubSetup: {
           enabled: hasGithubSetup,
           appSlug: githubAppSlug,
@@ -995,7 +1079,118 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
         projectId={loaderData.project.id}
         agentName={activeAgent}
       />
+      <ConnectionsCard
+        connections={loaderData.connections}
+        configured={loaderData.connectionsConfigured}
+        projectId={loaderData.project.id}
+        agentName={activeAgent}
+      />
     </>
+  );
+}
+
+/**
+ * Auth-brokered connections (issue #30): the ONE place a connector's OAuth account is connected and
+ * reconnected — installs no longer gate on it, so a row exists for every provider the lock REQUIRES,
+ * even before any grant. Each row routes to /google/connect (returnTo = this Deployment tab) and, per
+ * its loader-derived state, offers Connect (no grant), a subtle Reconnect (covered), or a primary
+ * Reconnect (under-scoped / expired / revoked). Visual language mirrors the Discord card.
+ */
+function ConnectionsCard({
+  connections,
+  configured,
+  projectId,
+  agentName,
+}: {
+  connections: LoaderData["connections"];
+  configured: boolean;
+  projectId: string;
+  agentName: string;
+}) {
+  if (connections.length === 0) return null;
+  const returnTo = `${contextPath(projectId, agentName)}/deployment`;
+  const providerLabel = (p: string) =>
+    p === "google" ? "Google" : p.charAt(0).toUpperCase() + p.slice(1);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Connections</CardTitle>
+        <CardDescription>
+          Accounts this agent is authorized to act on. Connect a new one, or
+          reconnect if a grant expires, is revoked, or is missing permissions.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {connections.map((c) => {
+          const label = providerLabel(c.provider);
+          // Request the scopes the INSTALL declares (lock snapshot), not the grant's stored scopes
+          // (issue #30): stored scopes record what Google granted last time, so using them as the
+          // request template perpetuates stale/narrow scopes forever — the incident where an
+          // identity-only grant reconnected without ever re-requesting the Sheets scope. Fall back
+          // to stored scopes only for old locks that predate the snapshot.
+          const connectUrl =
+            `/google/connect?project=${encodeURIComponent(projectId)}` +
+            `&agent=${encodeURIComponent(agentName)}` +
+            `&scopes=${encodeURIComponent(c.requiredScopes ?? c.scopes)}` +
+            `&returnTo=${encodeURIComponent(returnTo)}`;
+          return (
+            <div
+              key={c.id}
+              className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
+            >
+              <div className="grid gap-0.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">{label}</span>
+                  {c.state === "not-connected" ? (
+                    <Badge variant="outline">not connected</Badge>
+                  ) : c.state === "inactive" ? (
+                    <Badge variant="warning">{c.status}</Badge>
+                  ) : c.state === "under-scoped" ? (
+                    <Badge variant="warning">missing permissions</Badge>
+                  ) : (
+                    <Badge variant="success">connected</Badge>
+                  )}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {c.state === "not-connected"
+                    ? "Not connected"
+                    : c.state === "under-scoped"
+                      ? `Connected as ${c.accountEmail ?? "your Google account"} — missing permissions this connector needs.`
+                      : c.state === "connected"
+                        ? `Connected as ${c.accountEmail ?? "your Google account"}`
+                        : (c.accountEmail ?? "connected account")}
+                </span>
+              </div>
+              {configured ? (
+                // A covered grant is done — only a subtle Reconnect link. Every other state is a
+                // to-do (connect, re-scope, or re-auth) and gets the primary button (issue #30).
+                c.state === "connected" ? (
+                  <Link
+                    to={connectUrl}
+                    className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                  >
+                    Reconnect
+                  </Link>
+                ) : (
+                  <Button asChild variant="default" size="sm">
+                    <Link to={connectUrl}>
+                      {c.state === "not-connected"
+                        ? `Connect ${label}`
+                        : "Reconnect"}
+                    </Link>
+                  </Button>
+                )
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  operator config missing
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
   );
 }
 

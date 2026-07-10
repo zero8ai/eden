@@ -21,7 +21,10 @@
  *               parental) range wins silently.
  *  - secrets    union by name (includes-first then parent); first occurrence keeps its
  *               description; sandbox flags OR together.
- *  - connections union, deduped, includes-first then parent.
+ *  - auths      union by provider (issue #30): every include's + the parent's OAuth connection
+ *               descriptors, deduped by provider with scopes unioned. Surfaced on the resolved
+ *               template (NOT folded into the manifest) so the install wizard can render a Connect
+ *               step for each — a bundle carries a connector's auth by including the connection.
  *  - sandbox    one merged setup: bootstrap concatenated includes-first then parent-last; env
  *               merged with the parent winning collisions; revalidationKey = the non-empty keys
  *               joined with "|" (includes-first, parent-last).
@@ -46,9 +49,18 @@ export interface ResolvedInclude {
   hash: string;
 }
 
+/** One auth-brokered connection descriptor surfaced by composition (issue #30). */
+export interface ResolvedAuth {
+  /** The connection template that declared it (provenance / display). */
+  templateId: string;
+  provider: string;
+  kind: "oauth2";
+  scopes: string[];
+}
+
 /** A template with every include flattened into it — what the planner installs. */
 export interface ResolvedTemplate {
-  /** Parent manifest with flattened files/deps/secrets/connections/sandbox; `includes` removed. */
+  /** Parent manifest with flattened files/deps/secrets/sandbox; `includes` removed. */
   manifest: TemplateManifest;
   /** install-relative path → content: the union of every include's files plus the parent's. */
   files: Record<string, string>;
@@ -56,6 +68,12 @@ export interface ResolvedTemplate {
   hash: string;
   /** Direct include references, each with its own name/version/hash (composition provenance). */
   includes: ResolvedInclude[];
+  /**
+   * OAuth connection descriptors the install must broker (issue #30): the parent's own `auth`
+   * plus every include's, deduped by provider (scopes unioned). Empty for templates with no
+   * connector. Kept OFF the manifest — it's an install-wizard concern, not a materialized file.
+   */
+  auths: ResolvedAuth[];
 }
 
 /** Depth cap on include nesting — a defensive bound; real catalogs nest one or two deep. */
@@ -188,13 +206,25 @@ async function resolve(
   addSecrets(manifest.secrets);
   const secrets = [...secretByName.values()];
 
-  // ── connections: union, deduped, includes-first then parent ──
-  const connectionSet = new Set<string>();
+  // ── auths: union by provider, includes-first then parent; scopes unioned per provider ──
+  const authByProvider = new Map<string, ResolvedAuth>();
+  const addAuth = (auth: ResolvedAuth) => {
+    const existing = authByProvider.get(auth.provider);
+    if (!existing) {
+      authByProvider.set(auth.provider, { ...auth, scopes: [...auth.scopes] });
+      return;
+    }
+    for (const scope of auth.scopes) {
+      if (!existing.scopes.includes(scope)) existing.scopes.push(scope);
+    }
+  };
   for (const child of resolvedIncludes) {
-    for (const c of child.manifest.connections ?? []) connectionSet.add(c);
+    for (const a of child.auths) addAuth(a);
   }
-  for (const c of manifest.connections ?? []) connectionSet.add(c);
-  const connections = [...connectionSet];
+  if (manifest.auth) {
+    addAuth({ templateId: manifest.id, ...manifest.auth });
+  }
+  const auths = [...authByProvider.values()];
 
   // ── sandbox: one merged setup, includes-first then parent-last (parent wins env collisions) ──
   const sandbox = mergeSandbox(
@@ -209,14 +239,16 @@ async function resolve(
   resolvedManifest.files = fileList;
   setOrDelete(resolvedManifest, "dependencies", deps, Object.keys(deps).length > 0);
   setOrDelete(resolvedManifest, "secrets", secrets, secrets.length > 0);
-  setOrDelete(resolvedManifest, "connections", connections, connections.length > 0);
   setOrDelete(resolvedManifest, "sandbox", sandbox, sandbox !== undefined);
+  // `auth` is an install-wizard concern surfaced via `auths` below — never a materialized field.
+  delete resolvedManifest.auth;
 
   return {
     manifest: resolvedManifest,
     files,
     hash: ownHash,
     includes: provenance,
+    auths,
   };
 }
 

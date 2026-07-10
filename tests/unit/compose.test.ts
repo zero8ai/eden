@@ -4,8 +4,8 @@
  * All against an in-memory CatalogSource fake, no I/O: resolveTemplate (compose.server.ts) sits on
  * top of the unchanged seam and flattens `includes` into one materialized template. These pin the
  * merge rules — files union (dup = error), deps parent-wins, secrets union (desc first-wins,
- * sandbox OR), connections union, sandbox merge, provenance, and the own-hash invariant — plus the
- * guard rails: cycles, depth cap, agent-include rejection, missing references.
+ * sandbox OR), auth union-by-provider (issue #30), sandbox merge, provenance, and the own-hash
+ * invariant — plus the guard rails: cycles, depth cap, agent-include rejection, missing references.
  */
 import { describe, expect, it } from "vitest";
 
@@ -30,7 +30,6 @@ const channelTpl: CatalogTemplate = {
       { name: "DISCORD_BOT_TOKEN", description: "bot token" },
       { name: "SHARED_SECRET", description: "from channel", provisioned: true },
     ],
-    connections: ["discord-gateway"],
     sandbox: {
       bootstrap: ["install discord"],
       env: { DISCORD_ENV: "chan", SHARED_ENV: "chan" },
@@ -75,7 +74,6 @@ const agentTpl: CatalogTemplate = {
       { name: "SHARED_SECRET", description: "from parent", sandbox: true },
       { name: "AGENT_SECRET", description: "agent only" },
     ],
-    connections: ["agent-conn", "discord-gateway"],
     sandbox: {
       bootstrap: ["agent boot"],
       env: { AGENT_ENV: "agent", SHARED_ENV: "parent" },
@@ -127,12 +125,9 @@ describe("resolveTemplate — flattening an agent that includes a channel + a to
     ]);
   });
 
-  it("unions connections, deduped, includes-first then parent", async () => {
+  it("surfaces no auths when nothing declares one", async () => {
     const resolved = await resolveTemplate(source, "agent", "engineer");
-    expect(resolved.manifest.connections).toEqual([
-      "discord-gateway",
-      "agent-conn",
-    ]);
+    expect(resolved.auths).toEqual([]);
   });
 
   it("merges sandbox: bootstrap includes→parent, env parent-wins, revalidationKey joined", async () => {
@@ -293,6 +288,133 @@ describe("resolveTemplate — a file-less bundle (pure composition, issue #42)",
   it("keeps the bundle's OWN hash (its includes never fold into it)", async () => {
     const resolved = await resolveTemplate(source, "bundle", "chat-pack");
     expect(resolved.hash).toBe(templateContentHash(bundleTpl));
+  });
+});
+
+describe("resolveTemplate — auth descriptors (issue #30)", () => {
+  const connTpl: CatalogTemplate = {
+    manifest: {
+      id: "google-sheets",
+      type: "connection",
+      name: "Google Sheets",
+      description: "Read/write Sheets.",
+      version: "0.1.0",
+      eve: ">=0.20.0",
+      files: ["connections/google-sheets.ts"],
+      auth: {
+        provider: "google",
+        kind: "oauth2",
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+      },
+    },
+    files: { "connections/google-sheets.ts": "export default {};\n" },
+  };
+  const skillTpl: CatalogTemplate = {
+    manifest: {
+      id: "sheets-skill",
+      type: "skill",
+      name: "Sheets skill",
+      description: "How to use sheets.",
+      version: "0.1.0",
+      eve: ">=0.20.0",
+      files: ["skills/sheets.md"],
+    },
+    files: { "skills/sheets.md": "# sheets\n" },
+  };
+  const bundleTpl: CatalogTemplate = {
+    manifest: {
+      id: "sheets-bundle",
+      type: "bundle",
+      name: "Sheets bundle",
+      description: "Connector + skill.",
+      version: "0.1.0",
+      eve: ">=0.20.0",
+      files: [],
+      includes: [
+        { type: "connection", id: "google-sheets" },
+        { type: "skill", id: "sheets-skill" },
+      ],
+    },
+    files: {},
+  };
+
+  it("surfaces the connection's own auth on the resolved template", async () => {
+    const source = fakeCatalog([connTpl]);
+    const resolved = await resolveTemplate(source, "connection", "google-sheets");
+    expect(resolved.auths).toEqual([
+      {
+        templateId: "google-sheets",
+        provider: "google",
+        kind: "oauth2",
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+      },
+    ]);
+    // auth is an install-wizard concern, never a materialized manifest field.
+    expect(
+      (resolved.manifest as Record<string, unknown>).auth,
+    ).toBeUndefined();
+  });
+
+  it("a bundle including a connection surfaces that connection's auth", async () => {
+    const source = fakeCatalog([connTpl, skillTpl, bundleTpl]);
+    const resolved = await resolveTemplate(source, "bundle", "sheets-bundle");
+    expect(resolved.auths).toEqual([
+      {
+        templateId: "google-sheets",
+        provider: "google",
+        kind: "oauth2",
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+      },
+    ]);
+  });
+
+  it("dedupes by provider and unions scopes across two connections", async () => {
+    const connB: CatalogTemplate = {
+      manifest: {
+        id: "google-drive",
+        type: "connection",
+        name: "Google Drive",
+        description: "Drive access.",
+        version: "0.1.0",
+        eve: ">=0.20.0",
+        files: ["connections/google-drive.ts"],
+        auth: {
+          provider: "google",
+          kind: "oauth2",
+          scopes: [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive.file",
+          ],
+        },
+      },
+      files: { "connections/google-drive.ts": "export default {};\n" },
+    };
+    const bundle2: CatalogTemplate = {
+      manifest: {
+        id: "google-bundle",
+        type: "bundle",
+        name: "Google bundle",
+        description: "Both Google connectors.",
+        version: "0.1.0",
+        eve: ">=0.20.0",
+        files: [],
+        includes: [
+          { type: "connection", id: "google-sheets" },
+          { type: "connection", id: "google-drive" },
+        ],
+      },
+      files: {},
+    };
+    const source = fakeCatalog([connTpl, connB, bundle2]);
+    const resolved = await resolveTemplate(source, "bundle", "google-bundle");
+    expect(resolved.auths).toHaveLength(1);
+    expect(resolved.auths[0].provider).toBe("google");
+    expect(new Set(resolved.auths[0].scopes)).toEqual(
+      new Set([
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive.file",
+      ]),
+    );
   });
 });
 

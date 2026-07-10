@@ -1,0 +1,825 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Google Sheets API",
+    "description": "Vendored, trimmed OpenAPI 3.0.3 spec for the Google Sheets v4 API. Reads and writes cell values and spreadsheet structure. Cell ranges are addressed using A1 notation, e.g. 'Sheet1!A1:B10', 'Sheet1!A:A' (a whole column), 'Sheet1!1:2' (whole rows), or 'A1:B2' (defaults to the first visible sheet). Authorization is handled by the caller (a bearer OAuth2 access token with the appropriate https://www.googleapis.com/auth/spreadsheets scope); no auth is declared in this spec.",
+    "version": "v4"
+  },
+  "servers": [
+    {
+      "url": "https://sheets.googleapis.com",
+      "description": "Google Sheets API production endpoint"
+    }
+  ],
+  "paths": {
+    "/v4/spreadsheets/{spreadsheetId}": {
+      "get": {
+        "operationId": "spreadsheets_get",
+        "summary": "Get spreadsheet metadata",
+        "description": "Returns the spreadsheet at the given ID, including its properties and the metadata for each sheet (title, sheetId, grid size, etc.). By default cell data is NOT returned. To include cell values set includeGridData=true, optionally limited to specific ranges via the ranges parameter. Use this to discover sheet titles and IDs before reading or writing values.",
+        "parameters": [
+          {
+            "name": "spreadsheetId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the spreadsheet to retrieve. This is the long token in the spreadsheet URL between '/d/' and '/edit'.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "ranges",
+            "in": "query",
+            "required": false,
+            "description": "The ranges to retrieve from the spreadsheet, in A1 notation (e.g. 'Sheet1!A1:B10'). Repeat the parameter for multiple ranges. Only meaningful together with includeGridData=true.",
+            "schema": { "type": "array", "items": { "type": "string" } }
+          },
+          {
+            "name": "includeGridData",
+            "in": "query",
+            "required": false,
+            "description": "If true, cell grid data (values, formats) is returned for the requested ranges (or all sheets if no ranges given). If false (default), only metadata is returned. This parameter is ignored if a field mask was set in the request.",
+            "schema": { "type": "boolean" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requested spreadsheet.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Spreadsheet" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v4/spreadsheets": {
+      "post": {
+        "operationId": "spreadsheets_create",
+        "summary": "Create a spreadsheet",
+        "description": "Creates a new spreadsheet and returns it, including the generated spreadsheetId and spreadsheetUrl. Provide at least properties.title. You may optionally define initial sheets; if omitted a single default sheet is created.",
+        "requestBody": {
+          "required": true,
+          "description": "The spreadsheet to create. Typically supply properties.title and optionally an initial sheets array.",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Spreadsheet" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The newly created spreadsheet.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Spreadsheet" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v4/spreadsheets/{spreadsheetId}:batchUpdate": {
+      "post": {
+        "operationId": "spreadsheets_batchUpdate",
+        "summary": "Apply structural updates to a spreadsheet",
+        "description": "Applies one or more structural mutations to the spreadsheet atomically. The 'requests' array holds a sequence of Request union objects, each of which sets exactly one field naming the operation to perform (e.g. addSheet, updateCells, deleteSheet, updateSheetProperties, and many others supported by the API). All requests are validated before any are applied; if any is invalid none are applied. Use this to add or remove sheets, rename sheets, resize grids, format cells, insert rows/columns, etc.",
+        "parameters": [
+          {
+            "name": "spreadsheetId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the spreadsheet to update.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/BatchUpdateSpreadsheetRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The result of applying the batch of updates.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BatchUpdateSpreadsheetResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v4/spreadsheets/{spreadsheetId}/values/{range}": {
+      "get": {
+        "operationId": "spreadsheets_values_get",
+        "summary": "Read values from a range",
+        "description": "Returns a range of cell values from a spreadsheet. The response echoes the resolved range and a 2D 'values' array (an array of rows, each an array of cell values). Empty trailing rows and columns are omitted. Use majorDimension to choose row-major or column-major ordering and valueRenderOption to control how values are formatted.",
+        "parameters": [
+          {
+            "name": "spreadsheetId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the spreadsheet to retrieve data from.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "range",
+            "in": "path",
+            "required": true,
+            "description": "The A1 notation of the range to retrieve, e.g. 'Sheet1!A1:B10'. May be a named range. If the sheet name is omitted the first visible sheet is used.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "majorDimension",
+            "in": "query",
+            "required": false,
+            "description": "The major dimension the results should use. ROWS returns an outer array of rows; COLUMNS returns an outer array of columns.",
+            "schema": { "type": "string", "enum": ["ROWS", "COLUMNS"] }
+          },
+          {
+            "name": "valueRenderOption",
+            "in": "query",
+            "required": false,
+            "description": "How values should be rendered. FORMATTED_VALUE (default) applies the cell's number format; UNFORMATTED_VALUE returns the raw typed value; FORMULA returns the formula text for cells that contain formulas.",
+            "schema": { "type": "string", "enum": ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"] }
+          },
+          {
+            "name": "dateTimeRenderOption",
+            "in": "query",
+            "required": false,
+            "description": "How dates, times and durations should be rendered. SERIAL_NUMBER returns a numeric serial value; FORMATTED_STRING returns the formatted text. Ignored when valueRenderOption is FORMATTED_VALUE.",
+            "schema": { "type": "string", "enum": ["SERIAL_NUMBER", "FORMATTED_STRING"] }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requested values.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ValueRange" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "spreadsheets_values_update",
+        "summary": "Write values to a range",
+        "description": "Sets values in a range of a spreadsheet, overwriting existing cells. The request body is a ValueRange whose 'values' is a 2D array; its range should match the {range} path parameter. valueInputOption controls parsing: RAW stores the values exactly as given (strings stay strings, no formulas), while USER_ENTERED parses input as if typed in the UI (so '=SUM(A1:A2)' becomes a formula and '1,000' or '5/2/2020' may be interpreted as a number or date).",
+        "parameters": [
+          {
+            "name": "spreadsheetId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the spreadsheet to update.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "range",
+            "in": "path",
+            "required": true,
+            "description": "The A1 notation of the range to write to, e.g. 'Sheet1!A1:B2'. Must match the range in the request body.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "valueInputOption",
+            "in": "query",
+            "required": true,
+            "description": "How the input data should be interpreted. RAW: the values are stored as-is. USER_ENTERED: the values are parsed exactly as if entered into the Sheets UI, so formulas, numbers and dates are recognized. This parameter is required.",
+            "schema": { "type": "string", "enum": ["RAW", "USER_ENTERED"] }
+          },
+          {
+            "name": "includeValuesInResponse",
+            "in": "query",
+            "required": false,
+            "description": "If true, the response includes the updatedData ValueRange reflecting the values that were written.",
+            "schema": { "type": "boolean" }
+          },
+          {
+            "name": "responseValueRenderOption",
+            "in": "query",
+            "required": false,
+            "description": "How values in the response should be rendered when includeValuesInResponse is true. Defaults to FORMATTED_VALUE.",
+            "schema": { "type": "string", "enum": ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"] }
+          },
+          {
+            "name": "responseDateTimeRenderOption",
+            "in": "query",
+            "required": false,
+            "description": "How dates/times in the response should be rendered when includeValuesInResponse is true. Defaults to SERIAL_NUMBER.",
+            "schema": { "type": "string", "enum": ["SERIAL_NUMBER", "FORMATTED_STRING"] }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ValueRange" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The result of the update.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UpdateValuesResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v4/spreadsheets/{spreadsheetId}/values:batchGet": {
+      "get": {
+        "operationId": "spreadsheets_values_batchGet",
+        "summary": "Read values from multiple ranges",
+        "description": "Returns one or more ranges of values from a spreadsheet in a single request. Supply each range via the repeated 'ranges' query parameter. The response contains a valueRanges array with one ValueRange per requested range, in the same order.",
+        "parameters": [
+          {
+            "name": "spreadsheetId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the spreadsheet to retrieve data from.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "ranges",
+            "in": "query",
+            "required": false,
+            "description": "The A1 notation ranges to retrieve, e.g. 'Sheet1!A1:B10'. Repeat the parameter once per range.",
+            "schema": { "type": "array", "items": { "type": "string" } }
+          },
+          {
+            "name": "majorDimension",
+            "in": "query",
+            "required": false,
+            "description": "The major dimension for the results. ROWS returns arrays of rows; COLUMNS returns arrays of columns.",
+            "schema": { "type": "string", "enum": ["ROWS", "COLUMNS"] }
+          },
+          {
+            "name": "valueRenderOption",
+            "in": "query",
+            "required": false,
+            "description": "How values should be rendered. FORMATTED_VALUE (default), UNFORMATTED_VALUE, or FORMULA.",
+            "schema": { "type": "string", "enum": ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"] }
+          },
+          {
+            "name": "dateTimeRenderOption",
+            "in": "query",
+            "required": false,
+            "description": "How dates/times should be rendered. SERIAL_NUMBER or FORMATTED_STRING. Ignored when valueRenderOption is FORMATTED_VALUE.",
+            "schema": { "type": "string", "enum": ["SERIAL_NUMBER", "FORMATTED_STRING"] }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requested value ranges.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BatchGetValuesResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v4/spreadsheets/{spreadsheetId}/values/{range}:append": {
+      "post": {
+        "operationId": "spreadsheets_values_append",
+        "summary": "Append values after a table",
+        "description": "Appends rows of values after the last row of an existing table. Google Sheets locates a table starting at the given {range} and writes the new data immediately after it, so the {range} only needs to overlap the table (a single cell like 'Sheet1!A1' is common). Use insertDataOption=INSERT_ROWS to shift existing rows down instead of overwriting following content. valueInputOption behaves as in the update operation (RAW vs USER_ENTERED).",
+        "parameters": [
+          {
+            "name": "spreadsheetId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the spreadsheet to update.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "range",
+            "in": "path",
+            "required": true,
+            "description": "The A1 notation of a range that overlaps the table to append to, e.g. 'Sheet1!A1'. The API searches from this range for a logical table and appends after its last row.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "valueInputOption",
+            "in": "query",
+            "required": true,
+            "description": "How the input data should be interpreted. RAW stores values as-is; USER_ENTERED parses them as if typed in the UI (formulas, numbers, dates recognized). Required.",
+            "schema": { "type": "string", "enum": ["RAW", "USER_ENTERED"] }
+          },
+          {
+            "name": "insertDataOption",
+            "in": "query",
+            "required": false,
+            "description": "How new data is inserted. OVERWRITE writes into existing cells after the table (may overwrite content below it); INSERT_ROWS inserts new rows, pushing existing rows down.",
+            "schema": { "type": "string", "enum": ["OVERWRITE", "INSERT_ROWS"] }
+          },
+          {
+            "name": "includeValuesInResponse",
+            "in": "query",
+            "required": false,
+            "description": "If true, the response includes the updates.updatedData ValueRange reflecting the appended values.",
+            "schema": { "type": "boolean" }
+          },
+          {
+            "name": "responseValueRenderOption",
+            "in": "query",
+            "required": false,
+            "description": "How values in the response should be rendered when includeValuesInResponse is true. Defaults to FORMATTED_VALUE.",
+            "schema": { "type": "string", "enum": ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"] }
+          },
+          {
+            "name": "responseDateTimeRenderOption",
+            "in": "query",
+            "required": false,
+            "description": "How dates/times in the response should be rendered when includeValuesInResponse is true. Defaults to SERIAL_NUMBER.",
+            "schema": { "type": "string", "enum": ["SERIAL_NUMBER", "FORMATTED_STRING"] }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ValueRange" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The result of the append.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AppendValuesResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v4/spreadsheets/{spreadsheetId}/values/{range}:clear": {
+      "post": {
+        "operationId": "spreadsheets_values_clear",
+        "summary": "Clear values from a range",
+        "description": "Clears the cell values in the given range while preserving cell formatting and other properties. Only values are removed. The request body is an empty JSON object.",
+        "parameters": [
+          {
+            "name": "spreadsheetId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the spreadsheet to update.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "range",
+            "in": "path",
+            "required": true,
+            "description": "The A1 notation of the range whose values should be cleared, e.g. 'Sheet1!A1:B10'.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An empty JSON object.",
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "additionalProperties": true }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The result of clearing the range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "spreadsheetId": {
+                      "type": "string",
+                      "description": "The spreadsheet the updates were applied to."
+                    },
+                    "clearedRange": {
+                      "type": "string",
+                      "description": "The range (in A1 notation) that was cleared."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v4/spreadsheets/{spreadsheetId}/values:batchUpdate": {
+      "post": {
+        "operationId": "spreadsheets_values_batchUpdate",
+        "summary": "Write values to multiple ranges",
+        "description": "Sets values in one or more ranges of a spreadsheet in a single request. Provide a 'data' array of ValueRange objects, each specifying its own range and 2D values. A single valueInputOption applies to all of them (RAW or USER_ENTERED, as in the update operation).",
+        "parameters": [
+          {
+            "name": "spreadsheetId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the spreadsheet to update.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "The request body for a batch value update.",
+                "properties": {
+                  "valueInputOption": {
+                    "type": "string",
+                    "enum": ["RAW", "USER_ENTERED"],
+                    "description": "How the input data should be interpreted for all ranges. RAW stores as-is; USER_ENTERED parses as if typed in the UI."
+                  },
+                  "data": {
+                    "type": "array",
+                    "description": "The ranges and values to write. Each entry sets its own range and 2D values array.",
+                    "items": { "$ref": "#/components/schemas/ValueRange" }
+                  },
+                  "includeValuesInResponse": {
+                    "type": "boolean",
+                    "description": "If true, each response entry includes the updatedData ValueRange reflecting the written values."
+                  },
+                  "responseValueRenderOption": {
+                    "type": "string",
+                    "enum": ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"],
+                    "description": "How values in the response should be rendered when includeValuesInResponse is true."
+                  },
+                  "responseDateTimeRenderOption": {
+                    "type": "string",
+                    "enum": ["SERIAL_NUMBER", "FORMATTED_STRING"],
+                    "description": "How dates/times in the response should be rendered when includeValuesInResponse is true."
+                  }
+                },
+                "required": ["valueInputOption", "data"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The result of the batch value update.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BatchUpdateValuesResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Spreadsheet": {
+        "type": "object",
+        "description": "A single spreadsheet resource.",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "description": "The ID of the spreadsheet. Read-only; assigned by the API on creation."
+          },
+          "properties": {
+            "$ref": "#/components/schemas/SpreadsheetProperties"
+          },
+          "sheets": {
+            "type": "array",
+            "description": "The sheets that are part of this spreadsheet.",
+            "items": { "$ref": "#/components/schemas/Sheet" }
+          },
+          "spreadsheetUrl": {
+            "type": "string",
+            "description": "The URL of the spreadsheet. Read-only."
+          }
+        }
+      },
+      "SpreadsheetProperties": {
+        "type": "object",
+        "description": "Properties of a spreadsheet.",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "The title of the spreadsheet."
+          },
+          "locale": {
+            "type": "string",
+            "description": "The locale of the spreadsheet, e.g. 'en_US'. Affects parsing and formatting."
+          },
+          "timeZone": {
+            "type": "string",
+            "description": "The time zone of the spreadsheet, in CLDR format, e.g. 'America/New_York'."
+          }
+        }
+      },
+      "Sheet": {
+        "type": "object",
+        "description": "A sheet (tab) within a spreadsheet.",
+        "properties": {
+          "properties": {
+            "$ref": "#/components/schemas/SheetProperties"
+          }
+        }
+      },
+      "SheetProperties": {
+        "type": "object",
+        "description": "Properties describing a single sheet.",
+        "properties": {
+          "sheetId": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The ID of the sheet. Stable and unique within the spreadsheet. Zero is a valid ID."
+          },
+          "title": {
+            "type": "string",
+            "description": "The name of the sheet (the tab label). Used as the sheet-name prefix in A1 notation."
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The zero-based index of the sheet within the spreadsheet."
+          },
+          "sheetType": {
+            "type": "string",
+            "enum": ["GRID", "OBJECT", "DATA_SOURCE"],
+            "description": "The type of sheet. Most sheets are GRID."
+          },
+          "gridProperties": {
+            "$ref": "#/components/schemas/GridProperties"
+          }
+        }
+      },
+      "GridProperties": {
+        "type": "object",
+        "description": "Properties of a grid sheet, such as its size.",
+        "properties": {
+          "rowCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of rows in the grid."
+          },
+          "columnCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of columns in the grid."
+          },
+          "frozenRowCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of rows that are frozen in the grid."
+          },
+          "frozenColumnCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of columns that are frozen in the grid."
+          }
+        }
+      },
+      "ValueRange": {
+        "type": "object",
+        "description": "Data within a range of a spreadsheet.",
+        "properties": {
+          "range": {
+            "type": "string",
+            "description": "The range these values cover, in A1 notation, e.g. 'Sheet1!A1:B2'. On write, should match the target range."
+          },
+          "majorDimension": {
+            "type": "string",
+            "enum": ["ROWS", "COLUMNS"],
+            "description": "The major dimension of the values. ROWS means the outer array holds rows; COLUMNS means it holds columns. Defaults to ROWS."
+          },
+          "values": {
+            "type": "array",
+            "description": "A two-dimensional array of values: an outer array of rows (or columns), each an inner array of cell values. Each cell may be a string, number, or boolean. Missing trailing empty cells may be omitted.",
+            "items": {
+              "type": "array",
+              "items": {}
+            }
+          }
+        }
+      },
+      "UpdateValuesResponse": {
+        "type": "object",
+        "description": "The response when updating a range of values in a spreadsheet.",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "description": "The spreadsheet the updates were applied to."
+          },
+          "updatedRange": {
+            "type": "string",
+            "description": "The range (A1 notation) that was updated."
+          },
+          "updatedRows": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of rows where at least one cell was updated."
+          },
+          "updatedColumns": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of columns where at least one cell was updated."
+          },
+          "updatedCells": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of cells that were updated."
+          },
+          "updatedData": {
+            "$ref": "#/components/schemas/ValueRange"
+          }
+        }
+      },
+      "AppendValuesResponse": {
+        "type": "object",
+        "description": "The response when appending values to a spreadsheet.",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "description": "The spreadsheet the updates were applied to."
+          },
+          "tableRange": {
+            "type": "string",
+            "description": "The range (A1 notation) of the table that values were appended to, before the append."
+          },
+          "updates": {
+            "$ref": "#/components/schemas/UpdateValuesResponse"
+          }
+        }
+      },
+      "BatchGetValuesResponse": {
+        "type": "object",
+        "description": "The response when retrieving more than one range of values.",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "description": "The ID of the spreadsheet the data was retrieved from."
+          },
+          "valueRanges": {
+            "type": "array",
+            "description": "The requested values, one ValueRange per requested range, in the order requested.",
+            "items": { "$ref": "#/components/schemas/ValueRange" }
+          }
+        }
+      },
+      "BatchUpdateValuesResponse": {
+        "type": "object",
+        "description": "The response when updating a range of values in a spreadsheet via batchUpdate.",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "description": "The spreadsheet the updates were applied to."
+          },
+          "totalUpdatedRows": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The total number of rows where at least one cell was updated."
+          },
+          "totalUpdatedColumns": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The total number of columns where at least one cell was updated."
+          },
+          "totalUpdatedCells": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The total number of cells updated across all ranges."
+          },
+          "totalUpdatedSheets": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The total number of sheets where at least one cell was updated."
+          },
+          "responses": {
+            "type": "array",
+            "description": "One UpdateValuesResponse per requested range, in the order requested.",
+            "items": { "$ref": "#/components/schemas/UpdateValuesResponse" }
+          }
+        }
+      },
+      "BatchUpdateSpreadsheetRequest": {
+        "type": "object",
+        "description": "The request body for applying a batch of structural updates to a spreadsheet.",
+        "properties": {
+          "requests": {
+            "type": "array",
+            "description": "A list of update requests to apply, in order. Each is a Request union object setting exactly one operation field.",
+            "items": { "$ref": "#/components/schemas/Request" }
+          },
+          "includeSpreadsheetInResponse": {
+            "type": "boolean",
+            "description": "If true, the updated spreadsheet resource is returned in the response's updatedSpreadsheet field."
+          },
+          "responseRanges": {
+            "type": "array",
+            "description": "Limits the ranges of the updated spreadsheet included in the response (A1 notation). Only used when includeSpreadsheetInResponse is true.",
+            "items": { "type": "string" }
+          },
+          "responseIncludeGridData": {
+            "type": "boolean",
+            "description": "If true, grid data (cell values) is included in the returned spreadsheet. Only used when includeSpreadsheetInResponse is true."
+          }
+        },
+        "required": ["requests"]
+      },
+      "BatchUpdateSpreadsheetResponse": {
+        "type": "object",
+        "description": "The reply to a batch update of a spreadsheet.",
+        "properties": {
+          "spreadsheetId": {
+            "type": "string",
+            "description": "The spreadsheet the updates were applied to."
+          },
+          "replies": {
+            "type": "array",
+            "description": "One reply per request, in the same order. Each reply is empty unless the corresponding request produced output (e.g. addSheet returns the created sheet's properties). Structure varies per request type.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "updatedSpreadsheet": {
+            "$ref": "#/components/schemas/Spreadsheet"
+          }
+        }
+      },
+      "Request": {
+        "type": "object",
+        "description": "A single kind of update to apply to a spreadsheet. Set exactly ONE of the fields below (the field name selects the operation). Only a few common operations are modeled explicitly here; additionalProperties is true so any other Google Sheets request type (e.g. appendCells, repeatCell, mergeCells, insertDimension, deleteDimension, addNamedRange, addProtectedRange, etc.) may also be supplied.",
+        "additionalProperties": true,
+        "properties": {
+          "addSheet": {
+            "type": "object",
+            "description": "Adds a new sheet. When a sheet is added at a given index, all subsequent sheets' indexes are incremented.",
+            "properties": {
+              "properties": { "$ref": "#/components/schemas/SheetProperties" }
+            }
+          },
+          "deleteSheet": {
+            "type": "object",
+            "description": "Deletes the sheet with the given ID.",
+            "properties": {
+              "sheetId": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The ID of the sheet to delete. Zero is a valid ID."
+              }
+            }
+          },
+          "updateSheetProperties": {
+            "type": "object",
+            "description": "Updates properties of a sheet (e.g. rename it or resize its grid).",
+            "properties": {
+              "properties": { "$ref": "#/components/schemas/SheetProperties" },
+              "fields": {
+                "type": "string",
+                "description": "A field mask (comma-separated paths) listing which properties to update, e.g. 'title' or 'gridProperties.rowCount'. Use '*' to update all."
+              }
+            }
+          },
+          "updateCells": {
+            "type": "object",
+            "description": "Updates cell values and/or formatting within a range or at a start coordinate.",
+            "additionalProperties": true,
+            "properties": {
+              "rows": {
+                "type": "array",
+                "description": "The data to write, one entry per row. Each row contains a 'values' array of cell data objects.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "fields": {
+                "type": "string",
+                "description": "A field mask (comma-separated paths) listing which cell fields to update, e.g. 'userEnteredValue' or '*'."
+              },
+              "range": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "A GridRange (sheetId plus start/end row and column indices) to write into. Provide either range or start."
+              },
+              "start": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "A GridCoordinate (sheetId, rowIndex, columnIndex) for the top-left cell to begin writing at."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -153,6 +153,11 @@ export default [
   route("discord/connect", "routes/discord.connect.tsx"),
   route("discord/callback", "routes/discord.callback.tsx"),
   route("api/discord/send", "routes/api.discord.send.ts"),
+  // Install-time auth-brokered connections (issue #30): Eden brokers Google OAuth against the
+  // operator's shared client. connect signs state + redirects to consent; callback exchanges the
+  // code and seals the grant. The grant is injected as env at deploy so eve self-refreshes tokens.
+  route("google/connect", "routes/google.connect.tsx"),
+  route("google/callback", "routes/google.callback.tsx"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
   // Teammate delegation relay: a team member's ask-teammate tool POSTs here (Bearer token).
   route("api/team/ask", "routes/api.team.ask.ts"),

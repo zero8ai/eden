@@ -11,6 +11,11 @@ import {
   isGoogleCallbackStagingRequest,
   stageGoogleCallback,
 } from "~/connections/google-callback.server";
+import {
+  clearGitHubManifestCallbackCookie,
+  isGitHubManifestCallbackStagingRequest,
+  stageGitHubManifestCallback,
+} from "~/github/manifest-callback.server";
 
 type BetterAuthSession = NonNullable<
   Awaited<ReturnType<typeof auth.api.getSession>>
@@ -173,11 +178,14 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
   // Better Auth's own handler owns all cookies for its endpoints. In particular, sign-out and
   // reset responses must not be followed by an older rolling session cookie from this wrapper.
   const pathname = new URL(request.url).pathname;
-  const stagesGoogleCallback = isGoogleCallbackStagingRequest(request);
-  if (stagesGoogleCallback) {
-    // Do not call `next()`: matched loaders include root startup work, so even an anonymous
-    // context could still touch Postgres or open services before the callback URL was scrubbed.
+  // Do not call `next()` when staging: matched loaders include root startup work, so even an
+  // anonymous context could still touch Postgres or open services before the callback URL was
+  // scrubbed.
+  if (isGoogleCallbackStagingRequest(request)) {
     return hardenDynamicResponse(stageGoogleCallback(request));
+  }
+  if (isGitHubManifestCallbackStagingRequest(request)) {
+    return hardenDynamicResponse(stageGitHubManifestCallback(request));
   }
   const ownsSession =
     !isBetterAuthEndpoint(pathname) && !isMachineEndpoint(pathname);
@@ -193,6 +201,12 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
   hardenDynamicResponse(response);
   if (pathname === "/google/callback") {
     response.headers.append("set-cookie", clearGoogleCallbackCookie(request));
+  }
+  if (pathname === "/github/apps/callback") {
+    response.headers.append(
+      "set-cookie",
+      clearGitHubManifestCallbackCookie(request),
+    );
   }
   appendRefreshHeaders(response, refreshHeaders);
   return response;

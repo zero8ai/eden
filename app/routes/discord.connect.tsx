@@ -22,6 +22,7 @@ import {
   INTERACTIONS_ROUTE,
   signConnectState,
 } from "~/discord/connect.server";
+import { createOAuthStateNonce } from "~/connections/oauth-state.server";
 import { listAgents, listAgentEnvironments } from "~/db/queries.server";
 import { ensureTeamEnvironments } from "~/deploy/environments.server";
 import { isLocalOrigin, publicOrigin } from "~/lib/ingress";
@@ -98,12 +99,23 @@ export const loader = (args: LoaderFunctionArgs) =>
         }
       }
 
+      // Bind the round-trip to this user + session and record a single-use nonce, mirroring the
+      // Google connect flow: a leaked or replayed callback can't complete in another session.
+      const exp = Date.now() + CONNECT_STATE_TTL_MS;
+      const nonce = await createOAuthStateNonce({
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+        expiresAt: new Date(exp),
+      });
       const state = signConnectState(
         {
           projectId: project.id,
           agentId: agent.id,
           environmentId: env.id,
-          exp: Date.now() + CONNECT_STATE_TTL_MS,
+          userId: auth.user.id,
+          sessionId: auth.session.id,
+          nonce,
+          exp,
         },
         connectStateKey(),
       );

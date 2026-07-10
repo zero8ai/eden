@@ -1,5 +1,6 @@
 import { Bot, FolderGit2, Users } from "lucide-react";
 import {
+  data,
   Link,
   redirect,
   type ActionFunctionArgs,
@@ -59,6 +60,12 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action({ request }: ActionFunctionArgs) {
+  // Only an explicit sign-out submission may end the session — a future same-origin form that
+  // happens to POST to /dashboard must not sign the user out as a side effect.
+  const form = await request.formData();
+  if (String(form.get("intent") ?? "") !== "sign-out") {
+    return data("Unknown action.", { status: 400 });
+  }
   const response = await auth.api.signOut({
     headers: request.headers,
     asResponse: true,

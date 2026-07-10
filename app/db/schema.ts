@@ -186,6 +186,23 @@ export const connectionOauthStates = pgTable(
   (t) => [index("connection_oauth_states_expires_idx").on(t.expiresAt)],
 );
 
+/**
+ * The workspace a user last worked in. Better Auth keeps `activeOrganizationId` on the SESSION,
+ * so every fresh sign-in (new device, expired session, post-password-reset revocation) starts
+ * org-less; this row lets `ensureWorkspace` return a multi-workspace user to their last
+ * workspace instead of the chooser. Cascades keep it consistent: a deleted org or user simply
+ * forgets the preference.
+ */
+export const userWorkspaceMemory = pgTable("user_workspace_memory", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  lastOrgId: text("last_org_id")
+    .notNull()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  updatedAt: updatedAt(),
+});
+
 /** A project == one connected eve repo. */
 export const projects = pgTable(
   "projects",

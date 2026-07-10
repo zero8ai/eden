@@ -25,6 +25,28 @@ import { publicAuthErrorMessage } from "~/lib/auth-error.server";
 import { recordAudit } from "~/managed/audit.server";
 import type { Route } from "./+types/org.members";
 
+type MemberRow = Awaited<
+  ReturnType<typeof betterAuth.api.listMembers>
+>["members"][number];
+
+/** Page through Better Auth's member list so workspaces beyond one page don't truncate. */
+async function listAllMembers(
+  organizationId: string,
+  headers: Headers,
+): Promise<MemberRow[]> {
+  const pageSize = 100;
+  const members: MemberRow[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await betterAuth.api.listMembers({
+      query: { organizationId, limit: pageSize, offset },
+      headers,
+    });
+    members.push(...page.members);
+    if (members.length >= page.total || page.members.length === 0) break;
+  }
+  return members;
+}
+
 export const loader = (args: Route.LoaderArgs) =>
   sessionLoader(
     args,
@@ -42,10 +64,7 @@ export const loader = (args: Route.LoaderArgs) =>
       }
 
       const [memberList, permission] = await Promise.all([
-        betterAuth.api.listMembers({
-          query: { organizationId: active.org.id, limit: 100 },
-          headers: auth.requestHeaders,
-        }),
+        listAllMembers(active.org.id, auth.requestHeaders),
         betterAuth.api.hasPermission({
           body: {
             organizationId: active.org.id,
@@ -67,7 +86,7 @@ export const loader = (args: Route.LoaderArgs) =>
 
       return {
         org: active.org,
-        members: memberList.members.map((membership) => ({
+        members: memberList.map((membership) => ({
           id: membership.id,
           userId: membership.userId,
           email: membership.user.email,
@@ -128,12 +147,27 @@ export async function action(args: Route.ActionArgs) {
 
   if (intent === "cancel-invite") {
     const invitationId = String(form.get("invitationId") ?? "");
-    const email = String(form.get("email") ?? "");
+    // Better Auth authorizes cancellation against the INVITATION's organization, so an id from
+    // another workspace the caller administers would succeed while this action audits against
+    // the active one. Resolve the id inside the active workspace first, and audit the
+    // server-side email — never form-supplied values.
+    let cancelled: { email: string };
     try {
+      const invitations = await betterAuth.api.listInvitations({
+        query: { organizationId: active.org.id },
+        headers: session.requestHeaders,
+      });
+      const invitation = invitations.find(
+        (candidate) => candidate.id === invitationId,
+      );
+      if (!invitation) {
+        return { error: "That invitation is not part of this workspace." };
+      }
       await betterAuth.api.cancelInvitation({
         body: { invitationId },
         headers: session.requestHeaders,
       });
+      cancelled = { email: invitation.email };
     } catch (error) {
       return {
         error: publicAuthErrorMessage(
@@ -146,7 +180,7 @@ export async function action(args: Route.ActionArgs) {
       orgId: active.org.id,
       actorUserId: session.user.id,
       action: "invite_revoked",
-      target: email || invitationId,
+      target: cancelled.email,
     });
     throw redirect("/org/members");
   }
@@ -155,11 +189,19 @@ export async function action(args: Route.ActionArgs) {
     const email = String(form.get("email") ?? "")
       .trim()
       .toLowerCase();
-    const role =
-      String(form.get("role") ?? "member") === "admin" ? "admin" : "member";
+    if (!email || !email.includes("@"))
+      return { error: "Enter a valid email address." };
     try {
+      // No client-chosen role: when a pending invitation exists Better Auth re-sends it with its
+      // STORED role; when it lapsed, this mints a fresh invite that must follow the same "new
+      // invitees join with the member role" policy as the invite intent above.
       await betterAuth.api.createInvitation({
-        body: { email, role, organizationId: active.org.id, resend: true },
+        body: {
+          email,
+          role: "member",
+          organizationId: active.org.id,
+          resend: true,
+        },
         headers: session.requestHeaders,
       });
     } catch (error) {
@@ -170,6 +212,12 @@ export async function action(args: Route.ActionArgs) {
         ),
       };
     }
+    await recordAudit({
+      orgId: active.org.id,
+      actorUserId: session.user.id,
+      action: "invite_resent",
+      target: email,
+    });
     throw redirect("/org/members");
   }
 
@@ -376,11 +424,6 @@ export default function Members({
                             name="email"
                             value={invitation.email}
                           />
-                          <input
-                            type="hidden"
-                            name="role"
-                            value={invitation.role}
-                          />
                           <Button type="submit" variant="outline" size="sm">
                             Resend
                           </Button>
@@ -395,11 +438,6 @@ export default function Members({
                             type="hidden"
                             name="invitationId"
                             value={invitation.id}
-                          />
-                          <input
-                            type="hidden"
-                            name="email"
-                            value={invitation.email}
                           />
                           <Button type="submit" variant="ghost" size="sm">
                             Cancel

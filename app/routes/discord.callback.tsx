@@ -24,6 +24,7 @@ import {
   registerGuildCommand,
   verifyConnectState,
 } from "~/discord/connect.server";
+import { consumeOAuthStateNonce } from "~/connections/oauth-state.server";
 import {
   findConnectionByGuildCommand,
   upsertConnection,
@@ -65,6 +66,29 @@ export const loader = (args: LoaderFunctionArgs) =>
         return fail(
           "This link is invalid or has expired (it lives one hour). Start again from the " +
             "agent's Deployment tab.",
+        );
+      }
+      if (
+        state.userId !== auth.user.id ||
+        state.sessionId !== auth.session.id
+      ) {
+        return fail(
+          "This Discord connection was started in a different Eden session. Start again from " +
+            "the agent's Deployment tab.",
+        );
+      }
+
+      // Consume before registering the command. DELETE ... RETURNING makes concurrent
+      // callbacks race safely: exactly one request can proceed, even across replicas.
+      const consumed = await consumeOAuthStateNonce({
+        nonce: state.nonce,
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+      });
+      if (!consumed) {
+        return fail(
+          "This Discord connection link is invalid, expired, or has already been used. Start " +
+            "again from the agent's Deployment tab.",
         );
       }
 

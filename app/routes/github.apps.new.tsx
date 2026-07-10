@@ -36,6 +36,7 @@ import {
   manifestStateKey,
   signManifestState,
 } from "~/github/app-manifest.server";
+import { createOAuthStateNonce } from "~/connections/oauth-state.server";
 import { envIngressUrl, isLocalOrigin, publicOrigin } from "~/lib/ingress";
 import { contextPath } from "~/lib/paths";
 import { noindexMeta } from "~/lib/seo";
@@ -99,12 +100,23 @@ export const loader = (args: LoaderFunctionArgs) =>
       const deploymentUrl = `${origin}${contextPath(project.id, memberSegment)}/deployment`;
       const webhookUrl = envIngressUrl(origin, env.id, GITHUB_CHANNEL_ROUTE);
 
+      // Bind the round-trip to this user + session and record a single-use nonce, mirroring the
+      // Google connect flow: a leaked or replayed callback can't complete in another session.
+      const exp = Date.now() + MANIFEST_STATE_TTL_MS;
+      const nonce = await createOAuthStateNonce({
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+        expiresAt: new Date(exp),
+      });
       const state = signManifestState(
         {
           projectId: project.id,
           agentId: agent.id,
           environmentId: env.id,
-          exp: Date.now() + MANIFEST_STATE_TTL_MS,
+          userId: auth.user.id,
+          sessionId: auth.session.id,
+          nonce,
+          exp,
         },
         manifestStateKey(),
       );

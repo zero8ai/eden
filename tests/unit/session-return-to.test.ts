@@ -117,4 +117,54 @@ describe("explicit authentication return destinations", () => {
       ),
     ).toBe(true);
   });
+
+  it("scrubs a GitHub manifest callback before session I/O, then clears staging on the clean hop", async () => {
+    const { betterAuthSessionMiddleware } =
+      await import("~/auth/session.server");
+    const sensitiveRequest = new Request(
+      "https://eden.example.com/github/apps/callback?code=manifest-code&state=raw-state",
+    );
+    const next = vi.fn(async () => new Response("must not render"));
+
+    const staged = await betterAuthSessionMiddleware(
+      middlewareArgs(sensitiveRequest, new RouterContextProvider()),
+      next,
+    );
+    expect(staged).toBeInstanceOf(Response);
+    if (!(staged instanceof Response)) {
+      throw new Error("Session middleware did not return the staged response.");
+    }
+    expect(getSession).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+    expect(staged.status).toBe(302);
+    expect(staged.headers.get("location")).toBe("/github/apps/callback");
+    const stagingCookie = setCookies(staged).find((value) =>
+      value.startsWith("eden-github-manifest-callback="),
+    );
+    expect(stagingCookie).toBeTruthy();
+    expect(stagingCookie).not.toContain("manifest-code");
+    expect(stagingCookie).not.toContain("raw-state");
+
+    getSession.mockResolvedValue({ response: null, headers: new Headers() });
+    const cleanRequest = new Request(
+      "https://eden.example.com/github/apps/callback",
+      { headers: { cookie: stagingCookie!.split(";", 1)[0] } },
+    );
+    const clean = await betterAuthSessionMiddleware(
+      middlewareArgs(cleanRequest, new RouterContextProvider()),
+      async () => new Response("clean callback"),
+    );
+    expect(clean).toBeInstanceOf(Response);
+    if (!(clean instanceof Response)) {
+      throw new Error("Session middleware did not return the clean response.");
+    }
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(
+      setCookies(clean).some(
+        (value) =>
+          value.startsWith("eden-github-manifest-callback=") &&
+          value.includes("Max-Age=0"),
+      ),
+    ).toBe(true);
+  });
 });

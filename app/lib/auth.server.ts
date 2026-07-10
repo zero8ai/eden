@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { APIError } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { organization } from "better-auth/plugins";
 
@@ -14,10 +15,19 @@ assertProductionAuthEnvironment();
 export const auth = betterAuth({
   appName: "Eden",
   // Production request paths can carry one-time tokens. Better Auth's default error logger may
-  // serialize endpoint params, so production returns errors to the route boundary without logging
-  // internals. Development keeps the framework's diagnostics.
+  // serialize endpoint params (its `args` can include token-bearing bodies), so production logs
+  // the message line only — enough to observe provider failures (e.g. a swallowed invitation
+  // email rejection) without ever serializing an error object or endpoint input. Development
+  // keeps the framework's full diagnostics.
   logger:
-    process.env.NODE_ENV === "production" ? { disabled: true } : undefined,
+    process.env.NODE_ENV === "production"
+      ? {
+          level: "error" as const,
+          log: (level: string, message: string) => {
+            console.error(`[better-auth:${level}] ${message}`);
+          },
+        }
+      : undefined,
   onAPIError:
     process.env.NODE_ENV === "production" ? { throw: true } : undefined,
   database: drizzleAdapter(db, { provider: "pg", schema }),
@@ -34,13 +44,23 @@ export const auth = betterAuth({
     sendOnSignIn: false,
     expiresIn: 60 * 60,
     sendVerificationEmail: async ({ user, url }) => {
-      void sendEmailVerification({
-        userEmail: user.email,
-        verificationUrl: url,
-      }).catch(() => {
-        // Provider errors can include the token-bearing HTML body; never log the error object.
-        console.error("Could not send an email verification message.");
-      });
+      // Await so a provider rejection fails the endpoint: the invite-verification gate is
+      // hard-blocked on this email, and a silent 200 would strand the invitee behind a
+      // "verification sent" message that never arrives.
+      try {
+        await sendEmailVerification({
+          userEmail: user.email,
+          verificationUrl: url,
+        });
+      } catch (error) {
+        // Provider errors can include the token-bearing HTML body; log the error name only.
+        console.error(
+          `Could not send an email verification message (${(error as Error)?.name ?? "Error"}).`,
+        );
+        throw new APIError("INTERNAL_SERVER_ERROR", {
+          message: "Could not send the verification email.",
+        });
+      }
     },
   },
   emailAndPassword: {
@@ -52,21 +72,44 @@ export const auth = betterAuth({
     resetPasswordTokenExpiresIn: 60 * 60,
     revokeSessionsOnPasswordReset: true,
     sendResetPassword: async ({ user, url }) => {
+      // Deliberately fire-and-forget: /forgot-password must answer uniformly whether or not an
+      // account exists (anti-enumeration), so a provider failure can't change the response. The
+      // sanitized marker below keeps the failure observable in production logs.
       void sendPasswordResetEmail({
         userEmail: user.email,
         resetUrl: url,
-      }).catch(() => {
+      }).catch((error) => {
         // Do not log the error object: provider errors can include the token-bearing HTML body.
-        console.error("Could not send a password reset email.");
+        console.error(
+          `Could not send a password reset email (${(error as Error)?.name ?? "Error"}).`,
+        );
       });
     },
   },
   plugins: [
     organization({
+      // Better Auth ships POST /api/auth/organization/delete enabled by default; Eden's tables
+      // cascade from organization.id, so one owner-session call would erase an entire tenant
+      // (projects, deployments, secrets — and the audit log recording it) while leaving deployed
+      // containers orphaned. No Eden flow calls it; keep it off until an app-owned teardown
+      // exists.
+      disableOrganizationDeletion: true,
       // CVE-2026-53514: invitation IDs can be listed by organization members. Require the
       // recipient to prove mailbox ownership before get/accept/reject invitation operations.
       requireEmailVerificationOnInvitation: true,
-      sendInvitationEmail: sendOrganizationInvitation,
+      sendInvitationEmail: async (invitation) => {
+        // Better Auth awaits this but swallows a rejection into logger.error, so log a sanitized
+        // marker ourselves (never the error object — provider errors can include the
+        // token-bearing HTML body) before rethrowing for the framework logger.
+        try {
+          await sendOrganizationInvitation(invitation);
+        } catch (error) {
+          console.error(
+            `Could not send an organization invitation email (${(error as Error)?.name ?? "Error"}).`,
+          );
+          throw error;
+        }
+      },
     }),
   ],
 });

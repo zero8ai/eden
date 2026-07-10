@@ -255,6 +255,7 @@ function AccountMenu({ userEmail }: { userEmail?: string | null }) {
           </>
         )}
         <Form method="post" action="/dashboard">
+          <input type="hidden" name="intent" value="sign-out" />
           <DropdownMenuItem asChild>
             <button type="submit" className="w-full cursor-pointer">
               <LogOut className="mr-2 h-4 w-4" />

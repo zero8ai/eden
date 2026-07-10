@@ -1,5 +1,8 @@
 import { redirect } from "react-router";
+import { eq } from "drizzle-orm";
 
+import { db } from "~/db/client.server";
+import { userWorkspaceMemory } from "~/db/schema";
 import { newId } from "~/lib/id";
 import { auth } from "~/lib/auth.server";
 import type { SessionAuth } from "./session.server";
@@ -22,10 +25,15 @@ export type ActiveWorkspace = {
 
 export function chooseWorkspaceEntry(input: {
   membershipOrgIds: string[];
+  lastOrgId?: string | null;
 }): { kind: "create" } | { kind: "enter"; orgId: string } | { kind: "choose" } {
   if (input.membershipOrgIds.length === 0) return { kind: "create" };
   if (input.membershipOrgIds.length === 1) {
     return { kind: "enter", orgId: input.membershipOrgIds[0] };
+  }
+  // A remembered workspace only counts while the user is still a member of it.
+  if (input.lastOrgId && input.membershipOrgIds.includes(input.lastOrgId)) {
+    return { kind: "enter", orgId: input.lastOrgId };
   }
   return { kind: "choose" };
 }
@@ -63,10 +71,31 @@ export async function setActiveWorkspace(
   session: SessionAuth,
   organizationId: string | null,
 ) {
-  return auth.api.setActiveOrganization({
+  const result = await auth.api.setActiveOrganization({
     body: { organizationId },
     headers: session.requestHeaders,
   });
+  // Remember the choice across sessions: Better Auth scopes activeOrganizationId to the session,
+  // so without this a multi-workspace user lands on the chooser after every fresh sign-in.
+  if (organizationId) {
+    await db
+      .insert(userWorkspaceMemory)
+      .values({ userId: session.user.id, lastOrgId: organizationId })
+      .onConflictDoUpdate({
+        target: userWorkspaceMemory.userId,
+        set: { lastOrgId: organizationId, updatedAt: new Date() },
+      });
+  }
+  return result;
+}
+
+async function lastWorkspaceId(userId: string): Promise<string | null> {
+  const rows = await db
+    .select({ lastOrgId: userWorkspaceMemory.lastOrgId })
+    .from(userWorkspaceMemory)
+    .where(eq(userWorkspaceMemory.userId, userId))
+    .limit(1);
+  return rows[0]?.lastOrgId ?? null;
 }
 
 function personalWorkspaceName(session: SessionAuth): string {
@@ -112,6 +141,7 @@ export async function ensureWorkspace(
   const workspaces = await listUserWorkspaces(session);
   const decision = chooseWorkspaceEntry({
     membershipOrgIds: workspaces.map((workspace) => workspace.id),
+    lastOrgId: await lastWorkspaceId(session.user.id),
   });
 
   if (decision.kind === "choose") {

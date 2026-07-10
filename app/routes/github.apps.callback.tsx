@@ -2,9 +2,12 @@
  * Manifest-flow callback — step 2 of the per-agent GitHub App flow (issue #26).
  *
  * GitHub redirects here with a single-use `?code=` (valid one hour) and our signed `?state=`.
- * The loader verifies the state (signature + expiry + the session's org owns the project),
- * converts the code (`POST /app-manifests/{code}/conversions` — the ONLY time GitHub hands
- * over the `pem`/`webhook_secret`), writes the four channel secrets onto THAT agent, and
+ * The raw URL is immediately staged into an encrypted HttpOnly cookie and left (the code
+ * converts into the App's PEM private key — it must not survive in history/logs/referrers or a
+ * rendered error document). On the clean follow-up request the loader verifies the state
+ * (signature + expiry + user/session binding + single-use nonce + the session's org owns the
+ * project), converts the code (`POST /app-manifests/{code}/conversions` — the ONLY time GitHub
+ * hands over the `pem`/`webhook_secret`), writes the four channel secrets onto THAT agent, and
  * sends the user to `github.com/apps/<slug>/installations/new` to pick the repositories.
  * The slug always comes from the conversion response — GitHub derives it from the final
  * (possibly user-edited) name, never from what Eden proposed.
@@ -21,6 +24,7 @@ import { AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { listAgents } from "~/db/queries.server";
+import { consumeOAuthStateNonce } from "~/connections/oauth-state.server";
 import {
   appInstallUrl,
   convertManifestCode,
@@ -29,19 +33,38 @@ import {
   manifestStateKey,
   verifyManifestState,
 } from "~/github/app-manifest.server";
+import {
+  isGitHubManifestCallbackStagingRequest,
+  readStagedGitHubManifestCallback,
+  stageGitHubManifestCallback,
+} from "~/github/manifest-callback.server";
 import { contextPath } from "~/lib/paths";
 import { noindexMeta } from "~/lib/seo";
 import { requireProject } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
 import type { Route } from "./+types/github.apps.callback";
 
-export const loader = (args: LoaderFunctionArgs) =>
-  sessionLoader(
+export const loader = (args: LoaderFunctionArgs) => {
+  // GitHub's response contains the single-use manifest code. Leave that URL before
+  // session/database work so the credential never survives in history, logs, rendered errors,
+  // or a framework error document. The encrypted HttpOnly cookie is cleared by root middleware.
+  if (isGitHubManifestCallbackStagingRequest(args.request)) {
+    return stageGitHubManifestCallback(args.request);
+  }
+
+  return sessionLoader(
     args,
     async ({ auth }) => {
-      const url = new URL(args.request.url);
-      const code = url.searchParams.get("code");
-      const stateToken = url.searchParams.get("state");
+      // A staging failure is authoritative. Never allow an older valid cookie to be processed
+      // after a malformed/oversized callback has replaced it.
+      const stagingFailed = new URL(args.request.url).searchParams.has(
+        "failure",
+      );
+      const callback = stagingFailed
+        ? null
+        : readStagedGitHubManifestCallback(args.request);
+      const code = callback?.code ?? null;
+      const stateToken = callback?.state ?? null;
 
       const fail = (error: string, backUrl = "/dashboard") => ({
         error,
@@ -57,6 +80,27 @@ export const loader = (args: LoaderFunctionArgs) =>
       if (!state) {
         return fail(
           "This link is invalid or has expired (it lives one hour). Start the flow again from the agent's Deployment tab.",
+        );
+      }
+      if (
+        state.userId !== auth.user.id ||
+        state.sessionId !== auth.session.id
+      ) {
+        return fail(
+          "This GitHub App flow was started in a different Eden session. Start the flow again from the agent's Deployment tab.",
+        );
+      }
+
+      // Consume before converting the code. DELETE ... RETURNING makes concurrent callbacks
+      // race safely: exactly one request can proceed, even across multiple app replicas.
+      const consumed = await consumeOAuthStateNonce({
+        nonce: state.nonce,
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+      });
+      if (!consumed) {
+        return fail(
+          "This GitHub App link is invalid, expired, or has already been used. Start the flow again from the agent's Deployment tab.",
         );
       }
 
@@ -139,8 +183,12 @@ export const loader = (args: LoaderFunctionArgs) =>
       // Deployment tab.
       throw redirect(appInstallUrl(converted.slug));
     },
-    { ensureSignedIn: true },
+    // The manifest state is bound to the initiating Better Auth session. If that session
+    // expired, the round-trip cannot safely resume; keep the staged callback out of the login
+    // returnTo URL.
+    { ensureSignedIn: true, returnTo: "/dashboard" },
   );
+};
 
 export function meta() {
   return [{ title: "GitHub App · eden" }, ...noindexMeta];

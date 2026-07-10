@@ -178,6 +178,9 @@ describe("manifest state token", () => {
     projectId: "projabcdefgh",
     agentId: "agntabcdefgh",
     environmentId: "envabcdefghi",
+    userId: "user_1",
+    sessionId: "sess_1",
+    nonce: "nonce-value",
     exp: 1_800_000_000_000,
   };
 
@@ -212,6 +215,12 @@ describe("manifest state token", () => {
     expect(verifyManifestState("", key)).toBeNull();
     expect(verifyManifestState("no-dot", key)).toBeNull();
     expect(verifyManifestState("a.b.c", key)).toBeNull();
+  });
+
+  it("rejects a state without the user/session binding or nonce", () => {
+    const { userId: _u, sessionId: _s, nonce: _n, ...legacy } = state;
+    const token = signManifestState(legacy as ManifestState, key);
+    expect(verifyManifestState(token, key, state.exp - 1000)).toBeNull();
   });
 });
 

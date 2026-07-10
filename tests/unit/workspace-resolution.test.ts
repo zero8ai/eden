@@ -35,6 +35,24 @@ describe("chooseWorkspaceEntry", () => {
       kind: "choose",
     });
   });
+
+  it("re-enters the remembered workspace when the user is still a member", () => {
+    expect(
+      chooseWorkspaceEntry({
+        membershipOrgIds: ["org_a", "org_b"],
+        lastOrgId: "org_b",
+      }),
+    ).toEqual({ kind: "enter", orgId: "org_b" });
+  });
+
+  it("falls back to the chooser when the remembered workspace was left", () => {
+    expect(
+      chooseWorkspaceEntry({
+        membershipOrgIds: ["org_a", "org_b"],
+        lastOrgId: "org_gone",
+      }),
+    ).toEqual({ kind: "choose" });
+  });
 });
 
 describe("resolveCrossWorkspaceRedirect", () => {

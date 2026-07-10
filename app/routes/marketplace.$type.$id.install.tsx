@@ -474,7 +474,7 @@ export async function action(args: ActionFunctionArgs) {
         });
         if (!grant || grant.status !== "active") {
           return {
-            error: `Connect ${auth.provider} for this agent before installing — use the Connect button on the install page.`,
+            error: `Connect ${providerLabel(auth.provider)} for this agent before installing — use the Connect button on the install page.`,
           };
         }
       }
@@ -671,6 +671,13 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
     !hasConflicts &&
     !singleAgentInvalid &&
     !missingConnect;
+  // When the sole block is an unconnected provider, name it under the disabled button so the
+  // Connect step above reads as the next action rather than a dead end.
+  const unconnectedProvider = missingConnect
+    ? connectAuths.find(
+        (a) => a.configured && (!a.grant || a.grant.status !== "active"),
+      )?.provider
+    : undefined;
 
   /** Navigate to this route with an updated query, preserving the rest. */
   const go = (patch: Record<string, string | null>) => {
@@ -1050,8 +1057,9 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
                 Stage install
               </Button>
               <span className="text-sm text-muted-foreground">
-                Stages a change-set — review and publish it on the Deployment
-                tab.
+                {unconnectedProvider
+                  ? `Connect ${providerLabel(unconnectedProvider)} above before installing.`
+                  : "Stages a change-set — review and publish it on the Deployment tab."}
               </span>
             </div>
           </Form>

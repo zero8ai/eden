@@ -1141,15 +1141,12 @@ function ConnectionsCard({
       <CardContent className="space-y-3">
         {connections.map((c) => {
           const label = providerLabel(c.provider);
-          // Request the scopes the INSTALL declares (lock snapshot), not the grant's stored scopes
-          // (issue #30): stored scopes record what Google granted last time, so using them as the
-          // request template perpetuates stale/narrow scopes forever — the incident where an
-          // identity-only grant reconnected without ever re-requesting the Sheets scope. Fall back
-          // to stored scopes only for old locks that predate the snapshot.
+          // The server re-derives requested scopes from this agent's effective lock (falling back
+          // to its stored grant only for old locks). Never put an authority-bearing scope list in
+          // this browser-controlled URL.
           const connectUrl =
             `/google/connect?project=${encodeURIComponent(projectId)}` +
             `&agent=${encodeURIComponent(agentName)}` +
-            `&scopes=${encodeURIComponent(c.requiredScopes ?? c.scopes)}` +
             `&returnTo=${encodeURIComponent(returnTo)}`;
           return (
             <div

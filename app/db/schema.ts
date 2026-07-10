@@ -152,7 +152,9 @@ export const connectionGrants = pgTable(
     refreshTokenCiphertext: text("refresh_token_ciphertext").notNull(),
     refreshTokenIv: text("refresh_token_iv").notNull(),
     refreshTokenAuthTag: text("refresh_token_auth_tag").notNull(),
-    createdBy: text("created_by").references(() => users.id),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

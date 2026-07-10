@@ -207,19 +207,19 @@ export function sessionLoader(
 export function sessionLoader<T extends object>(
   args: RequestArgs,
   callback: (context: { auth: SessionAuth }) => T | Promise<T>,
-  options?: { ensureSignedIn?: boolean },
+  options?: { ensureSignedIn?: boolean; returnTo?: string },
 ): Promise<T & { user: SessionAuth["user"] }>;
 export async function sessionLoader<T extends object>(
   args: RequestArgs,
   callback?: (context: { auth: SessionAuth }) => T | Promise<T>,
-  options?: { ensureSignedIn?: boolean },
+  options?: { ensureSignedIn?: boolean; returnTo?: string },
 ): Promise<
   (T & { user: SessionAuth["user"] }) | { user: SessionState["user"] }
 > {
   const session = await getSessionAuth(args);
   if (!session.user) {
     if (options?.ensureSignedIn || callback)
-      throw redirect(loginPath(args.request));
+      throw redirect(loginPath(args.request, options?.returnTo));
     return { user: null };
   }
   if (!callback) return { user: session.user };

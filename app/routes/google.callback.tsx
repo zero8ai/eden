@@ -7,8 +7,9 @@
  * and stores the grant, and returns the user to the wizard/Deployment tab it came from. Mirrors the
  * Discord callback's readable-error (`fail`) pattern.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { Plug } from "lucide-react";
+import { useEffect } from "react";
 import { Link, redirect, type LoaderFunctionArgs } from "react-router";
 
 import { AppShell, PageHeader } from "~/components/shell";
@@ -32,7 +33,7 @@ import { getRuntime } from "~/seams/index.server";
 import type { Route } from "./+types/google.callback";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const url = new URL(args.request.url);
@@ -40,7 +41,10 @@ export const loader = (args: LoaderFunctionArgs) =>
       const code = url.searchParams.get("code");
       const oauthError = url.searchParams.get("error");
 
-      const fail = (error: string, backUrl = "/dashboard") => ({ error, backUrl });
+      const fail = (error: string, backUrl = "/dashboard") => ({
+        error,
+        backUrl,
+      });
 
       if (oauthError) {
         return fail(
@@ -61,16 +65,18 @@ export const loader = (args: LoaderFunctionArgs) =>
             "agent's install page or Deployment tab.",
         );
       }
+      if (
+        state.userId !== auth.user.id ||
+        state.sessionId !== auth.session.id
+      ) {
+        return fail(
+          "This Google connection was started in a different Eden session. Start again from " +
+            "the agent's install page or Deployment tab.",
+        );
+      }
 
       // Tenancy: the signed state names the project, but the SESSION must own it too.
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId ?? null,
-          role: auth.role ?? null,
-        },
-        state.projectId,
-      );
+      const project = await requireProject(auth, state.projectId);
       const backUrl = safeReturnTo(state.returnTo) ?? "/dashboard";
 
       const roster = (await listAgents(project.id)).filter(
@@ -127,12 +133,18 @@ export const loader = (args: LoaderFunctionArgs) =>
         actorUserId: auth.user.id,
         action: "connection.connect",
         target: agent.name,
-        meta: { provider: "google", accountEmail, scopes: grant.scope || state.scopes },
+        meta: {
+          provider: "google",
+          accountEmail,
+          scopes: grant.scope || state.scopes,
+        },
       });
 
       throw redirect(backUrl);
     },
-    { ensureSignedIn: true },
+    // OAuth state is bound to the initiating Better Auth session. If that session expired, the
+    // round-trip cannot safely resume; keep Google's code/state out of the login returnTo URL.
+    { ensureSignedIn: true, returnTo: "/dashboard" },
   );
 
 export function meta() {
@@ -140,9 +152,20 @@ export function meta() {
 }
 
 export default function GoogleCallback({ loaderData }: Route.ComponentProps) {
-  const { error, backUrl } = loaderData;
+  const { error, backUrl, user } = loaderData;
+  useEffect(() => {
+    // A failed callback renders instead of redirecting. Remove Google's one-time code and Eden's
+    // signed state from browser history once the loader has consumed them.
+    if (window.location.search) {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        window.location.pathname,
+      );
+    }
+  }, []);
   return (
-    <AppShell>
+    <AppShell userEmail={user.email}>
       <PageHeader
         icon={Plug}
         accent="brand"

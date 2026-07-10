@@ -418,7 +418,9 @@ export async function publishDrafts(
     const names = [...new Set(orphaned.map((d) => orphanedMemberName(d.path)).filter(Boolean))];
     const plural = orphaned.length === 1 ? "" : "s";
     throw new Error(
-      `Can't publish — ${orphaned.length} staged change${plural} belong to ${
+      `Can't publish — ${orphaned.length} staged change${plural} ${
+        orphaned.length === 1 ? "belongs" : "belong"
+      } to ${
         names.length === 1 ? `"${names[0]}"` : `members (${names.map((n) => `"${n}"`).join(", ")})`
       }, which is no longer part of this team. Discard ${
         orphaned.length === 1 ? "it" : "them"

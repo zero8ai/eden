@@ -141,7 +141,7 @@ import { envIngressUrl, isLocalOrigin, publicOrigin } from "~/lib/ingress";
 import { contextPath } from "~/lib/paths";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { cn } from "~/lib/utils";
-import { overlayLock } from "~/marketplace/lock";
+import { overlayLock, requiredScopesByProvider } from "~/marketplace/lock";
 import {
   agentRequiredSecretState,
   cleanupOrphanedPendingSecrets,
@@ -248,8 +248,15 @@ interface DeploymentData {
     id: string;
     provider: string;
     accountEmail: string | null;
+    /** What Google GRANTED last time — a record only, never the Reconnect request template (§#30). */
     scopes: string;
     status: string;
+    /**
+     * The space-joined scopes a Connect/Reconnect must REQUEST for this provider, derived from the
+     * install's lock snapshot (issue #30). Null when the lock carries no snapshot (old locks) — the
+     * card then falls back to the stored grant `scopes`.
+     */
+    requiredScopes: string | null;
   }>;
   /** Whether the operator configured a Google OAuth client — gates the reconnect action. */
   connectionsConfigured: boolean;
@@ -507,11 +514,17 @@ export const loader = (args: LoaderFunctionArgs) =>
         );
       let hasDiscordSetup = activeHasChannelFile("discord");
       let hasGithubSetup = activeHasChannelFile("github");
+      // The effective lock for this agent (drafts overlaid) — drives both the missing-secret guard
+      // and the Connections card's required-scope derivation (issue #30).
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        allDrafts.map((d) => ({ path: d.path, content: d.content })),
+      );
+      // The lock attributes installs to a member name (team) or null (single-agent root) — mirror
+      // lockSecretsForMember's mapping so the required-scope union covers the right installs.
+      const activeMember = isTeam ? active.name : null;
+      const requiredScopes = requiredScopesByProvider(lock, activeMember);
       try {
-        const lock = overlayLock(
-          source.files["eden-lock.json"] ?? null,
-          allDrafts.map((d) => ({ path: d.path, content: d.content })),
-        );
         const [state, shared] = await Promise.all([
           agentRequiredSecretState({
             projectId: project.id,
@@ -561,13 +574,20 @@ export const loader = (args: LoaderFunctionArgs) =>
       // them with a Reconnect affordance. Installs create grants, so this covers the reconnect UX.
       let connectionGrantRows: DeploymentData["connections"] = [];
       try {
-        connectionGrantRows = (await listGrantsForAgent(active.id)).map((g) => ({
-          id: g.id,
-          provider: g.provider,
-          accountEmail: g.accountEmail,
-          scopes: g.scopes,
-          status: g.status,
-        }));
+        connectionGrantRows = (await listGrantsForAgent(active.id)).map((g) => {
+          const req = requiredScopes.get(g.provider);
+          return {
+            id: g.id,
+            provider: g.provider,
+            accountEmail: g.accountEmail,
+            scopes: g.scopes,
+            status: g.status,
+            // The scopes a Reconnect must REQUEST, from the install's lock snapshot (issue #30).
+            // Null when the lock has no snapshot for this provider (old locks) → the card falls
+            // back to the grant's stored scopes.
+            requiredScopes: req && req.length > 0 ? req.join(" ") : null,
+          };
+        });
       } catch {
         connectionGrantRows = []; // store hiccup — the card simply doesn't render
       }
@@ -1106,10 +1126,15 @@ function ConnectionsCard({
       </CardHeader>
       <CardContent className="space-y-3">
         {connections.map((c) => {
+          // Request the scopes the INSTALL declares (lock snapshot), not the grant's stored scopes
+          // (issue #30): stored scopes record what Google granted last time, so using them as the
+          // request template perpetuates stale/narrow scopes forever — the incident where an
+          // identity-only grant reconnected without ever re-requesting the Sheets scope. Fall back
+          // to stored scopes only for old locks that predate the snapshot.
           const connectUrl =
             `/google/connect?project=${encodeURIComponent(projectId)}` +
             `&agent=${encodeURIComponent(agentName)}` +
-            `&scopes=${encodeURIComponent(c.scopes)}` +
+            `&scopes=${encodeURIComponent(c.requiredScopes ?? c.scopes)}` +
             `&returnTo=${encodeURIComponent(returnTo)}`;
           const active = c.status === "active";
           return (

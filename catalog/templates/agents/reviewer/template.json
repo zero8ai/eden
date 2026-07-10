@@ -3,7 +3,7 @@
   "type": "agent",
   "name": "Reviewer",
   "description": "Reviews open pull requests — reads the change against its issue, runs the repo's checks, and leaves specific, ranked feedback. Reviews; doesn't merge.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "eve": ">=0.22.0",
   "model": "z-ai/glm-5.2",
   "includes": [

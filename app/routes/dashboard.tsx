@@ -42,7 +42,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           return {
             project,
             members: roster.map((a) => a.name),
-            isTeam: roster.length > 0 && roster[0].root !== "agent",
+            isTeam: project.layout === "team",
           };
         }),
       );

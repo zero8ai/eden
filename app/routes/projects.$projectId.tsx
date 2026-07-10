@@ -28,6 +28,7 @@ import {
 } from "react-router";
 
 import { NewResourceDialog } from "~/components/new-resource-dialog";
+import { EmptyTeamState } from "~/components/empty-team-state";
 import {
   AgentNav,
   AppShell,
@@ -55,15 +56,13 @@ import { Label } from "~/components/ui/label";
 import {
   listAgentEnvironments,
   listReleases,
-  syncProjectAgents,
-  withPreservedNames,
   type Agent,
 } from "~/db/queries.server";
 import { FreshnessBadge, releaseFreshness } from "~/components/deploy-freshness";
 import { listDeployments, queueDeploy } from "~/deploy/controller.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { readModel } from "~/eve/agentModule";
-import { buildAgentConfig, detectAgentRoots } from "~/eve/parse";
+import { buildAgentConfig } from "~/eve/parse";
 import { RESOURCE_KINDS, sandboxPath, slugifyResourceName } from "~/eve/templates";
 import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
 import { memberScaffold } from "~/github/create.server";
@@ -79,6 +78,7 @@ import {
   agentFromParams,
   agentParamRedirect,
   resolveAgentContext,
+  resolveSyncedAgentContext,
 } from "~/project/agent-context.server";
 import { agentRequiredSecretState } from "~/project/secrets.server";
 import { overlayLock } from "~/marketplace/lock";
@@ -203,31 +203,16 @@ export const loader = (args: LoaderFunctionArgs) =>
           const legacy = agentParamRedirect(args.request, project.id);
           if (legacy) throw legacy;
         }
-        let { roster, active, isTeam } = await resolveAgentContext(
+        const { roster, active, isTeam } = await resolveSyncedAgentContext(
           project.id,
           requestedAgent,
+          source.paths,
         );
-        const detected = withPreservedNames(
-          roster,
-          detectAgentRoots(source.paths),
-        );
-        const known = new Set(roster.map((a) => `${a.name}:${a.root}`));
-        if (
-          detected.length > 0 &&
-          (detected.length !== roster.length ||
-            detected.some((d) => !known.has(`${d.name}:${d.root}`)))
-        ) {
-          await syncProjectAgents(project.id, detected);
-          ({ roster, active, isTeam } = await resolveAgentContext(
-            project.id,
-            requestedAgent,
-          ));
-        }
 
         const orgDefaultModel = await getWorkspaceAssistantModel(project.orgId).catch(
           () => null,
         );
-        const teamLayout = active.root !== "agent";
+        const teamLayout = project.layout === "team";
         // The hierarchy: a team repo LANDS on the team (roster) view; a member's config
         // surface is a drill-in (?agent=<name>). Single-agent repos go straight to their
         // one member, exactly as before teams existed.
@@ -235,6 +220,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           teamLayout && !requestedAgent
             ? ("team" as const)
             : ("member" as const);
+        if (view === "member" && !active) throw redirect(`/repos/${project.id}`);
         const lock = overlayLock(
           source.files["eden-lock.json"] ?? null,
           drafts.map((d) => ({ path: d.path, content: d.content })),
@@ -279,9 +265,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         // The model shown inline must reflect the newest intent: a staged agent.ts draft
         // wins over the repo value (same rule the editors follow).
         const config =
-          view === "member" ? buildAgentConfig(source, active.root) : null;
+          view === "member" && active ? buildAgentConfig(source, active.root) : null;
         const agentTsDraft = drafts.find(
-          (d) => d.path === `${active.root}/agent.ts` && d.content !== null,
+          (d) => active && d.path === `${active.root}/agent.ts` && d.content !== null,
         );
         if (config && agentTsDraft?.content) {
           config.model = readModel(agentTsDraft.content) ?? config.model;
@@ -300,8 +286,8 @@ export const loader = (args: LoaderFunctionArgs) =>
         let ship: ProjectView["ship"] = null;
         // Cache the active member's envs so the member-scope shipped-row lookup reuses them.
         const activeEnvs =
-          view === "member" ? await listAgentEnvironments(active.id) : [];
-        if (view === "member") {
+          view === "member" && active ? await listAgentEnvironments(active.id) : [];
+        if (view === "member" && active) {
           // Newest-first releases for this member, so we can flag whether each
           // env is running the latest version (matches the deployment pipeline).
           const memberReleases = (await listReleases(project.id)).filter(
@@ -343,7 +329,7 @@ export const loader = (args: LoaderFunctionArgs) =>
             await Promise.all(
               roster.map(async (member): Promise<ShipStatusRow | null> => {
                 const memberEnvs =
-                  view === "member" && member.id === active.id
+                  view === "member" && member.id === active?.id
                     ? activeEnvs
                     : await listAgentEnvironments(member.id);
                 const env = memberEnvs.find((e) => e.name === shipEnv);
@@ -372,7 +358,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         return {
           project,
           roster: roster.map((a) => ({ name: a.name })),
-          active: { name: active.name, root: active.root },
+          active: active ? { name: active.name, root: active.root } : null,
           isTeam,
           teamLayout,
           view,
@@ -385,6 +371,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           ship,
         };
       } catch (error) {
+        if (error instanceof Response) throw error;
         return {
           project,
           roster: [],
@@ -729,6 +716,15 @@ function TeamSurface({
     document.cookie = `${TEAM_INTRO_COOKIE}=1; path=/; max-age=31536000; SameSite=Lax`;
     setShowIntro(false);
   };
+
+  if (members.length === 0) {
+    return (
+      <EmptyTeamState
+        overviewHref={base}
+        action={<AddMemberDialog />}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">

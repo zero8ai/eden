@@ -9,6 +9,8 @@ import {
   buildAgentConfig,
   detectAgentRoots,
   detectSandbox,
+  EMPTY_TEAM_MARKER,
+  hasTeamLayout,
   isEveRepo,
 } from "~/eve/parse";
 
@@ -52,12 +54,18 @@ describe("detectAgentRoots", () => {
       { name: "agent", root: "agent" },
     ]);
   });
+
+  it("keeps an empty-team marker out of the member roster", () => {
+    expect(detectAgentRoots([EMPTY_TEAM_MARKER])).toEqual([]);
+    expect(hasTeamLayout([EMPTY_TEAM_MARKER])).toBe(true);
+  });
 });
 
 describe("isEveRepo", () => {
   it("accepts both layouts and rejects everything else", () => {
     expect(isEveRepo(SINGLE)).toBe(true);
     expect(isEveRepo(TEAM)).toBe(true);
+    expect(isEveRepo([EMPTY_TEAM_MARKER])).toBe(true);
     expect(isEveRepo(["src/index.ts", "README.md"])).toBe(false);
   });
 });

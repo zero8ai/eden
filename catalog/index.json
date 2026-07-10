@@ -28,9 +28,9 @@
       "id": "reviewer",
       "type": "agent",
       "name": "Reviewer",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "description": "Reviews open pull requests — reads the change against its issue, runs the repo's checks, and leaves specific, ranked feedback. Reviews; doesn't merge.",
-      "hash": "f581bf51b714ac1843615c31b6c35cd201f0efe8"
+      "hash": "60f58e5570baec2096b5a07b16f354e0d8c6c16a"
     },
     {
       "id": "technical-writer",
@@ -164,9 +164,9 @@
       "id": "reviewing-a-pull-request",
       "type": "skill",
       "name": "Reviewing a pull request",
-      "version": "0.1.0",
-      "description": "How to judge whether a change is correct, safe, and ready — and give feedback that helps the author.",
-      "hash": "3c5b4f5f15181b176ff913bd290be271d28d7ddb"
+      "version": "0.2.0",
+      "description": "Two-axis PR review from a local checkout — standards (repo conventions plus a code-smell baseline) and spec (does it do what the issue asked) — delivered as one ranked review.",
+      "hash": "78fcec342a131840b6905f6ba8eb9ab1263ef995"
     },
     {
       "id": "technical-writing",

@@ -61,6 +61,7 @@ import {
   agentFromParams,
   agentParamRedirect,
   resolveAgentContext,
+  requireActiveAgent,
 } from "~/project/agent-context.server";
 import { requireProject } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.runs";
@@ -98,6 +99,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         project.id,
         agentName,
       );
+      requireActiveAgent(active, project.id);
       // Teams have no repo-level Runs — the tab exists only at the member level.
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
 

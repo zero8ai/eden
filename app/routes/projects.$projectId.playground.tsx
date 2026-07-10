@@ -68,6 +68,7 @@ import {
   agentFromParams,
   agentParamRedirect,
   resolveAgentContext,
+  requireActiveAgent,
 } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.playground";
@@ -96,6 +97,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         project.id,
         agentName,
       );
+      requireActiveAgent(active, project.id);
       // Teams have no repo-level Playground — the tab exists only at the member level.
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
 
@@ -245,6 +247,7 @@ export async function action(args: ActionFunctionArgs) {
   );
   const agentName = agentFromParams(args.params);
   const { active, isTeam } = await resolveAgentContext(project.id, agentName);
+  requireActiveAgent(active, project.id);
   if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
 
   const form = await args.request.formData();

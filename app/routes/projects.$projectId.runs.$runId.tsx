@@ -30,6 +30,7 @@ import {
   agentFromParams,
   agentParamRedirect,
   resolveAgentContext,
+  requireActiveAgent,
 } from "~/project/agent-context.server";
 import { requireProject } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.runs.$runId";
@@ -56,6 +57,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         getRunWithSteps(project.id, args.params.runId!),
         resolveAgentContext(project.id, agentName),
       ]);
+      requireActiveAgent(active, project.id);
       // Teams have no repo-level run pages — the transcript lives at the member level.
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
       if (!result) throw data("Run not found", { status: 404 });

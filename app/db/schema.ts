@@ -147,6 +147,8 @@ export const projects = pgTable(
       .references(() => orgs.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
+    /** Persisted repository shape; unlike the roster, this remains meaningful at zero members. */
+    layout: text("layout").notNull().default("single"),
     // GitHub coordinates (Connect pillar, M0). installationId ties to the GitHub App install.
     repoOwner: text("repo_owner"),
     repoName: text("repo_name"),

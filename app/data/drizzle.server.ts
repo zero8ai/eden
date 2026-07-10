@@ -35,7 +35,7 @@ export const drizzleDataStore: DataStore = {
         .where(eq(agents.projectId, projectId))
         .orderBy(asc(agents.name));
     },
-    async syncRoster(projectId, roster) {
+    async syncRoster(projectId, roster, options) {
       return db.transaction(async (tx) => {
         if (roster.length > 0) {
           await tx
@@ -57,9 +57,13 @@ export const drizzleDataStore: DataStore = {
               ),
             ),
           );
+        } else if (options?.allowEmpty) {
+          await tx.delete(agents).where(
+            and(eq(agents.projectId, projectId), eq(agents.kind, "member")),
+          );
         }
-        // Never delete the whole roster: an empty detection (e.g. a truncated tree read)
-        // must not cascade away releases/runs. An empty roster is a no-op.
+        // An empty detection is protected by default so a truncated tree read cannot cascade
+        // history away. Only a caller with explicit empty-team proof sets allowEmpty above.
         return tx
           .select()
           .from(agents)

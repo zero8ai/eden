@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { memberScaffold } from "~/github/create.server";
+import { memberScaffold, teamFiles } from "~/github/create.server";
+import { EMPTY_TEAM_MARKER } from "~/eve/parse";
 
 describe("repo scaffold", () => {
+  it("creates an empty team skeleton with a durable marker and no member package", () => {
+    const paths = teamFiles("my-team").map((file) => file.path);
+    expect(paths).toContain(EMPTY_TEAM_MARKER);
+    expect(paths).toContain("package.json");
+    expect(paths).toContain("eden.json");
+    expect(paths.some((path) => /^agents\/[^/]+\/agent\//.test(path))).toBe(false);
+    expect(paths.some((path) => /^agents\/[^/]+\/package\.json$/.test(path))).toBe(false);
+  });
+
   it("starts new members without a dummy example tool", () => {
     const files = memberScaffold("assistant");
 

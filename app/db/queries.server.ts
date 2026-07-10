@@ -56,6 +56,7 @@ export async function createProject(
     repoName?: string | null;
     repoInstallationId?: string | null;
     defaultBranch?: string;
+    layout?: "single" | "team";
     /** Detected roster (detectAgentRoots); defaults to a single root agent. */
     roster?: { name: string; root: string }[];
   },
@@ -66,8 +67,8 @@ export async function createProject(
   );
   const { slug: _ignore, roster: rosterInput, ...rest } = input;
   const project = await store.projects.create({ ...rest, slug });
-  const roster = rosterInput?.length ? rosterInput : [...SINGLE_AGENT_ROSTER];
-  await store.agents.syncRoster(project.id, roster);
+  const roster = rosterInput ?? [...SINGLE_AGENT_ROSTER];
+  await store.agents.syncRoster(project.id, roster, { allowEmpty: rosterInput !== undefined });
   // Team-level env seeding: one converge fans the team env set (just "default" on a fresh
   // project) across every member, instead of per-agent ensureDefault loops.
   await ensureTeamEnvironments(project.id, { store });
@@ -213,6 +214,7 @@ export async function syncProjectAgents(
   roster: { name: string; root: string }[],
   store: DataStore = getRuntime().data,
   deployTarget?: DeployTarget,
+  options?: { allowEmpty?: boolean },
 ): Promise<Agent[]> {
   const existing = await store.agents.listByProject(projectId);
   const existingNames = new Set(existing.map((a) => a.name));
@@ -246,7 +248,7 @@ export async function syncProjectAgents(
   // infra. Tear it down FIRST, best-effort, exactly like deleteTeamEnvironment. Renamed rows
   // were mapped in place above, so a landed rename never reads as a removal here.
   const finalRoster = withPreservedNames(existing, roster);
-  if (roster.length > 0) {
+  if (roster.length > 0 || options?.allowEmpty) {
     const keep = new Set(finalRoster.map((m) => m.name));
     const renamedIds = new Set(renames.map((r) => r.id));
     const pruned = existing.filter(
@@ -262,11 +264,12 @@ export async function syncProjectAgents(
     }
   }
 
-  const agents = await store.agents.syncRoster(projectId, finalRoster);
+  const agents = await store.agents.syncRoster(projectId, finalRoster, options);
   // A new member inherits the team's full env set here — this converge is what guarantees no
   // member is left existing in one environment but not another.
   await ensureTeamEnvironments(projectId, { store });
-  const created = agents.filter((a) => !existingNames.has(a.name));
+  const memberAgents = agents.filter((a) => a.kind === "member");
+  const created = memberAgents.filter((a) => !existingNames.has(a.name));
   if (created.length > 0) {
     const { migratePendingSecrets } = await import("~/project/secrets.server");
     for (const agent of created) {
@@ -282,7 +285,7 @@ export async function syncProjectAgents(
       }
     }
   }
-  return agents;
+  return memberAgents;
 }
 
 /**

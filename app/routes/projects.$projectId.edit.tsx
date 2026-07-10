@@ -37,6 +37,7 @@ import {
   agentFromParams,
   agentParamRedirect,
   memberFromPath,
+  requireActiveAgent,
   resolveAgentContext,
 } from "~/project/agent-context.server";
 import {
@@ -124,6 +125,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         resolveFileView(project, path),
         resolveAgentContext(project.id, paramAgent ?? memberFromPath(path)),
       ]);
+      requireActiveAgent(active, project.id);
       const template = view.content === null ? templateFor(path) : null;
       return {
         project,

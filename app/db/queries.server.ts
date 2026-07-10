@@ -341,6 +341,19 @@ export async function getProject(
   return (await store.projects.getByOrg(orgId, projectId)) ?? undefined;
 }
 
+/**
+ * Fetch a project by its globally-unique id WITHOUT tenant scoping — the deep-link case
+ * (issue #56): a `/repos/:projectId` link to a project in another workspace the user belongs to.
+ * Callers MUST re-check the viewer's membership in the returned project's org before acting on
+ * it; this is never a substitute for the org-scoped `getProject`.
+ */
+export async function findProjectAnyOrg(
+  projectId: string,
+  store: DataStore = getRuntime().data,
+): Promise<Project | null> {
+  return store.projects.findById(projectId);
+}
+
 /** Releases for a project, newest first (D9 version history). */
 export function listReleases(projectId: string, store: DataStore = getRuntime().data) {
   return store.releases.listByProject(projectId);

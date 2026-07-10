@@ -67,6 +67,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         await requireProject(
           { user: auth.user, organizationId: auth.organizationId, role: auth.role },
           args.params.projectId,
+          { request: args.request },
         ),
       );
       const url = new URL(args.request.url);

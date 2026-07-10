@@ -128,6 +128,62 @@ export const discordConnections = pgTable(
   (t) => [uniqueIndex("discord_connections_guild_command_uq").on(t.guildId, t.commandName)],
 );
 
+/**
+ * Auth-brokered connection grants (issue #30). When an agent installs a connector like Google
+ * Sheets from the marketplace, the install wizard runs an Eden-brokered OAuth flow against the
+ * operator's OAuth client; the resulting refresh token lands here, sealed with the same
+ * AES-256-GCM secretbox that protects `secret_values`. Deploy unseals it, validates it once, and
+ * injects the operator client creds + refresh token as env so the shipped eve connection file can
+ * self-refresh access tokens at runtime (no control-plane dependency per turn).
+ *
+ * Phase 1 grants are APP-SCOPED: one shared grant per (agent, provider), captured at install time,
+ * used by every session. The plaintext columns (provider, accountEmail, scopes, status) are
+ * display/UX only — they drive the wizard's "Connected as …" line and the Deployment tab's
+ * Reconnect affordance; only the sealed token is ever a secret.
+ *
+ * Scope is (projectId, agentId, environmentId, provider) with a nulls-not-distinct unique index —
+ * matching the secrets scope convention. `environmentId` is nullable and always null in Phase 1
+ * (grant applies to every environment); it exists now so a future per-environment grant needs no
+ * migration.
+ */
+export const connectionGrants = pgTable(
+  "connection_grants",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 12 })
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    /** null = applies to every environment (always null in Phase 1). */
+    environmentId: varchar("environment_id", { length: 12 }).references(
+      () => environments.id,
+      { onDelete: "cascade" },
+    ),
+    /** Connector provider id, e.g. "google". */
+    provider: varchar("provider", { length: 32 }).notNull(),
+    /** The connected account's email, for display ("Connected as …"). Best-effort, nullable. */
+    accountEmail: text("account_email"),
+    /** Scopes actually granted, space-separated as the provider returned them. */
+    scopes: text("scopes").notNull(),
+    /** "active" | "expired" | "revoked" — display + deploy-guard state, not a secret. */
+    status: varchar("status", { length: 16 }).notNull().default("active"),
+    /** Sealed OAuth refresh token (AES-256-GCM, same secretbox as secret_values). */
+    refreshTokenCiphertext: text("refresh_token_ciphertext").notNull(),
+    refreshTokenIv: text("refresh_token_iv").notNull(),
+    refreshTokenAuthTag: text("refresh_token_auth_tag").notNull(),
+    createdBy: text("created_by").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique("connection_grants_scope_uq")
+      .on(t.projectId, t.agentId, t.environmentId, t.provider)
+      .nullsNotDistinct(),
+  ],
+);
+
 /** A project == one connected eve repo. */
 export const projects = pgTable(
   "projects",

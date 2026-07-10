@@ -18,11 +18,13 @@ import {
   CONNECT_STATE_TTL_MS,
   connectStateKey,
   discordAuthorizeUrl,
+  ensureInteractionsEndpoint,
+  INTERACTIONS_ROUTE,
   signConnectState,
 } from "~/discord/connect.server";
 import { listAgents, listAgentEnvironments } from "~/db/queries.server";
 import { ensureTeamEnvironments } from "~/deploy/environments.server";
-import { publicOrigin } from "~/lib/ingress";
+import { isLocalOrigin, publicOrigin } from "~/lib/ingress";
 import { contextPath } from "~/lib/paths";
 import { noindexMeta } from "~/lib/seo";
 import { requireProject } from "~/project/guard.server";
@@ -86,6 +88,23 @@ export const loader = (args: LoaderFunctionArgs) =>
         };
       }
 
+      // Self-register the app's Interactions Endpoint URL — the one Developer Portal setting
+      // nothing else automates; without it Discord never delivers a single interaction and
+      // slash commands time out. Best-effort: an operator-managed portal setup (or a Discord
+      // hiccup) must not block connecting a server. Skipped in local dev, where Discord's
+      // validation PING can't reach the origin.
+      const origin = publicOrigin(args.request);
+      if (!isLocalOrigin(origin)) {
+        try {
+          await ensureInteractionsEndpoint(
+            config,
+            `${origin}${INTERACTIONS_ROUTE}`,
+          );
+        } catch (err) {
+          console.warn("[discord] interactions endpoint registration:", err);
+        }
+      }
+
       const state = signConnectState(
         {
           projectId: project.id,
@@ -95,7 +114,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         },
         connectStateKey(),
       );
-      const redirectUri = `${publicOrigin(args.request)}/discord/callback`;
+      const redirectUri = `${origin}/discord/callback`;
       throw redirect(
         discordAuthorizeUrl({
           applicationId: config.applicationId,

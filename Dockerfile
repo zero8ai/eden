@@ -19,8 +19,10 @@ FROM node:24-alpine
 # The control plane shells out to `docker` (agent image builds, deploys, publish build-checks —
 # app/deploy/eve-image.server.ts, app/seams/oss/deploy.localdocker.server.ts) and to GNU `tar`
 # (source extraction with --strip-components). In the self-host stack the host's Docker socket
-# is mounted in, so only the CLI client is needed here.
-RUN apk add --no-cache docker-cli tar
+# is mounted in, so only the CLI client is needed here. buildx matters: without it the CLI
+# falls back to the deprecated legacy builder, whose step output goes to stdout in a format
+# extractBuildError can't parse — build failures then surface without the compiler's lines.
+RUN apk add --no-cache docker-cli docker-cli-buildx tar
 COPY ./package.json package-lock.json .npmrc /app/
 COPY --from=production-dependencies-env /app/node_modules /app/node_modules
 COPY --from=build-env /app/build /app/build

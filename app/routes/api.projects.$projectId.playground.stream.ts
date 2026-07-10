@@ -22,6 +22,7 @@ import {
 import {
   resolveAgentContext,
   agentFromParams,
+  requireActiveAgent,
 } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 
@@ -42,6 +43,7 @@ export async function action(args: ActionFunctionArgs) {
   const agentName =
     agentFromParams(args.params) ?? asString(form.get("agentName"));
   const { active } = await resolveAgentContext(project.id, agentName);
+  requireActiveAgent(active, project.id);
 
   const deploymentId = asString(form.get("deploymentId"));
   const playgroundSessionId = asString(form.get("playgroundSessionId")) || null;

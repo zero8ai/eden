@@ -1,9 +1,0 @@
-{
-  "id": "technical-writing",
-  "type": "skill",
-  "name": "Technical writing",
-  "description": "How to write documentation that gets a reader to an outcome — leading with what they came for and cutting the rest.",
-  "version": "0.1.0",
-  "eve": ">=0.1.0",
-  "files": ["skills/technical-writing.md"]
-}

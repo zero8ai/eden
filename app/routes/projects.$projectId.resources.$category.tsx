@@ -67,6 +67,7 @@ import {
   agentFromParams,
   agentParamRedirect,
   resolveAgentContext,
+  requireActiveAgent,
 } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.resources.$category";
@@ -113,6 +114,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         project.id,
         agentName,
       );
+      requireActiveAgent(active, project.id);
       // Teams have no repo-level resource lists — they exist only at the member level.
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
       const repo = { owner: project.repoOwner, repo: project.repoName };
@@ -210,6 +212,7 @@ export async function action(args: ActionFunctionArgs) {
     project.id,
     String(form.get("agent") ?? "") || null,
   );
+  requireActiveAgent(active, project.id);
   // The path must be a resource of THIS member's category — no arbitrary deletions.
   if (
     !target.startsWith(`${active.root}/${cat.dir}/`) ||

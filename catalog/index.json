@@ -1,60 +1,12 @@
 {
   "templates": [
     {
-      "id": "designer",
-      "type": "agent",
-      "name": "Designer",
-      "version": "0.3.0",
-      "description": "A product designer that turns problems into build-ready design specs and critiques UI work — capturing decisions and feedback in GitHub as committed notes and PR/issue comments.",
-      "hash": "c3c40c12e0dd255f545b5d364930d4729087fedb"
-    },
-    {
       "id": "engineer",
       "type": "agent",
       "name": "Engineer",
       "version": "0.4.0",
       "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
       "hash": "0b862fa85809a3b5e5eb25e88c09e341b1fd099b"
-    },
-    {
-      "id": "product-manager",
-      "type": "agent",
-      "name": "Product Manager",
-      "version": "0.3.0",
-      "description": "Draws the real need out of a request in conversation, then captures it as clear, actionable GitHub issues with gh — following each repo's own templates and labels.",
-      "hash": "832512729d0e00848e8faf57f2a910ebb233492e"
-    },
-    {
-      "id": "reviewer",
-      "type": "agent",
-      "name": "Reviewer",
-      "version": "0.3.0",
-      "description": "Reviews open pull requests — reads the change against its issue, runs the repo's checks, and leaves specific, ranked feedback. Reviews; doesn't merge.",
-      "hash": "f581bf51b714ac1843615c31b6c35cd201f0efe8"
-    },
-    {
-      "id": "technical-writer",
-      "type": "agent",
-      "name": "Technical Writer",
-      "version": "0.3.0",
-      "description": "Writes and maintains a project's documentation — READMEs, guides, references, changelogs — as pull requests, accurate to the code and in the project's own voice.",
-      "hash": "ef991a18e68c4778d0f21fc6c320e1ca49c42545"
-    },
-    {
-      "id": "triage-lead",
-      "type": "agent",
-      "name": "Triage Lead",
-      "version": "0.3.0",
-      "description": "Keeps a GitHub issue backlog healthy — triages, labels, prioritizes, de-duplicates, and assigns work through gh, learning each repo's own taxonomy. Runs on demand or on a schedule.",
-      "hash": "643f49bac23af3dbeab2f9ff7b8a12cc86a646ef"
-    },
-    {
-      "id": "discord-bundle",
-      "type": "bundle",
-      "name": "Discord",
-      "version": "0.1.0",
-      "description": "Everything an agent needs to talk on Discord: the Discord channel (one-click connect via Eden's shared app and a slash command named after the agent) and the outbound send-message tool.",
-      "hash": "ff9ce5bcbb3603b4667d066abdf217dc8445f252"
     },
     {
       "id": "github-bundle",
@@ -89,46 +41,6 @@
       "hash": "530407920c180a7a1c92ed8f4ca32d89f8b475af"
     },
     {
-      "id": "linear",
-      "type": "channel",
-      "name": "Linear",
-      "version": "0.1.0",
-      "description": "Assign and @mention this agent in Linear — it works as a Linear agent, posting Agent Activities on delegated sessions via eve's linearChannel with webhook signature verification.",
-      "hash": "51bf1e41c76117e1ef87a5e2757f8d7c44c68ae3"
-    },
-    {
-      "id": "microsoft-teams",
-      "type": "channel",
-      "name": "Microsoft Teams",
-      "version": "0.1.0",
-      "description": "Talk to this agent from Microsoft Teams — inbound Bot Framework JWT validation and replies over the Bot Connector API via eve's teamsChannel.",
-      "hash": "63dbf1553963dc06ff417478206b1b8961f8d06f"
-    },
-    {
-      "id": "slack",
-      "type": "channel",
-      "name": "Slack",
-      "version": "0.1.0",
-      "description": "Talk to this agent from Slack — app mentions and direct messages with buttons and select menus, credentials brokered by a Vercel Connect connector via eve's slackChannel.",
-      "hash": "f4120950f1c654504e062512251a7fc09a1058f4"
-    },
-    {
-      "id": "telegram",
-      "type": "channel",
-      "name": "Telegram",
-      "version": "0.1.0",
-      "description": "Talk to this agent from Telegram — direct messages and group @mentions with inbound signature verification, replies, and typing indicators via eve's telegramChannel.",
-      "hash": "f9630f0cc2aa178fe5cd7f0370f1320e2699ad37"
-    },
-    {
-      "id": "twilio",
-      "type": "channel",
-      "name": "Twilio (SMS)",
-      "version": "0.1.0",
-      "description": "Talk to this agent over SMS through Twilio — inbound signature verification and outbound replies via eve's twilioChannel, with the allowed sender and from-number read from env.",
-      "hash": "6696c610b9291779a5ceaa29e36e760e04445f46"
-    },
-    {
       "id": "google-sheets",
       "type": "connection",
       "name": "Google Sheets",
@@ -161,14 +73,6 @@
       "hash": "fcfeb9fec37e3017f8f0410923f36dbc5934596e"
     },
     {
-      "id": "design-critique",
-      "type": "skill",
-      "name": "Design critique",
-      "version": "0.1.0",
-      "description": "How to critique a design against its intent — hierarchy, consistency, the unhappy states, accessibility, and copy.",
-      "hash": "c7116a3a026df48cf6f4443407fa32089a451ad2"
-    },
-    {
       "id": "github-app-auth",
       "type": "skill",
       "name": "GitHub App auth",
@@ -188,41 +92,9 @@
       "id": "reviewing-a-pull-request",
       "type": "skill",
       "name": "Reviewing a pull request",
-      "version": "0.1.0",
-      "description": "How to judge whether a change is correct, safe, and ready — and give feedback that helps the author.",
-      "hash": "3c5b4f5f15181b176ff913bd290be271d28d7ddb"
-    },
-    {
-      "id": "technical-writing",
-      "type": "skill",
-      "name": "Technical writing",
-      "version": "0.1.0",
-      "description": "How to write documentation that gets a reader to an outcome — leading with what they came for and cutting the rest.",
-      "hash": "bfa240a80f9c8559bd192a59e6401de714b573b3"
-    },
-    {
-      "id": "triaging-issues",
-      "type": "skill",
-      "name": "Triaging issues",
-      "version": "0.1.0",
-      "description": "How to groom a backlog — decide what an incoming issue is, how urgent it is, and what happens to it next.",
-      "hash": "e6ab4b70189ca9938f477c414c77f07c55e9d503"
-    },
-    {
-      "id": "writing-a-github-issue",
-      "type": "skill",
-      "name": "Writing a GitHub issue",
-      "version": "0.1.0",
-      "description": "How to turn a request, bug, or idea into a GitHub issue someone can act on without asking you anything.",
-      "hash": "1a77fe3908cbccc0692b9781fe457fd4454ca196"
-    },
-    {
-      "id": "writing-a-prd",
-      "type": "skill",
-      "name": "Writing a PRD",
-      "version": "0.1.0",
-      "description": "A playbook for writing product requirements documents that lead with the decision.",
-      "hash": "cb89a337281c3122d3bb67d9f7e835d742f38b47"
+      "version": "0.2.0",
+      "description": "Two-axis PR review from a local checkout — standards (repo conventions plus a code-smell baseline) and spec (does it do what the issue asked) — delivered as one ranked review.",
+      "hash": "78fcec342a131840b6905f6ba8eb9ab1263ef995"
     },
     {
       "id": "discord-send-message",

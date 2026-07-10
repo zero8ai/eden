@@ -12,19 +12,24 @@ import {
   syncProjectAgents,
   withPreservedNames,
 } from "~/db/queries.server";
-import { detectAgentRoots } from "~/eve/parse";
+import { detectAgentRoots, hasTeamLayout } from "~/eve/parse";
+import { getRuntime } from "~/seams/index.server";
 
 export interface AgentContext {
   /** The project's full roster, by name. */
   roster: Agent[];
   /** The member the current request operates on. */
-  active: Agent;
+  active: Agent | null;
   /** True when the repo uses the `agents/<member>/agent` team layout. */
   isTeam: boolean;
 }
 
-function isTeamRoster(roster: Agent[]): boolean {
-  return roster.some((a) => a.root !== "agent");
+/** Member-only routes use this to turn a stale empty-team member URL into a safe repo landing. */
+export function requireActiveAgent(
+  active: Agent | null,
+  projectId: string,
+): asserts active is Agent {
+  if (!active) throw redirect(`/repos/${projectId}`);
 }
 
 function rosterMatches(
@@ -44,13 +49,19 @@ export async function resolveAgentContext(
   agentName: string | null,
   store?: DataStore,
 ): Promise<AgentContext> {
-  const roster = await listAgents(projectId, store);
+  const dataStore = store ?? getRuntime().data;
+  const [project, roster] = await Promise.all([
+    dataStore.projects.findById(projectId),
+    listAgents(projectId, dataStore),
+  ]);
+  if (!project) throw data("Project not found.", { status: 404 });
+  const isTeam = project.layout === "team";
   if (roster.length === 0) {
-    // Pre-split projects that never re-synced; connect/webhook normally prevent this.
+    if (isTeam) return { roster, active: null, isTeam: true };
     throw data("Project has no agents — reconnect the repository.", { status: 500 });
   }
   const active = roster.find((a) => a.name === agentName || a.id === agentName) ?? roster[0];
-  return { roster, active, isTeam: isTeamRoster(roster) };
+  return { roster, active, isTeam };
 }
 
 /**
@@ -65,10 +76,11 @@ export async function resolveSyncedAgentContext(
 ): Promise<AgentContext> {
   const ctx = await resolveAgentContext(projectId, agentName, store);
   const detected = withPreservedNames(ctx.roster, detectAgentRoots(paths));
-  if (detected.length === 0 || rosterMatches(ctx.roster, detected)) {
+  const allowEmpty = ctx.isTeam && hasTeamLayout(paths) && detected.length === 0;
+  if ((!allowEmpty && detected.length === 0) || rosterMatches(ctx.roster, detected)) {
     return ctx;
   }
-  await syncProjectAgents(projectId, detected, store);
+  await syncProjectAgents(projectId, detected, store, undefined, { allowEmpty });
   return resolveAgentContext(projectId, agentName, store);
 }
 

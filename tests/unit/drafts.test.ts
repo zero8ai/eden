@@ -290,7 +290,9 @@ describe("publish gate (build check)", () => {
     );
     expect(JSON.parse(checkedPackage.content).dependencies).toEqual({
       "@ai-sdk/openai-compatible": "^3.0.5",
-      eve: "latest",
+      // "latest" gets pinned: the docker layer cache would keep serving whatever
+      // version the first image build installed (see ensureOpenRouterDependency).
+      eve: "^0.22.0",
       zod: "^4.4.3",
     });
     expect(propose.mock.calls[0][2].files).toEqual([
@@ -429,12 +431,14 @@ RUN npm ci
   });
 
   it("keeps the lockfile when the published package.json matches the repo's", async () => {
+    // A pinned eve: normalization leaves this package.json byte-identical to the repo's.
+    // (A floating "latest" would be rewritten, which correctly stages the lock's deletion.)
     const repoPackage =
       JSON.stringify(
         {
           dependencies: {
             "@ai-sdk/openai-compatible": "^3.0.5",
-            eve: "latest",
+            eve: "^0.22.0",
             zod: "^4.4.3",
           },
         },

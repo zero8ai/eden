@@ -21,11 +21,15 @@ export function commandErrorText(error: unknown): string {
       signal?: unknown;
       killed?: unknown;
     };
-    const text = [e.stderr, e.stdout, e.message]
+    // stderr + stdout only while either exists: an execFile error's message is the command
+    // line plus a COPY of stderr, and that duplicate tail crowded the real failure (often on
+    // stdout — legacy docker builder steps, tsc, eslint) out of callers' last-N-lines views.
+    const streams = [e.stderr, e.stdout]
       .map((v) => (typeof v === "string" ? v.trim() : ""))
       .filter(Boolean)
       .join("\n");
-    if (text) return text;
+    if (streams) return streams;
+    if (typeof e.message === "string" && e.message.trim()) return e.message.trim();
   }
   return String(error);
 }

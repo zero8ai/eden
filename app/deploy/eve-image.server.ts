@@ -436,12 +436,17 @@ export async function checkEveBuild(
           { maxBuffer: 16 * 1024 * 1024 },
         );
       } catch (error) {
-        const raw = error instanceof Error ? error.message : String(error);
+        // commandErrorText, not error.message: tsc/eslint report errors on STDOUT, and an
+        // execFile error's message carries only the command line + stderr.
+        const raw = commandErrorText(error);
         return { ok: false, output: raw.split("\n").slice(-30).join("\n") };
       }
       return { ok: true };
     } catch (error) {
-      const raw = error instanceof Error ? error.message : String(error);
+      // commandErrorText again: a docker CLI without buildx falls back to the legacy builder,
+      // which streams build-step output (the compiler's own lines) to STDOUT — error.message
+      // has only stderr, which reduced real compile failures to "returned a non-zero code: 1".
+      const raw = commandErrorText(error);
       if (isDockerUnavailableError(error)) {
         console.warn(
           `[publish-check] ${normalizeDockerCliError(error, "check this agent build").message}`,

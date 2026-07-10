@@ -27,6 +27,11 @@ The workflow:
 
 ## Model split
 
+**Codex coding harness override:** When this skill runs in Codex, ignore all Opus, Fable, and
+model-selection directions below. Use whatever agent and model the coding harness provides for the
+entire workflow; do not request or select a different model. Sub-agents may still be used when the
+harness supports them, but never to enforce a model split.
+
 **Research and planning stay with the main agent**, on whatever model the session is set to.
 The main agent reads the issue, explores the codebase, and writes the implementation plan — it is
 the only party that does research.

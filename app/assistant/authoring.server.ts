@@ -121,7 +121,7 @@ export async function projectContext(
   const agents = (await deps.store.agents.listByProject(project.id)).filter(
     (a) => a.kind === "member",
   );
-  const isTeam = agents.some((a) => a.root !== "agent");
+  const isTeam = project.layout === "team";
   const members = await Promise.all(
     agents.map(async (a) => ({
       name: a.name,

@@ -16,6 +16,7 @@ const project: AuthoringProject = {
   orgId: "o",
   name: "repo",
   slug: "repo",
+  layout: "single",
   repoOwner: "acme",
   repoName: "repo",
   repoInstallationId: "inst",

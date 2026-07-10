@@ -46,6 +46,7 @@ import {
 } from "react-router";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
+import { EmptyTeamState } from "~/components/empty-team-state";
 import { FreshnessBadge, releaseFreshness } from "~/components/deploy-freshness";
 import {
   AgentNav,
@@ -148,9 +149,10 @@ import {
   agentFromParams,
   agentParamRedirect,
   memberFromPath,
+  requireActiveAgent,
   resolveSyncedAgentContext,
 } from "~/project/agent-context.server";
-import { detectAgentRoots } from "~/eve/parse";
+import { detectAgentRoots, hasTeamLayout } from "~/eve/parse";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type {
   DeploymentWithRelease,
@@ -416,11 +418,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         } catch {
           missingSecrets = []; // secrets store unavailable — never block the pipeline view
         }
-        const guardAgent = missingSecrets[0]?.member ?? roster[0]?.name ?? active.name;
+        const guardAgent = missingSecrets[0]?.member ?? roster[0]?.name ?? "";
         return {
           project,
           roster: roster.map((a) => ({ name: a.name })),
-          activeAgent: active.name,
+          activeAgent: active?.name ?? "",
           isTeam,
           level,
           view,
@@ -457,6 +459,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
 
       // Member pipeline: this member's drafts + shared ones, its envs + versions.
+      requireActiveAgent(active, project.id);
       const drafts = allDrafts.flatMap((d) =>
         d.agentId === active.id || d.agentId === null
           ? [{ ...d, shared: d.agentId === null }]
@@ -701,7 +704,10 @@ export async function action(args: ActionFunctionArgs) {
           ...repo,
           ref: mergeSha,
         });
-        await syncProjectAgents(project.id, detectAgentRoots(source.paths));
+        const detected = detectAgentRoots(source.paths);
+        await syncProjectAgents(project.id, detected, undefined, undefined, {
+          allowEmpty: project.layout === "team" && hasTeamLayout(source.paths) && detected.length === 0,
+        });
         invalidateRepoSource(project.repoInstallationId, repo);
         warmAgentSource(project.repoInstallationId, repo, {
           ...source,
@@ -959,7 +965,14 @@ export default function Deployment({
 
       {view === "repo" ? (
         <>
-          <TeamRollup loaderData={loaderData} />
+          {roster.length === 0 && (
+            <EmptyTeamState overviewHref={`/repos/${project.id}`} />
+          )}
+          {(roster.length > 0 ||
+            loaderData.changes.length > 0 ||
+            loaderData.draftGroups.length > 0) && (
+            <TeamRollup loaderData={loaderData} />
+          )}
           {loaderData.githubSetup.enabled && <GitHubSetupTeamHint />}
           {loaderData.discordSetup.enabled && <DiscordSetupTeamHint />}
         </>

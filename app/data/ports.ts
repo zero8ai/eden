@@ -59,6 +59,7 @@ export interface AgentRepo {
   syncRoster(
     projectId: string,
     roster: { name: string; root: string }[],
+    options?: { allowEmpty?: boolean },
   ): Promise<Agent[]>;
   /**
    * Rename a member IN PLACE — updates `name` (and `root`, which moves with the directory) while
@@ -161,6 +162,7 @@ export interface ProjectRepo {
     orgId: string;
     name: string;
     slug: string;
+    layout?: "single" | "team";
     repoOwner?: string | null;
     repoName?: string | null;
     repoInstallationId?: string | null;

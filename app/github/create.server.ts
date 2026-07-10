@@ -4,8 +4,7 @@
  * This is Eden's headless equivalent of `eve init`: create the repo via the GitHub App, then
  * commit an eve skeleton directly to the default branch. Two layouts (PRD §7.9):
  *  - **single** — one agent at the repo root (`agent/`), today's default.
- *  - **team**   — a monorepo of agents by convention (`agents/<member>/agent/`), scaffolded
- *    with one starter member so the structure is self-evident.
+ *  - **team**   — an initially empty monorepo marked by `agents/README.md`.
  *
  * (The PRD flags "eve init headless" as a spike — we scaffold a faithful minimal skeleton
  * rather than shelling the interactive TUI; swap to a real `eve init` invocation once the
@@ -23,6 +22,7 @@ import {
 import { DEFAULT_SANDBOX_MODULE, sandboxPath } from "~/eve/templates";
 import { commitFiles, type FileChange } from "./write.server";
 import { getInstallationOctokit } from "./client.server";
+import { EMPTY_TEAM_MARKER } from "~/eve/parse";
 
 export type RepoLayout = "single" | "team";
 
@@ -35,8 +35,7 @@ export interface CreateRepoInput {
   /** Repo layout: one agent at the root, or a team monorepo. Defaults to "single". */
   layout?: RepoLayout;
   /**
-   * The agent's name: the single agent's display name, or the first team member's
-   * directory name (e.g. "product-manager").
+   * The single agent's display name. Ignored for team repositories.
    */
   agentName?: string;
 }
@@ -53,14 +52,6 @@ export interface CreatedRepo {
 // they actually want is a Settings-tab decision, not something we guess for them. This is
 // the platform-wide default (assistant, scaffolds, marketplace agents all share it).
 const DEFAULT_MODEL = "z-ai/glm-5.2";
-/**
- * The scaffolded first member of a team repo — a placeholder the customer renames/extends.
- * NOT "assistant": that name is reserved for Eden's built-in project-level assistant agent
- * and a roster member sharing it would collide on the unique
- * (project, name) index.
- */
-const STARTER_MEMBER = "planner";
-
 const GITIGNORE =
   ".eve/\n.output/\n.workflow-data/\nnode_modules/\n.env\n.env.*\n";
 
@@ -147,13 +138,12 @@ export function memberScaffold(
  * A fresh team monorepo skeleton (PRD §7.9): npm workspaces, each member a complete eve
  * project under `agents/<member>/`, detected by convention. `eden.json` is metadata only.
  */
-function teamFiles(
-  name: string,
-  model: string,
-  firstMember: string,
-): FileChange[] {
+export function teamFiles(name: string): FileChange[] {
   return [
-    ...memberScaffold(firstMember, model),
+    {
+      path: EMPTY_TEAM_MARKER,
+      content: "# Agents\n\nAdd each team member under `agents/<member>/` as a complete eve project.\n",
+    },
     {
       path: "package.json",
       content: packageJson({
@@ -276,7 +266,7 @@ export async function createEveRepo(
   const model = input.model ?? DEFAULT_MODEL;
   const files =
     layout === "team"
-      ? teamFiles(input.name, model, input.agentName || STARTER_MEMBER)
+      ? teamFiles(input.name)
       : singleAgentFiles(input.name, model, input.agentName || input.name);
   await commitFiles(
     octokit,

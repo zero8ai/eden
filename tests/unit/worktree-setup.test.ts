@@ -10,9 +10,12 @@ import {
 
 describe("withDatabaseName", () => {
   test("replaces the database name, preserving auth/host/port", () => {
-    expect(withDatabaseName("postgres://eden:eden@localhost:5442/eden", "eden_feature_x")).toBe(
-      "postgres://eden:eden@localhost:5442/eden_feature_x",
-    );
+    expect(
+      withDatabaseName(
+        "postgres://eden:eden@localhost:5442/eden",
+        "eden_feature_x",
+      ),
+    ).toBe("postgres://eden:eden@localhost:5442/eden_feature_x");
   });
 
   test("accepts postgresql:// scheme", () => {
@@ -22,9 +25,9 @@ describe("withDatabaseName", () => {
   });
 
   test("preserves query string", () => {
-    expect(withDatabaseName("postgres://u:p@host:5432/db?sslmode=disable", "db_wt")).toBe(
-      "postgres://u:p@host:5432/db_wt?sslmode=disable",
-    );
+    expect(
+      withDatabaseName("postgres://u:p@host:5432/db?sslmode=disable", "db_wt"),
+    ).toBe("postgres://u:p@host:5432/db_wt?sslmode=disable");
   });
 
   test("rejects non-postgres protocol", () => {
@@ -32,13 +35,17 @@ describe("withDatabaseName", () => {
   });
 
   test("rejects unexpected database names", () => {
-    expect(() => withDatabaseName("postgres://u:p@host:5432/db", "bad-name")).toThrow();
+    expect(() =>
+      withDatabaseName("postgres://u:p@host:5432/db", "bad-name"),
+    ).toThrow();
   });
 });
 
 describe("parseDatabaseUrl", () => {
   test("extracts user, password, and db", () => {
-    expect(parseDatabaseUrl("postgres://eden:eden@localhost:5442/eden")).toEqual({
+    expect(
+      parseDatabaseUrl("postgres://eden:eden@localhost:5442/eden"),
+    ).toEqual({
       user: "eden",
       password: "eden",
       db: "eden",
@@ -66,11 +73,14 @@ describe("applyEnvOverrides", () => {
       DATABASE_URL: "postgres://b",
       PORT: "5273",
     });
-    expect(out).toBe("# comment\nDATABASE_URL=postgres://b\nFOO=bar\n\nPORT=5273\n");
+    expect(out).toBe(
+      "# comment\nDATABASE_URL=postgres://b\nFOO=bar\n\nPORT=5273\n",
+    );
   });
 
   test("leaves comments and multi-line quoted values untouched", () => {
-    const original = 'KEY="-----BEGIN X-----\nabc=def\n-----END X-----"\nPORT=1\n';
+    const original =
+      'KEY="-----BEGIN X-----\nabc=def\n-----END X-----"\nPORT=1\n';
     const out = applyEnvOverrides(original, { PORT: "2" });
     expect(out).toContain('KEY="-----BEGIN X-----');
     // The PEM continuation line contains '=' but its "key" (abc) isn't an
@@ -93,11 +103,17 @@ describe("applyEnvOverrides", () => {
 
 describe("allocatePorts", () => {
   test("first allocation starts at the base ports", () => {
-    expect(allocatePorts({}, "feature-x")).toEqual({ dev: 5273, splitter: 8887, instance: 3100 });
+    expect(allocatePorts({}, "feature-x")).toEqual({
+      dev: 5273,
+      splitter: 8887,
+      instance: 3100,
+    });
   });
 
   test("skips ports used by other entries", () => {
-    const registry = { "feature-a": { dev: 5273, splitter: 8887, instance: 3100 } };
+    const registry = {
+      "feature-a": { dev: 5273, splitter: 8887, instance: 3100 },
+    };
     expect(allocatePorts(registry, "feature-b")).toEqual({
       dev: 5274,
       splitter: 8888,
@@ -109,11 +125,22 @@ describe("allocatePorts", () => {
     const entry = { dev: 5280, splitter: 8894, instance: 3800 };
     expect(allocatePorts({ "feature-a": entry }, "feature-a")).toBe(entry);
   });
+
+  test("preserves enriched fields on an existing entry", () => {
+    const entry = {
+      dev: 5280,
+      splitter: 8894,
+      instance: 3800,
+      tunnelShortId: "abcdef12",
+      tunnelHost: "feature-a-abcdef12.dev.zero8.ai",
+    };
+    expect(allocatePorts({ "feature-a": entry }, "feature-a")).toBe(entry);
+  });
 });
 
 describe("parseEnvFile", () => {
   test("parses keys, ignores comments and blanks, strips quotes", () => {
-    const parsed = parseEnvFile('# c\n\nA=1\nB="two"\nC=\'three\'\n');
+    const parsed = parseEnvFile("# c\n\nA=1\nB=\"two\"\nC='three'\n");
     expect(parsed).toEqual({ A: "1", B: "two", C: "three" });
   });
 });

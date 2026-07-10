@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   canContinueSessionOnTarget,
   findSessionOwnerTarget,
+  sessionContinuationIsBlocked,
 } from "~/playground/ownership";
 
 const owner = {
@@ -67,5 +68,44 @@ describe("playground session deployment ownership", () => {
         replacement,
       ]),
     ).toBeNull();
+  });
+
+  it("blocks an existing session when only a replacement is live", () => {
+    expect(
+      sessionContinuationIsBlocked(
+        {
+          externalSessionId: "eve_session_1",
+          lastDeploymentId: owner.deploymentId,
+        },
+        [replacement],
+      ),
+    ).toBe(true);
+  });
+
+  it("does not block a new session, an owned session, or a session with no live target", () => {
+    expect(
+      sessionContinuationIsBlocked(
+        { externalSessionId: null, lastDeploymentId: owner.deploymentId },
+        [replacement],
+      ),
+    ).toBe(false);
+    expect(
+      sessionContinuationIsBlocked(
+        {
+          externalSessionId: "eve_session_1",
+          lastDeploymentId: owner.deploymentId,
+        },
+        [owner],
+      ),
+    ).toBe(false);
+    expect(
+      sessionContinuationIsBlocked(
+        {
+          externalSessionId: "eve_session_1",
+          lastDeploymentId: owner.deploymentId,
+        },
+        [],
+      ),
+    ).toBe(false);
   });
 });

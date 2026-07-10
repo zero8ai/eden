@@ -3,9 +3,26 @@ import { describe, expect, it } from "vitest";
 import {
   cacheCoversCompletedLiveTurn,
   liveTurnIsForDifferentSession,
+  shouldPollRemoteSession,
 } from "~/playground/handoff";
 
 describe("playground live-turn handoff", () => {
+  it("does not poll when the remote session is not running", () => {
+    expect(shouldPollRemoteSession(false, null)).toBe(false);
+  });
+
+  it("polls a running remote session when no live turn is visible", () => {
+    expect(shouldPollRemoteSession(true, null)).toBe(true);
+  });
+
+  it("does not poll while the visible live stream is active", () => {
+    expect(shouldPollRemoteSession(true, { done: false })).toBe(false);
+  });
+
+  it("polls a running remote session after its visible live stream ends", () => {
+    expect(shouldPollRemoteSession(true, { done: true })).toBe(true);
+  });
+
   it("detects a live turn from a different selected session", () => {
     expect(liveTurnIsForDifferentSession("session-a", "session-b")).toBe(true);
     expect(liveTurnIsForDifferentSession("session-a", "session-a")).toBe(false);

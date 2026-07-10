@@ -13,6 +13,10 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
+import {
+  LocalizedDateTime,
+  LocalizedNumber,
+} from "~/components/localized-values";
 import { ModelSelect } from "~/components/model-select";
 import { AppShell, PageHeader, accentText } from "~/components/shell";
 import { Button } from "~/components/ui/button";
@@ -295,10 +299,14 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
             <CardDescription>
               Tokens used (last 30 days):{" "}
               <span className={`font-medium ${accentText.indigo}`}>
-                {used.toLocaleString()}
+                <LocalizedNumber value={used} />
               </span>
-              {limit?.monthlyTokenCap != null &&
-                ` / ${limit.monthlyTokenCap.toLocaleString()}`}
+              {limit?.monthlyTokenCap != null && (
+                <>
+                  {" / "}
+                  <LocalizedNumber value={limit.monthlyTokenCap} />
+                </>
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -356,7 +364,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                       )}
                     </span>
                     <span className="text-muted-foreground">
-                      {new Date(a.createdAt).toLocaleString()}
+                      <LocalizedDateTime value={a.createdAt} />
                     </span>
                   </li>
                 ))}

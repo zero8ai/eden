@@ -19,6 +19,7 @@ import {
 } from "react-router";
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
+import { RelativeTime } from "~/components/localized-values";
 import { NewResourceDialog } from "~/components/new-resource-dialog";
 import { categoryMeta } from "~/components/resource-category";
 import {
@@ -275,19 +276,6 @@ export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${label} · eden` }];
 }
 
-function relativeTime(iso: string | null): string {
-  if (!iso) return "—";
-  const ms = Date.now() - new Date(iso).getTime();
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-
 const CATEGORY_HINTS: Record<string, string> = {
   tools: "TypeScript functions the agent can call",
   skills: "On-demand Markdown playbooks",
@@ -437,7 +425,11 @@ export default function ResourceCategory({
                       ) : null}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {relativeTime(row.lastCommit?.date ?? null)}
+                      {row.lastCommit?.date ? (
+                        <RelativeTime value={row.lastCommit.date} />
+                      ) : (
+                        "—"
+                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {row.lastCommit?.authorLogin ??

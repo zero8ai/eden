@@ -17,6 +17,7 @@ import {
 } from "react-router";
 
 import { AppShell, PageHeader, accentText } from "~/components/shell";
+import { LocalizedDate } from "~/components/localized-values";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
@@ -291,7 +292,7 @@ export default function Members({ loaderData, actionData }: Route.ComponentProps
                     <span className="min-w-0">
                       <span className="font-medium">{inv.email}</span>
                       <span className="ml-2 text-muted-foreground">
-                        expires {new Date(inv.expiresAt).toLocaleDateString()}
+                        expires <LocalizedDate value={inv.expiresAt} />
                       </span>
                     </span>
                     <span className="flex items-center gap-2">

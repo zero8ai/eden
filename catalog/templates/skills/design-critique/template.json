@@ -1,9 +1,0 @@
-{
-  "id": "design-critique",
-  "type": "skill",
-  "name": "Design critique",
-  "description": "How to critique a design against its intent — hierarchy, consistency, the unhappy states, accessibility, and copy.",
-  "version": "0.1.0",
-  "eve": ">=0.1.0",
-  "files": ["skills/design-critique.md"]
-}

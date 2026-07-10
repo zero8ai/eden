@@ -20,17 +20,9 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { noindexMeta } from "~/lib/seo";
 import { auth as betterAuth } from "~/lib/auth.server";
+import { publicAuthErrorMessage } from "~/lib/auth-error.server";
 import { recordAudit } from "~/managed/audit.server";
 import type { Route } from "./+types/org.members";
-
-function canManageOrganization(role: string): boolean {
-  const roles = role.split(",").map((value) => value.trim());
-  return roles.includes("owner") || roles.includes("admin");
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
 
 const invitationDate = new Intl.DateTimeFormat("en-AU", {
   day: "numeric",
@@ -55,16 +47,29 @@ export const loader = (args: Route.LoaderArgs) =>
         };
       }
 
-      const [memberList, invitations] = await Promise.all([
+      const [memberList, permission] = await Promise.all([
         betterAuth.api.listMembers({
           query: { organizationId: active.org.id, limit: 100 },
           headers: auth.requestHeaders,
         }),
-        betterAuth.api.listInvitations({
-          query: { organizationId: active.org.id },
+        betterAuth.api.hasPermission({
+          body: {
+            organizationId: active.org.id,
+            permissions: {
+              organization: ["update"],
+              invitation: ["create", "cancel"],
+            },
+          },
           headers: auth.requestHeaders,
         }),
       ]);
+      const canManage = permission.success;
+      const invitations = canManage
+        ? await betterAuth.api.listInvitations({
+            query: { organizationId: active.org.id },
+            headers: auth.requestHeaders,
+          })
+        : [];
 
       return {
         org: active.org,
@@ -88,7 +93,7 @@ export const loader = (args: Route.LoaderArgs) =>
             : [],
         ),
         currentUserId: auth.user.id,
-        canManage: canManageOrganization(active.member.role),
+        canManage,
       };
     },
     { ensureSignedIn: true },
@@ -114,7 +119,9 @@ export async function action(args: Route.ActionArgs) {
         headers: session.requestHeaders,
       });
     } catch (error) {
-      return { error: errorMessage(error, "Could not send the invitation.") };
+      return {
+        error: publicAuthErrorMessage(error, "Could not send the invitation."),
+      };
     }
     await recordAudit({
       orgId: active.org.id,
@@ -134,7 +141,12 @@ export async function action(args: Route.ActionArgs) {
         headers: session.requestHeaders,
       });
     } catch (error) {
-      return { error: errorMessage(error, "Could not cancel the invitation.") };
+      return {
+        error: publicAuthErrorMessage(
+          error,
+          "Could not cancel the invitation.",
+        ),
+      };
     }
     await recordAudit({
       orgId: active.org.id,
@@ -157,7 +169,12 @@ export async function action(args: Route.ActionArgs) {
         headers: session.requestHeaders,
       });
     } catch (error) {
-      return { error: errorMessage(error, "Could not resend the invitation.") };
+      return {
+        error: publicAuthErrorMessage(
+          error,
+          "Could not resend the invitation.",
+        ),
+      };
     }
     throw redirect("/org/members");
   }
@@ -171,7 +188,9 @@ export async function action(args: Route.ActionArgs) {
         headers: session.requestHeaders,
       });
     } catch (error) {
-      return { error: errorMessage(error, "Could not rename the workspace.") };
+      return {
+        error: publicAuthErrorMessage(error, "Could not rename the workspace."),
+      };
     }
     await recordAudit({
       orgId: active.org.id,

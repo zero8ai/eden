@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Form, Link } from "react-router";
 
 import { safeReturnTo } from "~/auth/return-to";
@@ -43,6 +43,22 @@ export default function ResetPassword({ loaderData }: Route.ComponentProps) {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    // The response's no-referrer policy protects initial subresource requests. Once React has
+    // captured loaderData, also remove Better Auth's one-time token from browser history and any
+    // future same-tab navigation without losing the safe return destination/email prefill.
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("token") && !url.searchParams.has("error"))
+      return;
+    url.searchParams.delete("token");
+    url.searchParams.delete("error");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

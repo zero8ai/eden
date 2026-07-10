@@ -18,7 +18,7 @@ type PasswordResetEmailProps = {
   resetUrl: string;
 };
 
-export function PasswordResetEmail({
+export default function PasswordResetEmail({
   userEmail,
   resetUrl,
 }: PasswordResetEmailProps) {

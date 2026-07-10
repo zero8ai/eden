@@ -20,7 +20,7 @@ type OrganizationInvitationEmailProps = {
   organizationName: string;
 };
 
-export function OrganizationInvitationEmail({
+export default function OrganizationInvitationEmail({
   invitationUrl,
   inviterEmail,
   inviterName,

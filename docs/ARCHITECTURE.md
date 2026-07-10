@@ -219,9 +219,16 @@ Postgres database holds the canonical `user`, `session`, `account`, `verificatio
 `member`, and `invitation` records. There is no hosted auth dashboard or external OAuth callback in
 this flow. Signup auto-signs in after name/email/password and does not require email verification.
 Password reset uses Better Auth's one-hour verification token, revokes that user's existing
-sessions on success, and never exposes whether a reset-request email is registered.
+sessions on success, and never exposes whether a reset-request email is registered. Organization
+invitation acceptance is deliberately stricter: the plugin's
+`requireEmailVerificationOnInvitation` gate requires the recipient to verify the invited mailbox
+before invitation details can be read or accepted, while ordinary signup/sign-in remain ungated.
 The supported nginx proxy overwrites `X-Real-IP`; Better Auth reads only that trusted single-value
 header for its production rate limiter rather than accepting a client-controlled forwarded chain.
+The production host uses React Router's official Express adapter with a query-free, capability-ID
+redacting request logger. nginx uses the same policy and suppresses raw request-target error logs,
+so password-reset, email-verification, and invitation credentials are not persisted in container or
+proxy logs.
 
 - **A Better Auth organization = an Eden tenant/workspace.** Eden uses the plugin's APIs for
   organization creation, membership, invitations, roles, and the active organization rather than
@@ -231,10 +238,11 @@ header for its production rate limiter rather than accepting a client-controlled
   bypass the plugin by writing membership or invitation rows directly.
 - Eden's application tables hold operational data such as projects, spend limits, deployment and
   billing metadata, and audit entries, keyed by Better Auth organization/user IDs.
-- Password resets and workspace invitations use React Email templates and Postmark
+- Password resets, invitation delivery, and invitation-recipient verification use React Email
+  templates and Postmark
   (`POSTMARK_SERVER_TOKEN` / `FROM_EMAIL`) in production. Development can use `SMTP_URL` for local
-  capture. Invitation emails link to `/accept-invitation/:id`; after authentication, that page
-  accepts through the plugin API.
+  capture. Invitation emails link to `/accept-invitation/:id`; after authentication and mailbox
+  verification, that page accepts through the plugin API.
 - This implementation is email/password plus organizations. It does not claim SSO, SCIM/directory
   sync, or an external identity audit service.
 - Instance-level agent auth (channel route-auth secrets) remains separate and lives in the secrets

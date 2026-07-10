@@ -18,11 +18,12 @@ import { authClient } from "~/lib/auth-client";
 import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/login";
 
-export async function loader({ request }: Route.LoaderArgs) {
+export async function loader(args: Route.LoaderArgs) {
+  const { request } = args;
   const returnTo = safeReturnTo(
     new URL(request.url).searchParams.get("returnTo"),
   );
-  const session = await getSessionAuth(request);
+  const session = await getSessionAuth(args);
   if (session.user) throw redirect(returnTo);
   return { returnTo };
 }

@@ -1,5 +1,5 @@
 import nodemailer from "nodemailer";
-import { ServerClient } from "postmark";
+import { Models, ServerClient } from "postmark";
 
 export interface SendEmailOptions {
   to: string;
@@ -38,8 +38,14 @@ function createEmailClient(): EmailSender {
         To: to,
         Subject: subject,
         HtmlBody: html,
+        TrackLinks: Models.LinkTrackingOptions.None,
+        TrackOpens: false,
       });
     };
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("POSTMARK_SERVER_TOKEN is required in production.");
   }
 
   console.warn(

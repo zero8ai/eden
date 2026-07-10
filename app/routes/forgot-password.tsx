@@ -24,11 +24,12 @@ function safePrefillEmail(value: string | null): string {
   return /^[^\s@]+@[^\s@]+$/.test(email) ? email : "";
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export async function loader(args: Route.LoaderArgs) {
+  const { request } = args;
   const url = new URL(request.url);
   const returnTo = safeReturnTo(url.searchParams.get("returnTo"));
   const email = safePrefillEmail(url.searchParams.get("email"));
-  const session = await getSessionAuth(request);
+  const session = await getSessionAuth(args);
   if (session.user) throw redirect(returnTo);
   return { returnTo, email };
 }

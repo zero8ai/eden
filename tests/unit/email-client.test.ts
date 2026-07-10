@@ -16,6 +16,7 @@ vi.mock("postmark", () => ({
   ServerClient: class {
     sendEmail = mocks.postmarkSend;
   },
+  Models: { LinkTrackingOptions: { None: "None" } },
 }));
 
 const saved = {
@@ -95,12 +96,23 @@ describe("transactional email client", () => {
       To: "person@example.com",
       Subject: "Reset",
       HtmlBody: "<p>Reset</p>",
+      TrackLinks: "None",
+      TrackOpens: false,
     });
     expect(mocks.createTransport).not.toHaveBeenCalled();
   });
 
-  it("is a nonthrowing no-op when no provider is configured", async () => {
+  it("fails during production startup when Postmark is not configured", async () => {
     process.env.NODE_ENV = "production";
+    await expect(freshClient()).rejects.toThrow(
+      "POSTMARK_SERVER_TOKEN is required in production.",
+    );
+    expect(mocks.createTransport).not.toHaveBeenCalled();
+    expect(mocks.postmarkSend).not.toHaveBeenCalled();
+  });
+
+  it("is a nonthrowing no-op when no development provider is configured", async () => {
+    process.env.NODE_ENV = "development";
     const warning = vi
       .spyOn(console, "warn")
       .mockImplementation(() => undefined);

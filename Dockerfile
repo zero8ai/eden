@@ -26,6 +26,7 @@ RUN apk add --no-cache docker-cli docker-cli-buildx tar
 COPY ./package.json package-lock.json .npmrc /app/
 COPY --from=production-dependencies-env /app/node_modules /app/node_modules
 COPY --from=build-env /app/build /app/build
+COPY server /app/server
 # First-party marketplace catalog (the fixture CatalogSource reads <cwd>/catalog). Bundled into
 # the image so a self-hosted deploy works offline; the GitHub-raw source (EDEN_CATALOG_REPO) is
 # only for pointing at a public catalog repo.

@@ -625,8 +625,10 @@ two-source-of-truth reconciliation problem.
   an Eden tenant**; the organization plugin is authoritative for members, invitations, its standard
   owner/admin/member roles, and `session.activeOrganizationId`. Invitation delivery uses the
   installation's React Email/Postmark sender and acceptance uses the plugin API. Password reset
-  delivery uses the same sender. The same local auth model serves OSS and managed installations.
-  SSO, email verification, and directory sync are not part of this implementation.
+  delivery uses the same sender. Ordinary signup/sign-in are not gated by email verification, but
+  invitation recipients must verify the invited mailbox before Better Auth will reveal or accept
+  an invitation ID. The same local auth model serves OSS and managed installations. SSO and
+  directory sync are not part of this implementation.
 - **Security & secrets:** encrypted at rest, scoped per environment/instance, never written to repo
   files; least-privilege GitHub App scopes; the assistant runs in an isolated sandbox and cannot
   reach production secrets or hosts.

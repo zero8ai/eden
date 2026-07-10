@@ -58,8 +58,10 @@ cp .env.example .env.local
 Authentication is self-hosted in the same Postgres database as Eden. Better Auth exposes its
 same-origin handler under `/api/auth/*`; there is no external auth dashboard or callback to
 configure. Sign-in is email-first and password-second; sign-up asks only for name, email, and
-password. Email verification is intentionally disabled. Password resets use Better Auth's
-single-use, one-hour tokens.
+password. Email verification does not gate ordinary signup or sign-in. Password resets use Better
+Auth's single-use, one-hour tokens. Accepting an organization invitation is the one exception:
+Better Auth requires the invitee to
+verify the invited mailbox before its invitation-ID APIs will reveal or accept the invitation.
 
 The checked-in auth setup was created with Better Auth's official `auth@1.6.23 init` flow. Do not
 hand-edit `app/db/auth-schema.ts`; run `npm run auth:generate` to regenerate it from the final
@@ -99,18 +101,18 @@ is configured, `/connect` shows an "unconfigured" notice.
 
 ## Common scripts
 
-| Command                 | What it does                                       |
-| ----------------------- | -------------------------------------------------- |
-| `npm run dev`           | Dev server with HMR (port 5173)                    |
-| `npm run build`         | Production build                                   |
-| `npm run start`         | Serve the production build                         |
-| `npm run typecheck`     | Route typegen + `tsc`                              |
-| `npm run auth:generate` | Regenerate Better Auth schema with its pinned CLI  |
-| `npm run db:generate`   | Generate a SQL migration from `app/db/schema.ts`   |
-| `npm run db:migrate`    | Apply pending migrations                           |
-| `npm run db:push`       | Push schema directly (dev only, no migration file) |
-| `npm run db:studio`     | Open Drizzle Studio                                |
-| `npm run email:dev`     | Preview React Email templates on port 8092         |
+| Command                 | What it does                                        |
+| ----------------------- | --------------------------------------------------- |
+| `npm run dev`           | Dev server with HMR (port 5173)                     |
+| `npm run build`         | Production build                                    |
+| `npm run start`         | Serve the build with the token-safe RR/Express host |
+| `npm run typecheck`     | Route typegen + `tsc`                               |
+| `npm run auth:generate` | Regenerate Better Auth schema with its pinned CLI   |
+| `npm run db:generate`   | Generate a SQL migration from `app/db/schema.ts`    |
+| `npm run db:migrate`    | Apply pending migrations                            |
+| `npm run db:push`       | Push schema directly (dev only, no migration file)  |
+| `npm run db:studio`     | Open Drizzle Studio                                 |
+| `npm run email:dev`     | Preview React Email templates on port 8092          |
 
 ## Project layout
 

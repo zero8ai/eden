@@ -7,18 +7,26 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 
-import { getSessionAuth } from "~/auth/session.server";
+import {
+  betterAuthSessionMiddleware,
+  getSessionAuth,
+} from "~/auth/session.server";
 import { ensureSplitterStarted } from "~/deploy/splitter.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
 import "./app.css";
+import type { Route } from "./+types/root";
 
 export { ErrorBoundary } from "~/components/error-boundary";
 
-export const loader = async ({ request }: LoaderFunctionArgs) => {
+export const middleware: Route.MiddlewareFunction[] = [
+  betterAuthSessionMiddleware,
+];
+
+export const loader = async (args: LoaderFunctionArgs) => {
   // Boot the background singletons with the first server render (per-process guards).
   ensureWorkerStarted();
   ensureSplitterStarted();
-  const session = await getSessionAuth(request);
+  const session = await getSessionAuth(args);
   return { user: session.user };
 };
 

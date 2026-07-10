@@ -208,11 +208,13 @@ it's containerized. Add it with `crontab -e`:
    first organization-backed workspace.
 3. Sign out, use **Forgot password** on the email-first login, and confirm the Postmark reset link
    lets you set a new password without an email-verification step.
-4. In **Settings**, set the workspace **model key** — this is what deployed agents use to call
+4. Invite a second address from **Members**. Confirm the recipient must use Eden's Postmark
+   verification link before Better Auth reveals and accepts the organization invitation.
+5. In **Settings**, set the workspace **model key** — this is what deployed agents use to call
    models; without it, deploys come up but every turn fails.
-5. **Connect** a repo (the GitHub App install flow should round-trip through your domain and
+6. **Connect** a repo (the GitHub App install flow should round-trip through your domain and
    land back on `/connect`).
-6. Create or open an agent, **Ship** it, and talk to it in the **Playground**. The first ship
+7. Create or open an agent, **Ship** it, and talk to it in the **Playground**. The first ship
    builds a full agent image (several minutes). The deploy itself is usually seconds — but an
    agent with skills or a sandbox `bootstrap()` prewarms its sandbox template on first boot
    (pulls `ghcr.io/vercel/eve`, runs bootstrap, snapshots an `eve-sbx-tpl-*` image), which can

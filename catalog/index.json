@@ -68,9 +68,9 @@
       "id": "reviewing-a-pull-request",
       "type": "skill",
       "name": "Reviewing a pull request",
-      "version": "0.1.0",
-      "description": "How to judge whether a change is correct, safe, and ready — and give feedback that helps the author.",
-      "hash": "3c5b4f5f15181b176ff913bd290be271d28d7ddb"
+      "version": "0.2.0",
+      "description": "Two-axis PR review from a local checkout — standards (repo conventions plus a code-smell baseline) and spec (does it do what the issue asked) — delivered as one ranked review.",
+      "hash": "78fcec342a131840b6905f6ba8eb9ab1263ef995"
     },
     {
       "id": "discord-send-message",

@@ -94,7 +94,7 @@
       "name": "Reviewing a pull request",
       "version": "0.2.0",
       "description": "Two-axis PR review from a local checkout — standards (repo conventions plus a code-smell baseline) and spec (does it do what the issue asked) — delivered as one ranked review.",
-      "hash": "78fcec342a131840b6905f6ba8eb9ab1263ef995"
+      "hash": "5dbaed44109ffb17db1f219915f893c5038dd298"
     },
     {
       "id": "discord-send-message",

@@ -14,6 +14,7 @@ import {
   LEGACY_OPENROUTER_PROVIDER_PACKAGE,
   OPENROUTER_PROVIDER_PACKAGE,
 } from "~/eve/agentModule";
+import { getAgentSource } from "~/github/cached.server";
 import { readAgentFile } from "~/github/repo.server";
 import {
   findOpenChangeForFile,
@@ -97,6 +98,43 @@ function stagedTeamMemberRoot(path: string): string | null {
   if (agentMatch) return `agents/${agentMatch[1]}/agent`;
   const packageMatch = path.match(/^agents\/([^/]+)\/package\.json$/);
   return packageMatch ? `agents/${packageMatch[1]}/agent` : null;
+}
+
+/**
+ * Drafts stranded under a member root that no longer exists (issue #67). A draft whose path
+ * implies `agents/<name>/…` is orphaned when the roster and repo tree no longer back that member
+ * AND the selection doesn't itself (re)create the member's agent code. Feeding one to the build
+ * gate yields an opaque eve failure ("Could not resolve an eve agent root"), so we detect them
+ * and let the user discard instead.
+ */
+export function findOrphanedDrafts(
+  roster: { root: string }[],
+  repoPaths: string[],
+  drafts: DraftChange[],
+): DraftChange[] {
+  const backedRoots = new Set<string>();
+  for (const a of roster) backedRoots.add(a.root);
+  // Repo code already under a member's agent dir backs that member…
+  for (const p of repoPaths) {
+    const m = p.match(/^(agents\/[^/]+\/agent)\//);
+    if (m) backedRoots.add(m[1]);
+  }
+  // …as does a non-null draft inside it (a new-member install creates the code before the roster
+  // and repo ever see it).
+  for (const d of drafts) {
+    if (d.content === null) continue;
+    const m = d.path.match(/^(agents\/[^/]+\/agent)\//);
+    if (m) backedRoots.add(m[1]);
+  }
+  return drafts.filter((d) => {
+    const root = stagedTeamMemberRoot(d.path);
+    return root !== null && !backedRoots.has(root);
+  });
+}
+
+/** The member name in an orphaned draft's path (for messaging). */
+function orphanedMemberName(path: string): string | null {
+  return path.match(/^agents\/([^/]+)\//)?.[1] ?? null;
 }
 
 /**
@@ -209,6 +247,24 @@ export type CheckBuildFn = (req: BuildCheckRequest) => Promise<BuildCheckResult>
 const runtimeCheckBuild: CheckBuildFn = async (req) => {
   const target = getRuntime().deployTarget;
   return target.checkBuild ? target.checkBuild(req) : { ok: true, skipped: true };
+};
+
+/** Repo tree reader for the orphan check (injectable in tests). */
+export type ListRepoPathsFn = (input: {
+  installationId: string;
+  owner: string;
+  repo: string;
+}) => Promise<string[]>;
+
+/** Default: the cached repo source's paths; on any failure, fall back to an empty tree so the
+ *  orphan check degrades to roster + selection rather than blocking a publish on a GitHub hiccup. */
+const runtimeListRepoPaths: ListRepoPathsFn = async ({ installationId, owner, repo }) => {
+  try {
+    const source = await getAgentSource(installationId, { owner, repo });
+    return source.paths;
+  } catch {
+    return [];
+  }
 };
 
 type PublishFile = { path: string; content: string | null };
@@ -338,11 +394,36 @@ export async function publishDrafts(
   store: DataStore = getRuntime().data,
   propose: ProposeFn = proposeChange,
   checkBuild: CheckBuildFn = runtimeCheckBuild,
+  listRepoPaths: ListRepoPathsFn = runtimeListRepoPaths,
 ): Promise<ProposedChange> {
   const staged = await store.drafts.listByProject(input.project.id);
   const selected = staged.filter((d) => input.paths.includes(d.path));
   if (selected.length === 0) {
     throw new Error("No staged changes selected to publish.");
+  }
+
+  const agents = await store.agents.listByProject(input.project.id);
+
+  // Orphan gate (issue #67): a draft stranded under a member root that the roster, repo tree, and
+  // selection no longer back would reach the build gate as a package.json with no agent code — eve
+  // fails opaquely ("Could not resolve an eve agent root"). Detect it first and attribute the
+  // blocking member so the user can discard instead of being permanently bricked.
+  const repoPaths = await listRepoPaths({
+    installationId: input.project.repoInstallationId,
+    owner: input.project.repoOwner,
+    repo: input.project.repoName,
+  });
+  const orphaned = findOrphanedDrafts(agents, repoPaths, selected);
+  if (orphaned.length > 0) {
+    const names = [...new Set(orphaned.map((d) => orphanedMemberName(d.path)).filter(Boolean))];
+    const plural = orphaned.length === 1 ? "" : "s";
+    throw new Error(
+      `Can't publish — ${orphaned.length} staged change${plural} belong to ${
+        names.length === 1 ? `"${names[0]}"` : `members (${names.map((n) => `"${n}"`).join(", ")})`
+      }, which is no longer part of this team. Discard ${
+        orphaned.length === 1 ? "it" : "them"
+      } below, then publish again:\n\n${orphaned.map((d) => `- \`${d.path}\``).join("\n")}`,
+    );
   }
 
   // Publish gate: the change-set must compile against the branch it targets. A failed check
@@ -353,7 +434,6 @@ export async function publishDrafts(
   // project, so collapsing to one whole-repo build would always fail). For staged new members,
   // there is no agent row yet, so the root is inferred from `agents/<name>/...`. Selections
   // touching truly shared files check the repo root.
-  const agents = await store.agents.listByProject(input.project.id);
   const roots = inferBuildRoots(agents, selected);
   const files = await normalizeOpenRouterPackageDrafts({
     project: input.project,

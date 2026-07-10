@@ -9,38 +9,6 @@
       "hash": "0b862fa85809a3b5e5eb25e88c09e341b1fd099b"
     },
     {
-      "id": "product-manager",
-      "type": "agent",
-      "name": "Product Manager",
-      "version": "0.3.0",
-      "description": "Draws the real need out of a request in conversation, then captures it as clear, actionable GitHub issues with gh — following each repo's own templates and labels.",
-      "hash": "832512729d0e00848e8faf57f2a910ebb233492e"
-    },
-    {
-      "id": "reviewer",
-      "type": "agent",
-      "name": "Reviewer",
-      "version": "0.3.0",
-      "description": "Reviews open pull requests — reads the change against its issue, runs the repo's checks, and leaves specific, ranked feedback. Reviews; doesn't merge.",
-      "hash": "f581bf51b714ac1843615c31b6c35cd201f0efe8"
-    },
-    {
-      "id": "technical-writer",
-      "type": "agent",
-      "name": "Technical Writer",
-      "version": "0.3.0",
-      "description": "Writes and maintains a project's documentation — READMEs, guides, references, changelogs — as pull requests, accurate to the code and in the project's own voice.",
-      "hash": "ef991a18e68c4778d0f21fc6c320e1ca49c42545"
-    },
-    {
-      "id": "triage-lead",
-      "type": "agent",
-      "name": "Triage Lead",
-      "version": "0.3.0",
-      "description": "Keeps a GitHub issue backlog healthy — triages, labels, prioritizes, de-duplicates, and assigns work through gh, learning each repo's own taxonomy. Runs on demand or on a schedule.",
-      "hash": "643f49bac23af3dbeab2f9ff7b8a12cc86a646ef"
-    },
-    {
       "id": "discord-bundle",
       "type": "bundle",
       "name": "Discord",

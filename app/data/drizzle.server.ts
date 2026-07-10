@@ -62,8 +62,8 @@ export const drizzleDataStore: DataStore = {
             and(eq(agents.projectId, projectId), eq(agents.kind, "member")),
           );
         }
-        // Never delete the whole roster: an empty detection (e.g. a truncated tree read)
-        // must not cascade away releases/runs. An empty roster is a no-op.
+        // An empty detection is protected by default so a truncated tree read cannot cascade
+        // history away. Only a caller with explicit empty-team proof sets allowEmpty above.
         return tx
           .select()
           .from(agents)

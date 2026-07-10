@@ -155,7 +155,7 @@ interface SettingsView {
   level: NavLevel;
   showMember: boolean;
   showRepo: boolean;
-  /** Member: whether the active member can be removed (team, not the last member). */
+  /** Member: whether the active member can be removed from a team. */
   canRemoveMember: boolean;
   /** Member: whether the active agent can be renamed (any member/single-agent, self view). */
   canRenameMember: boolean;
@@ -777,14 +777,14 @@ export async function action(args: ActionFunctionArgs) {
       const files: FileChange[] = source.paths.flatMap((p) =>
         p.startsWith(memberDir) ? [{ path: p, content: null }] : [],
       );
+      if (files.length === 0)
+        return { error: `No files found under ${memberDir}.` };
       if (!source.paths.includes(EMPTY_TEAM_MARKER)) {
         files.push({
           path: EMPTY_TEAM_MARKER,
           content: "# Agents\n\nAdd each team member under `agents/<member>/` as a complete eve project.\n",
         });
       }
-      if (files.length === 0)
-        return { error: `No files found under ${memberDir}.` };
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
         branch: `eden/remove-member-${name}`,

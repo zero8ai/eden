@@ -35,6 +35,7 @@ import {
   StepsCard,
   UserBubble,
 } from "~/components/chat";
+import { EmptyTeamState } from "~/components/empty-team-state";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -390,6 +391,11 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
     >
       <div className="mx-auto w-full max-w-5xl px-4 pt-8 sm:px-6">
         <AgentNav base={base} level={isTeam ? "repo" : "single"} roster={roster} className="mb-0" />
+        {isTeam && roster.length === 0 && (
+          <div className="mt-6">
+            <EmptyTeamState overviewHref={`/repos/${project.id}`} />
+          </div>
+        )}
       </div>
 
       <ChatTranscript

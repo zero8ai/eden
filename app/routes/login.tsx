@@ -3,15 +3,8 @@ import { Form, Link, redirect } from "react-router";
 
 import { safeReturnTo } from "~/auth/return-to";
 import { getSessionAuth } from "~/auth/session.server";
-import { Logo } from "~/components/marketing/logo";
+import { AuthLink, AuthScreen } from "~/components/auth/auth-screen";
 import { Button } from "~/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { authClient } from "~/lib/auth-client";
@@ -88,111 +81,101 @@ export default function Login({ loaderData }: Route.ComponentProps) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-eden-bg px-6 py-12 text-eden-fg">
-      <div className="w-full max-w-sm space-y-8">
-        <Link to="/" className="mx-auto block w-fit" aria-label="eden home">
-          <Logo className="h-8" />
-        </Link>
-        <Card>
-          <CardHeader>
-            <CardTitle>Sign in</CardTitle>
-            <CardDescription>
-              {step === "email"
-                ? "Continue to your Eden workspace."
-                : "Enter your password."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {step === "email" ? (
-              <Form
-                method="post"
-                onSubmit={continueToPassword}
-                className="space-y-4"
-              >
-                <div className="space-y-1.5">
-                  <Label htmlFor="email">Email</Label>
-                  <Input
-                    ref={emailRef}
-                    id="email"
-                    name="email"
-                    type="email"
-                    autoComplete="email"
-                    defaultValue={email}
-                    required
-                  />
-                </div>
-                <Button type="submit" className="w-full">
-                  Continue
-                </Button>
-              </Form>
-            ) : (
-              <Form method="post" onSubmit={submit} className="space-y-4">
-                <div className="flex items-baseline justify-between gap-3 text-sm">
-                  <span
-                    className="truncate text-muted-foreground"
-                    title={email}
-                  >
-                    {email}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={changeEmail}
-                    className="shrink-0 font-medium text-foreground underline underline-offset-4"
-                  >
-                    Change email
-                  </button>
-                </div>
-                {/* Hidden username field so password managers pair the saved login. */}
-                <input
-                  type="email"
-                  name="email"
-                  autoComplete="username"
-                  value={email}
-                  readOnly
-                  hidden
-                  tabIndex={-1}
-                />
-                <div className="space-y-1.5">
-                  <Label htmlFor="password">Password</Label>
-                  <Input
-                    ref={passwordRef}
-                    id="password"
-                    name="password"
-                    type="password"
-                    autoComplete="current-password"
-                    required
-                  />
-                </div>
-                {error && (
-                  <p role="alert" className="text-sm text-destructive">
-                    {error}
-                  </p>
-                )}
-                <Button type="submit" className="w-full" disabled={pending}>
-                  {pending ? "Signing in…" : "Sign in"}
-                </Button>
-                <p className="text-center text-sm">
-                  <Link
-                    to={`/forgot-password?returnTo=${encodeURIComponent(loaderData.returnTo)}${email ? `&email=${encodeURIComponent(email)}` : ""}`}
-                    className="text-muted-foreground underline underline-offset-4 hover:text-foreground"
-                  >
-                    Forgot password?
-                  </Link>
-                </p>
-              </Form>
-            )}
-            <p className="mt-5 text-center text-sm text-muted-foreground">
-              New to Eden?{" "}
+    <AuthScreen
+      title="Sign in"
+      description={
+        step === "email"
+          ? "Continue to your Eden workspace."
+          : "Enter your password."
+      }
+      footer={
+        <>
+          New to Eden?{" "}
+          <AuthLink
+            to={`/signup?returnTo=${encodeURIComponent(loaderData.returnTo)}`}
+          >
+            Create an account
+          </AuthLink>
+        </>
+      }
+    >
+      {step === "email" ? (
+        <Form
+          method="post"
+          onSubmit={continueToPassword}
+          className="space-y-5"
+        >
+          <div className="space-y-2">
+            <Label htmlFor="email">Email</Label>
+            <Input
+              ref={emailRef}
+              id="email"
+              name="email"
+              type="email"
+              autoComplete="email"
+              defaultValue={email}
+              className="h-10"
+              required
+            />
+          </div>
+          <Button type="submit" className="h-10 w-full">
+            Continue
+          </Button>
+        </Form>
+      ) : (
+        <Form method="post" onSubmit={submit} className="space-y-5">
+          <div className="flex items-baseline justify-between gap-3 rounded-lg bg-muted/50 px-3 py-2 text-sm">
+            <span className="truncate text-muted-foreground" title={email}>
+              {email}
+            </span>
+            <button
+              type="button"
+              onClick={changeEmail}
+              className="shrink-0 font-medium text-foreground underline decoration-muted-foreground/40 underline-offset-4 transition-colors hover:decoration-foreground"
+            >
+              Change
+            </button>
+          </div>
+          {/* Hidden username field so password managers pair the saved login. */}
+          <input
+            type="email"
+            name="email"
+            autoComplete="username"
+            value={email}
+            readOnly
+            hidden
+            tabIndex={-1}
+          />
+          <div className="space-y-2">
+            <div className="flex items-baseline justify-between">
+              <Label htmlFor="password">Password</Label>
               <Link
-                to={`/signup?returnTo=${encodeURIComponent(loaderData.returnTo)}`}
-                className="font-medium text-foreground underline underline-offset-4"
+                to={`/forgot-password?returnTo=${encodeURIComponent(loaderData.returnTo)}${email ? `&email=${encodeURIComponent(email)}` : ""}`}
+                className="text-xs text-muted-foreground transition-colors hover:text-foreground"
               >
-                Create an account
+                Forgot password?
               </Link>
+            </div>
+            <Input
+              ref={passwordRef}
+              id="password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              className="h-10"
+              required
+            />
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
             </p>
-          </CardContent>
-        </Card>
-      </div>
-    </main>
+          )}
+          <Button type="submit" className="h-10 w-full" disabled={pending}>
+            {pending ? "Signing in…" : "Sign in"}
+          </Button>
+        </Form>
+      )}
+    </AuthScreen>
   );
 }

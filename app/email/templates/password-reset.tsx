@@ -28,17 +28,18 @@ export default function PasswordResetEmail({
       <Preview>Reset your Eden password</Preview>
       <Body style={styles.main}>
         <Container style={styles.container}>
+          <Text style={styles.brand}>
+            <span style={styles.brandAccent}>e</span>den
+          </Text>
           <Heading style={styles.heading}>Reset your password</Heading>
           <Text style={styles.text}>
-            We received a request to reset the password for {userEmail}.
-          </Text>
-          <Text style={styles.text}>
-            Use the button below to choose a new password.
+            We received a request to reset the password for {userEmail}. Use
+            the button below to choose a new password.
           </Text>
           <Button href={resetUrl} style={styles.button}>
             Reset password
           </Button>
-          <Text style={styles.text}>
+          <Text style={styles.muted}>
             If you did not request this, you can ignore this email. This link
             expires in one hour.
           </Text>

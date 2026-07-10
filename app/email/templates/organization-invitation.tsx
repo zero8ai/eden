@@ -32,6 +32,9 @@ export default function OrganizationInvitationEmail({
       <Preview>Join {organizationName} on Eden</Preview>
       <Body style={styles.main}>
         <Container style={styles.container}>
+          <Text style={styles.brand}>
+            <span style={styles.brandAccent}>e</span>den
+          </Text>
           <Heading style={styles.heading}>Join {organizationName}</Heading>
           <Text style={styles.text}>
             {inviterName} ({inviterEmail}) invited you to join{" "}
@@ -40,7 +43,7 @@ export default function OrganizationInvitationEmail({
           <Button href={invitationUrl} style={styles.button}>
             Accept invitation
           </Button>
-          <Text style={styles.text}>
+          <Text style={styles.muted}>
             If you were not expecting this invitation, you can ignore this
             email.
           </Text>

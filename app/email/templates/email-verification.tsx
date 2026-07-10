@@ -28,6 +28,9 @@ export default function EmailVerificationEmail({
       <Preview>Verify your email to join an Eden workspace</Preview>
       <Body style={styles.main}>
         <Container style={styles.container}>
+          <Text style={styles.brand}>
+            <span style={styles.brandAccent}>e</span>den
+          </Text>
           <Heading style={styles.heading}>Verify your email</Heading>
           <Text style={styles.text}>
             Confirm that {userEmail} belongs to you before accepting the Eden
@@ -36,7 +39,7 @@ export default function EmailVerificationEmail({
           <Button href={verificationUrl} style={styles.button}>
             Verify email
           </Button>
-          <Text style={styles.text}>
+          <Text style={styles.muted}>
             If you were not trying to join a workspace, you can ignore this
             email. This link expires in one hour.
           </Text>

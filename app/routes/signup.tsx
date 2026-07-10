@@ -1,17 +1,10 @@
 import { useState, type FormEvent } from "react";
-import { Form, Link, redirect } from "react-router";
+import { Form, redirect } from "react-router";
 
 import { safeReturnTo } from "~/auth/return-to";
 import { getSessionAuth } from "~/auth/session.server";
-import { Logo } from "~/components/marketing/logo";
+import { AuthLink, AuthScreen } from "~/components/auth/auth-screen";
 import { Button } from "~/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { authClient } from "~/lib/auth-client";
@@ -63,67 +56,67 @@ export default function Signup({ loaderData }: Route.ComponentProps) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-eden-bg px-6 py-12 text-eden-fg">
-      <div className="w-full max-w-sm space-y-8">
-        <Link to="/" className="mx-auto block w-fit" aria-label="eden home">
-          <Logo className="h-8" />
-        </Link>
-        <Card>
-          <CardHeader>
-            <CardTitle>Create an account</CardTitle>
-            <CardDescription>
-              Start with a personal workspace. You can join others later.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Form method="post" onSubmit={submit} className="space-y-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="name">Name</Label>
-                <Input id="name" name="name" autoComplete="name" required />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  name="email"
-                  type="email"
-                  autoComplete="email"
-                  required
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  name="password"
-                  type="password"
-                  minLength={8}
-                  maxLength={128}
-                  autoComplete="new-password"
-                  required
-                />
-              </div>
-              {error && (
-                <p role="alert" className="text-sm text-destructive">
-                  {error}
-                </p>
-              )}
-              <Button type="submit" className="w-full" disabled={pending}>
-                {pending ? "Creating account…" : "Create account"}
-              </Button>
-            </Form>
-            <p className="mt-5 text-center text-sm text-muted-foreground">
-              Already have an account?{" "}
-              <Link
-                to={`/login?returnTo=${encodeURIComponent(loaderData.returnTo)}`}
-                className="font-medium text-foreground underline underline-offset-4"
-              >
-                Sign in
-              </Link>
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    </main>
+    <AuthScreen
+      title="Create an account"
+      description="Start with a personal workspace. You can join others later."
+      footer={
+        <>
+          Already have an account?{" "}
+          <AuthLink
+            to={`/login?returnTo=${encodeURIComponent(loaderData.returnTo)}`}
+          >
+            Sign in
+          </AuthLink>
+        </>
+      }
+    >
+      <Form method="post" onSubmit={submit} className="space-y-5">
+        <div className="space-y-2">
+          <Label htmlFor="name">Name</Label>
+          <Input
+            id="name"
+            name="name"
+            autoComplete="name"
+            className="h-10"
+            required
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="email">Email</Label>
+          <Input
+            id="email"
+            name="email"
+            type="email"
+            autoComplete="email"
+            className="h-10"
+            required
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="password">Password</Label>
+          <Input
+            id="password"
+            name="password"
+            type="password"
+            minLength={8}
+            maxLength={128}
+            autoComplete="new-password"
+            className="h-10"
+            required
+          />
+          <p className="text-xs text-muted-foreground">
+            At least 8 characters.
+          </p>
+        </div>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        <Button type="submit" className="h-10 w-full" disabled={pending}>
+          {pending ? "Creating account…" : "Create account"}
+        </Button>
+      </Form>
+    </AuthScreen>
   );
 }

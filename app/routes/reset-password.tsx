@@ -2,15 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Form, Link } from "react-router";
 
 import { safeReturnTo } from "~/auth/return-to";
-import { Logo } from "~/components/marketing/logo";
+import { AuthLink, AuthScreen } from "~/components/auth/auth-screen";
 import { Button } from "~/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { authClient } from "~/lib/auth-client";
@@ -99,89 +92,87 @@ export default function ResetPassword({ loaderData }: Route.ComponentProps) {
   const forgotHref = `/forgot-password?returnTo=${encodeURIComponent(loaderData.returnTo)}${loaderData.email ? `&email=${encodeURIComponent(loaderData.email)}` : ""}`;
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-eden-bg px-6 py-12 text-eden-fg">
-      <div className="w-full max-w-sm space-y-8">
-        <Link to="/" className="mx-auto block w-fit" aria-label="eden home">
-          <Logo className="h-8" />
-        </Link>
-        <Card>
-          <CardHeader>
-            <CardTitle>Reset your password</CardTitle>
-            <CardDescription>
-              {done
-                ? "Your password has been updated."
-                : loaderData.token
-                  ? "Choose a new password for your account."
-                  : "This link can't be used."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {done ? (
-              <div className="space-y-4">
-                <p role="status" className="text-sm text-muted-foreground">
-                  You can now sign in with your new password.
-                </p>
-                <Button asChild className="w-full">
-                  <Link to={loginHref}>Sign in</Link>
-                </Button>
-              </div>
-            ) : !loaderData.token ? (
-              <div className="space-y-4">
-                <p role="alert" className="text-sm text-muted-foreground">
-                  This password reset link is invalid or has expired. Request a
-                  new one and try again.
-                </p>
-                <Button asChild className="w-full">
-                  <Link to={forgotHref}>Request a new link</Link>
-                </Button>
-                <p className="text-center text-sm text-muted-foreground">
-                  <Link
-                    to={loginHref}
-                    className="font-medium text-foreground underline underline-offset-4"
-                  >
-                    Back to sign in
-                  </Link>
-                </p>
-              </div>
-            ) : (
-              <Form method="post" onSubmit={submit} className="space-y-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor="newPassword">New password</Label>
-                  <Input
-                    id="newPassword"
-                    name="newPassword"
-                    type="password"
-                    minLength={8}
-                    maxLength={128}
-                    autoComplete="new-password"
-                    required
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="passwordConfirmation">Confirm password</Label>
-                  <Input
-                    id="passwordConfirmation"
-                    name="passwordConfirmation"
-                    type="password"
-                    minLength={8}
-                    maxLength={128}
-                    autoComplete="new-password"
-                    required
-                  />
-                </div>
-                {error && (
-                  <p role="alert" className="text-sm text-destructive">
-                    {error}
-                  </p>
-                )}
-                <Button type="submit" className="w-full" disabled={pending}>
-                  {pending ? "Updating…" : "Update password"}
-                </Button>
-              </Form>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    </main>
+    <AuthScreen
+      title="Reset your password"
+      description={
+        done
+          ? "Your password has been updated."
+          : loaderData.token
+            ? "Choose a new password for your account."
+            : "This link can't be used."
+      }
+      footer={
+        done || loaderData.token ? undefined : (
+          <AuthLink to={loginHref}>Back to sign in</AuthLink>
+        )
+      }
+    >
+      {done ? (
+        <div className="space-y-5">
+          <p
+            role="status"
+            className="text-sm leading-relaxed text-muted-foreground"
+          >
+            You can now sign in with your new password.
+          </p>
+          <Button asChild className="h-10 w-full">
+            <Link to={loginHref}>Sign in</Link>
+          </Button>
+        </div>
+      ) : !loaderData.token ? (
+        <div className="space-y-5">
+          <p
+            role="alert"
+            className="text-sm leading-relaxed text-muted-foreground"
+          >
+            This password reset link is invalid or has expired. Request a new
+            one and try again.
+          </p>
+          <Button asChild className="h-10 w-full">
+            <Link to={forgotHref}>Request a new link</Link>
+          </Button>
+        </div>
+      ) : (
+        <Form method="post" onSubmit={submit} className="space-y-5">
+          <div className="space-y-2">
+            <Label htmlFor="newPassword">New password</Label>
+            <Input
+              id="newPassword"
+              name="newPassword"
+              type="password"
+              minLength={8}
+              maxLength={128}
+              autoComplete="new-password"
+              className="h-10"
+              required
+            />
+            <p className="text-xs text-muted-foreground">
+              At least 8 characters.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="passwordConfirmation">Confirm password</Label>
+            <Input
+              id="passwordConfirmation"
+              name="passwordConfirmation"
+              type="password"
+              minLength={8}
+              maxLength={128}
+              autoComplete="new-password"
+              className="h-10"
+              required
+            />
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <Button type="submit" className="h-10 w-full" disabled={pending}>
+            {pending ? "Updating…" : "Update password"}
+          </Button>
+        </Form>
+      )}
+    </AuthScreen>
   );
 }

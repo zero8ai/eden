@@ -110,6 +110,7 @@ import {
 } from "~/db/queries.server";
 import {
   discardDrafts,
+  findOrphanedDrafts,
   listDrafts,
   publishDrafts,
 } from "~/drafts/drafts.server";
@@ -208,11 +209,11 @@ interface DeploymentData {
   view: "repo" | "member";
   /** True where deploys/CRUD are acted on: the team (repo) view and single-agent repos. */
   canAct: boolean;
-  drafts: (DraftChange & { shared: boolean })[];
+  drafts: (DraftChange & { shared: boolean; orphaned: boolean })[];
   changes: OpenChange[];
   releases: Release[];
   envs: { env: Environment; deployments: DeploymentWithRelease[] }[];
-  draftGroups: { owner: string; drafts: DraftChange[] }[];
+  draftGroups: { owner: string; drafts: (DraftChange & { orphaned: boolean })[] }[];
   members: {
     name: string;
     latest: { version: string; gitSha: string; createdAt: Date } | null;
@@ -314,6 +315,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         project.id,
         agentName,
         source.paths,
+      );
+      // Drafts stranded under a member root the roster/repo/selection no longer back (issue #67):
+      // surfaced as orphaned (unchecked, discardable) and blocked at publish with attribution.
+      const orphanedPaths = new Set(
+        findOrphanedDrafts(roster, source.paths, allDrafts).map((d) => d.path),
       );
       const level: NavLevel = agentName ? "member" : isTeam ? "repo" : "single";
       const view = level === "repo" ? ("repo" as const) : ("member" as const);
@@ -447,7 +453,10 @@ export const loader = (args: LoaderFunctionArgs) =>
           canAct,
           draftGroups: [...groups.entries()].map(([owner, drafts]) => ({
             owner,
-            drafts,
+            drafts: drafts.map((d) => ({
+              ...d,
+              orphaned: orphanedPaths.has(d.path),
+            })),
           })),
           changes,
           members,
@@ -480,7 +489,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       requireActiveAgent(active, project.id);
       const drafts = allDrafts.flatMap((d) =>
         d.agentId === active.id || d.agentId === null
-          ? [{ ...d, shared: d.agentId === null }]
+          ? [{ ...d, shared: d.agentId === null, orphaned: orphanedPaths.has(d.path) }]
           : [],
       );
       const envRows = await listAgentEnvironments(active.id);
@@ -1235,7 +1244,7 @@ function StagedChangesCard({
                     type="checkbox"
                     name="path"
                     value={d.path}
-                    defaultChecked
+                    defaultChecked={!d.orphaned}
                     className="size-4 accent-primary"
                     aria-label={`Include ${d.path}`}
                   />
@@ -1248,6 +1257,7 @@ function StagedChangesCard({
                   >
                     {d.path}
                   </span>
+                  {d.orphaned && <Badge variant="destructive">orphaned</Badge>}
                   {d.content === null && (
                     <Badge
                       variant="outline"
@@ -1292,6 +1302,13 @@ function StagedChangesCard({
                 </li>
               ))}
             </ul>
+            {drafts.some((d) => d.orphaned) && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Orphaned changes belong to a member that&rsquo;s no longer on the
+                team. They&rsquo;re unchecked and can&rsquo;t be published —
+                discard them.
+              </p>
+            )}
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <Input
                 name="title"
@@ -1523,6 +1540,8 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
   const { project, draftGroups, changes, members, teamEnvs, teamVersions } =
     loaderData;
   const navigation = useNavigation();
+  const submit = useSubmit();
+  const anyOrphaned = draftGroups.some((g) => g.drafts.some((d) => d.orphaned));
   const totalDrafts = draftGroups.reduce((n, g) => n + g.drafts.length, 0);
   const memberNames = new Set(members.map((m) => m.name));
   const busy = navigation.state !== "idle" && navigation.formData != null;
@@ -1585,7 +1604,7 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                           type="checkbox"
                           name="path"
                           value={d.path}
-                          defaultChecked
+                          defaultChecked={!d.orphaned}
                           className="size-4 accent-primary"
                           aria-label={`Include ${d.path}`}
                         />
@@ -1598,6 +1617,9 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                         >
                           {d.path}
                         </span>
+                        {d.orphaned && (
+                          <Badge variant="destructive">orphaned</Badge>
+                        )}
                         {d.content === null && (
                           <Badge
                             variant="outline"
@@ -1609,11 +1631,43 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                         <span className="shrink-0 text-xs text-muted-foreground">
                           {timeAgo(d.updatedAt)}
                         </span>
+                        <ConfirmDialog
+                          trigger={
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              type="button"
+                              disabled={busy}
+                            >
+                              Discard
+                            </Button>
+                          }
+                          title={`Discard staged change to ${d.path}?`}
+                          description={
+                            d.content === null
+                              ? "Undoes the staged deletion — the file stays in the repository."
+                              : "The unpublished edit is deleted. The file itself is untouched — only the staged draft is lost."
+                          }
+                          confirmLabel="Discard"
+                          onConfirm={() =>
+                            submit(
+                              { intent: "discard", path: d.path },
+                              { method: "post" },
+                            )
+                          }
+                        />
                       </li>
                     ))}
                   </ul>
                 </div>
               ))}
+              {anyOrphaned && (
+                <p className="text-xs text-muted-foreground">
+                  Orphaned changes belong to a member that&rsquo;s no longer on
+                  the team. They&rsquo;re unchecked and can&rsquo;t be published
+                  — discard them.
+                </p>
+              )}
               <div className="flex flex-wrap items-center gap-3">
                 <Input
                   name="title"

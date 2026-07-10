@@ -192,11 +192,11 @@ export default defineAgent({
 describe("ensureOpenRouterDependency", () => {
   it("adds the provider dependency without dropping existing dependencies", () => {
     const next = ensureOpenRouterDependency(
-      JSON.stringify({ dependencies: { eve: "latest", zod: "^3.23.0" } }, null, 2) + "\n",
+      JSON.stringify({ dependencies: { eve: "^0.22.0", zod: "^3.23.0" } }, null, 2) + "\n",
     );
     expect(JSON.parse(next).dependencies).toEqual({
       "@ai-sdk/openai-compatible": "^3.0.5",
-      eve: "latest",
+      eve: "^0.22.0",
       zod: "^4.4.3",
     });
   });
@@ -222,7 +222,7 @@ describe("ensureOpenRouterDependency", () => {
         {
           dependencies: {
             "@openrouter/ai-sdk-provider": "^2.10.0",
-            eve: "latest",
+            eve: "^0.23.1",
             zod: "^3.23.0",
           },
         },
@@ -232,7 +232,7 @@ describe("ensureOpenRouterDependency", () => {
     );
     expect(JSON.parse(next).dependencies).toEqual({
       "@ai-sdk/openai-compatible": "^3.0.5",
-      eve: "latest",
+      eve: "^0.23.1",
       zod: "^4.4.3",
     });
   });
@@ -256,8 +256,17 @@ describe("ensureOpenRouterDependency", () => {
     expect(JSON.parse(next).dependencies.eve).toBe("^0.22.0");
   });
 
-  it("leaves resolvable or absent eve specs alone", () => {
-    for (const eve of ["latest", "*", ">=0.20.0", "^0.22.0", "^1.0.0", undefined]) {
+  it("leaves guaranteed-modern, absent, or fork eve specs alone", () => {
+    for (const eve of [
+      "^0.22.0",
+      "~0.22.4",
+      ">=0.22.0",
+      "0.22.1",
+      "^1.0.0",
+      "github:someone/eve",
+      "file:../eve",
+      undefined,
+    ]) {
       const pkg =
         JSON.stringify(
           {
@@ -271,6 +280,28 @@ describe("ensureOpenRouterDependency", () => {
           2,
         ) + "\n";
       expect(ensureOpenRouterDependency(pkg)).toBe(pkg);
+    }
+  });
+
+  it("pins floating eve specs — the docker layer cache freezes them at first install", () => {
+    // "latest" resolves at npm-install time, but agent builds reuse the cached install layer
+    // as long as package.json's bytes are unchanged, so "latest" silently stays whatever
+    // version the first build got (a prod repo was stuck on eve 0.20.0 — no defineDynamic,
+    // failed publish gate). The rewrite is the cache-buster.
+    for (const eve of ["latest", "*", "next", ">=0.20.0", "^0.18.1"]) {
+      const pkg =
+        JSON.stringify(
+          {
+            dependencies: {
+              "@ai-sdk/openai-compatible": "^3.0.5",
+              eve,
+              zod: "^4.4.3",
+            },
+          },
+          null,
+          2,
+        ) + "\n";
+      expect(JSON.parse(ensureOpenRouterDependency(pkg)).dependencies.eve).toBe("^0.22.0");
     }
   });
 });

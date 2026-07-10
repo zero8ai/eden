@@ -174,6 +174,93 @@ describe("checkEveBuild", () => {
     expect(message).not.toContain("Command failed: docker build");
   });
 
+  it("surfaces legacy-builder compile errors, which arrive on stdout", async () => {
+    // A docker CLI without the buildx plugin (some self-host setups) falls back to the
+    // legacy builder: build-step output — including the compiler's error — streams to
+    // STDOUT, while stderr carries only the deprecation banner and the exit-code line.
+    // Reading error.message alone reported "returned a non-zero code: 1" with no cause.
+    const { checkEveBuild } = await import("~/deploy/eve-image.server");
+
+    const stdout = [
+      "Step 7/7 : RUN npm exec -- eve build",
+      " ---> Running in 0123456789ab",
+      "The requested module 'eve' does not provide an export named 'defineDynamic'",
+    ].join("\n");
+    const stderr = [
+      "DEPRECATED: The legacy builder is deprecated and will be removed in a future release.",
+      "The command '/bin/sh -c npm exec -- eve build' returned a non-zero code: 1",
+    ].join("\n");
+
+    execFile.mockImplementation(
+      (
+        cmd: string,
+        args: string[],
+        optionsOrCallback: ExecOptionsOrCallback,
+        maybeCallback?: ExecCallback,
+      ) => {
+        const callback = execCallback(optionsOrCallback, maybeCallback);
+        if (cmd === "docker" && args[0] === "build") {
+          const error = Object.assign(
+            new Error(`Command failed: docker build\n${stderr}`),
+            { stdout, stderr },
+          );
+          callback(error, stdout, stderr);
+          return;
+        }
+        defaultExecFile(cmd, args, optionsOrCallback, maybeCallback);
+      },
+    );
+
+    const result = await checkEveBuild({
+      projectId: "proj_1",
+      repo: { owner: "acme", repo: "agents" },
+      ref: "abc123",
+      installationId: "inst_1",
+      overlay: [],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.output).toContain(
+      "does not provide an export named 'defineDynamic'",
+    );
+  });
+
+  it("surfaces typecheck/lint failures, which tsc and eslint print on stdout", async () => {
+    const { checkEveBuild } = await import("~/deploy/eve-image.server");
+
+    const tscOutput = "agent/agent.ts(4,10): error TS2305: Module 'eve' has no exported member 'defineDynamic'.";
+    execFile.mockImplementation(
+      (
+        cmd: string,
+        args: string[],
+        optionsOrCallback: ExecOptionsOrCallback,
+        maybeCallback?: ExecCallback,
+      ) => {
+        const callback = execCallback(optionsOrCallback, maybeCallback);
+        if (cmd === "docker" && args[0] === "run") {
+          const error = Object.assign(new Error("Command failed: docker run"), {
+            stdout: tscOutput,
+            stderr: "",
+          });
+          callback(error, tscOutput, "");
+          return;
+        }
+        defaultExecFile(cmd, args, optionsOrCallback, maybeCallback);
+      },
+    );
+
+    const result = await checkEveBuild({
+      projectId: "proj_1",
+      repo: { owner: "acme", repo: "agents" },
+      ref: "abc123",
+      installationId: "inst_1",
+      overlay: [],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.output).toContain("error TS2305");
+  });
+
   it("skips publish checks when the Docker daemon is unavailable", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {

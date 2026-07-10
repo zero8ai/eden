@@ -136,7 +136,11 @@ name only.
 ### 3.6 Ingress / routing
 A reverse proxy (**Caddy or Traefik**) on the box with **wildcard TLS** (`*.eden.app`), routing
 `agent-<id>.eden.app` → the instance container, integrated with the wake-proxy (§2.3). Also terminates
-channel webhooks (Slack/HTTP) per instance.
+channel webhooks (Slack/HTTP) per instance. **Discord (issue #32)** is the exception: one
+Eden-owned Discord app serves the whole installation, so its single Interactions Endpoint URL
+points at the **control plane** (`/api/discord/interactions`), which verifies the signature and
+relays each interaction to the bound agent instance's Discord channel — the shared bot token
+never reaches an instance.
 
 **Version-aware traffic splitting (§3.9, PRD §7.7 — data plane only since M5.6).** The data model
 admits **multiple Releases live at once** in one environment; the proxy does **weighted,

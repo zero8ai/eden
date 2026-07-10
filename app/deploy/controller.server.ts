@@ -21,6 +21,7 @@ import { getRuntime } from "~/seams/index.server";
 import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
 import { teammateRoster } from "~/team/roster.server";
 import { mintDelegationToken } from "~/team/token.server";
+import { getDiscordAppConfig } from "~/discord/config.server";
 import { DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS } from "./cleanup.server";
 import { isVersionLabelCollision, versionLabel } from "./versioning";
 
@@ -326,6 +327,35 @@ export async function deployRelease(
       if (process.env.EDEN_DELEGATION_TIMEOUT_MS) {
         envVars.EDEN_DELEGATION_TIMEOUT_MS = process.env.EDEN_DELEGATION_TIMEOUT_MS;
       }
+    }
+
+    // Shared Discord app (issue #32): the bot token can act in every connected server across
+    // all tenants, so it NEVER reaches an instance — instances get only the public credentials
+    // (application id + public key, used for inbound Ed25519 verification) plus the URL of the
+    // control-plane send proxy. All bot-token operations happen control-plane-side. Only when the
+    // operator has configured the shared app: legacy self-managed-app users are left untouched.
+    // Anti-shadowing (as with EDEN_SANDBOX_ENV / EDEN_TEAM_*): delete user-set keys, then set.
+    const discord = getDiscordAppConfig();
+    if (discord) {
+      for (const key of [
+        "DISCORD_BOT_TOKEN",
+        "DISCORD_APPLICATION_ID",
+        "DISCORD_PUBLIC_KEY",
+        "EDEN_DISCORD_SEND_URL",
+      ]) {
+        delete envVars[key];
+      }
+      envVars.DISCORD_APPLICATION_ID = discord.applicationId;
+      envVars.DISCORD_PUBLIC_KEY = discord.publicKey;
+      // Same control-plane base-URL derivation as EDEN_TEAM_URL above.
+      const controlPlaneBase =
+        process.env.EDEN_TEAM_RELAY_URL ??
+        `http://host.docker.internal:${process.env.PORT ?? (process.env.NODE_ENV === "production" ? "3000" : "5173")}`;
+      envVars.EDEN_DISCORD_SEND_URL = `${controlPlaneBase}/api/discord/send`;
+      // The send proxy authenticates the CALLER DEPLOYMENT with the same delegation token the
+      // team relay uses, so single-agent deployments (not team members — no EDEN_TEAM_* above)
+      // need one too. The team relay independently authorizes, so this grants no team powers.
+      envVars.EDEN_TEAM_TOKEN ??= mintDelegationToken(dep.id);
     }
 
     let imageRef = release.imageRef;

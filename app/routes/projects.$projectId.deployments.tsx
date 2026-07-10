@@ -120,6 +120,8 @@ import {
 } from "~/github/app-manifest.server";
 import { fetchAgentSource } from "~/github/repo.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
+import { getDiscordAppConfig } from "~/discord/config.server";
+import { listConnectionsForAgent } from "~/discord/connections.server";
 import {
   discardConversationCheckoutByBranch,
   isConversationBranch,
@@ -213,11 +215,20 @@ interface DeploymentData {
   /** Deploy guard: the member whose settings the guard links to fix secrets on. */
   guardAgent: string;
   guardSettingsAction: string;
-  /** Member/single view: Discord setup URL when the agent has the marketplace Discord channel. */
+  /** Member/single view: Discord connect state when the agent has the marketplace Discord channel. */
   discordSetup: {
     enabled: boolean;
+    /** Whether the operator has configured Eden's shared Discord app (EDEN_DISCORD_*). */
+    configured: boolean;
     origin: string;
-    routePath: string;
+    /** Member view: the agent's connected servers; null in the team (hint-only) view. */
+    connections: Array<{
+      id: string;
+      guildId: string;
+      guildName: string | null;
+      commandName: string;
+      environmentId: string;
+    }> | null;
   };
   /** Member/single view: GitHub App setup when the agent has the marketplace GitHub channel. */
   githubSetup: {
@@ -431,8 +442,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           guardSettingsAction: `${contextPath(project.id, guardAgent)}/settings`,
           discordSetup: {
             enabled: hasDiscordSetup,
+            configured: getDiscordAppConfig() !== null,
             origin: publicOrigin(args.request),
-            routePath: DISCORD_INTERACTIONS_ROUTE,
+            connections: null,
           },
           githubSetup: {
             enabled: hasGithubSetup,
@@ -500,6 +512,24 @@ export const loader = (args: LoaderFunctionArgs) =>
       // The App's @name once the guided flow (or manual setup) stored it, plus where it's
       // installed — the setup card renders real state (accounts, repo grants) and guides
       // adding accounts, so the user never needs to know GitHub's install-page URL.
+      // Discord: the servers this agent is connected to (issue #32) — the setup card lists them
+      // and offers "Connect another server". Only when the operator configured the shared app.
+      const discordConfigured = getDiscordAppConfig() !== null;
+      let discordConnections: DeploymentData["discordSetup"]["connections"] = null;
+      if (hasDiscordSetup && discordConfigured) {
+        try {
+          const rows = await listConnectionsForAgent(active.id);
+          discordConnections = rows.map((c) => ({
+            id: c.id,
+            guildId: c.guildId,
+            guildName: c.guildName,
+            commandName: c.commandName,
+            environmentId: c.environmentId,
+          }));
+        } catch {
+          discordConnections = null; // store hiccup — the card falls back to the connect button
+        }
+      }
       let githubAppSlug: string | null = null;
       let githubInstallations: AppInstallation[] | null = null;
       if (hasGithubSetup) {
@@ -549,8 +579,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         )}/settings`,
         discordSetup: {
           enabled: hasDiscordSetup,
+          configured: discordConfigured,
           origin: publicOrigin(args.request),
-          routePath: DISCORD_INTERACTIONS_ROUTE,
+          connections: discordConnections,
         },
         githubSetup: {
           enabled: hasGithubSetup,
@@ -791,10 +822,8 @@ type DraftRow = LoaderData["drafts"][number];
 type ChangeRow = LoaderData["changes"][number];
 
 const IN_FLIGHT = new Set(["queued", "pending", "building"]);
-const DISCORD_INTERACTIONS_ROUTE = "/eve/v1/discord";
 const DISCORD_SECRET_NAMES = new Set([
   "DISCORD_APPLICATION_ID",
-  "DISCORD_BOT_TOKEN",
   "DISCORD_PUBLIC_KEY",
 ]);
 const GITHUB_MENTIONS_ROUTE = "/eve/v1/github";
@@ -976,7 +1005,11 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
         projectId={loaderData.project.id}
         agentName={activeAgent}
       />
-      <DiscordSetupHelp envs={envs} setup={loaderData.discordSetup} />
+      <DiscordSetupHelp
+        setup={loaderData.discordSetup}
+        projectId={loaderData.project.id}
+        agentName={activeAgent}
+      />
     </>
   );
 }
@@ -2072,15 +2105,24 @@ function EnvironmentsCard({
   );
 }
 
+/**
+ * Discord channel setup (issue #32): one-click connect through Eden's shared Discord app. The
+ * user clicks Connect Discord, approves one authorization screen, and Eden registers a
+ * `/<agent-name>` slash command and routes interactions automatically — no portal, no secrets.
+ */
 function DiscordSetupHelp({
-  envs,
   setup,
+  projectId,
+  agentName,
 }: {
-  envs: EnvState[];
   setup: LoaderData["discordSetup"];
+  projectId: string;
+  agentName: string;
 }) {
-  const isLocal = isLocalOrigin(setup.origin);
   if (!setup.enabled) return null;
+
+  const connectUrl = `/discord/connect?project=${encodeURIComponent(projectId)}&agent=${encodeURIComponent(agentName)}`;
+  const connections = setup.connections ?? [];
 
   return (
     <Card className="mb-6 mt-6">
@@ -2092,76 +2134,57 @@ function DiscordSetupHelp({
       </CardHeader>
       <CardContent>
         <div className="space-y-3 text-sm">
-          <p>
-            Add the bot to your server with the <code>bot</code> and{" "}
-            <code>applications.commands</code> scopes. In Discord Developer
-            Portal, paste the endpoint for the environment you want Discord to
-            reach into General Information → Interactions Endpoint URL.
-          </p>
-          <div>
-            <p className="font-medium">Set up the slash command</p>
-            <ol className="mt-2 list-decimal space-y-1 pl-5">
-              <li>
-                Use Discord&rsquo;s guild command API for your application:{" "}
-                <code>
-                  PUT /applications/&lt;applicationId&gt;/guilds/&lt;guildId&gt;/commands
-                </code>
-                .
-              </li>
-              <li>
-                Create a command named <code>ask</code> with one required
-                string option named <code>message</code>.
-              </li>
-              <li>
-                Use the command in Discord as{" "}
-                <code>/ask message:review the latest issue</code>.
-              </li>
-            </ol>
-            <pre className="mt-3 overflow-x-auto rounded-md bg-muted p-3 text-xs">
-              <code>{`{
-  "name": "ask",
-  "description": "Ask the eden agent",
-  "options": [
-    {
-      "type": 3,
-      "name": "message",
-      "description": "What should the agent do?",
-      "required": true
-    }
-  ]
-}`}</code>
-            </pre>
-          </div>
-          {envs.length > 0 ? (
-            <ul className="space-y-2">
-              {envs.map(({ env }) => (
-                <li key={env.id}>
-                  <span className="font-medium">{env.name}: </span>
-                  <code className="break-all rounded bg-muted px-1.5 py-0.5">
-                    {envIngressUrl(setup.origin, env.id, setup.routePath)}
-                  </code>
-                </li>
-              ))}
-            </ul>
+          {!setup.configured ? (
+            <p className="text-muted-foreground">
+              This Eden installation doesn&rsquo;t have a Discord app configured
+              yet, so connecting a server isn&rsquo;t available. An operator
+              needs to set <code>EDEN_DISCORD_APPLICATION_ID</code>,{" "}
+              <code>EDEN_DISCORD_BOT_TOKEN</code>, and{" "}
+              <code>EDEN_DISCORD_PUBLIC_KEY</code> on the control plane (see the
+              self-host docs). For local development, set the same vars in{" "}
+              <code>.env.local</code>.
+            </p>
           ) : (
-            <p>
-              Create an environment below and this page will show its Discord
-              endpoint.
-            </p>
+            <>
+              <p>
+                Connect this agent to a Discord server. Eden adds its shared
+                bot, registers a <code>/{agentName}</code> slash command, and
+                routes interactions to the agent — use it as{" "}
+                <code>/{agentName} message: ...</code>. There are no secrets to
+                copy.
+              </p>
+              {connections.length > 0 && (
+                <ul className="space-y-1 rounded-lg border px-3 py-2">
+                  {connections.map((c) => (
+                    <li
+                      key={c.id}
+                      className="flex flex-wrap items-baseline gap-x-2"
+                    >
+                      <span className="font-medium">
+                        {c.guildName ?? `Server ${c.guildId}`}
+                      </span>
+                      <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                        /{c.commandName}
+                      </code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  asChild
+                  size="sm"
+                  variant={connections.length ? "outline" : "default"}
+                >
+                  <Link to={connectUrl}>
+                    {connections.length
+                      ? "Connect another server"
+                      : "Connect Discord"}
+                  </Link>
+                </Button>
+              </div>
+            </>
           )}
-          {isLocal && (
-            <p>
-              Discord cannot call localhost. For local development, expose eden
-              with a tunnel and use that public tunnel host with the same path.
-            </p>
-          )}
-          <p>
-            When someone runs the command, Discord sends the interaction to
-            this endpoint. eden verifies it, gives the <code>message</code>{" "}
-            text to the agent, and posts the agent&rsquo;s reply back to the
-            same Discord channel. To restrict where it can be used, set that
-            channel&rsquo;s permissions for the bot and deny access elsewhere.
-          </p>
         </div>
       </CardContent>
     </Card>
@@ -2364,16 +2387,10 @@ function DiscordSetupTeamHint() {
       <CardContent>
         <div className="space-y-3 text-sm">
           <p>
-            Discord endpoints are per member and per environment. Open a member
-            below, then use the endpoint shown at the bottom of that
-            member&rsquo;s Deployment page as the Interactions Endpoint URL in
-            Discord Developer Portal.
-          </p>
-          <p>
-            Register a slash command named <code>ask</code> with a required
-            string option named <code>message</code>. When someone runs it, eden
-            sends the message text to that member&rsquo;s agent and posts the
-            reply back to the Discord channel.
+            Discord connections are per member — each agent gets its own{" "}
+            <code>/&lt;name&gt;</code> slash command. Open a member below and
+            use <span className="font-medium">Connect Discord</span> on that
+            member&rsquo;s Deployment page to add a server.
           </p>
         </div>
       </CardContent>

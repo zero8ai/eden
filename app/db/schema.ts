@@ -91,6 +91,43 @@ export const githubInstallations = pgTable(
   (t) => [uniqueIndex("github_installations_org_install_uq").on(t.orgId, t.installationId)],
 );
 
+/**
+ * Discord connections (issue #32). Eden owns ONE shared Discord app per installation; a user
+ * authorizes it into their server and Eden registers a guild slash command named after the
+ * agent. This row binds (guild, command) → the agent/environment it routes to, so the
+ * interactions relay can look up the target deployment. The bot token is never stored here (or
+ * anywhere per-agent) — it lives only in control-plane env.
+ *
+ * Unique on (guildId, commandName): a slash command name is unique within a Discord server, so
+ * two agents can't both claim `/x` in one guild — the connect flow refuses the collision.
+ */
+export const discordConnections = pgTable(
+  "discord_connections",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 12 })
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    environmentId: varchar("environment_id", { length: 12 })
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    /** The Discord server (guild) the app was authorized into. */
+    guildId: text("guild_id").notNull(),
+    /** The guild's display name at connect time (best-effort, display-only). */
+    guildName: text("guild_name"),
+    /** The registered slash command name (Eden derives it from the agent name). */
+    commandName: text("command_name").notNull(),
+    /** Discord's id for the registered command, for dedup/cleanup on disconnect. */
+    commandId: text("command_id"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("discord_connections_guild_command_uq").on(t.guildId, t.commandName)],
+);
+
 /** A project == one connected eve repo. */
 export const projects = pgTable(
   "projects",

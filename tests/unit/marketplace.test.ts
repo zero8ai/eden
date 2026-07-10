@@ -187,12 +187,17 @@ describe("composition against the real seed", () => {
     expect(resolved.files["channels/discord.ts"]).toContain(
       'from "eve/channels/discord"',
     );
+    // The send tool now proxies through Eden's control plane (issue #32) — it reads the
+    // injected send URL/token, not the shared bot token, and no longer imports eve's Discord.
     expect(resolved.files["tools/discord-send-message.ts"]).toContain(
+      "EDEN_DISCORD_SEND_URL",
+    );
+    expect(resolved.files["tools/discord-send-message.ts"]).not.toContain(
       "sendDiscordChannelMessage",
     );
 
-    // The GitHub App secrets (from the GitHub channel) and Discord's secrets union in. The
-    // agent's own GitHub App is its only GitHub credential — there is no personal token.
+    // The GitHub App secrets (from the GitHub channel) and Discord's PROVISIONED secrets union
+    // in. The bot token is never a per-agent secret (issue #32) — Eden holds it control-plane-side.
     const secretNames = (resolved.manifest.secrets ?? []).map((s) => s.name);
     expect(secretNames).toEqual(
       expect.arrayContaining([
@@ -201,11 +206,11 @@ describe("composition against the real seed", () => {
         "GITHUB_WEBHOOK_SECRET",
         "GITHUB_APP_SLUG",
         "DISCORD_APPLICATION_ID",
-        "DISCORD_BOT_TOKEN",
         "DISCORD_PUBLIC_KEY",
       ]),
     );
     expect(secretNames).not.toContain("GITHUB_TOKEN");
+    expect(secretNames).not.toContain("DISCORD_BOT_TOKEN");
 
     // Provenance + hash lockstep: the parent's hash is its own index row; each include carries
     // its own index-row hash, in manifest order.

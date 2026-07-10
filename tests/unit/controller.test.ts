@@ -730,3 +730,111 @@ describe("setTrafficSplit", () => {
     expect(all.find((d) => d.id === d2.id)?.trafficWeight).toBe(0);
   });
 });
+
+describe("shared Discord app env injection (issue #32)", () => {
+  const KEYS = [
+    "EDEN_SECRETS_KEY",
+    "EDEN_DISCORD_APPLICATION_ID",
+    "EDEN_DISCORD_BOT_TOKEN",
+    "EDEN_DISCORD_PUBLIC_KEY",
+  ] as const;
+  const OLD: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of KEYS) OLD[k] = process.env[k];
+    process.env.EDEN_SECRETS_KEY = "a".repeat(64); // the send-proxy token is HMAC-minted
+  });
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (OLD[k] === undefined) delete process.env[k];
+      else process.env[k] = OLD[k];
+    }
+  });
+
+  function configureSharedApp() {
+    process.env.EDEN_DISCORD_APPLICATION_ID = "app_shared";
+    process.env.EDEN_DISCORD_BOT_TOKEN = "bot_shared";
+    process.env.EDEN_DISCORD_PUBLIC_KEY = "pub_shared";
+  }
+
+  it("injects the public credentials + send URL and strips the bot token, even if a user secret sets it", async () => {
+    configureSharedApp();
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "f6".repeat(20) }, store);
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        // A user secret trying to smuggle a bot token — Eden must strip it.
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k", DISCORD_BOT_TOKEN: "user_bot", DISCORD_APPLICATION_ID: "user_app" }),
+      },
+    );
+    const env = deployedEnvs[0];
+    expect(env.DISCORD_APPLICATION_ID).toBe("app_shared");
+    expect(env.DISCORD_PUBLIC_KEY).toBe("pub_shared");
+    expect(env.EDEN_DISCORD_SEND_URL).toMatch(/\/api\/discord\/send$/);
+    expect(env).not.toHaveProperty("DISCORD_BOT_TOKEN");
+  });
+
+  it("mints EDEN_TEAM_TOKEN for a single-agent deployment (root 'agent' — no team block) so the send proxy is reachable", async () => {
+    configureSharedApp();
+    const { verifyDelegationToken } = await import("~/team/token.server");
+    const deployedEnvs: Record<string, string>[] = [];
+    // The default seeded AGENT has root "agent" — never a team member, so the team block above
+    // sets no token; the Discord block must mint one or discord-send-message can't authenticate.
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b8".repeat(20) }, store);
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+      },
+    );
+    const env = deployedEnvs[0];
+    expect(env.EDEN_TEAM_URL).toBeUndefined(); // still not a team member…
+    expect(verifyDelegationToken(env.EDEN_TEAM_TOKEN)).toBe(dep.id); // …but the send token exists
+  });
+
+  it("keeps the team block's EDEN_TEAM_TOKEN for a team member (??= never clobbers)", async () => {
+    configureSharedApp();
+    const { verifyDelegationToken } = await import("~/team/token.server");
+    store.seedAgent({ id: "pm2", projectId: PROJECT, name: "pm2", root: "agents/pm2/agent" });
+    store.seedEnvironment({ id: "env_pm2", projectId: PROJECT, agentId: "pm2", name: "production" });
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease({ projectId: PROJECT, agentId: "pm2", gitSha: "c9".repeat(20) }, store);
+    const dep = await deployRelease(
+      { environmentId: "env_pm2", releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+      },
+    );
+    const env = deployedEnvs[0];
+    expect(env.EDEN_TEAM_URL).toBeTruthy(); // the team block ran and set the token first
+    expect(verifyDelegationToken(env.EDEN_TEAM_TOKEN)).toBe(dep.id);
+    expect(env.EDEN_DISCORD_SEND_URL).toMatch(/\/api\/discord\/send$/);
+  });
+
+  it("leaves user-resolved Discord secrets untouched when the operator app is absent", async () => {
+    delete process.env.EDEN_DISCORD_APPLICATION_ID;
+    delete process.env.EDEN_DISCORD_BOT_TOKEN;
+    delete process.env.EDEN_DISCORD_PUBLIC_KEY;
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a7".repeat(20) }, store);
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k", DISCORD_BOT_TOKEN: "user_bot", DISCORD_APPLICATION_ID: "user_app" }),
+      },
+    );
+    const env = deployedEnvs[0];
+    expect(env.DISCORD_BOT_TOKEN).toBe("user_bot");
+    expect(env.DISCORD_APPLICATION_ID).toBe("user_app");
+    expect(env).not.toHaveProperty("EDEN_DISCORD_SEND_URL");
+    expect(env).not.toHaveProperty("EDEN_TEAM_TOKEN"); // no operator app → nothing minted
+  });
+});

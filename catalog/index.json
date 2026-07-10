@@ -49,6 +49,14 @@
       "hash": "643f49bac23af3dbeab2f9ff7b8a12cc86a646ef"
     },
     {
+      "id": "discord-bundle",
+      "type": "bundle",
+      "name": "Discord",
+      "version": "0.1.0",
+      "description": "Everything an agent needs to talk on Discord: the Discord channel (one-click connect via Eden's shared app and a slash command named after the agent) and the outbound send-message tool.",
+      "hash": "ff9ce5bcbb3603b4667d066abdf217dc8445f252"
+    },
+    {
       "id": "github-bundle",
       "type": "bundle",
       "name": "GitHub",
@@ -60,9 +68,9 @@
       "id": "discord",
       "type": "channel",
       "name": "Discord",
-      "version": "0.2.0",
-      "description": "Talk to this agent from Discord — slash-command interactions with signature verification, threaded replies, and typing indicators via eve's discordChannel.",
-      "hash": "c8c4da26de305e765170feea8409e3d8e81aa9f3"
+      "version": "0.3.0",
+      "description": "Talk to this agent from Discord — one-click connect via Eden's shared Discord app, a slash command named after the agent, and signature-verified interactions via eve's discordChannel.",
+      "hash": "e51339781554da25d6801adfd57290aef6b1bb93"
     },
     {
       "id": "github",
@@ -196,9 +204,9 @@
       "id": "discord-send-message",
       "type": "tool",
       "name": "Discord Send Message",
-      "version": "0.1.0",
-      "description": "Send a bot-authenticated message to a Discord channel by channel id.",
-      "hash": "672c5c9715718c9118f7d33d7f7f0dd3caf24779"
+      "version": "0.2.0",
+      "description": "Send a message to a Discord channel by channel id via Eden's control plane, using the installation's shared Discord app — scoped to servers this agent is connected to.",
+      "hash": "3e142a6565b6966486a57fceddc92c38f38072ac"
     },
     {
       "id": "firecrawl-search",

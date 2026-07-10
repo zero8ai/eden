@@ -591,20 +591,24 @@ function autoGrow(el: HTMLTextAreaElement) {
 export function ChatComposer({
   placeholder,
   busy,
+  disabled = false,
   onSend,
   controls,
 }: {
   placeholder: string;
   busy: boolean;
+  /** Disable composing without showing the in-flight spinner used for `busy`. */
+  disabled?: boolean;
   onSend: (message: string) => void;
   /** Optional controls rendered in the toolbar, left of the send button (e.g. a picker). */
   controls?: ReactNode;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const unavailable = busy || disabled;
 
   const send = () => {
     const message = ref.current?.value.trim();
-    if (!message || busy) return;
+    if (!message || unavailable) return;
     onSend(message);
     if (ref.current) {
       ref.current.value = "";
@@ -620,7 +624,7 @@ export function ChatComposer({
         aria-label={placeholder}
         rows={1}
         className="max-h-48 min-h-11 resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
-        disabled={busy}
+        disabled={unavailable}
         onInput={(e) => autoGrow(e.currentTarget)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
@@ -636,7 +640,7 @@ export function ChatComposer({
           size="icon"
           className="size-9 shrink-0 rounded-full"
           onClick={send}
-          disabled={busy}
+          disabled={unavailable}
           aria-label="Send"
         >
           {busy ? (

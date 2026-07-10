@@ -27,6 +27,7 @@ import {
   titleFromMessage,
   type PlaygroundSession,
 } from "~/playground/sessions.server";
+import { canContinueSessionOnTarget } from "~/playground/ownership";
 import { requireProject, requireRepo } from "~/project/guard.server";
 
 export async function action(args: ActionFunctionArgs) {
@@ -56,7 +57,8 @@ export async function action(args: ActionFunctionArgs) {
       {
         error:
           instance.status === "failed"
-            ? (instance.error ?? "The assistant failed to start. Check the deployment logs.")
+            ? (instance.error ??
+              "The assistant failed to start. Check the deployment logs.")
             : "Your assistant is still starting — try again in a moment.",
         provisioning: instance.status === "provisioning",
       },
@@ -84,6 +86,15 @@ export async function action(args: ActionFunctionArgs) {
     : null;
   if (playgroundSessionId && !session) {
     throw data({ error: "That conversation was not found." }, { status: 404 });
+  }
+  if (session && !canContinueSessionOnTarget(session, target.deploymentId)) {
+    throw data(
+      {
+        error:
+          "This conversation belongs to an assistant instance that was replaced. Start a new conversation to continue.",
+      },
+      { status: 409 },
+    );
   }
   const title = session?.title ? null : titleFromMessage(message);
   if (!session) {

@@ -63,31 +63,24 @@ describe("explicit authentication return destinations", () => {
   });
 
   it("scrubs a Google callback before session I/O, then clears staging on the clean hop", async () => {
-    const { betterAuthSessionMiddleware, getSessionAuth } =
+    const { betterAuthSessionMiddleware } =
       await import("~/auth/session.server");
-    const { stageGoogleCallback } =
-      await import("~/connections/google-callback.server");
     const sensitiveRequest = new Request(
       "https://eden.example.com/google/callback?code=raw-code&state=raw-state",
     );
     const sensitiveContext = new RouterContextProvider();
+    const next = vi.fn(async () => new Response("must not render"));
 
     const staged = await betterAuthSessionMiddleware(
       middlewareArgs(sensitiveRequest, sensitiveContext),
-      async () => {
-        const session = await getSessionAuth({
-          request: sensitiveRequest,
-          context: sensitiveContext,
-        });
-        expect(session.user).toBeNull();
-        return stageGoogleCallback(sensitiveRequest);
-      },
+      next,
     );
     expect(staged).toBeInstanceOf(Response);
     if (!(staged instanceof Response)) {
       throw new Error("Session middleware did not return the staged response.");
     }
     expect(getSession).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
     expect(staged.status).toBe(302);
     expect(staged.headers.get("location")).toBe("/google/callback");
     expect(staged.headers.get("cache-control")).toBe("private, no-store");

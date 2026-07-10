@@ -9,6 +9,7 @@ import { auth } from "~/lib/auth.server";
 import {
   clearGoogleCallbackCookie,
   isGoogleCallbackStagingRequest,
+  stageGoogleCallback,
 } from "~/connections/google-callback.server";
 
 type BetterAuthSession = NonNullable<
@@ -173,21 +174,16 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
   // reset responses must not be followed by an older rolling session cookie from this wrapper.
   const pathname = new URL(request.url).pathname;
   const stagesGoogleCallback = isGoogleCallbackStagingRequest(request);
+  if (stagesGoogleCallback) {
+    // Do not call `next()`: matched loaders include root startup work, so even an anonymous
+    // context could still touch Postgres or open services before the callback URL was scrubbed.
+    return hardenDynamicResponse(stageGoogleCallback(request));
+  }
   const ownsSession =
-    !isBetterAuthEndpoint(pathname) &&
-    !isMachineEndpoint(pathname) &&
-    !stagesGoogleCallback;
+    !isBetterAuthEndpoint(pathname) && !isMachineEndpoint(pathname);
 
   let refreshHeaders: Headers | undefined;
-  if (stagesGoogleCallback) {
-    // Matched loaders may run in parallel. Seed an explicit anonymous value so root.loader cannot
-    // fall back to readSession while this request's only job is leaving the credential-bearing URL.
-    context.set(sessionContext, {
-      user: null,
-      session: null,
-      organizationId: null,
-    });
-  } else if (ownsSession) {
+  if (ownsSession) {
     const loaded = await readSession(request);
     context.set(sessionContext, loaded.session);
     refreshHeaders = loaded.responseHeaders;
@@ -195,7 +191,7 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
 
   const response = await next();
   hardenDynamicResponse(response);
-  if (pathname === "/google/callback" && !stagesGoogleCallback) {
+  if (pathname === "/google/callback") {
     response.headers.append("set-cookie", clearGoogleCallbackCookie(request));
   }
   appendRefreshHeaders(response, refreshHeaders);

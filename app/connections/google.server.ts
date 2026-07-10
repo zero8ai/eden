@@ -80,6 +80,8 @@ export interface GoogleConnectState {
   /** Better Auth user and session that initiated this OAuth round-trip. */
   userId: string;
   sessionId: string;
+  /** Random server-recorded nonce consumed atomically by the callback. */
+  nonce: string;
   provider: "google";
   /** Space-separated scopes requested (as the connector declared them). */
   scopes: string;
@@ -119,6 +121,7 @@ export function verifyConnectState(
     typeof parsed.agentId !== "string" ||
     typeof parsed.userId !== "string" ||
     typeof parsed.sessionId !== "string" ||
+    typeof parsed.nonce !== "string" ||
     parsed.provider !== "google" ||
     typeof parsed.scopes !== "string" ||
     typeof parsed.returnTo !== "string" ||

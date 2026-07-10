@@ -16,6 +16,7 @@ import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { getGoogleOAuthConfig } from "~/connections/config.server";
 import { findGrant } from "~/connections/grants.server";
+import { createOAuthStateNonce } from "~/connections/oauth-state.server";
 import {
   CONNECT_STATE_TTL_MS,
   connectStateKey,
@@ -106,16 +107,23 @@ export const loader = (args: LoaderFunctionArgs) =>
         };
       }
 
+      const expiresAt = Date.now() + CONNECT_STATE_TTL_MS;
+      const nonce = await createOAuthStateNonce({
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+        expiresAt: new Date(expiresAt),
+      });
       const state = signConnectState(
         {
           projectId: project.id,
           agentId: agent.id,
           userId: auth.user.id,
           sessionId: auth.session.id,
+          nonce,
           provider: "google",
           scopes,
           returnTo,
-          exp: Date.now() + CONNECT_STATE_TTL_MS,
+          exp: expiresAt,
         },
         connectStateKey(),
       );

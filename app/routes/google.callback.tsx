@@ -9,13 +9,17 @@
  */
 import { sessionLoader } from "~/auth/session.server";
 import { Plug } from "lucide-react";
-import { useEffect } from "react";
 import { Link, redirect, type LoaderFunctionArgs } from "react-router";
 
 import { AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { getGoogleOAuthConfig } from "~/connections/config.server";
+import {
+  isGoogleCallbackStagingRequest,
+  readStagedGoogleCallback,
+  stageGoogleCallback,
+} from "~/connections/google-callback.server";
 import {
   connectStateKey,
   exchangeCode,
@@ -24,6 +28,7 @@ import {
   verifyConnectState,
 } from "~/connections/google.server";
 import { upsertGrant } from "~/connections/grants.server";
+import { consumeOAuthStateNonce } from "~/connections/oauth-state.server";
 import { listAgents } from "~/db/queries.server";
 import { publicOrigin } from "~/lib/ingress";
 import { noindexMeta } from "~/lib/seo";
@@ -32,33 +37,38 @@ import { requireProject } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
 import type { Route } from "./+types/google.callback";
 
-export const loader = (args: LoaderFunctionArgs) =>
-  sessionLoader(
+export const loader = (args: LoaderFunctionArgs) => {
+  // Google's response contains a one-time authorization code and signed state. Leave that URL
+  // before session/database work so credentials never survive in history, logs, rendered errors,
+  // or a framework error document. The encrypted HttpOnly cookie is cleared by root middleware.
+  if (isGoogleCallbackStagingRequest(args.request)) {
+    return stageGoogleCallback(args.request);
+  }
+
+  return sessionLoader(
     args,
     async ({ auth }) => {
-      const url = new URL(args.request.url);
-      const stateToken = url.searchParams.get("state");
-      const code = url.searchParams.get("code");
-      const oauthError = url.searchParams.get("error");
+      // A staging failure is authoritative. Never allow an older valid cookie to be processed
+      // after a malformed/oversized callback has replaced it.
+      const stagingFailed = new URL(args.request.url).searchParams.has(
+        "failure",
+      );
+      const callback = stagingFailed
+        ? null
+        : readStagedGoogleCallback(args.request);
 
       const fail = (error: string, backUrl = "/dashboard") => ({
         error,
         backUrl,
       });
 
-      if (oauthError) {
+      if (!callback?.state) {
         return fail(
-          "Google authorization was cancelled or denied — the connection was not made. " +
-            "Start again from the agent's install page or Deployment tab.",
+          "This Google callback is invalid or has expired. Start again from the agent's " +
+            "install page or Deployment tab.",
         );
       }
-      if (!stateToken || !code) {
-        return fail(
-          "Google didn't send back an authorization code — the connection was not made. " +
-            "Start again from the agent's install page or Deployment tab.",
-        );
-      }
-      const state = verifyConnectState(stateToken, connectStateKey());
+      const state = verifyConnectState(callback.state, connectStateKey());
       if (!state) {
         return fail(
           "This link is invalid or has expired (it lives one hour). Start again from the " +
@@ -72,6 +82,33 @@ export const loader = (args: LoaderFunctionArgs) =>
         return fail(
           "This Google connection was started in a different Eden session. Start again from " +
             "the agent's install page or Deployment tab.",
+        );
+      }
+
+      // Consume before exchanging the authorization code. DELETE ... RETURNING makes concurrent
+      // callbacks race safely: exactly one request can proceed, even across multiple app replicas.
+      const consumed = await consumeOAuthStateNonce({
+        nonce: state.nonce,
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+      });
+      if (!consumed) {
+        return fail(
+          "This Google connection link is invalid, expired, or has already been used. Start " +
+            "again from the agent's install page or Deployment tab.",
+        );
+      }
+
+      if (callback.error) {
+        return fail(
+          "Google authorization was cancelled or denied — the connection was not made. " +
+            "Start again from the agent's install page or Deployment tab.",
+        );
+      }
+      if (!callback.code) {
+        return fail(
+          "Google didn't send back an authorization code — the connection was not made. " +
+            "Start again from the agent's install page or Deployment tab.",
         );
       }
 
@@ -99,7 +136,11 @@ export const loader = (args: LoaderFunctionArgs) =>
       const redirectUri = `${publicOrigin(args.request)}/google/callback`;
       let grant;
       try {
-        grant = await exchangeCode({ config, code, redirectUri });
+        grant = await exchangeCode({
+          config,
+          code: callback.code,
+          redirectUri,
+        });
       } catch (error) {
         return fail((error as Error).message, backUrl);
       }
@@ -146,6 +187,7 @@ export const loader = (args: LoaderFunctionArgs) =>
     // round-trip cannot safely resume; keep Google's code/state out of the login returnTo URL.
     { ensureSignedIn: true, returnTo: "/dashboard" },
   );
+};
 
 export function meta() {
   return [{ title: "Connect Google · eden" }, ...noindexMeta];
@@ -153,17 +195,6 @@ export function meta() {
 
 export default function GoogleCallback({ loaderData }: Route.ComponentProps) {
   const { error, backUrl, user } = loaderData;
-  useEffect(() => {
-    // A failed callback renders instead of redirecting. Remove Google's one-time code and Eden's
-    // signed state from browser history once the loader has consumed them.
-    if (window.location.search) {
-      window.history.replaceState(
-        window.history.state,
-        "",
-        window.location.pathname,
-      );
-    }
-  }, []);
   return (
     <AppShell userEmail={user.email}>
       <PageHeader

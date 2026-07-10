@@ -131,6 +131,7 @@ const state: GoogleConnectState = {
   agentId: "agntabcdefgh",
   userId: "userabcdefgh",
   sessionId: "sessabcdefgh",
+  nonce: "nonceabcdefgh",
   provider: "google",
   scopes: "https://www.googleapis.com/auth/spreadsheets",
   returnTo:
@@ -190,6 +191,16 @@ describe("google connect state", () => {
     );
     expect(
       verifyConnectState(missingSessionToken, key, state.exp - 1000),
+    ).toBeNull();
+
+    const missingNonce = { ...state } as Partial<GoogleConnectState>;
+    delete missingNonce.nonce;
+    const missingNonceToken = signConnectState(
+      missingNonce as GoogleConnectState,
+      key,
+    );
+    expect(
+      verifyConnectState(missingNonceToken, key, state.exp - 1000),
     ).toBeNull();
   });
 

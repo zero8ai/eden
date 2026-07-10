@@ -61,6 +61,14 @@ CREATE TABLE "connection_grants" (
 	CONSTRAINT "connection_grants_scope_uq" UNIQUE NULLS NOT DISTINCT("project_id","agent_id","environment_id","provider")
 );
 --> statement-breakpoint
+CREATE TABLE "connection_oauth_states" (
+	"nonce_hash" text PRIMARY KEY NOT NULL,
+	"user_id" text NOT NULL,
+	"session_id" text NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "delegations" (
 	"id" varchar(12) PRIMARY KEY NOT NULL,
 	"project_id" varchar(12) NOT NULL,
@@ -440,6 +448,8 @@ ALTER TABLE "connection_grants" ADD CONSTRAINT "connection_grants_project_id_pro
 ALTER TABLE "connection_grants" ADD CONSTRAINT "connection_grants_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "connection_grants" ADD CONSTRAINT "connection_grants_environment_id_environments_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environments"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "connection_grants" ADD CONSTRAINT "connection_grants_created_by_user_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "connection_oauth_states" ADD CONSTRAINT "connection_oauth_states_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "connection_oauth_states" ADD CONSTRAINT "connection_oauth_states_session_id_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."session"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "delegations" ADD CONSTRAINT "delegations_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "delegations" ADD CONSTRAINT "delegations_from_agent_id_agents_id_fk" FOREIGN KEY ("from_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "delegations" ADD CONSTRAINT "delegations_to_agent_id_agents_id_fk" FOREIGN KEY ("to_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -504,6 +514,7 @@ CREATE UNIQUE INDEX "agent_links_pair_uq" ON "agent_links" USING btree ("from_ag
 CREATE UNIQUE INDEX "agents_project_name_uq" ON "agents" USING btree ("project_id","name");--> statement-breakpoint
 CREATE UNIQUE INDEX "assistant_checkouts_conversation_uq" ON "assistant_checkouts" USING btree ("conversation_id");--> statement-breakpoint
 CREATE INDEX "audit_log_org_created_idx" ON "audit_log" USING btree ("org_id","created_at");--> statement-breakpoint
+CREATE INDEX "connection_oauth_states_expires_idx" ON "connection_oauth_states" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "delegations_project_started_idx" ON "delegations" USING btree ("project_id","created_at");--> statement-breakpoint
 CREATE INDEX "deployments_environment_idx" ON "deployments" USING btree ("environment_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "deployments_env_inflight_uq" ON "deployments" USING btree ("environment_id") WHERE "deployments"."status" in ('pending', 'building');--> statement-breakpoint

@@ -6,6 +6,10 @@ import {
 } from "react-router";
 
 import { auth } from "~/lib/auth.server";
+import {
+  clearGoogleCallbackCookie,
+  isGoogleCallbackStagingRequest,
+} from "~/connections/google-callback.server";
 
 type BetterAuthSession = NonNullable<
   Awaited<ReturnType<typeof auth.api.getSession>>
@@ -168,11 +172,22 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
   // Better Auth's own handler owns all cookies for its endpoints. In particular, sign-out and
   // reset responses must not be followed by an older rolling session cookie from this wrapper.
   const pathname = new URL(request.url).pathname;
+  const stagesGoogleCallback = isGoogleCallbackStagingRequest(request);
   const ownsSession =
-    !isBetterAuthEndpoint(pathname) && !isMachineEndpoint(pathname);
+    !isBetterAuthEndpoint(pathname) &&
+    !isMachineEndpoint(pathname) &&
+    !stagesGoogleCallback;
 
   let refreshHeaders: Headers | undefined;
-  if (ownsSession) {
+  if (stagesGoogleCallback) {
+    // Matched loaders may run in parallel. Seed an explicit anonymous value so root.loader cannot
+    // fall back to readSession while this request's only job is leaving the credential-bearing URL.
+    context.set(sessionContext, {
+      user: null,
+      session: null,
+      organizationId: null,
+    });
+  } else if (ownsSession) {
     const loaded = await readSession(request);
     context.set(sessionContext, loaded.session);
     refreshHeaders = loaded.responseHeaders;
@@ -180,6 +195,9 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
 
   const response = await next();
   hardenDynamicResponse(response);
+  if (pathname === "/google/callback" && !stagesGoogleCallback) {
+    response.headers.append("set-cookie", clearGoogleCallbackCookie(request));
+  }
   appendRefreshHeaders(response, refreshHeaders);
   return response;
 };

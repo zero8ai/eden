@@ -17,7 +17,7 @@
 import { sql } from "drizzle-orm";
 
 import { newId } from "~/lib/id";
-import { organization, user } from "./auth-schema";
+import { organization, session as authSession, user } from "./auth-schema";
 import {
   boolean,
   index,
@@ -163,6 +163,27 @@ export const connectionGrants = pgTable(
       .on(t.projectId, t.agentId, t.environmentId, t.provider)
       .nullsNotDistinct(),
   ],
+);
+
+/**
+ * One-time OAuth state nonces for control-plane connection flows. The signed state carries the
+ * nonce; an atomic delete on callback makes it impossible to replay, while the Better Auth FKs
+ * invalidate outstanding flows when their initiating user or session is removed.
+ */
+export const connectionOauthStates = pgTable(
+  "connection_oauth_states",
+  {
+    nonceHash: text("nonce_hash").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => authSession.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("connection_oauth_states_expires_idx").on(t.expiresAt)],
 );
 
 /** A project == one connected eve repo. */

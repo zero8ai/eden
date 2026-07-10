@@ -369,17 +369,19 @@ export async function deployRelease(
     // Auth-brokered connections (issue #30): if this agent has an active Google grant, inject the
     // operator client creds + sealed refresh token so the shipped eve OpenAPI connection can
     // self-refresh access tokens at runtime. The provider validates the grant once (a dead grant
-    // THROWS here, failing the deploy with a reconnect message). Anti-shadowing as elsewhere:
-    // delete any user-set keys first, then set. No-op when there's no grant / no operator config.
-    for (const key of [
-      "GOOGLE_OAUTH_CLIENT_ID",
-      "GOOGLE_OAUTH_CLIENT_SECRET",
-      "GOOGLE_OAUTH_REFRESH_TOKEN",
-    ]) {
-      delete envVars[key];
-    }
-    if (deps.connectionGrantEnv) {
-      const grantEnv = await deps.connectionGrantEnv(scope);
+    // THROWS here, failing the deploy with a reconnect message). Eden OWNS these keys only when it
+    // actually brokers the connection: like the Discord block above, anti-shadowing runs ONLY when
+    // there's injection env — so a self-hoster's manually-set GOOGLE_OAUTH_* (their own client +
+    // token, no broker) passes through untouched. No-op when there's no grant / no operator config.
+    const grantEnv = deps.connectionGrantEnv ? await deps.connectionGrantEnv(scope) : {};
+    if (Object.keys(grantEnv).length > 0) {
+      for (const key of [
+        "GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_SECRET",
+        "GOOGLE_OAUTH_REFRESH_TOKEN",
+      ]) {
+        delete envVars[key];
+      }
       for (const [key, value] of Object.entries(grantEnv)) {
         envVars[key] = value;
       }

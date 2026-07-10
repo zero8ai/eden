@@ -19,6 +19,7 @@ import {
   connectStateKey,
   exchangeCode,
   fetchAccountEmail,
+  missingScopes,
   verifyConnectState,
 } from "~/connections/google.server";
 import { upsertGrant } from "~/connections/grants.server";
@@ -95,6 +96,18 @@ export const loader = (args: LoaderFunctionArgs) =>
         grant = await exchangeCode({ config, code, redirectUri });
       } catch (error) {
         return fail((error as Error).message, backUrl);
+      }
+
+      // Granular consent (issue #30): Google lets the user UNCHECK individual scopes on the consent
+      // screen. Storing a partial grant as "active" would 403 at runtime — a silent dead-end — so we
+      // refuse it here and tell the user to reconnect with every requested permission left checked.
+      const missing = missingScopes(state.scopes, grant.scope);
+      if (missing.length > 0) {
+        return fail(
+          `Google connected, but the following permission was not granted: ${missing.join(", ")}. ` +
+            "Reconnect and leave all requested permissions checked.",
+          backUrl,
+        );
       }
 
       const accountEmail = await fetchAccountEmail(grant.accessToken);

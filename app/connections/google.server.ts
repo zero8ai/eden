@@ -21,6 +21,21 @@ export const GOOGLE_IDENTITY_SCOPES = ["openid", "email"];
 
 export const CONNECT_STATE_TTL_MS = 60 * 60 * 1000;
 
+/**
+ * Requested connector scopes that Google did NOT grant (issue #30). Google's consent screen lets a
+ * user UNCHECK individual scopes (granular consent), so `granted` can be a strict subset of what we
+ * asked for — an under-scoped grant that 403s at runtime. Both inputs are space-separated. Only the
+ * CONNECTOR scopes are compared: identity scopes (openid/email) are appended separately and Google
+ * normalizes their short names, so callers pass just `state.scopes` here. Lenient when `granted` is
+ * empty/absent — Google reliably returns `scope`, but a missing field must not hard-fail the connect.
+ */
+export function missingScopes(requested: string, granted: string): string[] {
+  const grantedSet = new Set(granted.split(/\s+/).filter(Boolean));
+  if (grantedSet.size === 0) return [];
+  const requestedList = requested.split(/\s+/).filter(Boolean);
+  return requestedList.filter((s) => !grantedSet.has(s));
+}
+
 /* ─────────────────────────── state token (pure given key) ─────────────────────────── */
 
 export interface GoogleConnectState {

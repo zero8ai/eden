@@ -12,11 +12,46 @@ import {
   InvalidGrantError,
   exchangeCode,
   googleAuthorizeUrl,
+  missingScopes,
   refreshAccessToken,
   signConnectState,
   verifyConnectState,
   type GoogleConnectState,
 } from "~/connections/google.server";
+
+describe("missingScopes", () => {
+  const SHEETS = "https://www.googleapis.com/auth/spreadsheets";
+  const DRIVE = "https://www.googleapis.com/auth/drive";
+
+  it("returns [] when every requested scope was granted", () => {
+    expect(missingScopes(SHEETS, `${SHEETS} openid email`)).toEqual([]);
+  });
+
+  it("returns the scopes the user unchecked (granular consent)", () => {
+    expect(missingScopes(`${SHEETS} ${DRIVE}`, `${SHEETS} openid`)).toEqual([DRIVE]);
+  });
+
+  it("is lenient when granted is empty or absent (skip the check)", () => {
+    expect(missingScopes(SHEETS, "")).toEqual([]);
+    expect(missingScopes(SHEETS, "   ")).toEqual([]);
+  });
+
+  it("ignores extra granted scopes beyond what was requested", () => {
+    expect(missingScopes(SHEETS, `${SHEETS} ${DRIVE} openid email`)).toEqual([]);
+  });
+
+  it("returns [] when nothing was requested", () => {
+    expect(missingScopes("", `${SHEETS}`)).toEqual([]);
+  });
+
+  it("flags an identity-only grant as not covering a spreadsheets connector (the install-gate case)", () => {
+    // Mirrors the real under-scoped fixture: a grant stored with identity scopes only must NOT be
+    // treated as covering a connector that needs spreadsheets — the install gate blocks on this.
+    expect(
+      missingScopes(SHEETS, "https://www.googleapis.com/auth/userinfo.email openid"),
+    ).toEqual([SHEETS]);
+  });
+});
 
 const state: GoogleConnectState = {
   projectId: "projabcdefgh",

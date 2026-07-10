@@ -74,6 +74,7 @@ import {
   type ResolvedInclude,
 } from "~/marketplace/compose.server";
 import { getGoogleOAuthConfig } from "~/connections/config.server";
+import { missingScopes } from "~/connections/google.server";
 import { findGrant } from "~/connections/grants.server";
 import {
   findAppCredentialConflict,
@@ -141,6 +142,12 @@ interface ConnectAuth {
   scopes: string;
   configured: boolean;
   grant: { accountEmail: string | null; status: string } | null;
+  /**
+   * Whether an ACTIVE grant actually covers every scope this connector needs (issue #30). An active
+   * grant made for a narrower connector — or an under-scoped grant from before granular-consent was
+   * validated — would show "Connected" yet 403 at runtime; `covers=false` forces a Reconnect.
+   */
+  covers: boolean;
 }
 
 /** Whether a provider's OAuth client is configured on this control plane. Only Google in Phase 1. */
@@ -165,13 +172,20 @@ async function buildConnectAuths(
         agentId !== null
           ? await findGrant({ projectId, agentId, provider: a.provider })
           : null;
+      const descriptorScopes = a.scopes.join(" ");
+      // Coverage: an active grant only counts if its stored scopes include every scope this
+      // connector declares (issue #30). Reuse the same pure scope-set helper as the callback.
+      const covers =
+        grant?.status === "active" &&
+        missingScopes(descriptorScopes, grant.scopes).length === 0;
       return {
         provider: a.provider,
-        scopes: a.scopes.join(" "),
+        scopes: descriptorScopes,
         configured: providerConfigured(a.provider),
         grant: grant
           ? { accountEmail: grant.accountEmail, status: grant.status }
           : null,
+        covers,
       };
     }),
   );
@@ -479,6 +493,14 @@ export async function action(args: ActionFunctionArgs) {
             error: `Connect ${providerLabel(auth.provider)} for this agent before installing — use the Connect button on the install page.`,
           };
         }
+        // Scope coverage (issue #30): an active grant whose stored scopes don't cover this
+        // connector's descriptor (a narrower connector, or a pre-granular-consent grant) would ship
+        // a token that 403s at runtime. Refuse staging until the user reconnects with full scopes.
+        if (missingScopes(auth.scopes.join(" "), grant.scopes).length > 0) {
+          return {
+            error: `Reconnect ${providerLabel(auth.provider)} for this agent — the current connection is missing permissions this connector needs.`,
+          };
+        }
       }
     }
 
@@ -645,12 +667,11 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
   const backTo = `/marketplace/${type}/${manifest.id}`;
   const hasConflicts = (preview?.conflicts.length ?? 0) > 0;
   // Member installs must connect every configured brokered provider before staging (issue #30);
-  // new-member installs can't (no agent row yet) so they never block on this.
+  // new-member installs can't (no agent row yet) so they never block on this. An active grant that
+  // doesn't COVER the connector's scopes (covers=false) blocks too — it would 403 at runtime.
   const missingConnect =
     !newMemberTemplate &&
-    connectAuths.some(
-      (a) => a.configured && (!a.grant || a.grant.status !== "active"),
-    );
+    connectAuths.some((a) => a.configured && !a.covers);
   // The current wizard URL — where a Connect round-trip returns to (relative, same-origin).
   const wizardReturnTo = (() => {
     const p = new URLSearchParams();
@@ -676,9 +697,7 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
   // When the sole block is an unconnected provider, name it under the disabled button so the
   // Connect step above reads as the next action rather than a dead end.
   const unconnectedProvider = missingConnect
-    ? connectAuths.find(
-        (a) => a.configured && (!a.grant || a.grant.status !== "active"),
-      )?.provider
+    ? connectAuths.find((a) => a.configured && !a.covers)?.provider
     : undefined;
 
   /** Navigate to this route with an updated query, preserving the rest. */
@@ -1243,17 +1262,28 @@ function ConnectAuthRow({
     `&scopes=${encodeURIComponent(auth.scopes)}` +
     `&returnTo=${encodeURIComponent(returnTo)}`;
   const active = auth.grant?.status === "active";
+  // Only a covered grant reads as "Connected" with the subtle Reconnect link (issue #30). An active
+  // but under-scoped grant is a to-do, not a done: it 403s at runtime, so it gets the primary
+  // Reconnect button and the "missing permissions" copy — a reconnect (include_granted_scopes) fixes it.
 
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="grid gap-0.5">
         <Label className="text-sm font-medium">{label}</Label>
-        {active ? (
+        {active && auth.covers ? (
           <p className="text-xs text-muted-foreground">
             Connected as{" "}
             <span className="font-medium text-foreground">
               {auth.grant?.accountEmail ?? "your Google account"}
             </span>
+          </p>
+        ) : active ? (
+          <p className="text-xs text-muted-foreground">
+            Connected as{" "}
+            <span className="font-medium text-foreground">
+              {auth.grant?.accountEmail ?? "your Google account"}
+            </span>{" "}
+            — missing permissions this connector needs.
           </p>
         ) : (
           <p className="text-xs text-muted-foreground">
@@ -1263,7 +1293,7 @@ function ConnectAuthRow({
           </p>
         )}
       </div>
-      {active ? (
+      {active && auth.covers ? (
         <a
           href={connectUrl}
           className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
@@ -1272,7 +1302,7 @@ function ConnectAuthRow({
         </a>
       ) : (
         <Button asChild variant="default" size="sm">
-          <a href={connectUrl}>Connect {label}</a>
+          <a href={connectUrl}>{active ? "Reconnect" : `Connect ${label}`}</a>
         </Button>
       )}
     </div>

@@ -838,3 +838,52 @@ describe("shared Discord app env injection (issue #32)", () => {
     expect(env).not.toHaveProperty("EDEN_TEAM_TOKEN"); // no operator app → nothing minted
   });
 });
+
+describe("Google connection env injection (issue #30)", () => {
+  it("leaves a self-hoster's manually-set GOOGLE_OAUTH_* untouched when there's no grant to broker", async () => {
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "d1".repeat(20) }, store);
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        // The self-hoster runs their OWN Google client + token — no broker grant exists.
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          GOOGLE_OAUTH_CLIENT_ID: "my_client",
+          GOOGLE_OAUTH_CLIENT_SECRET: "my_secret",
+          GOOGLE_OAUTH_REFRESH_TOKEN: "my_token",
+        }),
+        connectionGrantEnv: async () => ({}), // no operator config / no active grant
+      },
+    );
+    const env = deployedEnvs[0];
+    expect(env.GOOGLE_OAUTH_CLIENT_ID).toBe("my_client");
+    expect(env.GOOGLE_OAUTH_CLIENT_SECRET).toBe("my_secret");
+    expect(env.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("my_token");
+  });
+
+  it("replaces user-set GOOGLE_OAUTH_* with Eden's brokered creds when a grant is injected", async () => {
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "d2".repeat(20) }, store);
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        // A user secret trying to shadow the brokered token — Eden owns these keys when it brokers.
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k", GOOGLE_OAUTH_REFRESH_TOKEN: "user_token" }),
+        connectionGrantEnv: async () => ({
+          GOOGLE_OAUTH_CLIENT_ID: "broker_client",
+          GOOGLE_OAUTH_CLIENT_SECRET: "broker_secret",
+          GOOGLE_OAUTH_REFRESH_TOKEN: "broker_token",
+        }),
+      },
+    );
+    const env = deployedEnvs[0];
+    expect(env.GOOGLE_OAUTH_CLIENT_ID).toBe("broker_client");
+    expect(env.GOOGLE_OAUTH_CLIENT_SECRET).toBe("broker_secret");
+    expect(env.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("broker_token");
+  });
+});

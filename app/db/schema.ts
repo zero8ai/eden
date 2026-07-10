@@ -48,6 +48,15 @@ export const users = pgTable("users", {
   id: text("id").primaryKey(),
   email: text("email").notNull(),
   name: text("name"),
+  /**
+   * The workspace (org) this user was last active in — remembered so a returning user in
+   * several workspaces silently re-enters the right one instead of hitting the chooser. It is
+   * stamped at session mint (in `syncTenant`, on every org-scoped request), which can precede
+   * the `orgs` mirror row existing, so it deliberately carries NO foreign key. It is never
+   * trusted blindly: `ensureWorkspace` validates it against the user's live WorkOS memberships
+   * before entering it (a revoked membership must not resurrect a dead workspace).
+   */
+  lastOrgId: text("last_org_id"),
   createdAt: createdAt(),
 });
 

@@ -211,6 +211,13 @@
       "when": 1783603258781,
       "tag": "0030_discord_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1783659858280,
+      "tag": "0031_big_banshee",
+      "breakpoints": true
     }
   ]
 }

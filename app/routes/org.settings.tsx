@@ -26,6 +26,7 @@ import {
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { syncTenant, type Org } from "~/auth/tenant.server";
+import { ensureWorkspace } from "~/auth/workspace.server";
 import { listAudit, recordAudit } from "~/managed/audit.server";
 import {
   getWorkspaceAssistantModel,
@@ -61,6 +62,8 @@ export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
     args,
     async ({ auth }): Promise<OrgSettingsView> => {
+      // Close the org-less hole: provision/adopt/choose a workspace before syncing.
+      await ensureWorkspace(args.request, auth);
       const { org } = await syncTenant({
         user: auth.user,
         organizationId: auth.organizationId,

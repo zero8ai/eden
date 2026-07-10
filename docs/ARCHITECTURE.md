@@ -209,6 +209,27 @@ configures redirect URIs/CORS in the WorkOS dashboard, writes `.env.local`, vali
 - Prereqs: Node 20+, a WorkOS account. Instance-level agent auth (channel route-auth secrets) is
   separate and lives in the secrets store (§3.5).
 
+**Shared workspaces (issue #56).** A workspace *is* the WorkOS Organization, and everyone in it is
+equal — any member can invite others and rename the workspace; there are no Eden-side roles or
+permission checks. Invitations are delegated to WorkOS end-to-end: `sendInvitation` emails the
+invitee and hosts the accept page, which lands back on our `/callback` → dashboard → the existing
+adopt-membership path. Eden stores **no** invitation state; the members page reads live from WorkOS.
+
+- **Workspace resolution** (org-less session → `ensureWorkspace`): last-active workspace
+  (`users.lastOrgId`, validated against live WorkOS memberships) → single-membership adopt →
+  first-ever provisions a personal org → several memberships with no usable last-active sends the
+  user to the `/workspaces` chooser. `lastOrgId` is stamped on every org-scoped request in
+  `syncTenant`, so entry, switch, and deep-link switch all keep it current with no extra write.
+- **Switching workspaces** re-mints the session against the chosen org via WorkOS's refresh grant
+  (`switchToOrganization`, which validates membership) — no sign-out. The active workspace is the
+  session's `org_id` claim, never a URL segment.
+- **Cross-workspace deep links.** A `/repos/:projectId` link to a project in *another* workspace the
+  user belongs to silently switches them into it (project ids are globally-unique); non-members
+  still get a 404. This only happens on page GET loaders — a stale-tab POST stays a hard 404.
+- **Manual dashboard knob:** keep the WorkOS **access-token duration short** so a membership
+  revocation propagates quickly — resolution and switching trust the live membership list, but an
+  already-minted session keeps its `org_id` until its access token refreshes.
+
 ### 3.9 Release registry & versioning (PRD §7.7)
 eve has no native versioning; Eden layers one over git. A **Release = an immutable build at a merge
 commit** — `{ label (v1/v2…), commit_sha, image_digest, changelog, author, created_at }`. Immutability

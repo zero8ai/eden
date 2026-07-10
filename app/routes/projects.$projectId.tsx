@@ -585,15 +585,16 @@ export default function ProjectDetail({
               />{" "}
               on {running[0].envName}
               {" · "}updated {timeAgo(running[0].at)}
+              {/* `url` is instance-internal — its presence just gates the playground link. */}
               {running[0].url && (
                 <>
                   {" · "}
-                  <a
-                    href={running[0].url}
+                  <Link
+                    to={`${ctx}/playground`}
                     className="underline underline-offset-4"
                   >
                     open
-                  </a>
+                  </Link>
                 </>
               )}
             </>
@@ -642,7 +643,14 @@ export default function ProjectDetail({
         </Alert>
       )}
 
-      {ship && <ShipProgress ship={ship} dismissTo={ctx} />}
+      {ship && (
+        <ShipProgress
+          ship={ship}
+          dismissTo={ctx}
+          projectId={project.id}
+          isTeam={isTeam}
+        />
+      )}
 
       {actionData?.ok && "changeUrl" in actionData && (
         <Alert className="mb-6">
@@ -892,9 +900,13 @@ function AddMemberDialog() {
 function ShipProgress({
   ship,
   dismissTo,
+  projectId,
+  isTeam,
 }: {
   ship: { env: string; rows: ShipStatusRow[]; skipped: string[] };
   dismissTo: string;
+  projectId: string;
+  isTeam: boolean;
 }) {
   const retry = useFetcher();
   const failed = ship.rows.filter((r) => r.status === "failed");
@@ -921,12 +933,25 @@ function ShipProgress({
               key={r.environmentId}
               className="flex flex-wrap items-center gap-x-2 gap-y-1"
             >
-              {!single && <span className="font-medium">{r.agentName}:</span>}
+              {!single && (
+                <Link
+                  to={contextPath(projectId, r.agentName)}
+                  className="font-medium underline-offset-4 hover:underline"
+                >
+                  {r.agentName}:
+                </Link>
+              )}
               <ShipSteps status={r.status} version={r.version} />
+              {/* `url` isn't the link target (it's an instance-internal address) — its
+                  presence is the "there's a reachable instance" signal gating the
+                  playground link. */}
               {r.status === "live" && r.url && (
-                <a href={r.url} className="underline underline-offset-4">
+                <Link
+                  to={`${contextPath(projectId, isTeam ? r.agentName : null)}/playground`}
+                  className="underline underline-offset-4"
+                >
                   open
-                </a>
+                </Link>
               )}
               {r.status === "failed" && (
                 <retry.Form method="post">
@@ -951,7 +976,19 @@ function ShipProgress({
           ))}
           {ship.skipped.length > 0 && (
             <p className="text-xs">
-              Not deployed for {ship.skipped.join(", ")} — no environment named{" "}
+              Not deployed for{" "}
+              {ship.skipped.map((name, i) => (
+                <span key={name}>
+                  {i > 0 && ", "}
+                  <Link
+                    to={contextPath(projectId, name)}
+                    className="underline underline-offset-4"
+                  >
+                    {name}
+                  </Link>
+                </span>
+              ))}{" "}
+              — no environment named{" "}
               <span className="font-mono">{ship.env}</span>.
             </p>
           )}

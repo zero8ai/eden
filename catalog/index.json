@@ -60,9 +60,9 @@
       "id": "github-app-auth",
       "type": "skill",
       "name": "GitHub App auth",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Exchange the agent's GitHub App private key for a short-lived installation token (GH_TOKEN), with gh and git preinstalled in the sandbox — the credential mechanics every GitHub-using agent needs, and nothing else.",
-      "hash": "126e8bd7911e5e5ca385e4b8bc8f585844d285d4"
+      "hash": "b9e18b81d8044aeefeb29fb6b5b8d8ca8de1c789"
     },
     {
       "id": "reviewing-a-pull-request",

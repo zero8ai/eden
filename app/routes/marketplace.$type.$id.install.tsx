@@ -13,7 +13,7 @@
  * standalone repo, and agent → subagent of an existing agent.
  */
 import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { Boxes, Download, KeyRound, Layers } from "lucide-react";
+import { Boxes, Download, KeyRound, Layers, Plug } from "lucide-react";
 import { useState } from "react";
 import {
   Form,
@@ -69,8 +69,11 @@ import {
 import { overlayLock } from "~/marketplace/lock";
 import {
   resolveTemplate,
+  type ResolvedAuth,
   type ResolvedInclude,
 } from "~/marketplace/compose.server";
+import { getGoogleOAuthConfig } from "~/connections/config.server";
+import { findGrant } from "~/connections/grants.server";
 import {
   findAppCredentialConflict,
   listAppCredentialRows,
@@ -125,6 +128,52 @@ function resolveMemberTarget(
       root: agent.root,
     },
   };
+}
+
+/**
+ * One brokered connection the wizard's Connect step renders (issue #30). `configured` is whether
+ * the operator set up the provider's OAuth client; `grant` is the current app-scoped grant for the
+ * chosen agent (null = not connected yet). `scopes` is space-separated for the connect URL.
+ */
+interface ConnectAuth {
+  provider: string;
+  scopes: string;
+  configured: boolean;
+  grant: { accountEmail: string | null; status: string } | null;
+}
+
+/** Whether a provider's OAuth client is configured on this control plane. Only Google in Phase 1. */
+function providerConfigured(provider: string): boolean {
+  return provider === "google" ? getGoogleOAuthConfig() !== null : false;
+}
+
+/**
+ * Build the Connect-step payload for a chosen member install: one entry per resolved auth
+ * descriptor, each with its current grant (looked up by the target agent's id) and whether the
+ * provider is configured. `agentId` null (new-member/agent template — no agent row yet) yields
+ * grant=null for every descriptor, so the step shows Connect buttons but never blocks.
+ */
+async function buildConnectAuths(
+  auths: ResolvedAuth[],
+  projectId: string,
+  agentId: string | null,
+): Promise<ConnectAuth[]> {
+  return Promise.all(
+    auths.map(async (a) => {
+      const grant =
+        agentId !== null
+          ? await findGrant({ projectId, agentId, provider: a.provider })
+          : null;
+      return {
+        provider: a.provider,
+        scopes: a.scopes.join(" "),
+        configured: providerConfigured(a.provider),
+        grant: grant
+          ? { accountEmail: grant.accountEmail, status: grant.status }
+          : null,
+      };
+    }),
+  );
 }
 
 interface PreviewData {
@@ -190,6 +239,8 @@ export const loader = (args: LoaderFunctionArgs) =>
         preview: null as PreviewData | null,
         /** Project-level shared secret names — powers the three-way choice (§9). */
         sharedNames: [] as string[],
+        /** Brokered connections to authorize before install (issue #30) — populated once a target is chosen. */
+        connectAuths: [] as ConnectAuth[],
       };
 
       if (!projectId) return base;
@@ -256,12 +307,20 @@ export const loader = (args: LoaderFunctionArgs) =>
           isUpdate: plan.isUpdate,
           includes: template.includes,
         };
+        // New-member install: no agent row yet, so grants can't be captured here — surface the
+        // descriptors (Connect buttons) but never block; the Deployment tab handles it post-ship.
+        base.connectAuths = await buildConnectAuths(template.auths, project.id, null);
         return base;
       }
 
       // Tool/skill/subagent → into an existing member.
       const resolved = resolveMemberTarget(ctx.roster, ctx.isTeam, selectedMember);
       if (!resolved) return base;
+      base.connectAuths = await buildConnectAuths(
+        template.auths,
+        project.id,
+        resolved.agent.id,
+      );
 
       // The target's current package.json (a staged draft wins) — needed only for the dep
       // merge, so skip the read entirely when the template ships no dependencies.
@@ -392,6 +451,33 @@ export async function action(args: ActionFunctionArgs) {
       return {
         error: `Can't install — ${plan.conflicts.length} file(s) already exist and aren't from this template:\n${plan.conflicts.join("\n")}`,
       };
+    }
+
+    // Connections gate (issue #30): a member install must have an active grant for every brokered
+    // auth descriptor before anything is staged (same short-circuit style as conflicts). A
+    // new-member install can't capture a grant yet (no agent row) — it proceeds and reconnects
+    // later from the Deployment tab.
+    if (secretAgent && template.auths.length > 0) {
+      for (const auth of template.auths) {
+        if (!providerConfigured(auth.provider)) {
+          return {
+            error:
+              `This Eden installation has no ${auth.provider} OAuth client configured — an ` +
+              "operator must set the provider credentials on the control plane before this " +
+              "connector can be installed.",
+          };
+        }
+        const grant = await findGrant({
+          projectId: project.id,
+          agentId: secretAgent.id,
+          provider: auth.provider,
+        });
+        if (!grant || grant.status !== "active") {
+          return {
+            error: `Connect ${auth.provider} for this agent before installing — use the Connect button on the install page.`,
+          };
+        }
+      }
     }
 
     // Secrets are PLANNED before anything is staged so a refused install stages nothing.
@@ -550,11 +636,27 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
     newMemberName,
     preview,
     sharedNames,
+    connectAuths,
   } = loaderData;
   const navigate = useNavigate();
 
   const backTo = `/marketplace/${type}/${manifest.id}`;
   const hasConflicts = (preview?.conflicts.length ?? 0) > 0;
+  // Member installs must connect every configured brokered provider before staging (issue #30);
+  // new-member installs can't (no agent row yet) so they never block on this.
+  const missingConnect =
+    !newMemberTemplate &&
+    connectAuths.some(
+      (a) => a.configured && (!a.grant || a.grant.status !== "active"),
+    );
+  // The current wizard URL — where a Connect round-trip returns to (relative, same-origin).
+  const wizardReturnTo = (() => {
+    const p = new URLSearchParams();
+    if (selectedProjectId) p.set("project", selectedProjectId);
+    if (selectedMember) p.set("member", selectedMember);
+    if (newMemberName) p.set("newMember", newMemberName);
+    return `/marketplace/${type}/${manifest.id}/install?${p.toString()}`;
+  })();
   // Issue #47: provisioned secrets are set by a guided Eden flow (e.g. Create GitHub App on the
   // Deployment tab) — the wizard never collects them. Only the user-supplied ones get inputs; the
   // provisioned ones get a single muted note so the user isn't led to think they must provide them.
@@ -564,7 +666,11 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
   );
   const targetChosen = newMemberTemplate ? !!newMemberName : !!selectedMember;
   const canSubmit =
-    !!selectedProjectId && targetChosen && !hasConflicts && !singleAgentInvalid;
+    !!selectedProjectId &&
+    targetChosen &&
+    !hasConflicts &&
+    !singleAgentInvalid &&
+    !missingConnect;
 
   /** Navigate to this route with an updated query, preserving the rest. */
   const go = (patch: Record<string, string | null>) => {
@@ -856,6 +962,34 @@ export default function InstallWizard({ loaderData, actionData }: Route.Componen
           </Card>
         )}
 
+        {/* 3.5 — Connect (brokered OAuth connections, issue #30) */}
+        {preview && connectAuths.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Plug className={`size-4 ${accentText.cyan}`} aria-hidden />
+                Connect
+              </CardTitle>
+              <CardDescription>
+                This connector authorizes against your account. Connect it before
+                installing so the agent can act on your behalf.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {connectAuths.map((auth) => (
+                <ConnectAuthRow
+                  key={auth.provider}
+                  auth={auth}
+                  agentName={selectedMember}
+                  isNewMember={newMemberTemplate}
+                  returnTo={wizardReturnTo}
+                  projectId={selectedProjectId}
+                />
+              ))}
+            </CardContent>
+          </Card>
+        )}
+
         {/* 4 — Secrets + submit */}
         {preview && (
           <Form method="post">
@@ -1033,6 +1167,103 @@ function InstallSecretField({
           Expose to sandbox shell
           {secret.sandbox && <span>· Requested by template</span>}
         </Label>
+      )}
+    </div>
+  );
+}
+
+/** Human label for a provider id (Phase 1: just Google). */
+function providerLabel(provider: string): string {
+  if (provider === "google") return "Google";
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
+/**
+ * One brokered connection in the Connect step (issue #30). Three states: not configured (a muted
+ * operator note), connected (shows the account + a subtle Reconnect), or not-yet-connected (a
+ * Connect button). A new-member install can't connect here — no agent row exists yet — so it shows
+ * a deferral note instead.
+ */
+function ConnectAuthRow({
+  auth,
+  agentName,
+  isNewMember,
+  returnTo,
+  projectId,
+}: {
+  auth: ConnectAuth;
+  agentName: string | null;
+  isNewMember: boolean;
+  returnTo: string;
+  projectId: string | null;
+}) {
+  const label = providerLabel(auth.provider);
+  const upperEnv =
+    auth.provider === "google"
+      ? "EDEN_GOOGLE_CLIENT_ID / EDEN_GOOGLE_CLIENT_SECRET"
+      : `${auth.provider.toUpperCase()} OAuth credentials`;
+
+  if (!auth.configured) {
+    return (
+      <div className="grid gap-1">
+        <Label className="text-sm font-medium">{label}</Label>
+        <p className="text-xs text-muted-foreground">
+          This Eden installation has no {label} OAuth client configured — an
+          operator must set <span className="font-mono">{upperEnv}</span> on the
+          control plane before this connector can be used.
+        </p>
+      </div>
+    );
+  }
+
+  if (isNewMember || !agentName || !projectId) {
+    return (
+      <div className="grid gap-1">
+        <Label className="text-sm font-medium">{label}</Label>
+        <p className="text-xs text-muted-foreground">
+          Connect {label} after this member ships — from its Deployment tab.
+        </p>
+      </div>
+    );
+  }
+
+  const connectUrl =
+    `/google/connect?project=${encodeURIComponent(projectId)}` +
+    `&agent=${encodeURIComponent(agentName)}` +
+    `&scopes=${encodeURIComponent(auth.scopes)}` +
+    `&returnTo=${encodeURIComponent(returnTo)}`;
+  const active = auth.grant?.status === "active";
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="grid gap-0.5">
+        <Label className="text-sm font-medium">{label}</Label>
+        {active ? (
+          <p className="text-xs text-muted-foreground">
+            Connected as{" "}
+            <span className="font-medium text-foreground">
+              {auth.grant?.accountEmail ?? "your Google account"}
+            </span>
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {auth.grant
+              ? `Connection ${auth.grant.status} — reconnect to continue.`
+              : `Authorize ${label} so the agent can act on your behalf.`}
+          </p>
+        )}
+      </div>
+      {active ? (
+        <a
+          href={connectUrl}
+          className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+        >
+          Reconnect
+        </a>
+      ) : (
+        <Button asChild variant="default" size="sm">
+          <a href={connectUrl}>Connect {label}</a>
+        </Button>
       )}
     </div>
   );

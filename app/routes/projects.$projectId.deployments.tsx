@@ -59,7 +59,13 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -122,6 +128,8 @@ import { fetchAgentSource } from "~/github/repo.server";
 import { closePullRequest, mergePullRequest } from "~/github/write.server";
 import { getDiscordAppConfig } from "~/discord/config.server";
 import { listConnectionsForAgent } from "~/discord/connections.server";
+import { getGoogleOAuthConfig } from "~/connections/config.server";
+import { listGrantsForAgent } from "~/connections/grants.server";
 import {
   discardConversationCheckoutByBranch,
   isConversationBranch,
@@ -230,6 +238,19 @@ interface DeploymentData {
       environmentId: string;
     }> | null;
   };
+  /**
+   * Member/single view: auth-brokered connection grants for this agent (issue #30) — the
+   * Connections card lists them with a Reconnect affordance. Empty in the team (hint-only) view.
+   */
+  connections: Array<{
+    id: string;
+    provider: string;
+    accountEmail: string | null;
+    scopes: string;
+    status: string;
+  }>;
+  /** Whether the operator configured a Google OAuth client — gates the reconnect action. */
+  connectionsConfigured: boolean;
   /** Member/single view: GitHub App setup when the agent has the marketplace GitHub channel. */
   githubSetup: {
     enabled: boolean;
@@ -446,6 +467,8 @@ export const loader = (args: LoaderFunctionArgs) =>
             origin: publicOrigin(args.request),
             connections: null,
           },
+          connections: [],
+          connectionsConfigured: getGoogleOAuthConfig() !== null,
           githubSetup: {
             enabled: hasGithubSetup,
             origin: publicOrigin(args.request),
@@ -530,6 +553,20 @@ export const loader = (args: LoaderFunctionArgs) =>
           discordConnections = null; // store hiccup — the card falls back to the connect button
         }
       }
+      // Auth-brokered connection grants for this agent (issue #30) — the Connections card lists
+      // them with a Reconnect affordance. Installs create grants, so this covers the reconnect UX.
+      let connectionGrantRows: DeploymentData["connections"] = [];
+      try {
+        connectionGrantRows = (await listGrantsForAgent(active.id)).map((g) => ({
+          id: g.id,
+          provider: g.provider,
+          accountEmail: g.accountEmail,
+          scopes: g.scopes,
+          status: g.status,
+        }));
+      } catch {
+        connectionGrantRows = []; // store hiccup — the card simply doesn't render
+      }
       let githubAppSlug: string | null = null;
       let githubInstallations: AppInstallation[] | null = null;
       if (hasGithubSetup) {
@@ -583,6 +620,8 @@ export const loader = (args: LoaderFunctionArgs) =>
           origin: publicOrigin(args.request),
           connections: discordConnections,
         },
+        connections: connectionGrantRows,
+        connectionsConfigured: getGoogleOAuthConfig() !== null,
         githubSetup: {
           enabled: hasGithubSetup,
           origin: publicOrigin(args.request),
@@ -1010,7 +1049,87 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
         projectId={loaderData.project.id}
         agentName={activeAgent}
       />
+      <ConnectionsCard
+        connections={loaderData.connections}
+        configured={loaderData.connectionsConfigured}
+        projectId={loaderData.project.id}
+        agentName={activeAgent}
+      />
     </>
+  );
+}
+
+/**
+ * Auth-brokered connections (issue #30): lists this agent's OAuth grants (e.g. Google) with the
+ * connected account, a status badge, and a Connect/Reconnect button routing to /google/connect
+ * with returnTo = this Deployment tab. Renders only when the agent has at least one grant — installs
+ * create grants, so this is the reconnect surface. Visual language mirrors the Discord card.
+ */
+function ConnectionsCard({
+  connections,
+  configured,
+  projectId,
+  agentName,
+}: {
+  connections: LoaderData["connections"];
+  configured: boolean;
+  projectId: string;
+  agentName: string;
+}) {
+  if (connections.length === 0) return null;
+  const returnTo = `${contextPath(projectId, agentName)}/deployment`;
+  const providerLabel = (p: string) =>
+    p === "google" ? "Google" : p.charAt(0).toUpperCase() + p.slice(1);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Connections</CardTitle>
+        <CardDescription>
+          Accounts this agent is authorized to act on. Reconnect if a grant expires
+          or is revoked.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {connections.map((c) => {
+          const connectUrl =
+            `/google/connect?project=${encodeURIComponent(projectId)}` +
+            `&agent=${encodeURIComponent(agentName)}` +
+            `&scopes=${encodeURIComponent(c.scopes)}` +
+            `&returnTo=${encodeURIComponent(returnTo)}`;
+          const active = c.status === "active";
+          return (
+            <div
+              key={c.id}
+              className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
+            >
+              <div className="grid gap-0.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">
+                    {providerLabel(c.provider)}
+                  </span>
+                  <Badge variant={active ? "success" : "warning"}>
+                    {c.status}
+                  </Badge>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {c.accountEmail ?? "connected account"}
+                </span>
+              </div>
+              {configured ? (
+                <Button asChild variant={active ? "outline" : "default"} size="sm">
+                  <Link to={connectUrl}>{active ? "Reconnect" : "Connect"}</Link>
+                </Button>
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  operator config missing
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
   );
 }
 

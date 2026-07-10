@@ -88,6 +88,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           role: auth.role,
         },
         args.params.projectId,
+        { request: args.request },
       );
       const agentName = agentFromParams(args.params);
       if (!agentName) {

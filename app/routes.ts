@@ -21,6 +21,11 @@ export default [
   route("marketplace/:type/:id", "routes/marketplace.$type.$id.tsx"),
   route("marketplace/:type/:id/install", "routes/marketplace.$type.$id.install.tsx"),
   route("org/settings", "routes/org.settings.tsx"),
+  // Shared workspaces (issue #56): the members/invite page, the multi-workspace chooser +
+  // switch endpoint, and the shell switcher's data route.
+  route("org/members", "routes/org.members.tsx"),
+  route("workspaces", "routes/workspaces.tsx"),
+  route("api/workspaces", "routes/api.workspaces.tsx"),
   route("connect", "routes/connect.tsx"),
   // The product noun is REPOSITORY (one connected GitHub repo = a single agent or a team).
   // Param stays :projectId — internal identifiers didn't churn with the URL rename.

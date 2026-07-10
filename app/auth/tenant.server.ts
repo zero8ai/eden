@@ -39,12 +39,25 @@ export async function syncTenant(
 
   // Start the user upsert but only await it where it's needed, so the org-less
   // path doesn't block on it and the org path overlaps it with the org lookup.
+  // When org-scoped, stamp `lastOrgId` — this is the single, self-maintaining write that
+  // keeps "last active workspace" honest: entry, switch, and deep-link auto-switch all land
+  // on an org-scoped request and converge here. Org-less requests leave it untouched (a
+  // signed-out-of-org session must not erase which workspace to re-enter).
   const userSync = db
     .insert(users)
-    .values({ id: auth.user.id, email: auth.user.email, name: displayName })
+    .values({
+      id: auth.user.id,
+      email: auth.user.email,
+      name: displayName,
+      lastOrgId: auth.organizationId ?? undefined,
+    })
     .onConflictDoUpdate({
       target: users.id,
-      set: { email: auth.user.email, name: displayName },
+      set: {
+        email: auth.user.email,
+        name: displayName,
+        ...(auth.organizationId ? { lastOrgId: auth.organizationId } : {}),
+      },
     });
 
   if (!auth.organizationId) {

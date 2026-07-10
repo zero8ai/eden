@@ -30,6 +30,7 @@ import {
 import { TEMPLATE_TYPES, isTemplateSlug, type TemplateType } from "~/marketplace/manifest";
 import { getRuntime } from "~/seams/index.server";
 import { syncTenant } from "~/auth/tenant.server";
+import { ensureWorkspace } from "~/auth/workspace.server";
 import type { Route } from "./+types/marketplace.$type.$id";
 
 /** Narrow a URL param to a TemplateType, 404-ing on anything else (unknown type = no such page). */
@@ -47,6 +48,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       // Gate the raw URL param before it reaches a CatalogSource — the fixture impl joins the
       // id into a filesystem path, so a non-slug id is a path-traversal attempt, not a miss.
       if (!isTemplateSlug(id)) throw data("Unknown template", { status: 404 });
+      await ensureWorkspace(args.request, auth);
       const { org } = await syncTenant(auth);
       try {
         // Detail deliberately shows the UNRESOLVED template (catalog.template, not

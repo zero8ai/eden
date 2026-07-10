@@ -33,6 +33,7 @@ import {
 import { TEMPLATE_TYPES, type TemplateType } from "~/marketplace/manifest";
 import { getRuntime } from "~/seams/index.server";
 import { syncTenant } from "~/auth/tenant.server";
+import { ensureWorkspace } from "~/auth/workspace.server";
 import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/marketplace";
 
@@ -119,6 +120,7 @@ export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
     args,
     async ({ auth }) => {
+      await ensureWorkspace(args.request, auth);
       const { org } = await syncTenant(auth);
       try {
         const index = await getRuntime().catalog.index();

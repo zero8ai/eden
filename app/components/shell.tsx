@@ -7,7 +7,16 @@
  * repo-wide surfaces, member level gets the member-scoped ones, and single-agent repos
  * collapse both levels into one merged row.
  */
-import { LogOut, Menu, User, Users, type LucideIcon } from "lucide-react";
+import {
+  Building2,
+  Check,
+  ChevronsUpDown,
+  LogOut,
+  Menu,
+  User,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect } from "react";
 import {
   Form,
@@ -109,9 +118,11 @@ export function AppShell({
           <nav className="ml-auto hidden items-center gap-1 text-sm md:flex">
             <HeaderLink to="/dashboard">Repositories</HeaderLink>
             <HeaderLink to="/marketplace">Marketplace</HeaderLink>
+            <HeaderLink to="/org/members">Members</HeaderLink>
             <HeaderLink to="/org/settings">Settings</HeaderLink>
           </nav>
           <div className="ml-auto flex shrink-0 items-center gap-1 md:ml-0">
+            {userEmail && <WorkspaceMenu />}
             <ThemeToggle />
             <AccountMenu userEmail={userEmail} />
             <MobileNav />
@@ -256,6 +267,80 @@ function AccountMenu({ userEmail }: { userEmail?: string | null }) {
   );
 }
 
+/**
+ * Workspace switcher in the header (issue #56). Self-fetches the user's workspaces from
+ * `/api/workspaces` (same pattern as StagedChangesPill) so it appears on every authed page
+ * without threading data through each loader. Hard requirement: a user in ≤1 workspace sees
+ * NOTHING — the switcher only exists for people who actually belong to several. Each item is a
+ * real `<Form>` POST to `/workspaces` (not a fetcher) so switching does a full document
+ * navigation: the org changes underneath, and every loader's data would otherwise be stale.
+ */
+interface WorkspaceInfo {
+  id: string;
+  name: string;
+}
+function WorkspaceMenu() {
+  const fetcher = useFetcher<{
+    currentOrgId: string | null;
+    currentName: string | null;
+    workspaces: WorkspaceInfo[];
+  }>();
+  const { load } = fetcher;
+  useEffect(() => {
+    load("/api/workspaces");
+  }, [load]);
+
+  const data = fetcher.data;
+  // While loading, or for single-workspace users, render nothing at all.
+  if (!data || data.workspaces.length <= 1) return null;
+
+  const currentName =
+    data.currentName ??
+    data.workspaces.find((w) => w.id === data.currentOrgId)?.name ??
+    "Workspace";
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="hidden max-w-40 items-center gap-1.5 sm:flex"
+          aria-label="Switch workspace"
+        >
+          <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="truncate">{currentName}</span>
+          <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuLabel className="text-xs text-muted-foreground">
+          Switch workspace
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {data.workspaces.map((ws) => {
+          const isCurrent = ws.id === data.currentOrgId;
+          return (
+            <Form method="post" action="/workspaces" key={ws.id}>
+              <input type="hidden" name="orgId" value={ws.id} />
+              <input type="hidden" name="returnTo" value="/dashboard" />
+              <DropdownMenuItem asChild>
+                <button type="submit" className="w-full cursor-pointer" disabled={isCurrent}>
+                  <Check
+                    className={cn("mr-2 h-4 w-4", isCurrent ? "opacity-100" : "opacity-0")}
+                    aria-hidden
+                  />
+                  <span className="truncate">{ws.name}</span>
+                </button>
+              </DropdownMenuItem>
+            </Form>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /** Primary nav folded behind a menu button on small screens (< md). */
 function MobileNav() {
   return (
@@ -272,6 +357,9 @@ function MobileNav() {
           </DropdownMenuItem>
           <DropdownMenuItem asChild>
             <Link to="/marketplace">Marketplace</Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild>
+            <Link to="/org/members">Members</Link>
           </DropdownMenuItem>
           <DropdownMenuItem asChild>
             <Link to="/org/settings">Settings</Link>

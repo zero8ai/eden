@@ -25,6 +25,7 @@ import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { syncTenant } from "~/auth/tenant.server";
 import { getProject } from "~/db/queries.server";
+import { requireProject, requireRepo } from "~/project/guard.server";
 import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
 import { contextPath } from "~/lib/paths";
 import {
@@ -39,22 +40,19 @@ export const loader = (args: LoaderFunctionArgs) =>
   authkitLoader(
     args,
     async ({ auth }) => {
-      const { org } = await syncTenant({
-        user: auth.user,
-        organizationId: auth.organizationId,
-        role: auth.role,
-      });
-      if (!org) throw data("No organization", { status: 403 });
-
-      const project = await getProject(org.id, args.params.projectId!);
-      if (!project) throw data("Project not found", { status: 404 });
-      if (
-        !project.repoInstallationId ||
-        !project.repoOwner ||
-        !project.repoName
-      ) {
-        throw data("Project has no connected repo", { status: 400 });
-      }
+      // Passing the request opts into cross-workspace deep-link auto-switch + org-less
+      // provisioning (issue #56); requireRepo narrows to a connected repo as before.
+      const project = requireRepo(
+        await requireProject(
+          {
+            user: auth.user,
+            organizationId: auth.organizationId,
+            role: auth.role,
+          },
+          args.params.projectId,
+          { request: args.request },
+        ),
+      );
 
       const agentName = agentFromParams(args.params);
       if (!agentName) {

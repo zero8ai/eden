@@ -52,6 +52,7 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { syncTenant } from "~/auth/tenant.server";
+import { ensureWorkspace } from "~/auth/workspace.server";
 import type { Agent } from "~/data/ports";
 import { stageDeletions, stageDraft, listDrafts } from "~/drafts/drafts.server";
 import { ZOD_PACKAGE, ZOD_VERSION } from "~/eve/agentModule";
@@ -200,6 +201,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       const type = parseType(args.params.type);
       const id = args.params.id!;
       if (!isTemplateSlug(id)) throw data("Unknown template", { status: 404 });
+      await ensureWorkspace(args.request, auth);
       const { org } = await syncTenant(auth);
 
       // Resolve composition (includes) up front: the plan, the file preview, the dep/secret

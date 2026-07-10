@@ -75,6 +75,7 @@ export const loader = (args: LoaderFunctionArgs) =>
             role: auth.role,
           },
           args.params.projectId,
+          { request: args.request },
         ),
       );
       // The member is the path segment when present (member-level route); otherwise the

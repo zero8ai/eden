@@ -18,7 +18,6 @@
  * operations (get/create/batchUpdate and values get/batchGet/update/append/clear/batchUpdate).
  */
 import { defineOpenAPIConnection } from "eve/connections";
-import { once } from "eve/tools/approval";
 
 import spec from "../data/google-sheets.openapi.json";
 
@@ -68,7 +67,4 @@ export default defineOpenAPIConnection({
     "to write cell values, and _batchUpdate (spreadsheets:batchUpdate) for structural changes " +
     "(add sheets, formatting). Ranges use A1 notation, e.g. 'Sheet1!A1:C10'.",
   auth: { getToken },
-  // A single human-approval gate per session before the connection acts — light protection against
-  // an unintended first write. Remove this line to run ungated if the agent is fully trusted.
-  approval: once(),
 });

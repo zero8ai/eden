@@ -3,7 +3,7 @@
   "type": "bundle",
   "name": "Google Sheets",
   "description": "Everything an agent needs to work with Google Sheets: the connector (install → Connect Google → read/write spreadsheets) plus a usage skill teaching A1 notation, read-before-write, and the values vs batchUpdate operations. Recommended way to add Sheets.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "eve": ">=0.20.0",
   "files": [],
   "setup": "This bundle installs the **Google Sheets connector** and its **usage skill** together. After installing, open the agent's **Deployment** tab and click **Connect Google** on the Connections card to authorize your account (one consent screen for the `spreadsheets` scope) and the agent can read and write spreadsheets it has access to.\n\n**Operators:** the connector needs a Google OAuth client configured on the control plane (`EDEN_GOOGLE_CLIENT_ID` / `EDEN_GOOGLE_CLIENT_SECRET`, redirect URI `<origin>/google/callback`) — see the Google Sheets connector's setup notes for the Google Cloud steps and the publishing-status/verification ladder.",

@@ -219,6 +219,49 @@ export async function fetchGuildName(
   }
 }
 
+/** The control plane's interactions relay route — what Discord's endpoint URL must point at. */
+export const INTERACTIONS_ROUTE = "/api/discord/interactions";
+
+/**
+ * Ensure the shared app's Interactions Endpoint URL points at this installation's relay —
+ * the one Discord-side setting the operator would otherwise have to click through the
+ * Developer Portal for. Reads the app first and PATCHes only on drift, because a PATCH makes
+ * Discord re-validate the endpoint with a signed PING each time. Throws a readable Error on
+ * non-2xx (a failed PATCH usually means Discord's validation PING couldn't reach the origin).
+ */
+export async function ensureInteractionsEndpoint(
+  config: { applicationId: string; botToken: string },
+  endpointUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<"unchanged" | "updated"> {
+  const headers = { authorization: `Bot ${config.botToken}` };
+  const current = await fetchImpl(`${DISCORD_API}/applications/@me`, {
+    headers,
+  });
+  if (!current.ok) {
+    throw new Error(
+      `Discord rejected the application lookup (HTTP ${current.status}).`,
+    );
+  }
+  const app = (await current.json()) as { interactions_endpoint_url?: string };
+  if (app.interactions_endpoint_url === endpointUrl) return "unchanged";
+
+  const res = await fetchImpl(`${DISCORD_API}/applications/@me`, {
+    method: "PATCH",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ interactions_endpoint_url: endpointUrl }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `Discord rejected the interactions endpoint URL (HTTP ${res.status}) — ` +
+        `it validates the URL with a signed PING, so ${endpointUrl} must be publicly ` +
+        `reachable${body ? `: ${body}` : "."}`,
+    );
+  }
+  return "updated";
+}
+
 export interface DeleteGuildCommandInput {
   applicationId: string;
   botToken: string;

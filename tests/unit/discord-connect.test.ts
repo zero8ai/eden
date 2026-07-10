@@ -14,6 +14,7 @@ import {
   DISCORD_BOT_PERMISSIONS,
   discordAuthorizeUrl,
   discordCommandName,
+  ensureInteractionsEndpoint,
   registerGuildCommand,
   signConnectState,
   verifyConnectState,
@@ -182,5 +183,72 @@ describe("registerGuildCommand", () => {
         fetchImpl,
       ),
     ).rejects.toThrow(/wasn't installed/);
+  });
+});
+
+describe("ensureInteractionsEndpoint", () => {
+  const config = { applicationId: "app_1", botToken: "bot_secret" };
+  const endpoint = "https://eden.example/api/discord/interactions";
+
+  it("leaves a matching endpoint alone (no PATCH)", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(
+        JSON.stringify({ interactions_endpoint_url: endpoint }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    await expect(
+      ensureInteractionsEndpoint(config, endpoint, fetchImpl),
+    ).resolves.toBe("unchanged");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(`${DISCORD_API}/applications/@me`);
+    expect(
+      (calls[0].init?.headers as Record<string, string>).authorization,
+    ).toBe("Bot bot_secret");
+  });
+
+  it("PATCHes a drifted endpoint with the Bot auth header", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(
+        JSON.stringify({ interactions_endpoint_url: "https://old.example" }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    await expect(
+      ensureInteractionsEndpoint(config, endpoint, fetchImpl),
+    ).resolves.toBe("updated");
+    expect(calls).toHaveLength(2);
+    expect(calls[1].url).toBe(`${DISCORD_API}/applications/@me`);
+    expect(calls[1].init?.method).toBe("PATCH");
+    expect(
+      (calls[1].init?.headers as Record<string, string>).authorization,
+    ).toBe("Bot bot_secret");
+    expect(JSON.parse(calls[1].init?.body as string)).toEqual({
+      interactions_endpoint_url: endpoint,
+    });
+  });
+
+  it("surfaces a rejected PATCH as a readable reachability error", async () => {
+    let first = true;
+    const fetchImpl = (async () => {
+      if (first) {
+        first = false;
+        return new Response(
+          JSON.stringify({ interactions_endpoint_url: null }),
+          { status: 200 },
+        );
+      }
+      return new Response("endpoint validation failed", { status: 400 });
+    }) as typeof fetch;
+
+    await expect(
+      ensureInteractionsEndpoint(config, endpoint, fetchImpl),
+    ).rejects.toThrow(/publicly reachable/);
   });
 });

@@ -105,9 +105,10 @@ Fill in every value (`deploy/vps/.env` is gitignored). Notes per section:
 - **Discord app (optional)** — for the one-click Discord channel (issue #32), register **one**
   Discord application for this installation at
   [discord.com/developers/applications](https://discord.com/developers/applications):
-  - **Interactions Endpoint URL**: `https://eden.example.com/api/discord/interactions` (Discord
-    validates it with a signed PING — Eden answers it, so it saves cleanly).
   - **OAuth2 → Redirects**: add `https://eden.example.com/discord/callback`.
+  - The **Interactions Endpoint URL** needs no portal setup: Eden sets it to
+    `https://eden.example.com/api/discord/interactions` via Discord's API the first time a user
+    runs Connect Discord (and re-asserts it on every connect, so a portal edit heals itself).
   - Copy the **Application ID** → `EDEN_DISCORD_APPLICATION_ID`, the **Public Key** →
     `EDEN_DISCORD_PUBLIC_KEY`, and a **Bot** token → `EDEN_DISCORD_BOT_TOKEN`. The bot token
     stays on the control plane and is never shipped to agent instances. Users then connect

@@ -14,12 +14,15 @@ import { buildModelDirective } from "~/models/model-directive";
 import {
   createPlaygroundSession,
   getPlaygroundSession,
+  loadPlaygroundEntriesFromCache,
   markPlaygroundSessionRunning,
   setPlaygroundSessionModel,
   titleFromMessage,
+  unbindPlaygroundSessionForReseed,
   type PlaygroundSession,
 } from "~/playground/sessions.server";
 import { canContinueSessionOnTarget } from "~/playground/ownership";
+import { buildSeedContext } from "~/playground/seed";
 import {
   resolveAgentContext,
   agentFromParams,
@@ -74,17 +77,21 @@ export async function action(args: ActionFunctionArgs) {
       { status: 404 },
     );
   }
+  // #71: continue a conversation whose owning eve session lives on a deployment that was replaced
+  // (or was explicitly de-selected for a different live one). That eve session can't be migrated —
+  // it died with the old container's runtime — so instead of 409ing, seed a FRESH eve session on
+  // this target transparently from Eden's durable transcript cache (the complete history), unbind
+  // the dead binding, and continue. This also covers the "owner still live but a different
+  // deployment was selected" case: continuing on any non-owner target reseeds from the cache.
+  let seedContext: string | null = null;
   if (
     playgroundSession &&
     !canContinueSessionOnTarget(playgroundSession, target.deploymentId)
   ) {
-    throw data(
-      {
-        error:
-          "This conversation belongs to a different deployment that was replaced or is no longer selected. Start a new conversation to continue.",
-      },
-      { status: 409 },
+    seedContext = buildSeedContext(
+      await loadPlaygroundEntriesFromCache(playgroundSession),
     );
+    playgroundSession = await unbindPlaygroundSessionForReseed(playgroundSession);
   }
   const title = playgroundSession?.title ? null : titleFromMessage(message);
   if (!playgroundSession) {
@@ -124,13 +131,18 @@ export async function action(args: ActionFunctionArgs) {
   // it, and every display surface strips it. The catalog lookup supplies the model's context
   // window; when the catalog is unreachable the directive simply omits it.
   const effectiveModel = requestedModelId ?? playgroundSession.modelId;
-  const messagePrefix = effectiveModel
+  const directive = effectiveModel
     ? buildModelDirective({
         id: effectiveModel,
         contextWindowTokens:
           (await findModel(effectiveModel))?.contextWindow ?? undefined,
       })
     : null;
+  // Order matters: the model directive MUST stay the first line of the sent message (both the
+  // agent-side resolver and `stripModelDirective` anchor to start-of-string); the reseed context
+  // block (#71), when present, follows it.
+  const messagePrefix =
+    [directive, seedContext].filter(Boolean).join("\n\n") || null;
 
   return streamTurnResponse({
     projectId: project.id,

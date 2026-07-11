@@ -138,7 +138,13 @@ export function streamTurnResponse(input: {
           const batch = pendingEvents.splice(0, pendingEvents.length);
           eventSave = eventSave.then(async () => {
             try {
-              await savePlaygroundEvents(activeSession.id, batch);
+              // `batch` indices are eve-space (the cursor scheme); the reseed offset is applied
+              // at the persist boundary so cursor bookkeeping below stays eve-space (#71).
+              await savePlaygroundEvents(
+                activeSession.id,
+                batch,
+                activeSession.cacheIndexOffset,
+              );
               persistedEventIndex = Math.max(
                 persistedEventIndex,
                 batch[batch.length - 1].streamIndex,

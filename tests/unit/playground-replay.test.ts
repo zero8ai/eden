@@ -5,6 +5,8 @@ import {
   type PlaygroundSession,
 } from "~/playground/sessions.server";
 import type { Target } from "~/chat/playground.server";
+import { buildSeedContext } from "~/playground/seed";
+import { buildModelDirective } from "~/models/model-directive";
 
 function streamResponse(events: unknown[]): Response {
   const encoder = new TextEncoder();
@@ -301,6 +303,60 @@ describe("loadPlaygroundEntriesFromEve", () => {
         modelId: "anthropic/claude-sonnet-5",
       },
     ]);
+  });
+
+  it("strips a cross-redeploy seed block from the user text (#71)", async () => {
+    const at = new Date().toISOString();
+    // The reseed turn's sent message: model directive, then the seed block built from the cached
+    // transcript, then the user's actual message. Only the plain message must render.
+    const seed = buildSeedContext([
+      { id: "prev:u", role: "user", text: "Please deploy my thing." },
+      {
+        id: "prev:a",
+        role: "assistant",
+        text: "I can't finish this without the credential.",
+        inputRequests: [{ requestId: "r0", prompt: "Add it and retry?" }],
+      },
+    ])!;
+    const directive = buildModelDirective({ id: "anthropic/claude-sonnet-5" });
+    const sentMessage = `${directive}\n\n${seed}\n\nCan you try again?`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        streamResponse([
+          {
+            type: "session.started",
+            data: { runtime: { modelId: "dynamic:anthropic/claude-sonnet-5" } },
+            meta: { at },
+          },
+          { type: "turn.started", data: { turnId: "turn_0" }, meta: { at } },
+          {
+            type: "message.received",
+            data: { turnId: "turn_0", message: sentMessage },
+            meta: { at },
+          },
+          {
+            type: "message.completed",
+            data: { turnId: "turn_0", message: "Retried successfully." },
+            meta: { at },
+          },
+        ]),
+      ),
+    );
+
+    const entries = await loadPlaygroundEntriesFromEve({
+      session: session({ streamIndex: 4 }),
+      target,
+    });
+
+    expect(entries[0]).toMatchObject({ role: "user", text: "Can you try again?" });
+    // No leaked transcript or markers in the user bubble.
+    expect(entries[0].text).not.toContain("Please deploy my thing.");
+    expect(entries[0].text).not.toContain("eden:context");
+    expect(entries[1]).toMatchObject({
+      role: "assistant",
+      text: "Retried successfully.",
+    });
   });
 
   it("surfaces a stopped or timed-out turn instead of an empty assistant reply", async () => {

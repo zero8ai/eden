@@ -27,6 +27,11 @@ export function applyEnvOverrides(
 ): string;
 export function parseEnvFile(text: string): Record<string, string>;
 export function resolveBetterAuthSecret(existing?: string): string;
+export function acquireSetupLock(
+  lockDir: string,
+  options?: { timeoutMs?: number; pollMs?: number; pid?: number },
+): void;
+export function releaseSetupLock(lockDir: string): void;
 export function withWorktreeAppendix(
   rawAgentsMd: string,
   appendixMarker: string,

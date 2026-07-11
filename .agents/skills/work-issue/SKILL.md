@@ -25,6 +25,65 @@ The workflow:
 6. **Verify (main agent).** Review the sub-agent's work against the research and plan (see below).
 7. Hand me the finished PR with a summary and the screenshots. Don't merge.
 
+## Unattended mode (orchestrated runs)
+
+This section applies ONLY when the invoking prompt says the run is unattended/orchestrated.
+There is no human at the keyboard: never ask a question, never pause for input, and never
+guess on a decision that materially affects the implementation.
+
+**Preflight gate.** After the research step (issue + comments read, codebase explored), decide
+whether the issue is actionable. **A blocker is an unmade decision — nothing else.** The issue
+is NOT actionable only when:
+
+- an open decision in the issue or its comments changes what gets built
+- the issue is ambiguous enough that two reasonable implementations would differ materially
+  (which is the same thing: a decision nobody has made yet)
+
+If not actionable, stop before writing any code and report `blocked` (below) with the exact
+questions whose answers would unblock it. Phrase each question so a yes/no or short answer
+suffices. Minor judgment calls that any implementation would share are NOT blockers — decide
+them and note the decision in the PR description.
+
+**Missing credentials, env vars, or external services are NOT blockers — build the feature
+anyway:**
+
+- if a value can be made up (a local-only secret, a placeholder URL, a key the code merely
+  reads), make it up and note it in the PR description
+- if a flow genuinely can't be exercised without real external setup (a GitHub App,
+  third-party API credentials), build it, test everything that IS reachable, and list the
+  rest under `untested` in RESULT.json — "built but not verified end-to-end" is a completed
+  run, not a blocked one
+
+**Result contract.** Always end the run — every terminal state — by writing `RESULT.json` at
+the worktree root (it's gitignored; never commit it):
+
+```json
+{
+  "issue": 55,
+  "status": "completed | blocked | failed",
+  "pr_url": "https://github.com/... (completed only)",
+  "summary": "one-paragraph description of what was built (completed only)",
+  "testing_notes": "markdown: what to exercise in the UI and how, plus anything to provision first — credentials, GitHub Apps, env vars (completed only)",
+  "screenshots": ["absolute paths to verification screenshots (completed only)"],
+  "untested": ["flows built but not verified end-to-end, each with the credential/setup the user must supply to test it (completed only, when applicable)"],
+  "questions": ["unmade decisions that must be answered to unblock (blocked only)"],
+  "failure": "what went wrong and what was tried (failed only)"
+}
+```
+
+`testing_notes` is what a human reads before touching the PR — write it for someone who
+hasn't seen the issue: the flow to click through, and any setup they must do first.
+
+**Unattended adjustments to the workflow:**
+
+- Browser verification: sign up a disposable user through the app's own email/password
+  sign-up (e.g. `issue-<nr>-verify@example.dev`); sign-up logs straight in — no email
+  verification gate. The worktree has its own database, so this pollutes nothing.
+- CI: if CI is still red after 3 fix cycles, stop and report `failed` with the diagnosis
+  rather than looping forever.
+- If anything else makes completion impossible (a broken base branch, a missing service),
+  report `failed` — don't wait, don't work around it destructively.
+
 ## Model split
 
 **Codex coding harness override:** When this skill runs in Codex, ignore all Opus, Fable, and

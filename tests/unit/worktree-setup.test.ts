@@ -1,10 +1,17 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, test } from "vitest";
 
 import {
+  acquireSetupLock,
   allocatePorts,
   applyEnvOverrides,
   parseDatabaseUrl,
   parseEnvFile,
+  releaseSetupLock,
   resolveBetterAuthSecret,
   withDatabaseName,
   withWorktreeAppendix,
@@ -159,6 +166,62 @@ describe("resolveBetterAuthSecret", () => {
     expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(second).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(second).not.toBe(first);
+  });
+});
+
+describe("acquireSetupLock / releaseSetupLock", () => {
+  const lockDirIn = (base: string) => join(base, "_setup.lock");
+
+  /** Pid of a process that has certainly exited by the time we return. */
+  function deadPid(): number {
+    const child = spawnSync("node", ["-e", ""]);
+    if (typeof child.pid !== "number") throw new Error("spawn failed");
+    return child.pid;
+  }
+
+  test("acquires by creating the lock dir with our pid inside", () => {
+    const base = mkdtempSync(join(tmpdir(), "eden-lock-"));
+    const lock = lockDirIn(base);
+    acquireSetupLock(lock);
+    expect(existsSync(join(lock, "pid"))).toBe(true);
+    releaseSetupLock(lock);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("release is idempotent", () => {
+    const base = mkdtempSync(join(tmpdir(), "eden-lock-"));
+    const lock = lockDirIn(base);
+    releaseSetupLock(lock);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("times out while the holder is alive", () => {
+    const base = mkdtempSync(join(tmpdir(), "eden-lock-"));
+    const lock = lockDirIn(base);
+    acquireSetupLock(lock); // held by this (live) process
+    expect(() =>
+      acquireSetupLock(lock, { timeoutMs: 200, pollMs: 25 }),
+    ).toThrow(/timed out waiting for the setup lock/);
+    releaseSetupLock(lock);
+  });
+
+  test("steals the lock when the holder is dead", () => {
+    const base = mkdtempSync(join(tmpdir(), "eden-lock-"));
+    const lock = lockDirIn(base);
+    mkdirSync(lock);
+    writeFileSync(join(lock, "pid"), String(deadPid()));
+    acquireSetupLock(lock, { timeoutMs: 1_000, pollMs: 25 });
+    expect(existsSync(join(lock, "pid"))).toBe(true);
+    releaseSetupLock(lock);
+  });
+
+  test("waits (does not steal) while the pid file is missing", () => {
+    const base = mkdtempSync(join(tmpdir(), "eden-lock-"));
+    const lock = lockDirIn(base);
+    mkdirSync(lock); // holder mid-acquire: dir exists, pid not written yet
+    expect(() =>
+      acquireSetupLock(lock, { timeoutMs: 200, pollMs: 25 }),
+    ).toThrow(/timed out waiting for the setup lock/);
   });
 });
 

@@ -114,6 +114,16 @@ function edenModel(id: string) {
 }
 `;
 
+// Before issue #28 added the edenModel router, Eden generated the same marked helper block but
+// ended it immediately before `export default defineAgent`. Match only that generated region so
+// stale scaffolds can be upgraded without reformatting or replacing neighboring user code.
+const EDEN_MODEL_HELPER_BLOCK =
+  /\/\/ Eden playground model override:[\s\S]*?(?=(?:\/\/ Eden model router:[^\n]*\n)?function edenModel\s*\(|export default defineAgent)/;
+const LEGACY_EDEN_MODEL_RESOLVER =
+  "return { model: openrouter.chatModel(selected.id), modelContextWindowTokens: selected.contextWindowTokens };";
+const CURRENT_EDEN_MODEL_RESOLVER =
+  "return { model: edenModel(selected.id), modelContextWindowTokens: selected.contextWindowTokens };";
+
 /** The `model:` value Eden writes — deploy default as the fallback, directive override per step. */
 function dynamicModelValue(model: string): string {
   return `defineDynamic({
@@ -244,7 +254,14 @@ function withEdenDynamicWiring(source: string): string {
         )
       : `import { defineDynamic } from 'eve';\n${next}`;
   }
-  if (!next.includes("function edenSelectedModel")) {
+  if (
+    next.includes("function edenSelectedModel") &&
+    !next.includes("function edenModel(") &&
+    EDEN_MODEL_HELPER_BLOCK.test(next)
+  ) {
+    next = next.replace(EDEN_MODEL_HELPER_BLOCK, EDEN_MODEL_HELPER);
+    next = next.replace(LEGACY_EDEN_MODEL_RESOLVER, CURRENT_EDEN_MODEL_RESOLVER);
+  } else if (!next.includes("function edenSelectedModel")) {
     next = /(^|\n)export default defineAgent/.test(next)
       ? next.replace(/(^|\n)(export default defineAgent)/, `$1${EDEN_MODEL_HELPER}\n$2`)
       : `${next}\n${EDEN_MODEL_HELPER}`;

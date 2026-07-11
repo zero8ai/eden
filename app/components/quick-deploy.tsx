@@ -2,13 +2,15 @@
  * Quick deploy — the "ship it" button in the tab row (AgentNav), at every hierarchy level and on
  * every tab, so a PM never has to navigate to a specific page to ship (PRD §7.3/§7.7).
  *
- * Its ONE job is the staged-changes short-circuit: publish the project's staged drafts → merge →
- * cut a version → deploy the WHOLE team into one environment. It never ships the branch head and
- * never redeploys a subset of the roster. When nothing is staged, it stays visible but unavailable
- * and teaches the user how to stage a change. An available button ALWAYS opens a confirmation
- * dialog (no instant deploy, no env-dropdown-as-button) — a ship is irreversible enough to warrant
- * a look at what it will do first. The current version keeps serving until the new one is healthy,
- * so shipping is never a step backwards.
+ * It deploys the WHOLE team (never a subset of the roster) in one of two modes. With staged drafts
+ * it short-circuits the staged-changes path: publish → merge → cut a version → deploy. With a
+ * connected, ready repo and ZERO staged drafts it deploys the branch HEAD directly (issue #101) —
+ * a ready repo is one-click deployable, no edit required. The button stays disabled ONLY for a
+ * genuinely undeployable repo (no connected repo, no detected members, unfetchable head), and that
+ * copy never tells the user to make an edit. An available button ALWAYS opens a confirmation dialog
+ * (no instant deploy, no env-dropdown-as-button) — a ship is irreversible enough to warrant a look
+ * at what it will do first. The current version keeps serving until the new one is healthy, so
+ * shipping is never a step backwards.
  *
  * Like StagedChangesPill this self-fetches from a resource route (repos/<id>/quick-deploy) so it
  * lives in the shared nav without every page's loader threading ship data through; React Router
@@ -18,9 +20,10 @@
  * banner takes over (and this dialog unmounts); on error it returns { error }, which we show inside
  * the dialog and keep the dialog OPEN so the user can retry or cancel.
  *
- * The dialog is transparent about scope: a file breakdown grouped by owning member (+ a "shared —
- * affects everyone" block), the "Will deploy" roster (the whole team redeploys together so no
- * member is left on an older version), and a team-level environment picker.
+ * The dialog is transparent about scope: in staged mode a file breakdown grouped by owning member
+ * (+ a "shared — affects everyone" block); in HEAD mode a "branch @ short-sha" summary (there is no
+ * change-set to break down). Both show the "Will deploy" roster (the whole team redeploys together
+ * so no member is left on an older version) and a team-level environment picker.
  */
 import { Rocket } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -55,6 +58,8 @@ interface QuickDeployData {
   groups: { member: string | null; files: string[] }[];
   members: string[];
   envNames: string[];
+  headBranch: string | null;
+  headSha: string | null;
 }
 
 export function QuickDeploy({ base }: { base: string }) {
@@ -89,9 +94,12 @@ export function QuickDeployControl({
   agent: string | null;
   data: QuickDeployData;
 }) {
-  if (data.draftCount === 0) {
+  // Zero staged drafts: deploy the branch HEAD when it's reachable (issue #101); otherwise the
+  // repo is genuinely undeployable and the button stays disabled — with copy that never mentions
+  // editing (a ready repo needs no edit; an unready one can't be fixed by one).
+  if (data.draftCount === 0 && !data.headBranch) {
     const instruction =
-      "Make and save an edit to stage a change, then use Quick deploy.";
+      "Quick deploy needs a connected repository with detected agents.";
 
     return (
       <Tooltip>
@@ -129,6 +137,9 @@ function QuickDeployDialog({
   const deploying = ship.state !== "idle";
   const error = ship.data?.error;
 
+  // HEAD mode when there is no staged change-set but a reachable branch head (issue #101).
+  const headMode = data.draftCount === 0 && !!data.headBranch;
+
   // Target environments: the team's env names (primary-first). One env → static text; more than
   // one → a Select. Preselect the first, and re-pin if the option set shifts.
   const envOptions = data.envNames;
@@ -140,7 +151,11 @@ function QuickDeployDialog({
   const count = data.draftCount;
 
   const submit = () => {
-    ship.submit(agent ? { env, agent } : { env }, { method: "post", action });
+    const source = headMode ? "head" : "staged";
+    ship.submit(
+      agent ? { env, agent, source } : { env, source },
+      { method: "post", action },
+    );
   };
 
   return (
@@ -154,44 +169,59 @@ function QuickDeployDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
-            Deploy {count} staged change{count === 1 ? "" : "s"}?
+            {headMode
+              ? "Deploy the latest version?"
+              : `Deploy ${count} staged change${count === 1 ? "" : "s"}?`}
           </DialogTitle>
           <DialogDescription>
-            Publishes the changes as a change request, merges it, cuts a new version, and deploys
-            the whole team. The current version keeps serving until the new one is healthy.
+            {headMode
+              ? "Deploys the repository as it exists on the connected branch, cuts a new version at the latest commit, and deploys the whole team. The current version keeps serving until the new one is healthy."
+              : "Publishes the changes as a change request, merges it, cuts a new version, and deploys the whole team. The current version keeps serving until the new one is healthy."}
           </DialogDescription>
         </DialogHeader>
 
-        {/* File breakdown: one block per owning member, a "shared" block last if present. */}
         {/* min-w-0 everywhere: DialogContent is a grid, and grid items default to min-width auto,
             so an unbroken mono path would otherwise push the dialog wider than its max. */}
-        <div className="min-w-0 space-y-3">
-          {data.groups.map((group) => {
-            const shared = group.member === null;
-            return (
-              <div key={group.member ?? "__shared__"} className="min-w-0 text-xs">
-                <div className="flex items-center gap-2">
-                  <span
-                    className="size-1.5 shrink-0 rounded-full bg-amber-500"
-                    aria-hidden
-                  />
-                  {shared ? (
-                    <span className="font-medium">Shared — affects all agents</span>
-                  ) : (
-                    <span className="font-mono font-medium">{group.member}</span>
-                  )}
+        {headMode ? (
+          // HEAD mode has no change-set — summarize the source commit instead of a file breakdown.
+          <div className="min-w-0 break-words text-xs">
+            <p>
+              <span className="font-medium">Deploying:</span>{" "}
+              <span className="font-mono">
+                {data.headBranch} @ {data.headSha?.slice(0, 7)}
+              </span>
+            </p>
+          </div>
+        ) : (
+          // File breakdown: one block per owning member, a "shared" block last if present.
+          <div className="min-w-0 space-y-3">
+            {data.groups.map((group) => {
+              const shared = group.member === null;
+              return (
+                <div key={group.member ?? "__shared__"} className="min-w-0 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                      aria-hidden
+                    />
+                    {shared ? (
+                      <span className="font-medium">Shared — affects all agents</span>
+                    ) : (
+                      <span className="font-mono font-medium">{group.member}</span>
+                    )}
+                  </div>
+                  <ul className="mt-1 min-w-0 space-y-0.5">
+                    {group.files.map((file) => (
+                      <li key={file} className="break-all font-mono text-muted-foreground">
+                        {file}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-                <ul className="mt-1 min-w-0 space-y-0.5">
-                  {group.files.map((file) => (
-                    <li key={file} className="break-all font-mono text-muted-foreground">
-                      {file}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* The whole team always redeploys together — no member is left on an older version. */}
         <div className="min-w-0 break-words text-xs">

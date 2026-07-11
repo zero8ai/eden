@@ -3,12 +3,14 @@
  * The TEAM is the deployment unit: verifies the chaining ship owns (publish → merge →
  * release-per-member → queued deploy for the WHOLE roster into one environment, even when the
  * drafts touch a single member), the build-gate leaving drafts staged on failure, and
- * deployTeamVersion moving the whole team to an existing version by git sha.
+ * deployTeamVersion moving the whole team to an existing version by git sha, and shipRepoHead
+ * deploying the branch HEAD with no staged change-set (idempotent per head sha).
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   deployTeamVersion,
+  shipRepoHead,
   shipStagedChanges,
   type ShipDeps,
   type ShipProject,
@@ -118,6 +120,86 @@ describe("shipStagedChanges", () => {
     await expect(
       shipStagedChanges({ project: PROJECT, envName: "staging" }, deps()),
     ).rejects.toThrow(/no "staging" environment/i);
+  });
+});
+
+describe("shipRepoHead", () => {
+  const HEAD_SHA = "face".repeat(10);
+  // Injected head reader — no GitHub. Records its ref so we can assert the default branch flows in.
+  function fakeBranchHead(sha = HEAD_SHA) {
+    const calls: { installationId: string | number; ref?: string }[] = [];
+    const fn: ShipDeps["branchHead"] = async (installationId, { ref }) => {
+      calls.push({ installationId, ref });
+      return { sha, branch: ref ?? "main" };
+    };
+    return { fn, calls };
+  }
+
+  it("deploys the whole member roster from the head sha, no change-set", async () => {
+    const branchHead = fakeBranchHead();
+    const result = await shipRepoHead(
+      { project: PROJECT, envName: "production", createdBy: "user_1" },
+      { store, branchHead: branchHead.fn },
+    );
+
+    expect(result.gitSha).toBe(HEAD_SHA);
+    expect(result.deployed.map((d) => d.agentName).sort()).toEqual(["alpha", "beta"]);
+    expect(result.skipped).toEqual([]);
+    // A release was cut at the head sha for every roster member.
+    expect(await store.releases.findByCommit("agent_a", HEAD_SHA)).not.toBeNull();
+    expect(await store.releases.findByCommit("agent_b", HEAD_SHA)).not.toBeNull();
+    // Deploys are queued in the requested env for every member.
+    const queuedA = await store.deployments.listByEnvironment("env_a_prod");
+    const queuedB = await store.deployments.listByEnvironment("env_b_prod");
+    expect(queuedA).toHaveLength(1);
+    expect(queuedB).toHaveLength(1);
+    expect(queuedA[0].status).toBe("queued");
+    // And the worker has a deploy job to pick up.
+    expect((await store.jobs.claimNext(new Date()))?.kind).toBe("deploy_release");
+  });
+
+  it("is idempotent — a second ship at the same head reuses releases and re-queues a deploy", async () => {
+    // Pre-existing release at the head sha for alpha (e.g. from a prior click).
+    const existing = await store.releases.insert({
+      projectId: PROJECT.id,
+      agentId: "agent_a",
+      version: "v1",
+      gitSha: HEAD_SHA,
+    });
+    const branchHead = fakeBranchHead();
+
+    const result = await shipRepoHead(
+      { project: PROJECT, envName: "production" },
+      { store, branchHead: branchHead.fn },
+    );
+
+    // No duplicate release for alpha at that sha — the existing one was reused.
+    const alphaRelease = await store.releases.findByCommit("agent_a", HEAD_SHA);
+    expect(alphaRelease?.id).toBe(existing.id);
+    // Deploy still queued for the whole team.
+    expect(result.deployed.map((d) => d.agentName).sort()).toEqual(["alpha", "beta"]);
+    expect((await store.deployments.listByEnvironment("env_a_prod"))[0]?.status).toBe("queued");
+  });
+
+  it("throws when no member has the requested environment", async () => {
+    const branchHead = fakeBranchHead();
+    await expect(
+      shipRepoHead(
+        { project: PROJECT, envName: "staging" },
+        { store, branchHead: branchHead.fn },
+      ),
+    ).rejects.toThrow(/no "staging" environment/i);
+  });
+
+  it("passes the project's default branch through to branchHead as ref", async () => {
+    const branchHead = fakeBranchHead();
+    await shipRepoHead(
+      { project: { ...PROJECT, defaultBranch: "trunk" }, envName: "production" },
+      { store, branchHead: branchHead.fn },
+    );
+    expect(branchHead.calls).toHaveLength(1);
+    expect(branchHead.calls[0].ref).toBe("trunk");
+    expect(branchHead.calls[0].installationId).toBe(PROJECT.repoInstallationId);
   });
 });
 

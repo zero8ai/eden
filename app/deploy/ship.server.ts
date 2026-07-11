@@ -12,6 +12,12 @@
  * every member's env of the chosen name. The publish build-gate still applies: a change-set that
  * doesn't compile creates nothing and the drafts stay staged.
  *
+ * shipRepoHead is the no-change-set counterpart: an already-ready repo must deploy in one click
+ * without first staging an edit. It reads the connected default branch's HEAD, cuts Releases at
+ * that commit (same idempotent per-member path), and deploys the WHOLE team — no publish, no
+ * merge, no build-gate, because nothing is being merged. The deploy-time image build surfaces any
+ * failure on the deployment rows, exactly like the staged path.
+ *
  * deployTeamVersion is the version-history counterpart: move the whole team to an existing
  * version (by git sha) in an environment — the rollback/redeploy path, direction-neutral.
  *
@@ -19,6 +25,7 @@
  */
 import type { Agent, DataStore, Release } from "~/data/ports";
 import { publishDrafts, type CheckBuildFn, type ProposeFn } from "~/drafts/drafts.server";
+import { getBranchHead } from "~/github/repo.server";
 import { mergePullRequest } from "~/github/write.server";
 import { getRuntime } from "~/seams/index.server";
 import { ensureReleasesForCommit, queueDeploy } from "./controller.server";
@@ -48,12 +55,15 @@ export interface ShipResult {
 }
 
 export type MergeFn = typeof mergePullRequest;
+export type BranchHeadFn = typeof getBranchHead;
 
 export interface ShipDeps {
   store?: DataStore;
   propose?: ProposeFn;
   checkBuild?: CheckBuildFn;
   merge?: MergeFn;
+  /** Reads the connected branch's HEAD sha for the no-change-set ship (shipRepoHead). */
+  branchHead?: BranchHeadFn;
 }
 
 /**
@@ -112,6 +122,57 @@ export async function shipStagedChanges(
     targets: roster,
     releases: releases.map((r) => r.release),
     gitSha: mergeSha,
+    envName,
+    createdBy: input.createdBy,
+  });
+}
+
+/**
+ * Ship the connected repo's HEAD to `envName` with no staged change-set: read the default
+ * branch's HEAD → cut Releases at that commit (one per member) → queue deploys for the WHOLE
+ * team. No publish, no merge, no build-gate — nothing is being merged, so the only failure
+ * surface is the async image build on the deployment rows (same as any deploy).
+ *
+ * `ensureReleasesForCommit` is idempotent per (agent, gitSha), so clicking Quick deploy twice at
+ * the same HEAD reuses the existing releases and just redeploys them — the intended behavior.
+ */
+export async function shipRepoHead(
+  input: {
+    project: ShipProject;
+    envName: string;
+    createdBy?: string | null;
+  },
+  deps: ShipDeps = {},
+): Promise<ShipResult> {
+  const store = deps.store ?? getRuntime().data;
+  const branchHead = deps.branchHead ?? getBranchHead;
+  const { project, envName } = input;
+
+  const { sha, branch } = await branchHead(project.repoInstallationId, {
+    owner: project.repoOwner,
+    repo: project.repoName,
+    ref: project.defaultBranch,
+  });
+
+  const releases = await ensureReleasesForCommit(
+    {
+      projectId: project.id,
+      gitSha: sha,
+      changelog: `Deployed ${branch} @ ${sha.slice(0, 7)} from HEAD`,
+      createdBy: input.createdBy,
+    },
+    store,
+  );
+
+  // Targets = the WHOLE member roster, always (the team is the deployment unit).
+  const roster = (await store.agents.listByProject(project.id)).filter(
+    (a) => a.kind === "member",
+  );
+  return deployToMembers({
+    store,
+    targets: roster,
+    releases: releases.map((r) => r.release),
+    gitSha: sha,
     envName,
     createdBy: input.createdBy,
   });

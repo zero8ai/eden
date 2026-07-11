@@ -7,7 +7,7 @@
  */
 import { useMemo, useRef, useState } from "react";
 import { Link, useFetcher } from "react-router";
-import { Copy, Eye, EyeOff, KeyRound, Lock, MoreHorizontal } from "lucide-react";
+import { Copy, KeyRound, Lock, MoreHorizontal } from "lucide-react";
 
 import { COPY, SECRET_NAME_RE, normalizeSecretName } from "~/components/secrets-card";
 import { RelativeTime } from "~/components/localized-values";
@@ -31,6 +31,7 @@ import {
 } from "~/components/ui/dropdown-menu";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
+import { SecretInput } from "~/components/ui/secret-input";
 import {
   Tooltip,
   TooltipContent,
@@ -72,7 +73,6 @@ function SharedRow({
   const [replacing, setReplacing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [value, setValue] = useState("");
-  const [showValue, setShowValue] = useState(false);
   const busy =
     replaceFetcher.state !== "idle" ||
     deleteFetcher.state !== "idle" ||
@@ -97,7 +97,6 @@ function SharedRow({
     );
     setReplacing(false);
     setValue("");
-    setShowValue(false);
   };
 
   return (
@@ -249,31 +248,20 @@ function SharedRow({
                 : COPY.replaceConfirm}
             </DialogDescription>
           </DialogHeader>
-          <div className="relative">
-            <Input
-              type={showValue ? "text" : "password"}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="new value (write-only)"
-              autoComplete="off"
-              autoFocus
-              className="pr-8 font-mono"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  submitReplace();
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="absolute inset-y-0 right-2 text-muted-foreground"
-              aria-label={showValue ? "Hide value" : "Show value"}
-              onClick={() => setShowValue((v) => !v)}
-            >
-              {showValue ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-            </button>
-          </div>
+          <SecretInput
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="new value (write-only)"
+            autoFocus
+            revealLabel="value"
+            className="font-mono"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                submitReplace();
+              }
+            }}
+          />
           <DialogFooter>
             <Button variant="ghost" onClick={() => setReplacing(false)}>
               Cancel
@@ -338,7 +326,6 @@ export function SharedSecretsSection({
   const [name, setName] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [value, setValue] = useState("");
-  const [showValue, setShowValue] = useState(false);
   const [sandboxDefault, setSandboxDefault] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -365,7 +352,6 @@ export function SharedSecretsSection({
     );
     setName("");
     setValue("");
-    setShowValue(false);
     setSandboxDefault(false);
   };
 
@@ -419,6 +405,9 @@ export function SharedSecretsSection({
                 value={name}
                 placeholder="GITHUB_TOKEN"
                 autoComplete="off"
+                data-1p-ignore="true"
+                data-lpignore="true"
+                data-bwignore=""
                 className="w-full font-mono sm:w-52"
                 onChange={(e) => {
                   setName(normalizeSecretName(e.target.value));
@@ -433,25 +422,15 @@ export function SharedSecretsSection({
             </div>
             <div className="grid w-full gap-1.5 sm:w-auto">
               <Label htmlFor="shared-add-value">Value</Label>
-              <div className="relative w-full sm:w-auto">
-                <Input
-                  id="shared-add-value"
-                  type={showValue ? "text" : "password"}
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  placeholder="value (write-only)"
-                  autoComplete="off"
-                  className="w-full pr-8 font-mono sm:w-60"
-                />
-                <button
-                  type="button"
-                  className="absolute inset-y-0 right-2 text-muted-foreground"
-                  aria-label={showValue ? "Hide value" : "Show value"}
-                  onClick={() => setShowValue((v) => !v)}
-                >
-                  {showValue ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                </button>
-              </div>
+              <SecretInput
+                id="shared-add-value"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                placeholder="value (write-only)"
+                revealLabel="value"
+                wrapperClassName="w-full sm:w-auto"
+                className="w-full font-mono sm:w-60"
+              />
             </div>
             <TooltipProvider delayDuration={300}>
               <Tooltip>

@@ -256,6 +256,34 @@ describe("composition against the real seed", () => {
     expect(resolved.files["channels/discord.ts"]).toContain(
       "discordContinuationToken(channel.discord.channelId, posted.id)",
     );
+    // Issue #113: prose turns (no ask_question) park at wait: "next-user-message" with no
+    // Discord reply path. The discord 0.3.2 channel posts a "Reply" button on session.waiting,
+    // re-shapes the modal's sentinel answer into a message via a deliver wrapper, and tracks a
+    // per-turn flag so the Reply button never clobbers a question's own button routing.
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      'async "session.waiting"(event, channel)',
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      "eve_input_freeform:eyJyZXF1ZXN0SWQiOiJlZGVuOnJlcGx5In0",
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      'const EDEN_REPLY_REQUEST_ID = "eden:reply"',
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      "r.requestId === EDEN_REPLY_REQUEST_ID",
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      "message: replies.map((r) => r.text).join",
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      "edenTurnAskedQuestion",
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      'async "turn.started"(event, channel)',
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      "channel.discord.startTyping()",
+    );
     // The send tool now proxies through Eden's control plane (issue #32) — it reads the
     // injected send URL/token, not the shared bot token, and no longer imports eve's Discord.
     expect(resolved.files["tools/discord-send-message.ts"]).toContain(

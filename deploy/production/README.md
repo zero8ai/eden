@@ -39,10 +39,12 @@ Health-check failure triggers Swarm rollback to the previous service specificati
 be a start-first, zero-downtime handoff until Eden supports multiple control-plane replicas.
 
 The deployment uses `docker stack deploy --resolve-image changed`, so the unchanged `postgres:17`
-service is not re-resolved on every Eden release. The final deploy transaction still waits for any
-current Postgres update to finish and for its container to be healthy. It also requires the Eden
-service to converge on exactly one task for the requested SHA, that task's container health check to
-pass, and the localhost smoke check to succeed.
+service is not re-resolved on every Eden release. On the first bootstrap, the second stack apply is
+verified from the Postgres service and container health because Swarm may advance service metadata
+without starting a task update. Ordinary deploys still monitor any current Postgres update through
+completion and require its container to be healthy. The transaction also requires the Eden service
+to converge on exactly one task for the requested SHA, that task's container health check to pass,
+and the localhost smoke check to succeed.
 
 ## One-time host provisioning
 

@@ -105,14 +105,6 @@
       "hash": "5dbaed44109ffb17db1f219915f893c5038dd298"
     },
     {
-      "id": "vercel-preview-url",
-      "type": "skill",
-      "name": "Vercel preview URL",
-      "version": "0.1.0",
-      "description": "Get a pull request's Vercel preview deployment URL with zero Vercel access — the agent polls the vercel[bot] comment on the PR with its own GitHub App token and extracts the link.",
-      "hash": "08c8ac292314699ac0bc863fde064930dcc5e310"
-    },
-    {
       "id": "discord-send-message",
       "type": "tool",
       "name": "Discord Send Message",

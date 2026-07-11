@@ -157,5 +157,131 @@ describe.runIf(LIVE)(
       await db.delete(organization).where(eq(organization.id, ORG));
       await db.delete(user).where(eq(user.id, USER));
     });
+
+    it("reseeds across a redeploy: preserves history, appends the new eve session past the offset (#71)", async () => {
+      const { db } = await import("~/db/client.server");
+      const { organization, user } = await import("~/db/auth-schema");
+      const { projects, agents, playgroundSessions } =
+        await import("~/db/schema");
+      const {
+        createPlaygroundSession,
+        savePlaygroundEvents,
+        loadPlaygroundEntriesFromCache,
+        cachedStreamIndex,
+        unbindPlaygroundSessionForReseed,
+      } = await import("~/playground/sessions.server");
+
+      const ORG = "org_pgreseed_smoke";
+      const USER = "user_pgreseed_smoke";
+      const now = new Date();
+      await db.delete(organization).where(eq(organization.id, ORG));
+      await db.delete(user).where(eq(user.id, USER));
+      await db.insert(organization).values({
+        id: ORG,
+        name: "pgreseed smoke",
+        slug: "pgreseed-smoke",
+        createdAt: now,
+      });
+      await db.insert(user).values({
+        id: USER,
+        name: "Playground Reseed Smoke",
+        email: "pgreseed@smoke.test",
+        emailVerified: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const [project] = await db
+        .insert(projects)
+        .values({ orgId: ORG, name: "pgreseed", slug: "pgreseed-smoke" })
+        .returning();
+      const [agent] = await db
+        .insert(agents)
+        .values({
+          projectId: project.id,
+          name: "engineer",
+          root: "agents/engineer/agent",
+        })
+        .returning();
+      const session = await createPlaygroundSession({
+        projectId: project.id,
+        agentId: agent.id,
+        userId: USER,
+      });
+
+      const at = new Date().toISOString();
+      // First eve session's transcript — 5 events (turn_a), cache indices 1..5.
+      const firstEvents = [
+        {
+          type: "session.started",
+          data: { runtime: { modelId: "m/x" } },
+          meta: { at },
+        },
+        { type: "turn.started", data: { turnId: "turn_a" }, meta: { at } },
+        {
+          type: "message.received",
+          data: { turnId: "turn_a", message: "Please deploy my thing." },
+          meta: { at },
+        },
+        {
+          type: "message.completed",
+          data: { turnId: "turn_a", message: "I need the credential first." },
+          meta: { at },
+        },
+        { type: "turn.completed", data: { turnId: "turn_a" }, meta: { at } },
+      ].map((e, i) => ({ streamIndex: i + 1, ...e }));
+      await savePlaygroundEvents(session.id, firstEvents);
+      expect(await cachedStreamIndex(session.id)).toBe(5);
+
+      // Redeploy: the owning deployment is replaced. Unbind for reseed.
+      const reseeded = await unbindPlaygroundSessionForReseed(session);
+      expect(reseeded).toMatchObject({
+        externalSessionId: null,
+        continuationToken: null,
+        streamIndex: 0,
+        cacheIndexOffset: 5,
+      });
+
+      // The fresh eve session re-indexes from 1; the drain persists it with the reseed offset.
+      const secondEvents = [
+        { type: "turn.started", data: { turnId: "turn_b" }, meta: { at } },
+        {
+          type: "message.received",
+          data: { turnId: "turn_b", message: "Can you try again?" },
+          meta: { at },
+        },
+        {
+          type: "message.completed",
+          data: { turnId: "turn_b", message: "Retried successfully." },
+          meta: { at },
+        },
+      ].map((e, i) => ({ streamIndex: i + 1, ...e }));
+      await savePlaygroundEvents(
+        session.id,
+        secondEvents,
+        reseeded.cacheIndexOffset,
+      );
+      // Appended after the preserved history: 6..8.
+      expect(await cachedStreamIndex(session.id)).toBe(8);
+
+      const entries = await loadPlaygroundEntriesFromCache(reseeded);
+      expect(entries).toMatchObject([
+        { role: "user", text: "Please deploy my thing." },
+        { role: "assistant", text: "I need the credential first." },
+        { role: "user", text: "Can you try again?" },
+        { role: "assistant", text: "Retried successfully." },
+      ]);
+
+      // Re-running the offset insert is idempotent (PK + ON CONFLICT DO NOTHING).
+      await savePlaygroundEvents(
+        session.id,
+        secondEvents,
+        reseeded.cacheIndexOffset,
+      );
+      expect(await cachedStreamIndex(session.id)).toBe(8);
+      expect(await loadPlaygroundEntriesFromCache(reseeded)).toEqual(entries);
+
+      await db.delete(organization).where(eq(organization.id, ORG));
+      await db.delete(user).where(eq(user.id, USER));
+    });
   },
 );

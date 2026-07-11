@@ -1,0 +1,1 @@
+ALTER TABLE "playground_sessions" ADD COLUMN "cache_index_offset" integer DEFAULT 0 NOT NULL;

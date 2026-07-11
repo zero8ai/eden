@@ -858,6 +858,14 @@ export const playgroundSessions = pgTable(
     continuationToken: text("continuation_token"),
     /** Number of Eve stream events consumed from the durable event stream. */
     streamIndex: integer("stream_index").notNull().default(0),
+    /**
+     * Offset added to the CURRENT eve session's stream indices when persisting rows to
+     * `playground_events`. Non-zero after a cross-redeploy reseed (#71): indices 1..offset hold
+     * the transcript of the replaced deployment's eve session(s); the replacement session's
+     * events append after them. `stream_index` itself stays in eve-space (it is the eve stream
+     * cursor for the CURRENT external session).
+     */
+    cacheIndexOffset: integer("cache_index_offset").notNull().default(0),
     title: text("title"),
     /** new | running | waiting | completed | failed */
     status: text("status").notNull().default("new"),

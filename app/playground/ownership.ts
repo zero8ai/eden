@@ -14,6 +14,10 @@ export function findSessionOwnerTarget<T extends { deploymentId: string }>(
 /**
  * Whether a live target exists, but none of the available targets owns this existing Eve session.
  * With no live target, the original deployment may only be stopped and able to wake in place.
+ *
+ * The two surfaces read this differently: the assistant BLOCKS on it (its 409 stands, the
+ * conversation is dead-ended), while the playground treats it as a "will reseed" hint (#71) —
+ * the next turn transparently seeds a fresh eve session on the replacement from the cache.
  */
 export function sessionContinuationIsBlocked<
   T extends { deploymentId: string },

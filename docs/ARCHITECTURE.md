@@ -280,6 +280,24 @@ is inherited: git commits + content-addressed images, nothing engineered.
   secrets/env (they live outside git). Version secret _metadata/generation_ only — never values — for
   faithful "what ran then".
 
+### 3.10 Playground conversation persistence (across redeploys)
+
+A playground conversation has two homes. The **eve session** lives inside the agent container — it
+holds the runtime context (the agent's working memory for the thread) and is owned by the exact
+deployment that created it (`playground_sessions.last_deployment_id`). Eden's **`playground_events`**
+table is the durable transcript cache in Postgres: the turn-stream drain persists every raw eve
+event as it arrives, and it is the source of truth for rendering the conversation.
+
+A redeploy destroys the container and with it the eve session; the cache survives untouched. So a
+follow-up to a conversation whose owning deployment was replaced can't reach the original eve
+session. Instead of dead-ending, Eden **reseeds** (#71): the next turn transparently starts a fresh
+eve session on the replacement deployment, seeded from the cached transcript via a strippable
+`eden:context` block prepended to the sent message (invisible in the rendered transcript, like the
+model directive). `playground_sessions.cache_index_offset` shifts the fresh session's stream indices
+(which restart at 1) above the preserved history so its events append after it on the
+`(session, stream_index)` PK instead of colliding. The assistant surface keeps its 409 block instead
+— its checkout-bound coding sessions can't be reseeded from a transcript alone.
+
 ---
 
 ## 4. Per-instance dependencies (managed)

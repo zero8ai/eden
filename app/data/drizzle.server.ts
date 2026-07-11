@@ -578,5 +578,12 @@ export const drizzleDataStore: DataStore = {
         .returning({ id: runs.id });
       return failed.length;
     },
+    async countRunningByDeployment(deploymentId) {
+      const [{ c }] = await db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(runs)
+        .where(and(eq(runs.deploymentId, deploymentId), eq(runs.status, "running")));
+      return c ?? 0;
+    },
   },
 };

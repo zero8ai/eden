@@ -982,8 +982,11 @@ export default function Deployment({
   // baseline poll runs regardless, so a deploy STARTED after this page loaded is
   // picked up on its own rather than staying stale until a manual refresh, and
   // the tail-end clear can't be missed either (issue #41).
+  // A draining sibling (a superseded version finishing in-flight turns after a redeploy — issue
+  // #81) keeps the page revalidating too, so the "winding down" note clears once the drain stops.
+  // Kept separate from IN_FLIGHT, whose other call sites mean specifically "queued/building".
   const inFlight = loaderData.envs.some(({ deployments }) =>
-    deployments.some((d) => IN_FLIGHT.has(d.status)),
+    deployments.some((d) => IN_FLIGHT.has(d.status) || d.status === "draining"),
   );
   useLiveRevalidate({ active: inFlight });
 
@@ -1885,6 +1888,7 @@ function TeamEnvMemberRow({
 }) {
   const running = runningOf(member.deployments);
   const pending = member.deployments.find((d) => IN_FLIGHT.has(d.status));
+  const draining = member.deployments.find((d) => d.status === "draining");
   const failed = member.deployments.find((d) => d.status === "failed");
   const failedCount = member.deployments.filter(
     (d) => d.status === "failed",
@@ -1927,6 +1931,11 @@ function TeamEnvMemberRow({
           </span>{" "}
           switches over once healthy
           {running ? `; ${running.version} keeps serving` : ""}.
+        </p>
+      )}
+      {draining && (
+        <p className="mt-1 text-sm text-muted-foreground">
+          {draining.version} winding down — finishing in-flight work before shutdown.
         </p>
       )}
       {failed && member.envId && (
@@ -2226,6 +2235,7 @@ function EnvironmentsCard({
           {envs.map(({ env, deployments }) => {
             const running = runningOf(deployments);
             const pending = deployments.find((d) => IN_FLIGHT.has(d.status));
+            const draining = deployments.find((d) => d.status === "draining");
             const failed = deployments.find((d) => d.status === "failed");
             const failedCount = deployments.filter(
               (d) => d.status === "failed",
@@ -2324,6 +2334,12 @@ function EnvironmentsCard({
                     </span>{" "}
                     switches over once healthy
                     {running ? `; ${running.version} keeps serving` : ""}.
+                  </p>
+                )}
+                {draining && (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {draining.version} winding down — finishing in-flight work before
+                    shutdown.
                   </p>
                 )}
                 {failed && (

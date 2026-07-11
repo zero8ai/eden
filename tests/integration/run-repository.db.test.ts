@@ -125,6 +125,14 @@ describe.runIf(LIVE)("run repository against real Postgres", () => {
         },
       ]);
 
+      // The drain watcher's idle signal: only `running` rows of the given deployment are counted.
+      await expect(
+        store.runs.countRunningByDeployment(targetDeployment.id),
+      ).resolves.toBe(3);
+      await expect(
+        store.runs.countRunningByDeployment(otherDeployment.id),
+      ).resolves.toBe(1);
+
       await expect(
         store.runs.failRunningByDeployment(
           targetDeployment.id,
@@ -132,6 +140,11 @@ describe.runIf(LIVE)("run repository against real Postgres", () => {
           finishedAt,
         ),
       ).resolves.toBe(3);
+
+      // After reconciliation the drained deployment reads idle.
+      await expect(
+        store.runs.countRunningByDeployment(targetDeployment.id),
+      ).resolves.toBe(0);
 
       const rows = await db
         .select()

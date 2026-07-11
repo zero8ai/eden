@@ -23,7 +23,11 @@ import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
 import { teammateRoster } from "~/team/roster.server";
 import { mintDelegationToken } from "~/team/token.server";
 import { getDiscordAppConfig } from "~/discord/config.server";
-import { DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS } from "./cleanup.server";
+import {
+  DEPLOYMENT_DRAIN_CEILING_MS,
+  scheduleDeploymentDrain,
+  stopDeploymentInfra,
+} from "./drain.server";
 import { isVersionLabelCollision, versionLabel } from "./versioning";
 
 export type { Release, Deployment } from "~/data/ports";
@@ -87,36 +91,6 @@ function hasModelCredential(env: Record<string, string>): boolean {
   );
 }
 
-function deploymentStillActive(status: string): boolean {
-  return status === "live" || status === "starting" || status === "pending";
-}
-
-async function stopDeploymentInfra(
-  deployTarget: DeployTarget,
-  deploymentId: string,
-): Promise<void> {
-  try {
-    await deployTarget.stop(deploymentId);
-  } catch (stopError) {
-    if (!deployTarget.destroy) throw stopError;
-    await deployTarget.destroy(deploymentId);
-  }
-
-  const health = await deployTarget.health(deploymentId);
-  if (!deploymentStillActive(health.status)) return;
-
-  if (deployTarget.destroy) {
-    await deployTarget.destroy(deploymentId);
-    const afterDestroy = await deployTarget.health(deploymentId);
-    if (!deploymentStillActive(afterDestroy.status)) return;
-    throw new Error(
-      `deployment ${deploymentId} is still ${afterDestroy.status} after destroy`,
-    );
-  }
-
-  throw new Error(`deployment ${deploymentId} is still ${health.status} after stop`);
-}
-
 async function cleanupNewDeploymentInfra(
   deployTarget: DeployTarget,
   deploymentId: string,
@@ -126,28 +100,6 @@ async function cleanupNewDeploymentInfra(
     return null;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
-  }
-}
-
-async function scheduleDeploymentContainerCleanup(
-  store: DataStore,
-  deploymentIds: string[],
-): Promise<void> {
-  if (deploymentIds.length === 0) return;
-  const runAt = new Date(Date.now() + Math.max(0, DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS));
-  try {
-    await Promise.all(
-      deploymentIds.map((deploymentId) =>
-        enqueue(
-          "cleanup_deployment_container",
-          { deploymentId },
-          { runAt, maxAttempts: 3 },
-          store,
-        ),
-      ),
-    );
-  } catch (error) {
-    console.warn("[deploy] failed to schedule deployment container cleanup", error);
   }
 }
 
@@ -474,39 +426,27 @@ export async function deployRelease(
       });
     }
 
-    // Cutover: a deployment that lands live becomes THE live version of this environment.
-    // Every other live deployment — any release — is demoted (stopped, weight 0). The old
-    // version keeps serving until this moment, so a failed deploy never takes anything down.
-    // (The weighted multi-version splitter survives in the data model, but the product model
-    // is single-live-per-environment for now.)
+    // Cutover: a deployment that lands live becomes THE live version of this environment. Every
+    // other live deployment — any release — is DRAINED, not stopped. Flipping the old row to
+    // `draining` (a) removes it from every `status === "live"` routing query, so all new inbound
+    // work goes to the new deployment immediately, and (b) closes `ingestRunStart`'s run-start
+    // gate, so no new `running` row can attach to it — while its container keeps running to finish
+    // in-flight turns. The drain watcher (drain.server.ts) stops the container once the runs table
+    // shows it idle or the 15-minute ceiling passes; only THEN is the container-cleanup scheduled.
+    // The old version keeps serving until this moment, so a failed deploy never takes anything down.
+    // (The weighted multi-version splitter survives in the data model, but the product model is
+    // single-live-per-environment for now.)
     const siblings = await store.deployments.listByEnvironment(input.environmentId);
     const superseded = siblings.filter((d) => d.id !== dep.id && d.status === "live");
     try {
       await Promise.all(
-        superseded.map(async (d) => {
-          await stopDeploymentInfra(deployTarget, d.id);
-          // Publish the stopped state before reconciliation. `recordTurnStart` takes a shared
-          // lock on this row, so an in-flight start either commits before this update (and is
-          // caught below) or observes `stopped` and refuses to insert a stale running row.
-          await store.deployments.update(d.id, {
-            status: "stopped",
+        superseded.map((d) =>
+          store.deployments.update(d.id, {
+            status: "draining",
             trafficWeight: 0,
             errorDetail: null,
-          });
-          try {
-            await store.runs.failRunningByDeployment(
-              d.id,
-              "Run interrupted because its deployment was replaced during a redeploy.",
-            );
-          } catch (error) {
-            // Infra lifecycle is authoritative. A telemetry bookkeeping failure must not turn a
-            // successful cutover into an outage after the old instance has already stopped.
-            console.warn(
-              `[deploy] failed to reconcile running runs for replaced deployment ${d.id}`,
-              error,
-            );
-          }
-        }),
+          }),
+        ),
       );
     } catch (error) {
       const cleanupError = await cleanupNewDeploymentInfra(deployTarget, dep.id);
@@ -515,7 +455,7 @@ export async function deployRelease(
         status: "failed",
         url: health.url ?? null,
         errorDetail: [
-          `cutover failed while stopping the previous deployment: ${detail}`,
+          `cutover failed while draining the previous deployment: ${detail}`,
           cleanupError && `new deployment cleanup failed: ${cleanupError}`,
         ]
           .filter(Boolean)
@@ -537,9 +477,12 @@ export async function deployRelease(
         meta: { environmentId: input.environmentId, status: updated.status },
       });
     }
-    await scheduleDeploymentContainerCleanup(
-      store,
-      superseded.map((d) => d.id),
+    // Hand each drained sibling to the watcher with the ceiling encoded as an absolute deadline
+    // anchored at cutover — so every re-poll of the job shares one 15-minute window regardless of
+    // how long individual ticks take. The watcher stops the container and schedules its cleanup.
+    const drainDeadline = new Date(Date.now() + DEPLOYMENT_DRAIN_CEILING_MS);
+    await Promise.all(
+      superseded.map((d) => scheduleDeploymentDrain(store, d.id, drainDeadline)),
     );
     return updated;
   } catch (error) {

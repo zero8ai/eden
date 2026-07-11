@@ -137,7 +137,7 @@ function SharedRow({
                 </Label>
               </TooltipTrigger>
               <TooltipContent className="max-w-64">
-                Default for new attachments only — members that already attached this secret
+                Default for new attachments only — agents that already attached this secret
                 keep their own flag.
               </TooltipContent>
             </Tooltip>
@@ -377,7 +377,7 @@ export function SharedSecretsSection({
           <p className="mb-3 flex items-center gap-1.5 text-sm text-muted-foreground">
             <Lock className="size-3.5 shrink-0" aria-hidden />
             <span>
-              Define once, attach to any team member from its Secrets card. {COPY.sectionNote}
+              Define once, attach to any agent from its Secrets card. {COPY.sectionNote}
             </span>
           </p>
           {flash && (
@@ -400,8 +400,8 @@ export function SharedSecretsSection({
             </ul>
           ) : (
             <p className="mb-4 rounded-lg border px-4 py-3 text-sm text-muted-foreground">
-              No shared secrets yet. Add one below, then attach it to members that need it —
-              attaching is always an explicit per-member choice.
+              No shared secrets yet. Add one below, then attach it to agents that need it —
+              attaching is always an explicit per-agent choice.
             </p>
           )}
 

@@ -366,11 +366,11 @@ export async function action(args: ActionFunctionArgs) {
       if (!ctx.isTeam) {
         return {
           error:
-            "Agent templates install as a new team member — this is a single-agent repo.",
+            "Agent templates install as a new agent — this is a single-agent repo.",
         };
       }
       const name = String(form.get("newMember") ?? "").trim();
-      if (!name) return { error: "Name the new team member." };
+      if (!name) return { error: "Name the new agent." };
       target = { kind: "new-member", name };
     } else {
       const selectedName = String(form.get("member") ?? "");
@@ -687,7 +687,7 @@ export default function InstallWizard({
 
             {selectedProjectId && !newMemberTemplate && (
               <div className="grid gap-1.5">
-                <Label>{isTeam ? "Team member" : "Agent"}</Label>
+                <Label>Agent</Label>
                 <Select
                   value={selectedMember ?? undefined}
                   onValueChange={(name) => go({ member: name })}
@@ -712,7 +712,7 @@ export default function InstallWizard({
                 <AlertDescription>
                   <span className="font-medium">{projectName}</span> is a
                   single-agent repository. Agent templates install as a new
-                  member of a <span className="font-medium">team</span> repo.
+                  agent in a <span className="font-medium">team</span> repo.
                   Add this to a team, or (punted) install it as its own new
                   repo.
                 </AlertDescription>
@@ -722,7 +722,7 @@ export default function InstallWizard({
             {selectedProjectId && newMemberTemplate && !singleAgentInvalid && (
               <Form method="get" className="grid max-w-sm gap-1.5">
                 <input type="hidden" name="project" value={selectedProjectId} />
-                <Label htmlFor="newMember">New team member name</Label>
+                <Label htmlFor="newMember">New agent name</Label>
                 <div className="flex items-center gap-2">
                   <Input
                     id="newMember"
@@ -926,7 +926,7 @@ export default function InstallWizard({
                   </CardTitle>
                   <CardDescription>
                     {newMemberTemplate
-                      ? `This agent needs ${userSecrets.length} secret${userSecrets.length === 1 ? "" : "s"}. Enter them now — they'll be attached when the member ships. Values are encrypted write-only.`
+                      ? `This agent needs ${userSecrets.length} secret${userSecrets.length === 1 ? "" : "s"}. Enter them now — they'll be attached when the agent ships. Values are encrypted write-only.`
                       : "Stored per-agent, agent-wide. Values are encrypted write-only. Leave blank to set later in Settings."}
                   </CardDescription>
                 </CardHeader>

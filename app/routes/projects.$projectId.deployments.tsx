@@ -1011,7 +1011,7 @@ export default function Deployment({
         }
         description={
           view === "repo"
-            ? "The team's pipeline: staged changes by member, change requests (merging cuts a version for every member), and each member's latest version."
+            ? "The team's pipeline: staged changes by agent, change requests (merging cuts a version for every agent), and each agent's latest version."
             : "The pipeline for this agent: staged changes become a change request; merging cuts a version; each environment runs one version. Rollback is just deploying an older version again."
         }
       />
@@ -1021,7 +1021,7 @@ export default function Deployment({
           <AlertTitle>{justReleased} is ready</AlertTitle>
           <AlertDescription>
             {view === "repo"
-              ? `The merge cut a new version for every member. Deploy it from each member's Deployment tab.`
+              ? `The merge cut a new version for every agent. Deploy it from each agent's Deployment tab.`
               : `Your change was merged and cut as version ${justReleased}. Deploy it to an environment from the version history below.`}
           </AlertDescription>
         </Alert>
@@ -1325,7 +1325,7 @@ function StagedChangesCard({
                   )}
                   {d.shared && isTeam && (
                     <Badge variant="outline">
-                      shared · affects all members
+                      shared · affects all agents
                     </Badge>
                   )}
                   <span className="shrink-0 text-xs text-muted-foreground">
@@ -1361,7 +1361,7 @@ function StagedChangesCard({
             </ul>
             {drafts.some((d) => d.orphaned) && (
               <p className="mt-2 text-xs text-muted-foreground">
-                Orphaned changes belong to a member that&rsquo;s no longer on the
+                Orphaned changes belong to an agent that&rsquo;s no longer on the
                 team. They&rsquo;re unchecked and can&rsquo;t be published —
                 discard them.
               </p>
@@ -1416,7 +1416,7 @@ function ChangeRequests({
         <h2 className="text-lg font-semibold">Open change requests</h2>
         {isTeam && (
           <span className="text-xs text-muted-foreground">
-            repo-wide — merging cuts a version for every member
+            repo-wide — merging cuts a version for every agent
           </span>
         )}
       </div>
@@ -1619,7 +1619,7 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
         <CardContent>
           {totalDrafts === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Nothing staged anywhere. Members' edits collect here until
+              Nothing staged anywhere. Agents' edits collect here until
               published.
             </p>
           ) : (
@@ -1632,7 +1632,7 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                       <>
                         shared{" "}
                         <span className="font-normal text-muted-foreground">
-                          · affects all members
+                          · affects all agents
                         </span>
                       </>
                     ) : memberNames.has(g.owner) ? (
@@ -1646,7 +1646,7 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                       <>
                         {g.owner}{" "}
                         <Badge variant="outline" className="align-middle">
-                          new member
+                          new agent
                         </Badge>
                       </>
                     )}
@@ -1720,7 +1720,7 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
               ))}
               {anyOrphaned && (
                 <p className="text-xs text-muted-foreground">
-                  Orphaned changes belong to a member that&rsquo;s no longer on
+                  Orphaned changes belong to an agent that&rsquo;s no longer on
                   the team. They&rsquo;re unchecked and can&rsquo;t be published
                   — discard them.
                 </p>
@@ -1794,7 +1794,7 @@ function TeamEnvironmentsCard({
               </Button>
             }
             title="New environment"
-            description="A separate place to run the team — every member gets a matching environment, with its own running version and environment-scoped secrets. Deploy into it from the version history."
+            description="A separate place to run the team — every agent gets a matching environment, with its own running version and environment-scoped secrets. Deploy into it from the version history."
             confirmLabel="Create"
           />
         </div>
@@ -1825,7 +1825,7 @@ function TeamEnvironmentsCard({
                         </Button>
                       }
                       title={`Rename ${te.name}?`}
-                      description="Renames this environment for every member — deploys, secrets, and history stay attached, only the name changes. Applies across the whole team."
+                      description="Renames this environment for every agent — deploys, secrets, and history stay attached, only the name changes. Applies across the whole team."
                       confirmLabel="Rename"
                     />
                     <ConfirmDialog
@@ -1840,7 +1840,7 @@ function TeamEnvironmentsCard({
                         </Button>
                       }
                       title={`Delete environment "${te.name}"?`}
-                      description={`Deletes "${te.name}" for EVERY member — stops anything running there and permanently removes its deployment history and environment-scoped secrets. Agent-wide secrets and versions are untouched.`}
+                      description={`Deletes "${te.name}" for EVERY agent — stops anything running there and permanently removes its deployment history and environment-scoped secrets. Agent-wide secrets and versions are untouched.`}
                       confirmLabel="Delete"
                       onConfirm={() =>
                         fetcher.submit(
@@ -2002,7 +2002,7 @@ function TeamVersionHistory({
         {skipped.length > 0 && (
           <Alert className="mb-4">
             <AlertTitle>
-              Some members stayed on their current version
+              Some agents stayed on their current version
             </AlertTitle>
             <AlertDescription>
               {skipped.join(", ")} had no build at this commit, so they were
@@ -2095,7 +2095,7 @@ function TeamDeployControl({
         }
       : {
           title: `Deploy ${version.version} to ${name}?`,
-          description: `Moves the whole team to ${version.version} in ${name}. Each member's ${name} switches over once healthy; the current version keeps serving until then. To switch back, deploy the previous version again.`,
+          description: `Moves the whole team to ${version.version} in ${name}. Each agent's ${name} switches over once healthy; the current version keeps serving until then. To switch back, deploy the previous version again.`,
         };
 
   const pick = (name: string) =>
@@ -2209,7 +2209,7 @@ function EnvironmentsCard({
                 </Button>
               }
               title="New environment"
-              description="A separate place to run the team — every member gets a matching environment, with its own running version and its own environment-scoped secrets. Deploy into it from the version history."
+              description="A separate place to run the team — every agent gets a matching environment, with its own running version and its own environment-scoped secrets. Deploy into it from the version history."
               confirmLabel="Create"
             />
           )}
@@ -2289,7 +2289,7 @@ function EnvironmentsCard({
                           </Button>
                         }
                         title={`Rename ${env.name}?`}
-                        description="Renames this environment for every member — deploys, secrets, and history stay attached, only the name changes. Applies across the whole team."
+                        description="Renames this environment for every agent — deploys, secrets, and history stay attached, only the name changes. Applies across the whole team."
                         confirmLabel="Rename"
                       />
                       <ConfirmDialog
@@ -2304,7 +2304,7 @@ function EnvironmentsCard({
                           </Button>
                         }
                         title={`Delete environment "${env.name}"?`}
-                        description={`Deletes "${env.name}" for EVERY member — stops anything running there and permanently removes its deployment history and environment-scoped secrets. Agent-wide secrets and versions are untouched.${running ? ` ${running.version} is running here and will be taken down.` : ""}`}
+                        description={`Deletes "${env.name}" for EVERY agent — stops anything running there and permanently removes its deployment history and environment-scoped secrets. Agent-wide secrets and versions are untouched.${running ? ` ${running.version} is running here and will be taken down.` : ""}`}
                         confirmLabel="Delete"
                         onConfirm={() =>
                           fetcher.submit(

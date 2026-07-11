@@ -76,7 +76,7 @@ export const COPY = {
     `${n} agents use this secret. The new value applies to all of them on their next deploy.`,
   deployDialogTitle: "Missing required secrets",
   installDeferral:
-    "Values are held securely and attached when the member ships. Held values are discarded if the install is cancelled.",
+    "Values are held securely and attached when the agent ships. Held values are discarded if the install is cancelled.",
   detachWarning: (agent: string, name: string) =>
     `${agent}'s template requires ${name}. Detaching will mark it missing.`,
 } as const;
@@ -1270,7 +1270,7 @@ export function SecretsCard({
           </div>
           {isTeam && (
             <p className="mb-3 text-xs text-muted-foreground">
-              Scoped to this member only — teammates cannot read each other&rsquo;s
+              Scoped to this agent only — other agents cannot read its
               credentials. Values are injected at deploy time.
             </p>
           )}

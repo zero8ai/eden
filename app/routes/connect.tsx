@@ -215,7 +215,7 @@ export async function action(args: ActionFunctionArgs) {
   }
   if (!isEveRepo(source.paths)) {
     return {
-      error: `${owner}/${repo} doesn't look like an eve project — no \`agent/\` directory, team members, or \`agents/README.md\` empty-team marker found.`,
+      error: `${owner}/${repo} doesn't look like an eve project — no \`agent/\` directory, agents, or \`agents/README.md\` empty-team marker found.`,
     };
   }
 
@@ -406,7 +406,7 @@ export default function Connect({
                 Creates a repository in your organization and scaffolds it — a
                 single agent (<span className="font-mono">agent/</span>) or a
                 team of agents (
-                <span className="font-mono">agents/&lt;member&gt;/agent/</span>
+                <span className="font-mono">agents/&lt;name&gt;/agent/</span>
                 ).
               </CardDescription>
             </CardHeader>
@@ -451,7 +451,7 @@ export default function Connect({
                       <span className="block text-sm font-medium">Team</span>
                       <span className="block text-xs text-muted-foreground">
                         A monorepo of agents under{" "}
-                        <span className="font-mono">agents/</span> — each member
+                        <span className="font-mono">agents/</span> — each agent
                         has its own runtime, channels, schedules, and secrets.
                       </span>
                     </span>

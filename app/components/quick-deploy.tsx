@@ -176,7 +176,7 @@ function QuickDeployDialog({
                     aria-hidden
                   />
                   {shared ? (
-                    <span className="font-medium">Shared — affects all members</span>
+                    <span className="font-medium">Shared — affects all agents</span>
                   ) : (
                     <span className="font-mono font-medium">{group.member}</span>
                   )}
@@ -200,7 +200,7 @@ function QuickDeployDialog({
             <span className="font-mono">{data.members.join(", ")}</span>
           </p>
           <p className="mt-1 text-muted-foreground">
-            The whole team redeploys together so no member is left on an older version.
+            The whole team redeploys together so no agent is left on an older version.
           </p>
         </div>
 

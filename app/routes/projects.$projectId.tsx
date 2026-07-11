@@ -428,7 +428,7 @@ export async function action(args: ActionFunctionArgs) {
     // ── Add a team member: scaffold agents/<name>/ as a change-set ──
     if (intent === "add-member") {
       const name = slugifyResourceName(String(form.get("name") ?? ""));
-      if (!name) return { error: "Member name is required." };
+      if (!name) return { error: "Agent name is required." };
       // "assistant" is reserved for Eden's built-in project-level assistant agent.
       if (name === "assistant") {
         return {
@@ -437,7 +437,7 @@ export async function action(args: ActionFunctionArgs) {
       }
       const { roster } = await resolveAgentContext(project.id, null);
       if (roster.some((a) => a.name === name)) {
-        return { error: `A member named "${name}" already exists.` };
+        return { error: `An agent named "${name}" already exists.` };
       }
       const model = await getWorkspaceAssistantModel(project.orgId).catch(
         () => null,
@@ -446,10 +446,10 @@ export async function action(args: ActionFunctionArgs) {
         base: project.defaultBranch,
         branch: `eden/add-member-${name}`,
         files: memberScaffold(name, model ?? undefined),
-        title: `Add team member: ${name}`,
+        title: `Add agent: ${name}`,
         body:
           `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, a ` +
-          `default sandbox, an example tool, package.json). eden picks the member up on merge.`,
+          `default sandbox, an example tool, package.json). eden picks the agent up on merge.`,
       });
       return {
         ok: true as const,
@@ -534,7 +534,7 @@ export default function ProjectDetail({
             <span className="flex flex-wrap items-center gap-3">
               {project.name}
               <Badge>
-                Team · {roster.length} member{roster.length === 1 ? "" : "s"}
+                Team · {roster.length} agent{roster.length === 1 ? "" : "s"}
               </Badge>
             </span>
           }
@@ -549,7 +549,7 @@ export default function ProjectDetail({
           description={
             teamLayout ? (
               <span>
-                Member of{" "}
+                Part of{" "}
                 <Link
                   to={base}
                   className="font-medium underline underline-offset-4"
@@ -740,13 +740,13 @@ function TeamSurface({
             <p>
               This is a{" "}
               <span className="font-medium text-foreground">team</span>: each
-              member below is a complete agent with its own runtime, channels,
-              schedules, secrets, and deployments. Members are versioned and
-              deployed independently, and changes to several members ship
+              one below is a complete agent with its own runtime, channels,
+              schedules, secrets, and deployments. Agents are versioned and
+              deployed independently, and changes to several agents ship
               atomically in one change request.
             </p>
             <p className="mt-2">
-              Teammates can delegate to each other: every member gets an{" "}
+              Teammates can delegate to each other: every agent gets an{" "}
               <em>ask-teammate</em> tool wired to the rest of the roster, so the
               team behaves like an organisation, not a folder of agents. Manage
               who can ask whom under{" "}
@@ -847,19 +847,19 @@ function AddMemberDialog() {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button variant="outline" disabled={busy}>
-          Add member
+          Add agent
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Add a team member</DialogTitle>
+          <DialogTitle>Add an agent</DialogTitle>
           <DialogDescription>
             Scaffolds a complete eve agent and opens a change request — the
-            member joins the roster when it merges.
+            agent joins the roster when it merges.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-1.5">
-          <Label htmlFor="new-member-name">Member name</Label>
+          <Label htmlFor="new-member-name">Agent name</Label>
           <Input
             id="new-member-name"
             value={name}

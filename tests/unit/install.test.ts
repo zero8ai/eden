@@ -695,7 +695,7 @@ describe("planInstall — new-member validation", () => {
       target: { kind: "new-member", name: "Not Valid" },
     });
     expect(plan.conflicts).toHaveLength(1);
-    expect(plan.conflicts[0]).toContain("valid member name");
+    expect(plan.conflicts[0]).toContain("valid agent name");
   });
 
   it("flags an orphan package.json already at the new member's path", () => {

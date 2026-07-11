@@ -27,3 +27,8 @@ export function applyEnvOverrides(
 ): string;
 export function parseEnvFile(text: string): Record<string, string>;
 export function resolveBetterAuthSecret(existing?: string): string;
+export function withWorktreeAppendix(
+  rawAgentsMd: string,
+  appendixMarker: string,
+  appendix: string,
+): string;

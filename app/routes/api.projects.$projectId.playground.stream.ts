@@ -19,6 +19,7 @@ import {
   titleFromMessage,
   type PlaygroundSession,
 } from "~/playground/sessions.server";
+import { canContinueSessionOnTarget } from "~/playground/ownership";
 import {
   resolveAgentContext,
   agentFromParams,
@@ -74,16 +75,15 @@ export async function action(args: ActionFunctionArgs) {
     );
   }
   if (
-    playgroundSession?.externalSessionId &&
-    playgroundSession.environmentId &&
-    playgroundSession.environmentId !== target.environmentId
+    playgroundSession &&
+    !canContinueSessionOnTarget(playgroundSession, target.deploymentId)
   ) {
     throw data(
       {
         error:
-          "That Eve session belongs to a different environment. Start a new conversation for this deployment.",
+          "This conversation belongs to a different deployment that was replaced or is no longer selected. Start a new conversation to continue.",
       },
-      { status: 400 },
+      { status: 409 },
     );
   }
   const title = playgroundSession?.title ? null : titleFromMessage(message);

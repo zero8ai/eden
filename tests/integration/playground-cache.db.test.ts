@@ -22,12 +22,16 @@ describe.runIf(LIVE)(
     it("persists raw events and reprojects the transcript from the cache, idempotently", async () => {
       const { db } = await import("~/db/client.server");
       const { organization, user } = await import("~/db/auth-schema");
-      const { projects, agents } = await import("~/db/schema");
+      const { projects, agents, playgroundSessions } =
+        await import("~/db/schema");
       const {
         createPlaygroundSession,
         savePlaygroundEvents,
         loadPlaygroundEntriesFromCache,
         cachedStreamIndex,
+        markPlaygroundSessionStopped,
+        savePlaygroundSessionCursor,
+        savePlaygroundSessionProgress,
       } = await import("~/playground/sessions.server");
 
       const ORG = "org_pgcache_smoke";
@@ -109,6 +113,45 @@ describe.runIf(LIVE)(
       await savePlaygroundEvents(session.id, events);
       expect(await loadPlaygroundEntriesFromCache(session)).toEqual(entries);
       expect(await cachedStreamIndex(session.id)).toBe(5);
+
+      // Stop is terminal for an already-running drain: both its queued progress write and its final
+      // cursor write arrive after /stop in this ordering, and both must become no-ops. The fake target
+      // deliberately has no FK rows, so either update escaping its status guard also fails loudly.
+      await markPlaygroundSessionStopped({ id: session.id });
+      const staleDrainTarget = {
+        deploymentId: "dep_pgsmoke",
+        environmentId: "env_pgsmoke",
+        releaseId: "rel_pgsmoke",
+        url: "http://127.0.0.1:1",
+        version: "v1",
+        environmentName: "smoke",
+        gitSha: "deadbeef",
+      };
+      await savePlaygroundSessionProgress({
+        id: session.id,
+        target: staleDrainTarget,
+        externalSessionId: "wrun_pgcache_smoke",
+        continuationToken: null,
+        streamIndex: 5,
+      });
+      await savePlaygroundSessionCursor({
+        id: session.id,
+        target: staleDrainTarget,
+        externalSessionId: "wrun_pgcache_smoke",
+        continuationToken: null,
+        streamIndex: 5,
+        status: "waiting",
+      });
+      const [afterStaleDrain] = await db
+        .select()
+        .from(playgroundSessions)
+        .where(eq(playgroundSessions.id, session.id));
+      expect(afterStaleDrain).toMatchObject({
+        status: "stopped",
+        externalSessionId: null,
+        streamIndex: 0,
+        lastDeploymentId: null,
+      });
 
       // Cleanup.
       await db.delete(organization).where(eq(organization.id, ORG));

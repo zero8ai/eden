@@ -32,9 +32,12 @@
  *      only PORT + WORKOS_REDIRECT_URI + DATABASE_URL + the port vars above.
  *      All other keys (secrets, API keys, deploy target) are shared with main.
  *   3. Writes a `WORKTREE.md` at the worktree root so humans can inspect the
- *      worktree URL and ports, and a `CLAUDE.local.md` with the same context
- *      plus a git-safety section so agents load the instructions automatically
- *      (both are gitignored).
+ *      worktree URL and ports (gitignored), and appends the same context plus
+ *      a git-safety section to the worktree's `AGENTS.md` so every agent
+ *      harness loads the instructions automatically. `AGENTS.md` is then
+ *      marked `skip-worktree` in the worktree's index so the appendix never
+ *      dirties `git status` or lands in commits (the `rebase` skill knows how
+ *      to un-set/re-set this around merges that touch `AGENTS.md`).
  *   4. Clones the canonical Postgres dev DB into a per-worktree copy so
  *      destructive `db:push` in the worktree doesn't affect main. All Postgres
  *      operations run inside the `eden-postgres` docker container via
@@ -47,7 +50,13 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -409,8 +418,21 @@ function gitSafetySection(feat) {
 - You are on branch \`${feat.full}\`, not \`main\`. \`git log\`, \`git status\`, and \`git diff\` refer to this branch only — they will NOT show work from main or other worktrees.
 - Do NOT \`git checkout\` a different branch inside this worktree — it breaks the sibling checkout that owns this working directory. If you need to inspect another branch, ask the user.
 - The Postgres database is per-worktree (a clone); deployed local-docker instances and other external services may still be shared — confirm with the user before running destructive ops against them.
-- \`WORKTREE.md\`, \`CLAUDE.local.md\`, and \`.env.local\` are generated per-worktree and gitignored. Do not stage or commit them.
+- \`WORKTREE.md\` and \`.env.local\` are generated per-worktree and gitignored. Do not stage or commit them.
+- This worktree's \`AGENTS.md\` has worktree-specific instructions (the section above this one) appended by \`scripts/worktree-setup.mjs\` and is marked \`skip-worktree\` in the local index, so \`git status\` ignores it and normal commits won't include it. Do not unset \`skip-worktree\` or stage \`AGENTS.md\` manually — the \`rebase\` skill handles the one case (a merge aborting on \`AGENTS.md\`) where it must be temporarily unset.
 `;
+}
+
+/**
+ * Return the worktree's AGENTS.md content with the generated appendix
+ * replaced/appended. Any prior appendix is stripped first so re-running the
+ * script doesn't double-append; the appendix always begins with the
+ * `# Worktree: <full>` header emitted by worktreeMdTemplate.
+ */
+export function withWorktreeAppendix(rawAgentsMd, appendixMarker, appendix) {
+  const markerIdx = rawAgentsMd.indexOf(appendixMarker);
+  const base = markerIdx === -1 ? rawAgentsMd : rawAgentsMd.slice(0, markerIdx);
+  return `${base.replace(/\s*$/, "")}\n\n${appendix}`;
 }
 
 /**
@@ -624,12 +646,36 @@ function main() {
 
   writeFileSync(join(worktreePath, ".env.local"), worktreeEnv);
   writeFileSync(join(worktreePath, "WORKTREE.md"), worktreeMd);
-  // CLAUDE.local.md is auto-loaded by Claude Code (and gitignored), so agents
-  // pick up the worktree context + git safety rules without extra flags.
+
+  // Append the worktree context + git safety rules to AGENTS.md so every
+  // agent harness (Claude Code loads it via the CLAUDE.md symlink) picks them
+  // up automatically, then mark the file skip-worktree so the appendix never
+  // dirties `git status` or sneaks into commits. Idempotent: re-running
+  // strips any prior appendix, and re-applying the bit is a no-op.
+  const agentsMdPath = join(worktreePath, "AGENTS.md");
+  const rawAgentsMd = existsSync(agentsMdPath)
+    ? readFileSync(agentsMdPath, "utf8")
+    : "";
   writeFileSync(
-    join(worktreePath, "CLAUDE.local.md"),
-    `${worktreeMd}${gitSafetySection(feat)}`,
+    agentsMdPath,
+    withWorktreeAppendix(
+      rawAgentsMd,
+      `# Worktree: ${feat.full}`,
+      `${worktreeMd}${gitSafetySection(feat)}`,
+    ),
   );
+  const skipWorktree = run(
+    ["git", "update-index", "--skip-worktree", "AGENTS.md"],
+    { cwd: worktreePath },
+  );
+  if (skipWorktree.code !== 0) {
+    die(
+      `git update-index --skip-worktree AGENTS.md failed in ${worktreePath}: ${skipWorktree.stderr.trim()}`,
+    );
+  }
+  // Older setups generated a CLAUDE.local.md with the same content; remove it
+  // so upgraded worktrees don't load the instructions twice.
+  rmSync(join(worktreePath, "CLAUDE.local.md"), { force: true });
 
   console.log(`worktree-setup: Installing dependencies in ${worktreePath}...`);
   const install = spawnSync("npm", ["install"], {

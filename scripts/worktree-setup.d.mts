@@ -26,3 +26,8 @@ export function applyEnvOverrides(
   overrides: Record<string, string>,
 ): string;
 export function parseEnvFile(text: string): Record<string, string>;
+export function withWorktreeAppendix(
+  rawAgentsMd: string,
+  appendixMarker: string,
+  appendix: string,
+): string;

@@ -6,6 +6,7 @@ import {
   parseDatabaseUrl,
   parseEnvFile,
   withDatabaseName,
+  withWorktreeAppendix,
 } from "../../scripts/worktree-setup.mjs";
 
 describe("withDatabaseName", () => {
@@ -142,5 +143,26 @@ describe("parseEnvFile", () => {
   test("parses keys, ignores comments and blanks, strips quotes", () => {
     const parsed = parseEnvFile("# c\n\nA=1\nB=\"two\"\nC='three'\n");
     expect(parsed).toEqual({ A: "1", B: "two", C: "three" });
+  });
+});
+
+describe("withWorktreeAppendix", () => {
+  const marker = "# Worktree: feature/x";
+  const appendix = `${marker}\n\ncontext here\n`;
+
+  test("appends after the base content with a blank line", () => {
+    expect(withWorktreeAppendix("# Eden\n\nbase\n", marker, appendix)).toBe(
+      `# Eden\n\nbase\n\n${appendix}`,
+    );
+  });
+
+  test("replaces a prior appendix instead of double-appending", () => {
+    const once = withWorktreeAppendix("# Eden\n", marker, appendix);
+    const twice = withWorktreeAppendix(once, marker, appendix);
+    expect(twice).toBe(once);
+  });
+
+  test("handles a missing/empty AGENTS.md", () => {
+    expect(withWorktreeAppendix("", marker, appendix)).toBe(`\n\n${appendix}`);
   });
 });

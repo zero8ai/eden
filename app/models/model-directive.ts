@@ -62,12 +62,13 @@ export function stripModelDirective(text: string): string {
 }
 
 /**
- * Eden's generated wiring names its provider "openrouter", and eve formats a live fallback
- * model's id as `<provider>/<modelId>` — so a dynamic agent reports
- * `dynamic:openrouter/anthropic/claude-…`. Strip that provider segment so fallback-served
- * turns display the same bare OpenRouter id directive-served turns do.
+ * Eden's generated wiring names its providers "openrouter" and (for codex/* ids, issue #28)
+ * "eden", and eve formats a live fallback model's id as `<provider>/<modelId>` — so a dynamic
+ * agent reports `dynamic:openrouter/anthropic/claude-…` or `dynamic:eden/codex/<conn>/<slug>`.
+ * Strip that leading provider segment so fallback-served turns display the same bare id
+ * directive-served turns do (a codex id keeps its own `codex/…` prefix intact).
  */
-const GATEWAY_PROVIDER_PREFIX = "openrouter/";
+const GATEWAY_PROVIDER_PREFIXES = ["openrouter/", "eden/"] as const;
 
 /** Split eve's reported runtime id into the displayable base id + the dynamic-model flag. */
 export function runtimeModelBase(runtimeModelId: string): {
@@ -77,8 +78,11 @@ export function runtimeModelBase(runtimeModelId: string): {
   const dynamic = runtimeModelId.startsWith(DYNAMIC_MODEL_ID_PREFIX);
   if (!dynamic) return { id: runtimeModelId, dynamic };
   let id = runtimeModelId.slice(DYNAMIC_MODEL_ID_PREFIX.length);
-  if (id.startsWith(GATEWAY_PROVIDER_PREFIX)) {
-    id = id.slice(GATEWAY_PROVIDER_PREFIX.length);
+  for (const prefix of GATEWAY_PROVIDER_PREFIXES) {
+    if (id.startsWith(prefix)) {
+      id = id.slice(prefix.length);
+      break;
+    }
   }
   return { id, dynamic };
 }

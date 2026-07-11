@@ -18,6 +18,9 @@ import {
   getWorkspaceAssistantModel,
   getWorkspaceModelKey,
 } from "~/org/workspace.server";
+import { hasActiveCodexConnection } from "~/models/provider-connections.server";
+import { gatewayBaseUrl } from "~/gateway/url.server";
+import { mintGatewayToken } from "~/gateway/token.server";
 import { getRuntime } from "~/seams/index.server";
 import { mintAssistantToken } from "./token.server";
 
@@ -146,7 +149,8 @@ function edenApiUrl(): string {
   return `http://host.docker.internal:${port}`;
 }
 
-async function assistantEnv(input: {
+/** Exported for tests: the Eden-owned env an assistant instance is deployed with (no user secrets). */
+export async function assistantEnv(input: {
   orgId: string;
   deploymentId: string;
 }): Promise<Record<string, string>> {
@@ -154,21 +158,30 @@ async function assistantEnv(input: {
     (await getWorkspaceModelKey(input.orgId).catch(() => null)) ??
     process.env.OPENROUTER_API_KEY ??
     null;
-  if (!openRouterKey) {
-    throw new Error(
-      "No OpenRouter key configured for the assistant. Add one in Org settings → Model provider " +
-        "(or set OPENROUTER_API_KEY in the server env).",
-    );
-  }
+  const hasCodex = await hasActiveCodexConnection(input.orgId).catch(() => false);
   const model =
     (await getWorkspaceAssistantModel(input.orgId).catch(() => null)) ?? DEFAULT_MODEL;
-  // Built fresh (no user secrets to shadow), but the Eden-owned keys are the only ones set.
-  return {
-    OPENROUTER_API_KEY: openRouterKey,
+  // A Codex-backed assistant model (issue #28) runs through Eden's gateway and needs no OpenRouter
+  // key; otherwise a key is required (the default model is an OpenRouter id).
+  if (!openRouterKey && !(hasCodex && model.startsWith("codex/"))) {
+    throw new Error(
+      "No OpenRouter key configured for the assistant. Add one in Org settings → Model providers " +
+        "(or set OPENROUTER_API_KEY in the server env), or connect an OpenAI Codex subscription and " +
+        "set a codex/… assistant model.",
+    );
+  }
+  // Built fresh (no user secrets to shadow); only the Eden-owned keys are set.
+  const env: Record<string, string> = {
     EDEN_ASSISTANT_MODEL: model,
     EDEN_API_URL: edenApiUrl(),
     EDEN_ASSISTANT_TOKEN: mintAssistantToken(input.deploymentId),
   };
+  if (openRouterKey) env.OPENROUTER_API_KEY = openRouterKey;
+  if (hasCodex) {
+    env.EDEN_MODEL_GATEWAY_URL = gatewayBaseUrl();
+    env.EDEN_MODEL_GATEWAY_TOKEN = mintGatewayToken(input.orgId);
+  }
+  return env;
 }
 
 /**

@@ -113,4 +113,12 @@ describe("effectiveModelId", () => {
       "openrouter/auto",
     );
   });
+
+  it("strips the eden gateway segment but keeps a codex/<conn>/<slug> id intact (issue #28)", () => {
+    // A codex fallback runs through the edenGateway provider (named "eden"), so eve reports
+    // dynamic:eden/codex/<conn>/<slug>. Only the leading provider segment is stripped.
+    expect(
+      effectiveModelId("dynamic:eden/codex/conn_1/gpt-5.5", "hi"),
+    ).toBe("codex/conn_1/gpt-5.5");
+  });
 });

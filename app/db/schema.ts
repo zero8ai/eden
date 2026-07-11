@@ -827,6 +827,57 @@ export const workspaceSettings = pgTable("workspace_settings", {
 });
 
 /**
+ * Connectable model providers beyond the workspace OpenRouter key (issue #28). Phase 1 adds
+ * "codex" — an OpenAI Codex ChatGPT subscription connected via device-code OAuth. A workspace
+ * may hold several connections (including multiple Codex accounts), each with a human label; the
+ * model pickers surface `codex/<connectionId>/<slug>` ids qualified by that label and Eden's
+ * gateway route runs the connection's subscription tokens against the Codex backend.
+ *
+ * Credentials are write-only, AES-256-GCM sealed with the same secretbox as `secret_values`:
+ * loader-facing code returns only display metadata (label, accountEmail, status); only the
+ * gateway/refresh path unseals the token triplets. `accountId` (the ChatGPT account id) is a
+ * request HEADER, not a secret, so it is stored plain. Additive: the OpenRouter key path is
+ * untouched.
+ */
+export const modelProviderConnections = pgTable(
+  "model_provider_connections",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** Provider id — "codex" in Phase 1. */
+    provider: varchar("provider", { length: 32 }).notNull(),
+    /** Human-readable label shown in the connections list + model picker suffixes. */
+    label: text("label").notNull(),
+    /** Connected account email (from the id_token), for display. Best-effort, nullable. */
+    accountEmail: text("account_email"),
+    /** ChatGPT account id — sent as the `ChatGPT-Account-ID` request header (not a secret). */
+    accountId: text("account_id"),
+    /** Sealed OAuth access token (AES-256-GCM, same secretbox as secret_values). */
+    accessTokenCiphertext: text("access_token_ciphertext"),
+    accessTokenIv: text("access_token_iv"),
+    accessTokenAuthTag: text("access_token_auth_tag"),
+    /** Sealed OAuth refresh token. */
+    refreshTokenCiphertext: text("refresh_token_ciphertext"),
+    refreshTokenIv: text("refresh_token_iv"),
+    refreshTokenAuthTag: text("refresh_token_auth_tag"),
+    /** When the sealed access token expires (drives the central refresh). */
+    accessTokenExpiresAt: timestamp("access_token_expires_at", {
+      withTimezone: true,
+    }),
+    /** "active" | "expired" | "revoked" — display + gateway-guard state, not a secret. */
+    status: varchar("status", { length: 16 }).notNull().default("active"),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("model_provider_connections_org_idx").on(t.orgId)],
+);
+
+/**
  * Eden's index of Eve playground sessions. The transcript itself lives in Eve's durable
  * event stream; this table stores the app-owned thread/cursor needed to list and resume
  * sessions for a project/agent/user.

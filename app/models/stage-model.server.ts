@@ -19,7 +19,8 @@ import {
   setModel,
 } from "~/eve/agentModule";
 import { packageJsonPathForRoot } from "~/marketplace/install.server";
-import { findModel } from "~/models/catalog.server";
+import type { findModel } from "~/models/catalog.server";
+import { findKnownModel } from "~/models/union.server";
 import { getRuntime } from "~/seams/index.server";
 
 export interface StageModelInput {
@@ -45,6 +46,9 @@ export interface StageModelDeps extends FileViewDeps {
   lookupModel: typeof findModel;
 }
 
+/** Default model lookup: resolves codex ids from the curated spec, else OpenRouter. */
+const defaultLookupModel: typeof findModel = findKnownModel;
+
 /**
  * Stage the model change for one member: `agent.ts` (dynamic wrapper, `model` as the fallback)
  * plus `package.json` when its dependencies need the OpenRouter provider / eve bump. Re-running
@@ -55,7 +59,7 @@ export async function stageModelChange(
   store: DataStore = getRuntime().data,
   deps?: StageModelDeps,
 ): Promise<StageModelResult> {
-  const modelInfo = await (deps?.lookupModel ?? findModel)(input.model);
+  const modelInfo = await (deps?.lookupModel ?? defaultLookupModel)(input.model);
   const contextWindowTokens =
     modelInfo?.contextWindow ?? input.fallbackContextWindowTokens;
   const path = `${input.root}/agent.ts`;

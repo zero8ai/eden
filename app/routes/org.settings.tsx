@@ -4,12 +4,14 @@
  * organization plugin.
  */
 import { getSessionAuth, sessionLoader } from "~/auth/session.server";
-import { Building2, Cpu, Gauge, ScrollText, ShieldAlert } from "lucide-react";
+import { Building2, Cpu, Gauge, Plug, ScrollText, ShieldAlert } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import {
   Form,
   Link,
   redirect,
   useFetcher,
+  useRevalidator,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
@@ -44,6 +46,20 @@ import {
   setWorkspaceModelKey,
 } from "~/org/workspace.server";
 import {
+  deleteModelConnection,
+  listModelConnections,
+  renameModelConnection,
+  type ModelConnection,
+} from "~/models/provider-connections.server";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "~/components/ui/dialog";
+import {
   getSpendLimit,
   setSpendLimit,
   tokensUsedSince,
@@ -66,6 +82,8 @@ interface OrgSettingsView {
   hasModelKey: boolean;
   /** Workspace default OpenRouter model id (null = Eden default). */
   assistantModel: string | null;
+  /** Connected model providers (issue #28) — display metadata only, never a token. */
+  connections: ModelConnection[];
   /** Better Auth organization:update permission for the active workspace. */
   canManage: boolean;
 }
@@ -101,18 +119,27 @@ export const loader = (args: LoaderFunctionArgs) =>
           audit: [],
           hasModelKey: false,
           assistantModel: null,
+          connections: [],
           canManage: false,
         };
       }
-      const [limit, used, audit, hasModelKey, assistantModel, canManage] =
-        await Promise.all([
-          getSpendLimit(org.id),
-          tokensUsedSince(org.id),
-          listAudit(org.id, 50),
-          hasWorkspaceModelKey(org.id),
-          getWorkspaceAssistantModel(org.id),
-          canManageWorkspace(org.id, auth.requestHeaders),
-        ]);
+      const [
+        limit,
+        used,
+        audit,
+        hasModelKey,
+        assistantModel,
+        connections,
+        canManage,
+      ] = await Promise.all([
+        getSpendLimit(org.id),
+        tokensUsedSince(org.id),
+        listAudit(org.id, 50),
+        hasWorkspaceModelKey(org.id),
+        getWorkspaceAssistantModel(org.id),
+        listModelConnections(org.id),
+        canManageWorkspace(org.id, auth.requestHeaders),
+      ]);
       return {
         org,
         mode: getRuntime().mode,
@@ -121,6 +148,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         audit,
         hasModelKey,
         assistantModel,
+        connections,
         canManage,
       };
     },
@@ -154,6 +182,34 @@ export async function action(args: ActionFunctionArgs) {
       orgId: org.id,
       actorUserId: auth.user.id,
       action: value ? "workspace_model_key_set" : "workspace_model_key_cleared",
+    });
+    throw redirect("/org/settings");
+  }
+
+  // ── Model provider connections (issue #28): rename / remove a connected provider ──
+  if (intent === "rename-connection") {
+    const id = String(form.get("connectionId") ?? "");
+    const label = String(form.get("label") ?? "").trim();
+    if (!id || !label) return { error: "Give the connection a name." };
+    await renameModelConnection(org.id, id, label);
+    await recordAudit({
+      orgId: org.id,
+      actorUserId: auth.user.id,
+      action: "model_provider_renamed",
+      target: id,
+    });
+    throw redirect("/org/settings");
+  }
+
+  if (intent === "remove-connection") {
+    const id = String(form.get("connectionId") ?? "");
+    if (!id) return { error: "No connection specified." };
+    await deleteModelConnection(org.id, id);
+    await recordAudit({
+      orgId: org.id,
+      actorUserId: auth.user.id,
+      action: "model_provider_removed",
+      target: id,
     });
     throw redirect("/org/settings");
   }
@@ -199,6 +255,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
     audit,
     hasModelKey,
     assistantModel,
+    connections,
     canManage,
   } = loaderData;
   const modelFetcher = useFetcher<typeof action>();
@@ -239,13 +296,17 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Cpu className={`size-4 ${accentText.blue}`} aria-hidden />
-              Model provider
+              Model providers
             </CardTitle>
             <CardDescription>
               OpenRouter is the default model provider. eden injects this key as{" "}
               <span className="font-mono">OPENROUTER_API_KEY</span> for
               deployments, and the default model below is used by the authoring
-              assistant and by agents that do not have their own model set.
+              assistant and by agents that do not have their own model set. You
+              can also connect an OpenAI Codex subscription — its models then
+              appear in every model picker as{" "}
+              <span className="font-mono">codex/&lt;connection&gt;/&lt;model&gt;</span>,
+              alongside OpenRouter.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -337,6 +398,34 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                 </div>
               </div>
             )}
+
+            {/* Connected providers (issue #28): OpenAI Codex subscriptions */}
+            <div className="mt-6 space-y-3 border-t pt-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label className="flex items-center gap-2">
+                  <Plug className="size-4" aria-hidden />
+                  Connected providers
+                </Label>
+                {canManage && <ConnectCodexDialog />}
+              </div>
+              {connections.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No provider accounts connected. OpenRouter (above) still works
+                  on its own; connect an OpenAI Codex subscription to run agents
+                  on your ChatGPT plan.
+                </p>
+              ) : (
+                <ul className="divide-y rounded-lg border text-sm">
+                  {connections.map((conn) => (
+                    <ConnectionRow
+                      key={conn.id}
+                      conn={conn}
+                      canManage={canManage}
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -441,5 +530,202 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
         </Card>
       </div>
     </AppShell>
+  );
+}
+
+/** One connected model provider — provider badge, inline rename, status, remove (issue #28). */
+function ConnectionRow({
+  conn,
+  canManage,
+}: {
+  conn: ModelConnection;
+  canManage: boolean;
+}) {
+  const rename = useFetcher();
+  const [editing, setEditing] = useState(false);
+  const active = conn.status === "active";
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+      <div className="space-y-0.5">
+        <div className="flex items-center gap-2">
+          <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
+            OpenAI Codex
+          </span>
+          {editing && canManage ? (
+            <rename.Form
+              method="post"
+              className="flex items-center gap-1"
+              onSubmit={() => setEditing(false)}
+            >
+              <input type="hidden" name="intent" value="rename-connection" />
+              <input type="hidden" name="connectionId" value={conn.id} />
+              <Input
+                name="label"
+                defaultValue={conn.label}
+                aria-label="Connection name"
+                className="h-7 w-40"
+              />
+              <Button type="submit" size="sm">
+                Save
+              </Button>
+            </rename.Form>
+          ) : (
+            <span className="font-medium">{conn.label}</span>
+          )}
+          {canManage && !editing && (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground underline"
+              onClick={() => setEditing(true)}
+            >
+              rename
+            </button>
+          )}
+        </div>
+        {conn.accountEmail && (
+          <p className="text-xs text-muted-foreground">{conn.accountEmail}</p>
+        )}
+        {!active && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            Reconnect needed — this connection is {conn.status}.
+          </p>
+        )}
+      </div>
+      {canManage && (
+        <Form method="post">
+          <input type="hidden" name="intent" value="remove-connection" />
+          <input type="hidden" name="connectionId" value={conn.id} />
+          <Button type="submit" variant="outline" size="sm">
+            Remove
+          </Button>
+        </Form>
+      )}
+    </li>
+  );
+}
+
+type CodexConnectResponse =
+  | { deviceAuthId: string; userCode: string; interval: number; verificationUrl: string }
+  | { pending: true }
+  | { done: true }
+  | { error: string };
+
+/**
+ * The "Connect OpenAI Codex" dialog (issue #28): request a device code, show the user the code +
+ * verification URL, then poll until they authorize — closing and revalidating on success so the
+ * connections list refreshes.
+ */
+function ConnectCodexDialog() {
+  const [open, setOpen] = useState(false);
+  const fetcher = useFetcher<CodexConnectResponse>();
+  const revalidator = useRevalidator();
+  const [device, setDevice] = useState<{
+    deviceAuthId: string;
+    userCode: string;
+    verificationUrl: string;
+    interval: number;
+  } | null>(null);
+  const started = useRef(false);
+
+  // Kick off the device-code request once per open.
+  useEffect(() => {
+    if (open && !started.current) {
+      started.current = true;
+      fetcher.submit(
+        { intent: "start" },
+        { method: "post", action: "/api/connections/codex" },
+      );
+    }
+    if (!open) {
+      started.current = false;
+      setDevice(null);
+    }
+    // fetcher is stable for the component's lifetime; re-running on it would resubmit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Latch the device code, complete on success — both driven by the fetcher response.
+  useEffect(() => {
+    const d = fetcher.data;
+    if (!d) return;
+    if ("deviceAuthId" in d && d.deviceAuthId) {
+      setDevice({
+        deviceAuthId: d.deviceAuthId,
+        userCode: d.userCode,
+        verificationUrl: d.verificationUrl,
+        interval: d.interval,
+      });
+    }
+    if ("done" in d && d.done) {
+      setOpen(false);
+      setDevice(null);
+      revalidator.revalidate();
+    }
+  }, [fetcher.data, revalidator]);
+
+  // Poll for authorization at the server-provided interval while the dialog is open.
+  useEffect(() => {
+    if (!open || !device) return;
+    const timer = setInterval(
+      () => {
+        fetcher.submit(
+          {
+            intent: "poll",
+            deviceAuthId: device.deviceAuthId,
+            userCode: device.userCode,
+          },
+          { method: "post", action: "/api/connections/codex" },
+        );
+      },
+      Math.max(device.interval, 1) * 1000,
+    );
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, device]);
+
+  const error =
+    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button type="button" size="sm">
+          Connect OpenAI Codex
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Connect OpenAI Codex</DialogTitle>
+          <DialogDescription>
+            Sign in with your ChatGPT subscription to run agents on your Codex
+            plan.
+          </DialogDescription>
+        </DialogHeader>
+        {error ? (
+          <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>
+        ) : device ? (
+          <div className="space-y-3">
+            <p className="text-sm">Enter this code to authorize eden:</p>
+            <p className="text-center font-mono text-3xl font-semibold tracking-widest">
+              {device.userCode}
+            </p>
+            <p className="text-sm">
+              Open{" "}
+              <a
+                href={device.verificationUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium underline"
+              >
+                {device.verificationUrl}
+              </a>{" "}
+              and enter the code. Waiting for you to authorize…
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Starting…</p>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

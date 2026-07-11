@@ -52,17 +52,24 @@ const MODEL_PROP =
 const OPENROUTER_IMPORT = `import { createOpenAICompatible } from '${OPENROUTER_PROVIDER_PACKAGE}';\n`;
 const OPENROUTER_FACTORY =
   "const openrouter = createOpenAICompatible({ name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY ?? '' });\n";
+// Eden's model gateway (issue #28): a `codex/<connectionId>/<slug>` model runs on the org's
+// connected Codex subscription through Eden's translating gateway. The base URL + token are
+// injected at deploy only when the org has a Codex connection; OpenRouter ids never touch it.
+const EDEN_GATEWAY_FACTORY =
+  "const edenGateway = createOpenAICompatible({ name: 'eden', baseURL: process.env.EDEN_MODEL_GATEWAY_URL ?? '', apiKey: process.env.EDEN_MODEL_GATEWAY_TOKEN ?? '' });\n";
 const LEGACY_OPENROUTER_IMPORT =
   /import\s+\{\s*createOpenRouter\s*\}\s+from\s+['"]@openrouter\/ai-sdk-provider['"];\n?/;
 const LEGACY_OPENROUTER_FACTORY =
   /const\s+openrouter\s*=\s*createOpenRouter\(\s*\{\s*apiKey\s*:\s*process\.env\.OPENROUTER_API_KEY\s*\?\?\s*(['"`])[^'"`]*\1\s*,?\s*\}\s*,?\s*\)\s*;?\n?/;
 
-function openRouterModelCall(model: string): string {
-  return `openrouter.chatModel('${model}')`;
+// Write-sites use the `edenModel(...)` router (defined in EDEN_MODEL_HELPER) rather than a bare
+// `openrouter.chatModel(...)` so a codex/* fallback or directive is routed to Eden's gateway.
+function edenModelCall(model: string): string {
+  return `edenModel('${model}')`;
 }
 
-function openRouterModelCallStart(model: string): string {
-  return `openrouter.chatModel('${model}'`;
+function edenModelCallStart(model: string): string {
+  return `edenModel('${model}'`;
 }
 
 /**
@@ -100,17 +107,22 @@ function edenSelectedModel(
   }
   return null;
 }
+// Eden model router: codex/* ids run on the org's connected subscription via Eden's model
+// gateway; every other id stays on OpenRouter (the default provider).
+function edenModel(id: string) {
+  return id.startsWith('codex/') ? edenGateway.chatModel(id) : openrouter.chatModel(id);
+}
 `;
 
 /** The `model:` value Eden writes — deploy default as the fallback, directive override per step. */
 function dynamicModelValue(model: string): string {
   return `defineDynamic({
-    fallback: ${openRouterModelCall(model)},
+    fallback: ${edenModelCall(model)},
     events: {
       'step.started': (_event, ctx) => {
         const selected = edenSelectedModel(ctx.messages);
         if (!selected) return null; // no directive -> the fallback model above
-        return { model: openrouter.chatModel(selected.id), modelContextWindowTokens: selected.contextWindowTokens };
+        return { model: edenModel(selected.id), modelContextWindowTokens: selected.contextWindowTokens };
       },
     },
   })`;
@@ -182,6 +194,28 @@ function withOpenRouterWiring(source: string): string {
   return next;
 }
 
+/**
+ * Ensure the `edenGateway` factory const exists (issue #28) so a `codex/*` fallback/directive can
+ * route through Eden's model gateway. Runs after `withOpenRouterWiring` (which guarantees the
+ * openrouter factory), inserting the gateway factory right after it; the `edenModel` router itself
+ * ships in EDEN_MODEL_HELPER via `withEdenDynamicWiring`.
+ */
+function withEdenGatewayWiring(source: string): string {
+  if (/\bedenGateway\s*=/.test(source)) return source;
+  const factory = source.match(/const\s+openrouter\s*=[^\n]*\n/);
+  if (factory && factory.index !== undefined) {
+    const at = factory.index + factory[0].length;
+    return `${source.slice(0, at)}${EDEN_GATEWAY_FACTORY}${source.slice(at)}`;
+  }
+  const imports = [...source.matchAll(/^import[^\n]*\n/gm)];
+  if (imports.length > 0) {
+    const last = imports[imports.length - 1];
+    const at = (last.index ?? 0) + last[0].length;
+    return `${source.slice(0, at)}\n${EDEN_GATEWAY_FACTORY}${source.slice(at)}`;
+  }
+  return `${EDEN_GATEWAY_FACTORY}\n${source}`;
+}
+
 function withContextWindow(source: string, tokens: number): string {
   const formatted = String(tokens);
   if (MODEL_CONTEXT.test(source)) {
@@ -239,10 +273,10 @@ export function setModel(
   if (MODEL_DYNAMIC.test(source) && (FALLBACK_CALL.test(source) || FALLBACK_LITERAL.test(source))) {
     let next = FALLBACK_CALL.test(source)
       ? source.replace(FALLBACK_CALL, (_match, prefix) => {
-          return `${prefix}${openRouterModelCallStart(safe)}`;
+          return `${prefix}${edenModelCallStart(safe)}`;
         })
-      : // A user-authored dynamic wrapper with a gateway-string fallback: rewire it to OpenRouter.
-        source.replace(FALLBACK_LITERAL, `fallback: ${openRouterModelCall(safe)}`);
+      : // A user-authored dynamic wrapper with a gateway-string fallback: rewire it to edenModel.
+        source.replace(FALLBACK_LITERAL, `fallback: ${edenModelCall(safe)}`);
     // MODEL_PROP would match only a prefix of the dynamic wrapper, so never append after it —
     // when the tokens prop is missing here, drop it right inside defineAgent({ instead.
     next = MODEL_CONTEXT.test(next)
@@ -251,7 +285,7 @@ export function setModel(
           DEFINE_AGENT_OPEN,
           (match) => `${match}\n  modelContextWindowTokens: ${tokens},`,
         );
-    return withEdenDynamicWiring(withOpenRouterWiring(next));
+    return withEdenDynamicWiring(withEdenGatewayWiring(withOpenRouterWiring(next)));
   }
   if (MODEL_CALL.test(source) || MODEL_LITERAL.test(source)) {
     // Set the context window while the model prop is still static (MODEL_PROP anchors on that
@@ -260,7 +294,7 @@ export function setModel(
     next = MODEL_CALL_FULL.test(next)
       ? next.replace(MODEL_CALL_FULL, (_match, prefix) => `${prefix}${dynamicModelValue(safe)}`)
       : next.replace(MODEL_LITERAL, (_match, prefix) => `${prefix}${dynamicModelValue(safe)}`);
-    return withEdenDynamicWiring(withOpenRouterWiring(next));
+    return withEdenDynamicWiring(withEdenGatewayWiring(withOpenRouterWiring(next)));
   }
   if (DEFINE_AGENT_OPEN.test(source)) {
     const next = source.replace(
@@ -268,7 +302,7 @@ export function setModel(
       (match) =>
         `${match}\n  model: ${dynamicModelValue(safe)},\n  modelContextWindowTokens: ${tokens},`,
     );
-    return withEdenDynamicWiring(withOpenRouterWiring(next));
+    return withEdenDynamicWiring(withEdenGatewayWiring(withOpenRouterWiring(next)));
   }
   return scaffoldAgentModule(safe, { contextWindowTokens: tokens });
 }
@@ -280,7 +314,7 @@ export function scaffoldAgentModule(
 ): string {
   const safe = model.replace(/['"`\\]/g, "");
   const tokens = contextWindow(options);
-  return `${OPENROUTER_IMPORT}import { defineAgent, defineDynamic } from 'eve';\n\n${OPENROUTER_FACTORY}\n${EDEN_MODEL_HELPER}\nexport default defineAgent({\n  model: ${dynamicModelValue(safe)},\n  modelContextWindowTokens: ${tokens},\n});\n`;
+  return `${OPENROUTER_IMPORT}import { defineAgent, defineDynamic } from 'eve';\n\n${OPENROUTER_FACTORY}${EDEN_GATEWAY_FACTORY}\n${EDEN_MODEL_HELPER}\nexport default defineAgent({\n  model: ${dynamicModelValue(safe)},\n  modelContextWindowTokens: ${tokens},\n});\n`;
 }
 
 /**

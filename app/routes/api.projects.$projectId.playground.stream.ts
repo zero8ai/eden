@@ -4,7 +4,7 @@
  * recording live in the shared `~/chat/turn-stream.server` helper (used by the assistant surface
  * too); this route only resolves the tenancy-guarded live target + the session row.
  */
-import { withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth } from "~/auth/session.server";
 import { data, redirect, type ActionFunctionArgs } from "react-router";
 
 import { liveTargets } from "~/chat/playground.server";
@@ -28,17 +28,10 @@ import {
 import { requireProject, requireRepo } from "~/project/guard.server";
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
   const form = await args.request.formData();
   const agentName =

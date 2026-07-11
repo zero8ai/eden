@@ -15,11 +15,11 @@ instances over loopback), so don't split these across machines; scale the box in
                         └─────────────────────────────────────────────────────────────────┘
 ```
 
-No installer script — the steps below *are* the deployment: an ordered sequence meant to be run
+No installer script — the steps below _are_ the deployment: an ordered sequence meant to be run
 top to bottom exactly as written, whether you follow it yourself or hand it to a coding agent
 you've given SSH access to the box. Everything an install needs is in this directory (this
 runbook plus the compose, nginx, and env templates). Budget ~1 hour the first time, most of it in
-the GitHub App and WorkOS dashboards.
+DNS/TLS, the GitHub App, and Postmark setup.
 
 ## 0. What you need before starting
 
@@ -27,8 +27,8 @@ the GitHub App and WorkOS dashboards.
   Sizing: **2 vCPU / 4 GB RAM / 40 GB disk minimum** — agent image builds are the peak load,
   and every agent version keeps an image on disk.
 - A **domain** (or subdomain) with an **A record** pointing at the VPS, e.g. `eden.example.com`.
-  Needed before the TLS step, and by GitHub/WorkOS for callbacks.
-- A **WorkOS** account (auth & tenancy) — you'll configure a production environment.
+  Needed before the TLS step and by external GitHub/Discord callbacks.
+- A **Postmark** server with a verified sender for password-reset and workspace-invitation email.
 - A **GitHub App** (repo access) — you'll create or reconfigure one to point at your domain.
 - An **Anthropic API key** (the authoring assistant) and a model key for deployed agents
   (set later in the product UI, not in the env file).
@@ -46,7 +46,7 @@ sudo ufw enable
 ```
 
 > **Docker bypasses ufw.** Docker programs iptables directly, so a container port published as
-> `-p 5442:5432` is reachable from the internet *no matter what ufw says*. The compose file in
+> `-p 5442:5432` is reachable from the internet _no matter what ufw says_. The compose file in
 > this directory avoids that by publishing Postgres only on `127.0.0.1` and `172.17.0.1`
 > (the docker bridge), and agent instances are already loopback-only. If you ever edit port
 > mappings, keep explicit bind addresses.
@@ -87,11 +87,17 @@ Fill in every value (`deploy/vps/.env` is gitignored). Notes per section:
   `DATABASE_URL` (env-file values are literal; no variable expansion).
 - **`EDEN_SECRETS_KEY`** — `openssl rand -hex 32`. This encrypts every secret your users store
   in Eden; **back it up** somewhere that isn't this VPS.
-- **WorkOS** — in the [WorkOS dashboard](https://dashboard.workos.com), use a *production*
-  environment: copy the API key and client ID, generate a cookie password
-  (`openssl rand -base64 32`), and register the redirect URI
-  `https://eden.example.com/callback` under *Redirects*.
-- **GitHub App** — create one at *Settings → Developer settings → GitHub Apps* (or repoint an
+- **Better Auth** — set `BETTER_AUTH_URL` to the exact public origin
+  (`https://eden.example.com`) and generate `BETTER_AUTH_SECRET` with
+  `openssl rand -base64 32`. Keep that secret backed up; rotating it invalidates authentication
+  state. Better Auth runs inside Eden and stores users, sessions, organizations, members, and
+  invitations in Postgres, so there is no external auth dashboard or callback registration. Keep
+  port 3000 private behind the supplied nginx: it overwrites `X-Real-IP`, which Better Auth trusts
+  for per-client production rate limiting.
+- **Transactional email** — set `POSTMARK_SERVER_TOKEN` and `FROM_EMAIL` to a verified Postmark
+  sender. Better Auth uses it for password resets and organization invitations. Local development
+  may use `SMTP_URL` with Mailpit or Mailtrap instead, but production intentionally uses Postmark.
+- **GitHub App** — create one at _Settings → Developer settings → GitHub Apps_ (or repoint an
   existing one):
   - **Webhook URL**: `https://eden.example.com/api/github/webhook`, with a
     **webhook secret** you generate (`openssl rand -hex 20`) and copy into the env file.
@@ -197,13 +203,18 @@ it's containerized. Add it with `crontab -e`:
 
 ## 7. First login & smoke test
 
-1. Open `https://<your-domain>` — you should land on the WorkOS sign-in.
-2. Sign in / sign up (creates your workspace).
-3. In **Settings**, set the workspace **model key** — this is what deployed agents use to call
+1. Open `https://<your-domain>/signup` — you should see Eden's email/password sign-up form.
+2. Create the first account. Better Auth creates the session, and Eden provisions the account's
+   first organization-backed workspace.
+3. Sign out, use **Forgot password** on the email-first login, and confirm the Postmark reset link
+   lets you set a new password without an email-verification step.
+4. Invite a second address from **Members**. Confirm the recipient must use Eden's Postmark
+   verification link before Better Auth reveals and accepts the organization invitation.
+5. In **Settings**, set the workspace **model key** — this is what deployed agents use to call
    models; without it, deploys come up but every turn fails.
-4. **Connect** a repo (the GitHub App install flow should round-trip through your domain and
+6. **Connect** a repo (the GitHub App install flow should round-trip through your domain and
    land back on `/connect`).
-5. Create or open an agent, **Ship** it, and talk to it in the **Playground**. The first ship
+7. Create or open an agent, **Ship** it, and talk to it in the **Playground**. The first ship
    builds a full agent image (several minutes). The deploy itself is usually seconds — but an
    agent with skills or a sandbox `bootstrap()` prewarms its sandbox template on first boot
    (pulls `ghcr.io/vercel/eve`, runs bootstrap, snapshots an `eve-sbx-tpl-*` image), which can
@@ -225,8 +236,8 @@ docker compose -f deploy/vps/docker-compose.yml run --rm --build migrate
 ```
 
 The `--build` on the `migrate` step is **not** optional. The `migrate` service is behind the
-`tools` profile, so the preceding `up -d --build` does *not* rebuild its image — without `--build`
-here, `run --rm migrate` executes whatever image a *previous* deploy built, which is missing any
+`tools` profile, so the preceding `up -d --build` does _not_ rebuild its image — without `--build`
+here, `run --rm migrate` executes whatever image a _previous_ deploy built, which is missing any
 migration files added since. drizzle-kit then finds nothing new and prints `migrations applied
 successfully!` while the new migration is silently skipped.
 
@@ -250,7 +261,7 @@ update never rebuilds or restarts them.
 docker exec eden-postgres pg_dump -U eden eden | gzip > /var/backups/eden-$(date +%F).sql.gz
 ```
 
-**Disk** — agent builds accumulate images. Reclaim space with a *filtered* prune:
+**Disk** — agent builds accumulate images. Reclaim space with a _filtered_ prune:
 
 ```bash
 docker image prune -f          # dangling layers only — safe
@@ -272,7 +283,7 @@ whenever the agent isn't running, and pruning them destroys rollbacks and agent 
   what lets Eden build and run agent containers (and lets agents get real Docker sandboxes),
   and it's the standard trade-off of the single-box topology. Don't co-host unrelated services.
 - Agent sandbox containers run with the images and network policy eve requests; they are for
-  the agents' *own* code and shell use. Treat the whole box as the trust boundary.
+  the agents' _own_ code and shell use. Treat the whole box as the trust boundary.
 - Postgres is reachable only from the host and the docker bridge (see the firewall note);
   the only public ports are 22/80/443.
 
@@ -283,5 +294,5 @@ whenever the agent isn't running, and pruning them destroys rollbacks and agent 
   the same `DeployTarget` seam, later.
 - **No horizontal scaling of Eden itself** — in-process job worker, splitter, and caches assume
   one process. One box, one Eden.
-- Run-ingest from agents deployed *elsewhere* (BYO instances posting back to
+- Run-ingest from agents deployed _elsewhere_ (BYO instances posting back to
   `/api/ingest/runs`) needs your public URL configured on that side; nothing on the VPS blocks it.

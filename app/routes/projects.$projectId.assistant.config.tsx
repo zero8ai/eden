@@ -4,7 +4,7 @@
  * (instructions + tools) is shown read-only so the assistant is inspectable. Config takes effect
  * after the change is published + merged, which restarts the instance (refresh-on-merge).
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { Lock, Sparkles } from "lucide-react";
 import {
   Link,
@@ -60,32 +60,29 @@ function basenameSlug(path: string) {
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const project = requireRepo(
-        await requireProject(
-          { user: auth.user, organizationId: auth.organizationId, role: auth.role },
-          args.params.projectId,
-          { request: args.request },
-        ),
+        await requireProject(auth, args.params.projectId, {
+          request: args.request,
+        }),
       );
       const url = new URL(args.request.url);
       const editSkill = url.searchParams.get("skill");
       const editSchedule = url.searchParams.get("schedule");
 
-      const [source, instructionsView, modelView, fixed, workspaceModel] = await Promise.all([
-        getAgentSource(project.repoInstallationId, {
-          owner: project.repoOwner,
-          repo: project.repoName,
-        }),
-        resolveFileView(project, INSTRUCTIONS),
-        resolveFileView(project, MODEL_FILE),
-        assistantFixedLayer(),
-        auth.organizationId
-          ? getWorkspaceAssistantModel(auth.organizationId).catch(() => null)
-          : Promise.resolve(null),
-      ]);
+      const [source, instructionsView, modelView, fixed, workspaceModel] =
+        await Promise.all([
+          getAgentSource(project.repoInstallationId, {
+            owner: project.repoOwner,
+            repo: project.repoName,
+          }),
+          resolveFileView(project, INSTRUCTIONS),
+          resolveFileView(project, MODEL_FILE),
+          assistantFixedLayer(),
+          getWorkspaceAssistantModel(project.orgId).catch(() => null),
+        ]);
       // What the assistant falls back to when no per-project override is set: the workspace
       // default, or Eden's built-in default if the workspace hasn't set one either.
       const inheritedModel = workspaceModel ?? DEFAULT_MODEL;
@@ -103,7 +100,8 @@ export const loader = (args: LoaderFunctionArgs) =>
       let model: string | null = null;
       if (modelView.content) {
         try {
-          model = (JSON.parse(modelView.content) as { model?: string }).model ?? null;
+          model =
+            (JSON.parse(modelView.content) as { model?: string }).model ?? null;
         } catch {
           model = null;
         }
@@ -113,13 +111,16 @@ export const loader = (args: LoaderFunctionArgs) =>
         editSkill != null
           ? {
               slug: editSkill,
-              content: (await resolveFileView(project, skillPath(editSkill))).content ?? "",
+              content:
+                (await resolveFileView(project, skillPath(editSkill)))
+                  .content ?? "",
             }
           : null;
       const editingSchedule =
         editSchedule != null
           ? parseScheduleFile(
-              (await resolveFileView(project, schedulePath(editSchedule))).content ?? "",
+              (await resolveFileView(project, schedulePath(editSchedule)))
+                .content ?? "",
             )
           : null;
 
@@ -141,17 +142,10 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
   // Ensure the assistant agent row exists so these drafts attribute to it (agentForPath).
   await ensureAssistantAgent(project.id);
@@ -169,7 +163,10 @@ export async function action(args: ActionFunctionArgs) {
     }
     case "save-model": {
       const model = String(form.get("model") ?? "").trim();
-      await stage(MODEL_FILE, model ? `${JSON.stringify({ model }, null, 2)}\n` : null);
+      await stage(
+        MODEL_FILE,
+        model ? `${JSON.stringify({ model }, null, 2)}\n` : null,
+      );
       return { ok: true, saved: "model" as const };
     }
     case "save-skill": {
@@ -191,7 +188,10 @@ export async function action(args: ActionFunctionArgs) {
       const cron = String(form.get("cron") ?? "").trim();
       const message = String(form.get("message") ?? "").trim();
       if (!cron) return { error: "A schedule needs a cron expression." };
-      await stage(schedulePath(slug), buildScheduleFile({ cron, message, extraFrontmatter: [] }));
+      await stage(
+        schedulePath(slug),
+        buildScheduleFile({ cron, message, extraFrontmatter: [] }),
+      );
       throw redirect(`/repos/${project.id}/assistant/config`);
     }
     case "delete-schedule": {
@@ -228,7 +228,10 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
       breadcrumbs={repoCrumbs({
         projectId: project.id,
         repoName: project.name,
-        tail: [{ label: "Assistant", to: `/repos/${project.id}/assistant` }, { label: "Configure" }],
+        tail: [
+          { label: "Assistant", to: `/repos/${project.id}/assistant` },
+          { label: "Configure" },
+        ],
       })}
     >
       <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-8 sm:px-6">
@@ -249,16 +252,19 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
           <CardHeader>
             <CardTitle>Instructions</CardTitle>
             <CardDescription>
-              The assistant always starts with eden's built-in instructions (shown below,
-              read-only). Anything you add is appended under a “Project instructions” marker — so
-              you don't need to repeat what's already covered here.
+              The assistant always starts with eden's built-in instructions
+              (shown below, read-only). Anything you add is appended under a
+              “Project instructions” marker — so you don't need to repeat what's
+              already covered here.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <Lock className="size-3.5 text-muted-foreground" aria-hidden />
-                <span className="text-sm font-medium">Built-in instructions</span>
+                <span className="text-sm font-medium">
+                  Built-in instructions
+                </span>
                 <Badge variant="secondary" className="text-xs">
                   read-only
                 </Badge>
@@ -274,9 +280,15 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
               </div>
               {fixed.tools.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                  <span className="text-xs text-muted-foreground">Built-in tools:</span>
+                  <span className="text-xs text-muted-foreground">
+                    Built-in tools:
+                  </span>
                   {fixed.tools.map((t) => (
-                    <Badge key={t} variant="outline" className="font-mono text-xs">
+                    <Badge
+                      key={t}
+                      variant="outline"
+                      className="font-mono text-xs"
+                    >
                       {t}
                     </Badge>
                   ))}
@@ -289,10 +301,12 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
             <form method="post" className="space-y-3">
               <input type="hidden" name="intent" value="save-instructions" />
               <div className="space-y-1.5">
-                <Label htmlFor="project-instructions">Your project instructions</Label>
+                <Label htmlFor="project-instructions">
+                  Your project instructions
+                </Label>
                 <p className="text-xs text-muted-foreground">
-                  Repo-specific conventions, priorities, and gotchas — added on top of the
-                  built-in layer above.
+                  Repo-specific conventions, priorities, and gotchas — added on
+                  top of the built-in layer above.
                 </p>
               </div>
               <Textarea
@@ -303,7 +317,9 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
                 placeholder="e.g. This team ships to Cloudflare. Prefer wrangler over bespoke tools…"
                 className="font-mono text-sm"
               />
-              <Button type="submit" size="sm">Stage instructions</Button>
+              <Button type="submit" size="sm">
+                Stage instructions
+              </Button>
             </form>
           </CardContent>
         </Card>
@@ -313,12 +329,17 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
           <CardHeader>
             <CardTitle>Model</CardTitle>
             <CardDescription>
-              Optional per-project model override. Search the live catalog and pick one — leave it
-              unset to use the workspace default. Applies without an image rebuild.
+              Optional per-project model override. Search the live catalog and
+              pick one — leave it unset to use the workspace default. Applies
+              without an image rebuild.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <ModelField projectId={project.id} model={model} inheritedModel={inheritedModel} />
+            <ModelField
+              projectId={project.id}
+              model={model}
+              inheritedModel={inheritedModel}
+            />
           </CardContent>
         </Card>
 
@@ -334,7 +355,10 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
             {skills.length > 0 && (
               <ul className="space-y-1.5">
                 {skills.map((slug) => (
-                  <li key={slug} className="flex items-center justify-between gap-2 text-sm">
+                  <li
+                    key={slug}
+                    className="flex items-center justify-between gap-2 text-sm"
+                  >
                     <button
                       type="button"
                       className="font-mono underline-offset-4 hover:underline"
@@ -367,7 +391,11 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="skill-desc">Description</Label>
-                  <Input id="skill-desc" name="description" placeholder="When to use this skill" />
+                  <Input
+                    id="skill-desc"
+                    name="description"
+                    placeholder="When to use this skill"
+                  />
                 </div>
               </div>
               <Textarea
@@ -389,15 +417,18 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
           <CardHeader>
             <CardTitle>Schedules</CardTitle>
             <CardDescription>
-              Cron-triggered runs. The message is delivered to the assistant when the schedule
-              fires.
+              Cron-triggered runs. The message is delivered to the assistant
+              when the schedule fires.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {schedules.length > 0 && (
               <ul className="space-y-1.5">
                 {schedules.map((slug) => (
-                  <li key={slug} className="flex items-center justify-between gap-2 text-sm">
+                  <li
+                    key={slug}
+                    className="flex items-center justify-between gap-2 text-sm"
+                  >
                     <button
                       type="button"
                       className="font-mono underline-offset-4 hover:underline"
@@ -406,7 +437,11 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
                       {slug}.md
                     </button>
                     <form method="post">
-                      <input type="hidden" name="intent" value="delete-schedule" />
+                      <input
+                        type="hidden"
+                        name="intent"
+                        value="delete-schedule"
+                      />
                       <input type="hidden" name="slug" value={slug} />
                       <Button type="submit" variant="ghost" size="sm">
                         Delete
@@ -455,8 +490,8 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
 
         <Alert>
           <AlertDescription>
-            Staged config appears on the Deployment tab. Publish + merge it to apply — that
-            restarts the assistant with your changes.
+            Staged config appears on the Deployment tab. Publish + merge it to
+            apply — that restarts the assistant with your changes.
           </AlertDescription>
         </Alert>
       </div>
@@ -478,7 +513,11 @@ function ModelField({
   model: string | null;
   inheritedModel: string;
 }) {
-  const fetcher = useFetcher<{ ok?: boolean; error?: string; saved?: string }>();
+  const fetcher = useFetcher<{
+    ok?: boolean;
+    error?: string;
+    saved?: string;
+  }>();
   const busy = fetcher.state !== "idle";
   const commit = (value: string) =>
     fetcher.submit({ intent: "save-model", model: value }, { method: "post" });
@@ -504,7 +543,8 @@ function ModelField({
         {model ? (
           <>
             Overriding the default of{" "}
-            <span className="font-mono text-xs">{inheritedModel}</span>. Reset to inherit it.
+            <span className="font-mono text-xs">{inheritedModel}</span>. Reset
+            to inherit it.
           </>
         ) : (
           <>

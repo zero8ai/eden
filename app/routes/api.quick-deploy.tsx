@@ -17,8 +17,12 @@
  * returns a clean error. The optional `agent` field is used ONLY to build the redirect target, so
  * the user lands back on the Overview they came from.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
-import { redirect, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
+import {
+  redirect,
+  type ActionFunctionArgs,
+  type LoaderFunctionArgs,
+} from "react-router";
 
 import { groupDrafts, type DraftGroup } from "~/deploy/quick-deploy";
 import { listTeamEnvNames } from "~/deploy/environments.server";
@@ -40,22 +44,24 @@ interface QuickDeployData {
   envNames: string[];
 }
 
-const EMPTY: QuickDeployData = { draftCount: 0, groups: [], members: [], envNames: [] };
+const EMPTY: QuickDeployData = {
+  draftCount: 0,
+  groups: [],
+  members: [],
+  envNames: [],
+};
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<QuickDeployData> => {
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId,
-          role: auth.role,
-        },
-        args.params.projectId,
-      );
+      const project = await requireProject(auth, args.params.projectId);
       // No connected repo → nothing to ship; hide the button rather than error the whole page.
-      if (!project.repoInstallationId || !project.repoOwner || !project.repoName) {
+      if (
+        !project.repoInstallationId ||
+        !project.repoOwner ||
+        !project.repoName
+      ) {
         return EMPTY;
       }
       try {
@@ -81,17 +87,10 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
 
   const form = await args.request.formData();

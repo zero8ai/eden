@@ -7,7 +7,7 @@
  * so a live playground turn fills in as it goes. The exact system prompt stays reconstructable
  * from the Release commit linked here (link, not snapshot).
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { Activity, Users } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import {
@@ -37,18 +37,12 @@ import { requireProject } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.runs.$runId";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId,
-          role: auth.role,
-        },
-        args.params.projectId,
-        { request: args.request },
-      );
+      const project = await requireProject(auth, args.params.projectId, {
+        request: args.request,
+      });
       const agentName = agentFromParams(args.params);
       if (!agentName) {
         const legacy = agentParamRedirect(args.request, project.id);
@@ -102,7 +96,9 @@ function commitUrl(
   return `https://github.com/${project.repoOwner}/${project.repoName}/commit/${gitSha}`;
 }
 
-export default function RunTranscriptRoute({ loaderData }: Route.ComponentProps) {
+export default function RunTranscriptRoute({
+  loaderData,
+}: Route.ComponentProps) {
   const { project, run, steps, release, roster, activeAgent, isTeam } =
     loaderData;
   const ctx = contextPath(project.id, isTeam ? activeAgent : null);
@@ -122,7 +118,8 @@ export default function RunTranscriptRoute({ loaderData }: Route.ComponentProps)
   // The triggering input: prefer a captured user-message step; fall back to run metadata (a
   // running turn has metadata before any steps land).
   const hasUserStep = stepViews.some(
-    (s) => s.type === "message" && (s.data as { role?: string })?.role === "user",
+    (s) =>
+      s.type === "message" && (s.data as { role?: string })?.role === "user",
   );
   const metaInput =
     typeof run.metadata?.input === "string" ? run.metadata.input : null;

@@ -9,7 +9,7 @@
  *
  * Convention: ALL identifiers — table PKs, client-side keys, external references — use
  * `newId()`, never crypto.randomUUID(). Every table PK we mint is
- * `varchar("id", { length: 12 }).primaryKey().$defaultFn(newId)` (WorkOS-issued org/user
+ * `varchar("id", { length: 12 }).primaryKey().$defaultFn(newId)` (Better Auth-owned identity
  * ids stay text). The column width enforces the format at the DB layer.
  */
 import { customAlphabet } from "nanoid";

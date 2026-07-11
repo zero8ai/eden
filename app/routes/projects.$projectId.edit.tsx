@@ -7,7 +7,7 @@
  * draft (refresh-proof, no git write); the Changes tab publishes staged drafts as one PR
  * (PRD §7.3).
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { Pencil } from "lucide-react";
 import { useState } from "react";
 import {
@@ -82,19 +82,13 @@ function templateFor(path: string): string | null {
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<FileEditView> => {
       const project = requireRepo(
-        await requireProject(
-          {
-            user: auth.user,
-            organizationId: auth.organizationId,
-            role: auth.role,
-          },
-          args.params.projectId,
-          { request: args.request },
-        ),
+        await requireProject(auth, args.params.projectId, {
+          request: args.request,
+        }),
       );
 
       // The member is the path segment when present (member-level route); otherwise the
@@ -145,18 +139,11 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
 
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
 
   const form = await args.request.formData();

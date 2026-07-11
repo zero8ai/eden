@@ -7,7 +7,7 @@
  * "is this version better?" is answerable inline (compare-by-version — the emergent A/B, D10).
  * Member-scoped (M5.8): team members' runs live at /repos/:id/agents/:name/runs.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { Activity, Inbox } from "lucide-react";
 import type { ReactNode } from "react";
 import {
@@ -83,18 +83,12 @@ const SORTS: RunSort[] = ["newest", "slowest", "tokens", "errors"];
 const STATUSES = ["all", "completed", "failed", "running"] as const;
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId,
-          role: auth.role,
-        },
-        args.params.projectId,
-        { request: args.request },
-      );
+      const project = await requireProject(auth, args.params.projectId, {
+        request: args.request,
+      });
       const agentName = agentFromParams(args.params);
       if (!agentName) {
         const legacy = agentParamRedirect(args.request, project.id);
@@ -115,11 +109,14 @@ export const loader = (args: LoaderFunctionArgs) =>
         rawRelease && rawRelease !== "all" ? rawRelease : undefined;
       const rawStatus = params.get("status");
       const status =
-        rawStatus === "completed" || rawStatus === "failed" || rawStatus === "running"
+        rawStatus === "completed" ||
+        rawStatus === "failed" ||
+        rawStatus === "running"
           ? rawStatus
           : undefined;
       const rawChannel = params.get("channel");
-      const channel = rawChannel && rawChannel !== "all" ? rawChannel : undefined;
+      const channel =
+        rawChannel && rawChannel !== "all" ? rawChannel : undefined;
       const range = params.get("range") ?? "7d";
       const rangeMs = RANGES[range];
       const since = rangeMs ? new Date(Date.now() - rangeMs) : undefined;
@@ -158,7 +155,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         stats,
         baseline,
         channels,
-        releases: releasesList.filter((r) => !isTeam || r.agentId === active.id),
+        releases: releasesList.filter(
+          (r) => !isTeam || r.agentId === active.id,
+        ),
         filters: { releaseId, status, channel, range, sort },
       };
     },
@@ -257,7 +256,11 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
               : `${Math.round(stats.successRate * 100)}%`
           }
           accent={stats.successRate != null ? "emerald" : undefined}
-          sub={baseline?.successRate != null ? `all: ${Math.round(baseline.successRate * 100)}%` : undefined}
+          sub={
+            baseline?.successRate != null
+              ? `all: ${Math.round(baseline.successRate * 100)}%`
+              : undefined
+          }
         />
         <StatCard
           label="Errors"
@@ -269,23 +272,29 @@ export default function Runs({ loaderData }: Route.ComponentProps) {
           label="p50 wall"
           value={ms(stats.p50Ms)}
           accent="indigo"
-          sub={baseline?.p50Ms != null ? `all: ${ms(baseline.p50Ms)}` : undefined}
+          sub={
+            baseline?.p50Ms != null ? `all: ${ms(baseline.p50Ms)}` : undefined
+          }
         />
         <StatCard
           label="p95 wall"
           value={ms(stats.p95Ms)}
           accent="indigo"
-          sub={baseline?.p95Ms != null ? `all: ${ms(baseline.p95Ms)}` : undefined}
+          sub={
+            baseline?.p95Ms != null ? `all: ${ms(baseline.p95Ms)}` : undefined
+          }
         />
         <StatCard
           label="Tokens"
           value={<LocalizedNumber value={stats.tokens} />}
           accent="brand"
-          sub={baseline ? (
-            <>
-              all: <LocalizedNumber value={baseline.tokens} />
-            </>
-          ) : undefined}
+          sub={
+            baseline ? (
+              <>
+                all: <LocalizedNumber value={baseline.tokens} />
+              </>
+            ) : undefined
+          }
         />
       </div>
       <Card className="mb-6">
@@ -424,11 +433,7 @@ function StatCard({
   accent?: Accent;
 }) {
   const numberColor =
-    tone === "bad"
-      ? "text-destructive"
-      : accent
-        ? accentText[accent]
-        : "";
+    tone === "bad" ? "text-destructive" : accent ? accentText[accent] : "";
   return (
     <div className="rounded-lg border px-3 py-2">
       <p className="text-xs uppercase tracking-wide text-muted-foreground">
@@ -482,7 +487,9 @@ function Sparkline({ runs }: { runs: RunRow[] }) {
   for (const r of runs) {
     const t = new Date(r.startedAt).getTime();
     const idx =
-      max === min ? N - 1 : Math.min(N - 1, Math.floor(((t - min) / (max - min)) * (N - 1)));
+      max === min
+        ? N - 1
+        : Math.min(N - 1, Math.floor(((t - min) / (max - min)) * (N - 1)));
     total[idx] += 1;
     if (r.status === "failed") failed[idx] += 1;
   }

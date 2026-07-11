@@ -13,7 +13,11 @@
  * keyed by the same tenant-wide secrets key that seals secrets (no new key to provision).
  */
 import { decodeKey } from "~/seams/oss/secretbox";
-import { safeReturnTo, signState, verifyState } from "~/lib/signed-state.server";
+import {
+  safeReturnTo,
+  signState,
+  verifyState,
+} from "~/lib/signed-state.server";
 import { getProvider } from "./providers.server";
 
 /** OpenID scopes appended to every request so we can display the connected account. */
@@ -46,10 +50,7 @@ export function missingScopes(requested: string, granted: string): string[] {
  *  - "inactive": grant expired/revoked → status badge + Reconnect.
  */
 export type ConnectionRowState =
-  | "not-connected"
-  | "connected"
-  | "under-scoped"
-  | "inactive";
+  "not-connected" | "connected" | "under-scoped" | "inactive";
 
 /**
  * Derive a Connections-card row's state from its lock-required scopes and current grant (issue #30).
@@ -76,7 +77,12 @@ export function connectionRowState(input: {
 export interface GoogleConnectState {
   projectId: string;
   agentId: string;
-  provider: string;
+  /** Better Auth user and session that initiated this OAuth round-trip. */
+  userId: string;
+  sessionId: string;
+  /** Random server-recorded nonce consumed atomically by the callback. */
+  nonce: string;
+  provider: "google";
   /** Space-separated scopes requested (as the connector declared them). */
   scopes: string;
   /** Same-origin relative path to return to after the round-trip. */
@@ -91,7 +97,10 @@ export function connectStateKey(): Buffer {
 }
 
 /** Sign a connect state. `returnTo` must already be a validated same-origin path. */
-export function signConnectState(state: GoogleConnectState, key: Buffer): string {
+export function signConnectState(
+  state: GoogleConnectState,
+  key: Buffer,
+): string {
   return signState(state, key);
 }
 
@@ -110,7 +119,10 @@ export function verifyConnectState(
   if (
     typeof parsed.projectId !== "string" ||
     typeof parsed.agentId !== "string" ||
-    typeof parsed.provider !== "string" ||
+    typeof parsed.userId !== "string" ||
+    typeof parsed.sessionId !== "string" ||
+    typeof parsed.nonce !== "string" ||
+    parsed.provider !== "google" ||
     typeof parsed.scopes !== "string" ||
     typeof parsed.returnTo !== "string" ||
     typeof parsed.exp !== "number"

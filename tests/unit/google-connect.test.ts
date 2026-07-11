@@ -29,7 +29,9 @@ describe("missingScopes", () => {
   });
 
   it("returns the scopes the user unchecked (granular consent)", () => {
-    expect(missingScopes(`${SHEETS} ${DRIVE}`, `${SHEETS} openid`)).toEqual([DRIVE]);
+    expect(missingScopes(`${SHEETS} ${DRIVE}`, `${SHEETS} openid`)).toEqual([
+      DRIVE,
+    ]);
   });
 
   it("is lenient when granted is empty or absent (skip the check)", () => {
@@ -38,7 +40,9 @@ describe("missingScopes", () => {
   });
 
   it("ignores extra granted scopes beyond what was requested", () => {
-    expect(missingScopes(SHEETS, `${SHEETS} ${DRIVE} openid email`)).toEqual([]);
+    expect(missingScopes(SHEETS, `${SHEETS} ${DRIVE} openid email`)).toEqual(
+      [],
+    );
   });
 
   it("returns [] when nothing was requested", () => {
@@ -50,7 +54,10 @@ describe("missingScopes", () => {
     // treated as covering a connector that needs spreadsheets — the Deployment-tab Connections card
     // derives an "under-scoped" row from exactly this (issue #30).
     expect(
-      missingScopes(SHEETS, "https://www.googleapis.com/auth/userinfo.email openid"),
+      missingScopes(
+        SHEETS,
+        "https://www.googleapis.com/auth/userinfo.email openid",
+      ),
     ).toEqual([SHEETS]);
   });
 });
@@ -122,9 +129,13 @@ describe("connectionRowState (issue #30)", () => {
 const state: GoogleConnectState = {
   projectId: "projabcdefgh",
   agentId: "agntabcdefgh",
+  userId: "userabcdefgh",
+  sessionId: "sessabcdefgh",
+  nonce: "nonceabcdefgh",
   provider: "google",
   scopes: "https://www.googleapis.com/auth/spreadsheets",
-  returnTo: "/marketplace/bundle/google-sheets/install?project=projabcdefgh&member=pm",
+  returnTo:
+    "/marketplace/bundle/google-sheets/install?project=projabcdefgh&member=pm",
   exp: 1_800_000_000_000,
 };
 
@@ -138,7 +149,9 @@ describe("google connect state", () => {
 
   it("rejects tamper, wrong key, and expiry", () => {
     const token = signConnectState(state, key);
-    expect(verifyConnectState(token, randomBytes(32), state.exp - 1000)).toBeNull();
+    expect(
+      verifyConnectState(token, randomBytes(32), state.exp - 1000),
+    ).toBeNull();
     expect(verifyConnectState(token, key, state.exp)).toBeNull();
     expect(verifyConnectState("garbage", key)).toBeNull();
   });
@@ -151,6 +164,44 @@ describe("google connect state", () => {
     expect(verifyConnectState(bad, key, state.exp - 1000)).toBeNull();
     const protoRel = signConnectState({ ...state, returnTo: "//evil" }, key);
     expect(verifyConnectState(protoRel, key, state.exp - 1000)).toBeNull();
+  });
+
+  it("rejects another provider or missing Better Auth binding", () => {
+    const wrongProvider = signConnectState(
+      { ...state, provider: "microsoft" } as unknown as GoogleConnectState,
+      key,
+    );
+    expect(verifyConnectState(wrongProvider, key, state.exp - 1000)).toBeNull();
+
+    const missingUser = { ...state } as Partial<GoogleConnectState>;
+    delete missingUser.userId;
+    const missingUserToken = signConnectState(
+      missingUser as GoogleConnectState,
+      key,
+    );
+    expect(
+      verifyConnectState(missingUserToken, key, state.exp - 1000),
+    ).toBeNull();
+
+    const missingSession = { ...state } as Partial<GoogleConnectState>;
+    delete missingSession.sessionId;
+    const missingSessionToken = signConnectState(
+      missingSession as GoogleConnectState,
+      key,
+    );
+    expect(
+      verifyConnectState(missingSessionToken, key, state.exp - 1000),
+    ).toBeNull();
+
+    const missingNonce = { ...state } as Partial<GoogleConnectState>;
+    delete missingNonce.nonce;
+    const missingNonceToken = signConnectState(
+      missingNonce as GoogleConnectState,
+      key,
+    );
+    expect(
+      verifyConnectState(missingNonceToken, key, state.exp - 1000),
+    ).toBeNull();
   });
 
   it("has a one-hour TTL", () => {
@@ -248,7 +299,11 @@ describe("exchangeCode", () => {
     const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
       body = String(init?.body ?? "");
       return new Response(
-        JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: 1 }),
+        JSON.stringify({
+          access_token: "at",
+          refresh_token: "rt",
+          expires_in: 1,
+        }),
         { status: 200 },
       );
     }) as typeof fetch;
@@ -269,9 +324,12 @@ describe("refreshAccessToken", () => {
 
   it("returns a fresh access token on success", async () => {
     const fetchImpl = (async () =>
-      new Response(JSON.stringify({ access_token: "fresh", expires_in: 3599 }), {
-        status: 200,
-      })) as typeof fetch;
+      new Response(
+        JSON.stringify({ access_token: "fresh", expires_in: 3599 }),
+        {
+          status: 200,
+        },
+      )) as typeof fetch;
     const out = await refreshAccessToken(
       { config, refreshToken: "rt" },
       fetchImpl,

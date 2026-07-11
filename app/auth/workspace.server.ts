@@ -1,126 +1,157 @@
-/**
- * Workspace resolution + provisioning (D2: WorkOS Organization == Eden workspace).
- *
- * WorkOS deliberately does not auto-create an organization at signup — the app owns that
- * onboarding step, and a user may belong to several workspaces (shared workspaces, issue #56).
- * A user's org-less request lands here; `ensureWorkspace` decides which workspace to enter and
- * re-mints the session against it, replaying the original request. The decision:
- *
- *   1. Already org-scoped → nothing to do.
- *   2. No WorkOS memberships → create the user's personal workspace + first (admin) membership.
- *   3. `users.lastOrgId` still points at a current membership → re-enter it (returning user).
- *   4. Exactly one membership → adopt it (invited user, or single-workspace user).
- *   5. Several memberships, no usable last-active → send them to the `/workspaces` chooser.
- *
- * The chooser/switcher must read live WorkOS memberships (not our `memberships` mirror): a
- * freshly-invited, never-entered workspace has no mirror row yet. WorkOS is the source of truth
- * for "which workspaces am I in".
- */
-import { getWorkOS, refreshSession } from "@workos-inc/authkit-react-router";
-import { eq } from "drizzle-orm";
 import { redirect } from "react-router";
+import { eq } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
-import { users } from "~/db/schema";
-import type { SessionAuth } from "./tenant.server";
+import { userWorkspaceMemory } from "~/db/schema";
+import { newId } from "~/lib/id";
+import { auth } from "~/lib/auth.server";
+import type { SessionAuth } from "./session.server";
 
-/**
- * Pure workspace-entry decision, split out so the branching is unit-testable without mocking
- * WorkOS. `membershipOrgIds` is the user's live active memberships; `lastOrgId` is the
- * remembered last-active workspace (may be stale or null).
- */
+export type WorkspaceInfo = {
+  id: string;
+  name: string;
+  slug: string;
+};
+
+export type ActiveWorkspace = {
+  org: WorkspaceInfo;
+  member: {
+    id: string;
+    organizationId: string;
+    userId: string;
+    role: string;
+  };
+};
+
 export function chooseWorkspaceEntry(input: {
   membershipOrgIds: string[];
-  lastOrgId: string | null;
+  lastOrgId?: string | null;
 }): { kind: "create" } | { kind: "enter"; orgId: string } | { kind: "choose" } {
-  const { membershipOrgIds, lastOrgId } = input;
-  if (membershipOrgIds.length === 0) return { kind: "create" };
-  // Prefer the remembered workspace, but only if it's still one the user belongs to.
-  if (lastOrgId && membershipOrgIds.includes(lastOrgId)) {
-    return { kind: "enter", orgId: lastOrgId };
+  if (input.membershipOrgIds.length === 0) return { kind: "create" };
+  if (input.membershipOrgIds.length === 1) {
+    return { kind: "enter", orgId: input.membershipOrgIds[0] };
   }
-  if (membershipOrgIds.length === 1) return { kind: "enter", orgId: membershipOrgIds[0] };
+  // A remembered workspace only counts while the user is still a member of it.
+  if (input.lastOrgId && input.membershipOrgIds.includes(input.lastOrgId)) {
+    return { kind: "enter", orgId: input.lastOrgId };
+  }
   return { kind: "choose" };
 }
 
-/**
- * The user's workspaces from WorkOS (the authoritative membership list, incl. never-entered
- * invites). Shared by the chooser, the shell switcher's resource route, and `ensureWorkspace`.
- */
 export async function listUserWorkspaces(
-  userId: string,
-): Promise<{ id: string; name: string }[]> {
-  const { data } = await getWorkOS().userManagement.listOrganizationMemberships({
-    userId,
-    statuses: ["active"],
+  session: SessionAuth,
+): Promise<WorkspaceInfo[]> {
+  const organizations = await auth.api.listOrganizations({
+    headers: session.requestHeaders,
   });
-  return data.map((m) => ({
-    id: m.organizationId,
-    name: m.organizationName ?? m.organizationId,
-  }));
+  return organizations.map(({ id, name, slug }) => ({ id, name, slug }));
 }
 
-/** Create the user's personal workspace + their first (admin) membership. Returns the org id. */
-async function createPersonalWorkspace(auth: SessionAuth): Promise<string> {
-  const workos = getWorkOS();
-  const first =
-    auth.user.firstName?.trim() || auth.user.email.split("@")[0] || "My";
-  const org = await workos.organizations.createOrganization({
-    name: `${first}'s workspace`,
-  });
+export async function resolveActiveWorkspace(
+  session: SessionAuth,
+): Promise<ActiveWorkspace | null> {
+  if (!session.organizationId) return null;
   try {
-    await workos.userManagement.createOrganizationMembership({
-      userId: auth.user.id,
-      organizationId: org.id,
-      roleSlug: "admin",
-    });
+    const [member, workspaces] = await Promise.all([
+      auth.api.getActiveMember({ headers: session.requestHeaders }),
+      listUserWorkspaces(session),
+    ]);
+    const org = workspaces.find(
+      (workspace) => workspace.id === session.organizationId,
+    );
+    if (!member || member.organizationId !== session.organizationId || !org)
+      return null;
+    return { org, member };
   } catch {
-    // Environment has no "admin" role defined — fall back to the default role.
-    await workos.userManagement.createOrganizationMembership({
-      userId: auth.user.id,
-      organizationId: org.id,
-    });
+    return null;
   }
-  return org.id;
 }
 
-/**
- * Guarantee the session is org-scoped, provisioning/adopting/choosing a workspace as needed.
- * Throws a redirect (with refreshed session cookies, or to the chooser) when it had to act —
- * callers just `await` it before using `auth.organizationId`.
- */
+export async function setActiveWorkspace(
+  session: SessionAuth,
+  organizationId: string | null,
+) {
+  const result = await auth.api.setActiveOrganization({
+    body: { organizationId },
+    headers: session.requestHeaders,
+  });
+  // Remember the choice across sessions: Better Auth scopes activeOrganizationId to the session,
+  // so without this a multi-workspace user lands on the chooser after every fresh sign-in.
+  if (organizationId) {
+    await db
+      .insert(userWorkspaceMemory)
+      .values({ userId: session.user.id, lastOrgId: organizationId })
+      .onConflictDoUpdate({
+        target: userWorkspaceMemory.userId,
+        set: { lastOrgId: organizationId, updatedAt: new Date() },
+      });
+  }
+  return result;
+}
+
+async function lastWorkspaceId(userId: string): Promise<string | null> {
+  const rows = await db
+    .select({ lastOrgId: userWorkspaceMemory.lastOrgId })
+    .from(userWorkspaceMemory)
+    .where(eq(userWorkspaceMemory.userId, userId))
+    .limit(1);
+  return rows[0]?.lastOrgId ?? null;
+}
+
+function personalWorkspaceName(session: SessionAuth): string {
+  const firstName = session.user.name.trim().split(/\s+/)[0];
+  const fallback = session.user.email.split("@")[0];
+  return `${firstName || fallback || "My"}'s workspace`;
+}
+
+function personalWorkspaceSlug(session: SessionAuth): string {
+  const stem = session.user.name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 32);
+  return `${stem || "workspace"}-${newId().toLowerCase()}`;
+}
+
+async function createPersonalWorkspace(session: SessionAuth): Promise<string> {
+  const organization = await auth.api.createOrganization({
+    body: {
+      name: personalWorkspaceName(session),
+      slug: personalWorkspaceSlug(session),
+    },
+    headers: session.requestHeaders,
+  });
+  if (!organization)
+    throw new Error("Better Auth did not create an organization.");
+  return organization.id;
+}
+
 export async function ensureWorkspace(
   request: Request,
-  auth: SessionAuth,
+  session: SessionAuth,
 ): Promise<void> {
-  if (auth.organizationId) return;
+  if (await resolveActiveWorkspace(session)) return;
 
-  const url = new URL(request.url);
-  const replayTo = url.pathname + url.search;
+  if (session.organizationId) {
+    await setActiveWorkspace(session, null);
+  }
 
-  const workspaces = await listUserWorkspaces(auth.user.id);
-  const membershipOrgIds = workspaces.map((w) => w.id);
-
-  // Read the remembered workspace; the row may not exist yet (first-ever request) → null.
-  const [row] = await db
-    .select({ lastOrgId: users.lastOrgId })
-    .from(users)
-    .where(eq(users.id, auth.user.id))
-    .limit(1);
-  const lastOrgId = row?.lastOrgId ?? null;
-
-  const decision = chooseWorkspaceEntry({ membershipOrgIds, lastOrgId });
+  const replayTo = `${new URL(request.url).pathname}${new URL(request.url).search}`;
+  const workspaces = await listUserWorkspaces(session);
+  const decision = chooseWorkspaceEntry({
+    membershipOrgIds: workspaces.map((workspace) => workspace.id),
+    lastOrgId: await lastWorkspaceId(session.user.id),
+  });
 
   if (decision.kind === "choose") {
     throw redirect(`/workspaces?returnTo=${encodeURIComponent(replayTo)}`);
   }
 
-  const organizationId =
-    decision.kind === "create"
-      ? await createPersonalWorkspace(auth)
-      : decision.orgId;
-
-  // Re-mint the session against the workspace and replay the request with the new cookies.
-  const { headers } = await refreshSession(request, { organizationId });
-  throw redirect(replayTo, { headers });
+  if (decision.kind === "create") {
+    await createPersonalWorkspace(session);
+  } else {
+    await setActiveWorkspace(session, decision.orgId);
+  }
+  throw redirect(replayTo);
 }

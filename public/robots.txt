@@ -8,7 +8,10 @@ Disallow: /org/
 Disallow: /connect
 Disallow: /login
 Disallow: /signup
-Disallow: /callback
+Disallow: /forgot-password
+Disallow: /reset-password
+Disallow: /accept-invitation/
+Disallow: /workspaces
 Disallow: /api/
 Disallow: /marketplace
 

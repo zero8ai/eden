@@ -3,51 +3,55 @@
  * `chooseWorkspaceEntry` picks which workspace an org-less session enters (or defers to the
  * chooser); `resolveCrossWorkspaceRedirect` decides whether a project miss is a deep link into
  * another workspace the viewer belongs to. Both are pure over injected inputs, so the branching
- * gets regression coverage without mocking WorkOS or the DB.
+ * gets regression coverage without mocking Better Auth or the DB.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// This suite exercises the pure workspace decisions. Avoid constructing the database-backed
+// Better Auth singleton just to import those helpers.
+vi.mock("~/lib/auth.server", () => ({ auth: { api: {} } }));
 
 import { chooseWorkspaceEntry } from "~/auth/workspace.server";
 import { resolveCrossWorkspaceRedirect } from "~/project/guard.server";
 
 describe("chooseWorkspaceEntry", () => {
   it("creates a workspace when the user has no memberships", () => {
-    expect(chooseWorkspaceEntry({ membershipOrgIds: [], lastOrgId: null })).toEqual({
-      kind: "create",
-    });
-    // A stale lastOrgId can't resurrect a workspace the user no longer belongs to.
-    expect(chooseWorkspaceEntry({ membershipOrgIds: [], lastOrgId: "org_dead" })).toEqual({
+    expect(chooseWorkspaceEntry({ membershipOrgIds: [] })).toEqual({
       kind: "create",
     });
   });
 
   it("enters the only workspace when there is exactly one", () => {
-    expect(chooseWorkspaceEntry({ membershipOrgIds: ["org_a"], lastOrgId: null })).toEqual({
+    expect(chooseWorkspaceEntry({ membershipOrgIds: ["org_a"] })).toEqual({
       kind: "enter",
       orgId: "org_a",
     });
   });
 
-  it("re-enters the remembered workspace when it is still a membership", () => {
+  it("defers to the chooser when the user belongs to several workspaces", () => {
     expect(
-      chooseWorkspaceEntry({ membershipOrgIds: ["org_a", "org_b"], lastOrgId: "org_b" }),
+      chooseWorkspaceEntry({ membershipOrgIds: ["org_a", "org_b"] }),
+    ).toEqual({
+      kind: "choose",
+    });
+  });
+
+  it("re-enters the remembered workspace when the user is still a member", () => {
+    expect(
+      chooseWorkspaceEntry({
+        membershipOrgIds: ["org_a", "org_b"],
+        lastOrgId: "org_b",
+      }),
     ).toEqual({ kind: "enter", orgId: "org_b" });
   });
 
-  it("defers to the chooser with several memberships and no usable last-active", () => {
+  it("falls back to the chooser when the remembered workspace was left", () => {
     expect(
-      chooseWorkspaceEntry({ membershipOrgIds: ["org_a", "org_b"], lastOrgId: null }),
+      chooseWorkspaceEntry({
+        membershipOrgIds: ["org_a", "org_b"],
+        lastOrgId: "org_gone",
+      }),
     ).toEqual({ kind: "choose" });
-    // lastOrgId points at a workspace the user no longer belongs to → still choose.
-    expect(
-      chooseWorkspaceEntry({ membershipOrgIds: ["org_a", "org_b"], lastOrgId: "org_gone" }),
-    ).toEqual({ kind: "choose" });
-  });
-
-  it("adopts the single membership even when last-active is stale", () => {
-    expect(
-      chooseWorkspaceEntry({ membershipOrgIds: ["org_a"], lastOrgId: "org_gone" }),
-    ).toEqual({ kind: "enter", orgId: "org_a" });
   });
 });
 

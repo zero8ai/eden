@@ -1,12 +1,13 @@
 /**
  * "Connect Google" — step 1 of the install-time connection flow (issue #30).
  *
- * Signs a (project, agent, provider, scopes, returnTo) state and redirects the user to Google's
- * OAuth consent screen for Eden's shared client. After they approve, Google returns to
+ * Signs a (project, agent, Better Auth user/session, provider, scopes, returnTo) state and
+ * redirects the user to Google's OAuth consent screen for Eden's shared client. After approval,
+ * Google returns to
  * /google/callback, which exchanges the code and stores the grant. Mirrors the Discord connect
- * start route (authkitLoader + requireProject tenancy + readable-error fallback).
+ * start route (sessionLoader + requireProject tenancy + readable-error fallback).
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { Plug } from "lucide-react";
 import { Link, data, redirect, type LoaderFunctionArgs } from "react-router";
 
@@ -14,6 +15,8 @@ import { AppShell, PageHeader } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { getGoogleOAuthConfig } from "~/connections/config.server";
+import { findGrant } from "~/connections/grants.server";
+import { createOAuthStateNonce } from "~/connections/oauth-state.server";
 import {
   CONNECT_STATE_TTL_MS,
   connectStateKey,
@@ -21,10 +24,13 @@ import {
   signConnectState,
 } from "~/connections/google.server";
 import { listAgents } from "~/db/queries.server";
+import { listDrafts } from "~/drafts/drafts.server";
+import { getAgentSource } from "~/github/cached.server";
 import { publicOrigin } from "~/lib/ingress";
 import { noindexMeta } from "~/lib/seo";
 import { safeReturnTo } from "~/lib/signed-state.server";
-import { requireProject } from "~/project/guard.server";
+import { overlayLock, requiredScopesByProvider } from "~/marketplace/lock";
+import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/google.connect";
 
 interface GoogleConnectData {
@@ -33,38 +39,23 @@ interface GoogleConnectData {
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<GoogleConnectData> => {
       const url = new URL(args.request.url);
       const projectId = url.searchParams.get("project") ?? "";
       const agentName = url.searchParams.get("agent") ?? "";
-      const scopes = (url.searchParams.get("scopes") ?? "").trim();
-      const returnTo = safeReturnTo(url.searchParams.get("returnTo")) ?? "/dashboard";
+      const returnTo =
+        safeReturnTo(url.searchParams.get("returnTo")) ?? "/dashboard";
 
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId ?? null,
-          role: auth.role ?? null,
-        },
-        projectId,
-      );
+      const project = requireRepo(await requireProject(auth, projectId));
 
       const roster = (await listAgents(project.id)).filter(
         (a) => a.kind === "member",
       );
       const agent = roster.find((a) => a.name === agentName);
       if (!agent) throw data("Unknown agent", { status: 404 });
-
       const backUrl = returnTo;
-
-      if (!scopes) {
-        return {
-          error: "No scopes were requested for this connection — nothing to authorize.",
-          backUrl,
-        };
-      }
 
       const config = getGoogleOAuthConfig();
       if (!config) {
@@ -77,14 +68,62 @@ export const loader = (args: LoaderFunctionArgs) =>
         };
       }
 
+      // Derive requested scopes from Eden's server-side install ledger. Query parameters are
+      // attacker-controlled and must never widen the consent requested by the shared OAuth client.
+      // Old lock entries predate the auth snapshot, so a stored grant is their trusted fallback.
+      const [source, drafts, existingGrant] = await Promise.all([
+        getAgentSource(project.repoInstallationId, {
+          owner: project.repoOwner,
+          repo: project.repoName,
+        }),
+        listDrafts(project.id),
+        findGrant({
+          projectId: project.id,
+          agentId: agent.id,
+          provider: "google",
+        }),
+      ]);
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        drafts.map((draft) => ({
+          path: draft.path,
+          content: draft.content,
+        })),
+      );
+      const requiredScopes = requiredScopesByProvider(
+        lock,
+        agent.root === "agent" ? null : agent.name,
+      ).get("google");
+      const scopes =
+        requiredScopes && requiredScopes.length > 0
+          ? requiredScopes.join(" ")
+          : (existingGrant?.scopes.trim() ?? "");
+
+      if (!scopes) {
+        return {
+          error:
+            "No scopes were requested for this connection — nothing to authorize.",
+          backUrl,
+        };
+      }
+
+      const expiresAt = Date.now() + CONNECT_STATE_TTL_MS;
+      const nonce = await createOAuthStateNonce({
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+        expiresAt: new Date(expiresAt),
+      });
       const state = signConnectState(
         {
           projectId: project.id,
           agentId: agent.id,
+          userId: auth.user.id,
+          sessionId: auth.session.id,
+          nonce,
           provider: "google",
           scopes,
           returnTo,
-          exp: Date.now() + CONNECT_STATE_TTL_MS,
+          exp: expiresAt,
         },
         connectStateKey(),
       );
@@ -106,9 +145,9 @@ export function meta() {
 }
 
 export default function GoogleConnect({ loaderData }: Route.ComponentProps) {
-  const { error, backUrl } = loaderData;
+  const { error, backUrl, user } = loaderData;
   return (
-    <AppShell>
+    <AppShell userEmail={user.email}>
       <PageHeader
         icon={Plug}
         accent="brand"

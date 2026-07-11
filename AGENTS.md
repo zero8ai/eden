@@ -5,9 +5,10 @@ without hand-writing code — a guided UI plus an embedded coding assistant over
 Open source and self-hostable.
 
 **Stack:** React Router 7 (framework mode, SSR) · TypeScript · Tailwind 4 · Drizzle + Postgres ·
-WorkOS AuthKit (auth & tenancy) · Docker.
+Better Auth (email/password auth + organization tenancy) · Docker.
 
 **Repo layout:**
+
 - `app/` — the React Router app (routes, components, db, business logic)
 - `drizzle/` — schema and migrations
 - `catalog/` — agent catalog + validation/index scripts

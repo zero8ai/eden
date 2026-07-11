@@ -9,7 +9,7 @@
  * The `state` carried through GitHub is an HMAC-signed (project, agent, environment) binding
  * with an expiry — the callback verifies it before touching anything.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { Webhook } from "lucide-react";
 import { useState } from "react";
 import { Link, data, type LoaderFunctionArgs } from "react-router";
@@ -36,6 +36,7 @@ import {
   manifestStateKey,
   signManifestState,
 } from "~/github/app-manifest.server";
+import { createOAuthStateNonce } from "~/connections/oauth-state.server";
 import { envIngressUrl, isLocalOrigin, publicOrigin } from "~/lib/ingress";
 import { contextPath } from "~/lib/paths";
 import { noindexMeta } from "~/lib/seo";
@@ -58,7 +59,7 @@ interface GitHubAppNewData {
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<GitHubAppNewData> => {
       const url = new URL(args.request.url);
@@ -66,16 +67,11 @@ export const loader = (args: LoaderFunctionArgs) =>
       const agentName = url.searchParams.get("agent") ?? "";
       const envId = url.searchParams.get("env");
 
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId ?? null,
-          role: auth.role ?? null,
-        },
-        projectId,
-      );
+      const project = await requireProject(auth, projectId);
 
-      const roster = (await listAgents(project.id)).filter((a) => a.kind === "member");
+      const roster = (await listAgents(project.id)).filter(
+        (a) => a.kind === "member",
+      );
       const agent = roster.find((a) => a.name === agentName);
       if (!agent) throw data("Unknown agent", { status: 404 });
 
@@ -104,12 +100,23 @@ export const loader = (args: LoaderFunctionArgs) =>
       const deploymentUrl = `${origin}${contextPath(project.id, memberSegment)}/deployment`;
       const webhookUrl = envIngressUrl(origin, env.id, GITHUB_CHANNEL_ROUTE);
 
+      // Bind the round-trip to this user + session and record a single-use nonce, mirroring the
+      // Google connect flow: a leaked or replayed callback can't complete in another session.
+      const exp = Date.now() + MANIFEST_STATE_TTL_MS;
+      const nonce = await createOAuthStateNonce({
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+        expiresAt: new Date(exp),
+      });
       const state = signManifestState(
         {
           projectId: project.id,
           agentId: agent.id,
           environmentId: env.id,
-          exp: Date.now() + MANIFEST_STATE_TTL_MS,
+          userId: auth.user.id,
+          sessionId: auth.session.id,
+          nonce,
+          exp,
         },
         manifestStateKey(),
       );
@@ -186,20 +193,26 @@ export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Webhook className={`size-4 shrink-0 ${accentText.brand}`} aria-hidden />
+              <Webhook
+                className={`size-4 shrink-0 ${accentText.brand}`}
+                aria-hidden
+              />
               Create the App on GitHub
             </CardTitle>
             <CardDescription>
-              GitHub shows a confirmation page — the app name is editable there and must be
-              unique across GitHub. Approve it, and Eden stores the App&rsquo;s credentials as{" "}
-              {agentName}&rsquo;s secrets and sends you to pick the repositories it watches.
+              GitHub shows a confirmation page — the app name is editable there
+              and must be unique across GitHub. Approve it, and Eden stores the
+              App&rsquo;s credentials as {agentName}&rsquo;s secrets and sends
+              you to pick the repositories it watches.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-1 text-sm">
               <p>
                 <span className="font-medium">Proposed name:</span>{" "}
-                <code className="rounded bg-muted px-1.5 py-0.5">{form.appName}</code>
+                <code className="rounded bg-muted px-1.5 py-0.5">
+                  {form.appName}
+                </code>
               </p>
               <p>
                 <span className="font-medium">Webhook ({form.envName}):</span>{" "}
@@ -208,9 +221,10 @@ export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
                 </code>
               </p>
               <p className="text-muted-foreground">
-                Permissions: issues &amp; pull requests (read/write, the conversation),
-                contents (read/write, so the agent can branch and push), metadata (read).
-                Events: issue comments and pull-request review comments.
+                Permissions: issues &amp; pull requests (read/write, the
+                conversation), contents (read/write, so the agent can branch and
+                push), metadata (read). Events: issue comments and pull-request
+                review comments.
               </p>
             </div>
 
@@ -218,9 +232,10 @@ export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
               <Alert>
                 <AlertTitle>Local development origin</AlertTitle>
                 <AlertDescription>
-                  The webhook URL points at localhost, which GitHub can&rsquo;t reach. The
-                  App will still be created and its credentials stored — expose Eden through
-                  a tunnel and update the App&rsquo;s webhook URL for live mentions.
+                  The webhook URL points at localhost, which GitHub can&rsquo;t
+                  reach. The App will still be created and its credentials
+                  stored — expose Eden through a tunnel and update the
+                  App&rsquo;s webhook URL for live mentions.
                 </AlertDescription>
               </Alert>
             )}
@@ -228,7 +243,9 @@ export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
             <form method="post" action={submitUrl} className="space-y-4">
               <input type="hidden" name="manifest" value={form.manifestJson} />
               <div className="space-y-1.5">
-                <Label htmlFor="organization">GitHub organization (optional)</Label>
+                <Label htmlFor="organization">
+                  GitHub organization (optional)
+                </Label>
                 <Input
                   id="organization"
                   value={organization}
@@ -237,17 +254,18 @@ export default function GitHubAppNew({ loaderData }: Route.ComponentProps) {
                   className="w-full font-mono sm:w-72"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Leave blank to create the App under your personal account, or name an
-                  organization you own to create it there. Either way you choose which
-                  repositories it can reach when you install it.
+                  Leave blank to create the App under your personal account, or
+                  name an organization you own to create it there. Either way
+                  you choose which repositories it can reach when you install
+                  it.
                 </p>
               </div>
               <Button type="submit">Continue to GitHub</Button>
             </form>
 
             <p className="text-xs text-muted-foreground">
-              Prefer to set it up by hand? The manual steps are in the GitHub channel&rsquo;s
-              setup notes.
+              Prefer to set it up by hand? The manual steps are in the GitHub
+              channel&rsquo;s setup notes.
             </p>
           </CardContent>
         </Card>

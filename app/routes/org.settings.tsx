@@ -1,8 +1,9 @@
 /**
  * Org governance (managed mode — PRD §7.5, ARCH §3.8). Spend cap + kill-switch, month-to-date
- * token usage, and the operational audit log. Org-scoped; roles/SSO are delegated to WorkOS.
+ * token usage, and the operational audit log. Workspace membership is managed by Better Auth's
+ * organization plugin.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { Building2, Cpu, Gauge, ScrollText, ShieldAlert } from "lucide-react";
 import {
   Form,
@@ -29,8 +30,11 @@ import {
 } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
-import { syncTenant, type Org } from "~/auth/tenant.server";
-import { ensureWorkspace } from "~/auth/workspace.server";
+import {
+  ensureWorkspace,
+  resolveActiveWorkspace,
+  type WorkspaceInfo,
+} from "~/auth/workspace.server";
 import { listAudit, recordAudit } from "~/managed/audit.server";
 import {
   getWorkspaceAssistantModel,
@@ -48,10 +52,11 @@ import { getRuntime } from "~/seams/index.server";
 import type { auditLog } from "~/db/schema";
 import type { EdenMode } from "~/seams/types";
 import { noindexMeta } from "~/lib/seo";
+import { auth as betterAuth } from "~/lib/auth.server";
 import type { Route } from "./+types/org.settings";
 
 interface OrgSettingsView {
-  org: Org | null;
+  org: WorkspaceInfo | null;
   mode: EdenMode;
   limit: SpendLimit | null;
   used: number;
@@ -60,19 +65,32 @@ interface OrgSettingsView {
   hasModelKey: boolean;
   /** Workspace default OpenRouter model id (null = Eden default). */
   assistantModel: string | null;
+  /** Better Auth organization:update permission for the active workspace. */
+  canManage: boolean;
+}
+
+async function canManageWorkspace(
+  organizationId: string,
+  headers: Headers,
+): Promise<boolean> {
+  const permission = await betterAuth.api.hasPermission({
+    headers,
+    body: {
+      organizationId,
+      permissions: { organization: ["update"] },
+    },
+  });
+  return permission.success;
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<OrgSettingsView> => {
       // Close the org-less hole: provision/adopt/choose a workspace before syncing.
       await ensureWorkspace(args.request, auth);
-      const { org } = await syncTenant({
-        user: auth.user,
-        organizationId: auth.organizationId,
-        role: auth.role,
-      });
+      const active = await resolveActiveWorkspace(auth);
+      const org = active?.org;
       if (!org) {
         return {
           org: null,
@@ -82,15 +100,18 @@ export const loader = (args: LoaderFunctionArgs) =>
           audit: [],
           hasModelKey: false,
           assistantModel: null,
+          canManage: false,
         };
       }
-      const [limit, used, audit, hasModelKey, assistantModel] = await Promise.all([
-        getSpendLimit(org.id),
-        tokensUsedSince(org.id),
-        listAudit(org.id, 50),
-        hasWorkspaceModelKey(org.id),
-        getWorkspaceAssistantModel(org.id),
-      ]);
+      const [limit, used, audit, hasModelKey, assistantModel, canManage] =
+        await Promise.all([
+          getSpendLimit(org.id),
+          tokensUsedSince(org.id),
+          listAudit(org.id, 50),
+          hasWorkspaceModelKey(org.id),
+          getWorkspaceAssistantModel(org.id),
+          canManageWorkspace(org.id, auth.requestHeaders),
+        ]);
       return {
         org,
         mode: getRuntime().mode,
@@ -99,20 +120,21 @@ export const loader = (args: LoaderFunctionArgs) =>
         audit,
         hasModelKey,
         assistantModel,
+        canManage,
       };
     },
     { ensureSignedIn: true },
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
-  const { org } = await syncTenant({
-    user: auth.user,
-    organizationId: auth.organizationId ?? null,
-    role: auth.role ?? null,
-  });
+  const active = await resolveActiveWorkspace(auth);
+  const org = active?.org;
   if (!org) return { error: "No organization." };
+  if (!(await canManageWorkspace(org.id, auth.requestHeaders))) {
+    throw new Response("Forbidden", { status: 403 });
+  }
 
   const form = await args.request.formData();
 
@@ -120,7 +142,9 @@ export async function action(args: ActionFunctionArgs) {
   const intent = String(form.get("intent") ?? "");
   if (intent === "set-model-key" || intent === "clear-model-key") {
     const value =
-      intent === "set-model-key" ? String(form.get("modelKey") ?? "").trim() : "";
+      intent === "set-model-key"
+        ? String(form.get("modelKey") ?? "").trim()
+        : "";
     if (intent === "set-model-key" && !value) {
       return { error: "Paste an OpenRouter API key." };
     }
@@ -146,7 +170,8 @@ export async function action(args: ActionFunctionArgs) {
   }
 
   const capRaw = String(form.get("monthlyTokenCap") ?? "").trim();
-  const monthlyTokenCap = capRaw === "" ? null : Math.max(0, Number(capRaw) || 0);
+  const monthlyTokenCap =
+    capRaw === "" ? null : Math.max(0, Number(capRaw) || 0);
   const killSwitch = form.get("killSwitch") === "on";
 
   await setSpendLimit(org.id, { monthlyTokenCap, killSwitch });
@@ -160,14 +185,21 @@ export async function action(args: ActionFunctionArgs) {
 }
 
 export function meta() {
-  return [
-    { title: "Org settings · eden" },
-    ...noindexMeta,
-  ];
+  return [{ title: "Org settings · eden" }, ...noindexMeta];
 }
 
 export default function OrgSettings({ loaderData }: Route.ComponentProps) {
-  const { user, org, mode, limit, used, audit, hasModelKey, assistantModel } = loaderData;
+  const {
+    user,
+    org,
+    mode,
+    limit,
+    used,
+    audit,
+    hasModelKey,
+    assistantModel,
+    canManage,
+  } = loaderData;
   const modelFetcher = useFetcher<typeof action>();
 
   if (!org) {
@@ -194,8 +226,8 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
         title="Settings"
         description={
           <>
-            Mode: <span className="font-mono">{mode}</span>. Roles &amp; SSO are
-            managed in WorkOS.
+            Mode: <span className="font-mono">{mode}</span>. Authentication and
+            organization roles are managed by Better Auth.
           </>
         }
       />
@@ -210,18 +242,30 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
             </CardTitle>
             <CardDescription>
               OpenRouter is the default model provider. eden injects this key as{" "}
-              <span className="font-mono">OPENROUTER_API_KEY</span> for deployments,
-              and the default model below is used by the authoring assistant and by
-              agents that do not have their own model set.
+              <span className="font-mono">OPENROUTER_API_KEY</span> for
+              deployments, and the default model below is used by the authoring
+              assistant and by agents that do not have their own model set.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {hasModelKey ? (
+            {!canManage ? (
+              <div className="space-y-2 text-sm">
+                <p>OpenRouter key: {hasModelKey ? "configured" : "not set"}</p>
+                <p>Default model: {assistantModel ?? "eden default"}</p>
+                <p className="text-muted-foreground">
+                  Only workspace owners and admins can change model provider
+                  settings.
+                </p>
+              </div>
+            ) : hasModelKey ? (
               <Form method="post" className="flex flex-wrap items-center gap-3">
                 <input type="hidden" name="intent" value="clear-model-key" />
                 <p className="text-sm">
-                  OpenRouter key: <span className="font-medium">configured</span>{" "}
-                  <span className="text-muted-foreground">(write-only; value never shown)</span>
+                  OpenRouter key:{" "}
+                  <span className="font-medium">configured</span>{" "}
+                  <span className="text-muted-foreground">
+                    (write-only; value never shown)
+                  </span>
                 </p>
                 <Button type="submit" variant="outline" size="sm">
                   Remove key
@@ -244,48 +288,53 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
               </Form>
             )}
 
-            <div className="mt-6 max-w-xl space-y-2 border-t pt-4">
-              <Label>Default model</Label>
-              <div className="flex flex-wrap items-center gap-2">
-                <ModelSelect
-                  value={assistantModel}
-                  busy={modelFetcher.state !== "idle"}
-                  onCommit={(model) =>
-                    modelFetcher.submit(
-                      { intent: "set-assistant-model", assistantModel: model },
-                      { method: "post" },
-                    )
-                  }
-                />
-                {assistantModel && (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    disabled={modelFetcher.state !== "idle"}
-                    onClick={() =>
+            {canManage && (
+              <div className="mt-6 max-w-xl space-y-2 border-t pt-4">
+                <Label>Default model</Label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <ModelSelect
+                    value={assistantModel}
+                    busy={modelFetcher.state !== "idle"}
+                    onCommit={(model) =>
                       modelFetcher.submit(
-                        { intent: "set-assistant-model", assistantModel: "" },
+                        {
+                          intent: "set-assistant-model",
+                          assistantModel: model,
+                        },
                         { method: "post" },
                       )
                     }
-                  >
-                    Use eden default
-                  </Button>
-                )}
-              </div>
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground">
-                  Any OpenRouter model id. Needs tool-calling support for
-                  tool-using agents.
-                </p>
-                {!assistantModel && (
+                  />
+                  {assistantModel && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      disabled={modelFetcher.state !== "idle"}
+                      onClick={() =>
+                        modelFetcher.submit(
+                          { intent: "set-assistant-model", assistantModel: "" },
+                          { method: "post" },
+                        )
+                      }
+                    >
+                      Use eden default
+                    </Button>
+                  )}
+                </div>
+                <div className="space-y-1">
                   <p className="text-xs text-muted-foreground">
-                    No workspace default set; eden's built-in default is used.
+                    Any OpenRouter model id. Needs tool-calling support for
+                    tool-using agents.
                   </p>
-                )}
+                  {!assistantModel && (
+                    <p className="text-xs text-muted-foreground">
+                      No workspace default set; eden's built-in default is used.
+                    </p>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </CardContent>
         </Card>
 
@@ -310,31 +359,44 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Form method="post" className="space-y-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="monthlyTokenCap">Monthly token cap</Label>
-                <Input
-                  id="monthlyTokenCap"
-                  name="monthlyTokenCap"
-                  type="number"
-                  min={0}
-                  defaultValue={limit?.monthlyTokenCap ?? ""}
-                  placeholder="unlimited"
-                  className="w-48"
-                />
+            {canManage ? (
+              <Form method="post" className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="monthlyTokenCap">Monthly token cap</Label>
+                  <Input
+                    id="monthlyTokenCap"
+                    name="monthlyTokenCap"
+                    type="number"
+                    min={0}
+                    defaultValue={limit?.monthlyTokenCap ?? ""}
+                    placeholder="unlimited"
+                    className="w-48"
+                  />
+                </div>
+                <Label className="flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2 font-normal text-rose-700 dark:text-rose-400">
+                  <ShieldAlert className="size-4 shrink-0" aria-hidden />
+                  <input
+                    type="checkbox"
+                    name="killSwitch"
+                    defaultChecked={limit?.killSwitch ?? false}
+                    aria-label="Kill-switch (block all model calls for this tenant)"
+                  />
+                  Kill-switch (block all model calls for this tenant)
+                </Label>
+                <Button type="submit">Save</Button>
+              </Form>
+            ) : (
+              <div className="space-y-2 text-sm">
+                <p>
+                  Monthly token cap:{" "}
+                  {limit?.monthlyTokenCap?.toLocaleString() ?? "unlimited"}
+                </p>
+                <p>Kill-switch: {limit?.killSwitch ? "on" : "off"}</p>
+                <p className="text-muted-foreground">
+                  Only workspace owners and admins can change spend controls.
+                </p>
               </div>
-              <Label className="flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2 font-normal text-rose-700 dark:text-rose-400">
-                <ShieldAlert className="size-4 shrink-0" aria-hidden />
-                <input
-                  type="checkbox"
-                  name="killSwitch"
-                  defaultChecked={limit?.killSwitch ?? false}
-                  aria-label="Kill-switch (block all model calls for this tenant)"
-                />
-                Kill-switch (block all model calls for this tenant)
-              </Label>
-              <Button type="submit">Save</Button>
-            </Form>
+            )}
           </CardContent>
         </Card>
 
@@ -342,7 +404,10 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <ScrollText className={`size-4 ${accentText.indigo}`} aria-hidden />
+              <ScrollText
+                className={`size-4 ${accentText.indigo}`}
+                aria-hidden
+              />
               Audit log
             </CardTitle>
           </CardHeader>

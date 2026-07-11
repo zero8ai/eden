@@ -8,7 +8,7 @@
  * registers the agent's guild command, records the connection, and sends the user back to the
  * Deployment tab. Mirrors the GitHub App manifest callback's readable-error (`fail`) pattern.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { MessageSquare } from "lucide-react";
 import { Link, redirect, type LoaderFunctionArgs } from "react-router";
 
@@ -24,6 +24,7 @@ import {
   registerGuildCommand,
   verifyConnectState,
 } from "~/discord/connect.server";
+import { consumeOAuthStateNonce } from "~/connections/oauth-state.server";
 import {
   findConnectionByGuildCommand,
   upsertConnection,
@@ -35,7 +36,7 @@ import { getRuntime } from "~/seams/index.server";
 import type { Route } from "./+types/discord.callback";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const url = new URL(args.request.url);
@@ -67,16 +68,32 @@ export const loader = (args: LoaderFunctionArgs) =>
             "agent's Deployment tab.",
         );
       }
+      if (
+        state.userId !== auth.user.id ||
+        state.sessionId !== auth.session.id
+      ) {
+        return fail(
+          "This Discord connection was started in a different Eden session. Start again from " +
+            "the agent's Deployment tab.",
+        );
+      }
+
+      // Consume before registering the command. DELETE ... RETURNING makes concurrent
+      // callbacks race safely: exactly one request can proceed, even across replicas.
+      const consumed = await consumeOAuthStateNonce({
+        nonce: state.nonce,
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+      });
+      if (!consumed) {
+        return fail(
+          "This Discord connection link is invalid, expired, or has already been used. Start " +
+            "again from the agent's Deployment tab.",
+        );
+      }
 
       // Tenancy: the signed state names the project, but the SESSION must own it too.
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId ?? null,
-          role: auth.role ?? null,
-        },
-        state.projectId,
-      );
+      const project = await requireProject(auth, state.projectId);
       const roster = (await listAgents(project.id)).filter(
         (a) => a.kind === "member",
       );

@@ -21,7 +21,7 @@
  *  - SINGLE (single-agent repos at /repos/:id/deployment, level 'single'): a team of one, so it
  *    renders the member layout with canAct=true — the same team-scoped intents, roster of one.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import {
   FileStack,
   GitPullRequest,
@@ -47,7 +47,10 @@ import {
 
 import { ConfirmDialog } from "~/components/confirm-dialog";
 import { EmptyTeamState } from "~/components/empty-team-state";
-import { FreshnessBadge, releaseFreshness } from "~/components/deploy-freshness";
+import {
+  FreshnessBadge,
+  releaseFreshness,
+} from "~/components/deploy-freshness";
 import {
   AgentNav,
   AppShell,
@@ -280,19 +283,13 @@ interface DeploymentData {
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<DeploymentData> => {
       const project = requireRepo(
-        await requireProject(
-          {
-            user: auth.user,
-            organizationId: auth.organizationId,
-            role: auth.role,
-          },
-          args.params.projectId,
-          { request: args.request },
-        ),
+        await requireProject(auth, args.params.projectId, {
+          request: args.request,
+        }),
       );
       const agentName = agentFromParams(args.params);
       if (!agentName) {
@@ -551,7 +548,8 @@ export const loader = (args: LoaderFunctionArgs) =>
       // Discord: the servers this agent is connected to (issue #32) — the setup card lists them
       // and offers "Connect another server". Only when the operator configured the shared app.
       const discordConfigured = getDiscordAppConfig() !== null;
-      let discordConnections: DeploymentData["discordSetup"]["connections"] = null;
+      let discordConnections: DeploymentData["discordSetup"]["connections"] =
+        null;
       if (hasDiscordSetup && discordConfigured) {
         try {
           const rows = await listConnectionsForAgent(active.id);
@@ -612,14 +610,19 @@ export const loader = (args: LoaderFunctionArgs) =>
           key,
         });
         try {
-          githubAppSlug = await getRuntime().secrets.get(secretRef("GITHUB_APP_SLUG"));
+          githubAppSlug = await getRuntime().secrets.get(
+            secretRef("GITHUB_APP_SLUG"),
+          );
           if (githubAppSlug) {
             const [appId, privateKey] = await Promise.all([
               getRuntime().secrets.get(secretRef("GITHUB_APP_ID")),
               getRuntime().secrets.get(secretRef("GITHUB_APP_PRIVATE_KEY")),
             ]);
             if (appId && privateKey) {
-              githubInstallations = await listAppInstallations({ appId, privateKey });
+              githubInstallations = await listAppInstallations({
+                appId,
+                privateKey,
+              });
             }
           }
         } catch {
@@ -684,17 +687,10 @@ async function sweepPendingSecrets(projectId: string): Promise<void> {
 }
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
   const form = await args.request.formData();
   const intent = String(form.get("intent") ?? "");
@@ -727,7 +723,8 @@ export async function action(args: ActionFunctionArgs) {
         branch,
       );
       // An assistant conversation branch is discarded with its PR — drop the checkout link row.
-      if (isConversationBranch(branch)) await discardConversationCheckoutByBranch(branch!);
+      if (isConversationBranch(branch))
+        await discardConversationCheckoutByBranch(branch!);
       // Closing an unmerged change is the other abandonment path — same sweep (§4.4).
       await sweepPendingSecrets(project.id);
       throw redirect(back);
@@ -774,7 +771,10 @@ export async function action(args: ActionFunctionArgs) {
         });
         const detected = detectAgentRoots(source.paths);
         await syncProjectAgents(project.id, detected, undefined, undefined, {
-          allowEmpty: project.layout === "team" && hasTeamLayout(source.paths) && detected.length === 0,
+          allowEmpty:
+            project.layout === "team" &&
+            hasTeamLayout(source.paths) &&
+            detected.length === 0,
         });
         invalidateRepoSource(project.repoInstallationId, repo);
         warmAgentSource(project.repoInstallationId, repo, {
@@ -790,7 +790,8 @@ export async function action(args: ActionFunctionArgs) {
         changelog: `#${pullNumber} ${title}`.trim(),
         createdBy: auth.user.id,
       });
-      if (isConversationBranch(branch)) await discardConversationCheckoutByBranch(branch!);
+      if (isConversationBranch(branch))
+        await discardConversationCheckoutByBranch(branch!);
       const version = results[0]?.release.version ?? "";
       throw redirect(`${back}?released=${encodeURIComponent(version)}`);
     }
@@ -838,7 +839,9 @@ export async function action(args: ActionFunctionArgs) {
       for (const credAgentId of new Set(credRows.map((r) => r.agentId))) {
         const conflict = findStoredAppCredentialConflict(credRows, credAgentId);
         if (conflict) {
-          const self = credRows.find((r) => r.agentId === credAgentId)!.agentName;
+          const self = credRows.find(
+            (r) => r.agentId === credAgentId,
+          )!.agentName;
           return {
             error:
               `Agents "${self}" and "${conflict.agentName}" share the same GitHub App ` +
@@ -937,7 +940,13 @@ function runningOf(deployments: DeploymentRow[]): DeploymentRow | undefined {
 }
 
 /** A tinted glyph square marking a pipeline card's role — keeps the surfaces scannable. */
-function CardGlyph({ icon: Icon, accent }: { icon: LucideIcon; accent: Accent }) {
+function CardGlyph({
+  icon: Icon,
+  accent,
+}: {
+  icon: LucideIcon;
+  accent: Accent;
+}) {
   return (
     <span
       className={cn(
@@ -1094,8 +1103,16 @@ export default function Deployment({
 /* ────────────────────────────── member pipeline ────────────────────────────── */
 
 function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
-  const { project, drafts, changes, releases, envs, activeAgent, isTeam, canAct } =
-    loaderData;
+  const {
+    project,
+    drafts,
+    changes,
+    releases,
+    envs,
+    activeAgent,
+    isTeam,
+    canAct,
+  } = loaderData;
   // Where "open" on a running deployment points: the agent's playground, not the instance's
   // internal URL (a 127.0.0.1:<port> that's unreachable from a browser).
   const playgroundPath = `${contextPath(project.id, isTeam ? activeAgent : null)}/playground`;
@@ -1176,15 +1193,12 @@ function ConnectionsCard({
       <CardContent className="space-y-3">
         {connections.map((c) => {
           const label = providerLabel(c.provider);
-          // Request the scopes the INSTALL declares (lock snapshot), not the grant's stored scopes
-          // (issue #30): stored scopes record what Google granted last time, so using them as the
-          // request template perpetuates stale/narrow scopes forever — the incident where an
-          // identity-only grant reconnected without ever re-requesting the Sheets scope. Fall back
-          // to stored scopes only for old locks that predate the snapshot.
+          // The server re-derives requested scopes from this agent's effective lock (falling back
+          // to its stored grant only for old locks). Never put an authority-bearing scope list in
+          // this browser-controlled URL.
           const connectUrl =
             `/google/connect?project=${encodeURIComponent(projectId)}` +
             `&agent=${encodeURIComponent(agentName)}` +
-            `&scopes=${encodeURIComponent(c.requiredScopes ?? c.scopes)}` +
             `&returnTo=${encodeURIComponent(returnTo)}`;
           return (
             <div
@@ -1793,9 +1807,7 @@ function TeamEnvironmentsCard({
           </Alert>
         )}
         {teamEnvs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No environments yet.
-          </p>
+          <p className="text-sm text-muted-foreground">No environments yet.</p>
         ) : (
           <div className="space-y-4">
             {teamEnvs.map((te) => (
@@ -1874,7 +1886,9 @@ function TeamEnvMemberRow({
   const running = runningOf(member.deployments);
   const pending = member.deployments.find((d) => IN_FLIGHT.has(d.status));
   const failed = member.deployments.find((d) => d.status === "failed");
-  const failedCount = member.deployments.filter((d) => d.status === "failed").length;
+  const failedCount = member.deployments.filter(
+    (d) => d.status === "failed",
+  ).length;
 
   return (
     <li className="px-4 py-2">
@@ -1987,7 +2001,9 @@ function TeamVersionHistory({
       <CardContent>
         {skipped.length > 0 && (
           <Alert className="mb-4">
-            <AlertTitle>Some members stayed on their current version</AlertTitle>
+            <AlertTitle>
+              Some members stayed on their current version
+            </AlertTitle>
             <AlertDescription>
               {skipped.join(", ")} had no build at this commit, so they were
               left behind. Ship them a version to bring the team back in sync.
@@ -2068,7 +2084,8 @@ function TeamDeployControl({
   const [guardEnv, setGuardEnv] = useState<string | null>(null);
   const guarded = guard.missing.length > 0;
   const runningHere = (name: string) => version.runningEnvNames.includes(name);
-  const run = (name: string) => onDeploy(name, version.gitSha, runningHere(name));
+  const run = (name: string) =>
+    onDeploy(name, version.gitSha, runningHere(name));
 
   const confirmFor = (name: string) =>
     runningHere(name)
@@ -2108,7 +2125,9 @@ function TeamDeployControl({
           <DropdownMenuContent align="end">
             {teamEnvNames.map((name) => (
               <DropdownMenuItem key={name} onSelect={() => pick(name)}>
-                {runningHere(name) ? `Redeploy in ${name}` : `Deploy to ${name}`}
+                {runningHere(name)
+                  ? `Redeploy in ${name}`
+                  : `Deploy to ${name}`}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -2492,7 +2511,8 @@ function GitHubSetupHelp({
               </p>
               {setup.installations === null ? (
                 <p className="text-muted-foreground">
-                  Couldn&rsquo;t reach GitHub to list where it&rsquo;s installed —{" "}
+                  Couldn&rsquo;t reach GitHub to list where it&rsquo;s installed
+                  —{" "}
                   <a
                     href={`https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`}
                     target="_blank"
@@ -2555,7 +2575,11 @@ function GitHubSetupHelp({
                 </a>
               </Button>
             )}
-            <Button asChild size="sm" variant={setup.appSlug ? "outline" : "default"}>
+            <Button
+              asChild
+              size="sm"
+              variant={setup.appSlug ? "outline" : "default"}
+            >
               <Link to={createUrl(envs[0]?.env.id)}>
                 {setup.appSlug ? "Reconnect GitHub" : "Connect GitHub"}
               </Link>
@@ -2639,9 +2663,7 @@ function VersionHistory({
               <li key={r.id} className="flex items-center gap-2 px-4 py-2">
                 <span className="w-10 shrink-0 font-semibold">{r.version}</span>
                 <span className="flex shrink-0 items-center gap-1">
-                  {i === 0 && (
-                    <Badge variant="success">Latest</Badge>
-                  )}
+                  {i === 0 && <Badge variant="success">Latest</Badge>}
                   {(runningEnvNames.get(r.id) ?? []).map((name) => (
                     <Badge key={name} variant="secondary">
                       {name}
@@ -2756,7 +2778,9 @@ function DeployControl({
               missing={guard.missing}
               activeAgent={guard.activeAgent}
               settingsAction={guard.settingsAction}
-              deployLabel={guardTarget.mode === "redeploy" ? "Redeploy" : "Deploy"}
+              deployLabel={
+                guardTarget.mode === "redeploy" ? "Redeploy" : "Deploy"
+              }
               onDeploy={() => {
                 run(guardTarget.envState, guardTarget.mode);
                 setGuardTarget(null);
@@ -2797,7 +2821,9 @@ function DeployControl({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {envs.map((s) => {
-            const mode = runningHere(s) ? ("redeploy" as const) : ("deploy" as const);
+            const mode = runningHere(s)
+              ? ("redeploy" as const)
+              : ("deploy" as const);
             return (
               <DropdownMenuItem
                 key={s.env.id}
@@ -2914,9 +2940,7 @@ function EnvNameDialog({
           </Alert>
         )}
         <div className="space-y-1.5">
-          <Label htmlFor={`env-name-${intent}-${from ?? "new"}`}>
-            Name
-          </Label>
+          <Label htmlFor={`env-name-${intent}-${from ?? "new"}`}>Name</Label>
           <Input
             id={`env-name-${intent}-${from ?? "new"}`}
             value={name}

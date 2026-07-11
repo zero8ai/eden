@@ -158,7 +158,8 @@ describe("subprocess environment safety", () => {
     const filtered = cloudflaredEnvironment({
       PATH: "/bin",
       HOME: "/tmp/home",
-      WORKOS_API_KEY: "secret",
+      BETTER_AUTH_SECRET: "secret",
+      SMTP_URL: "smtps://user:password@smtp.example.com",
       DATABASE_URL: "postgres://secret",
       TUNNEL_ORIGIN_CERT: "/tmp/cert.pem",
     });

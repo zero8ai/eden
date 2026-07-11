@@ -6,7 +6,7 @@
  * server and approve, Discord returns to /discord/callback, which registers the agent's slash
  * command. Mirrors the GitHub App manifest flow's start route.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { MessageSquare } from "lucide-react";
 import { Link, data, redirect, type LoaderFunctionArgs } from "react-router";
 
@@ -22,6 +22,7 @@ import {
   INTERACTIONS_ROUTE,
   signConnectState,
 } from "~/discord/connect.server";
+import { createOAuthStateNonce } from "~/connections/oauth-state.server";
 import { listAgents, listAgentEnvironments } from "~/db/queries.server";
 import { ensureTeamEnvironments } from "~/deploy/environments.server";
 import { isLocalOrigin, publicOrigin } from "~/lib/ingress";
@@ -36,7 +37,7 @@ interface DiscordConnectData {
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }): Promise<DiscordConnectData> => {
       const url = new URL(args.request.url);
@@ -44,14 +45,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       const agentName = url.searchParams.get("agent") ?? "";
       const envId = url.searchParams.get("env");
 
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId ?? null,
-          role: auth.role ?? null,
-        },
-        projectId,
-      );
+      const project = await requireProject(auth, projectId);
 
       const roster = (await listAgents(project.id)).filter(
         (a) => a.kind === "member",
@@ -105,12 +99,23 @@ export const loader = (args: LoaderFunctionArgs) =>
         }
       }
 
+      // Bind the round-trip to this user + session and record a single-use nonce, mirroring the
+      // Google connect flow: a leaked or replayed callback can't complete in another session.
+      const exp = Date.now() + CONNECT_STATE_TTL_MS;
+      const nonce = await createOAuthStateNonce({
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+        expiresAt: new Date(exp),
+      });
       const state = signConnectState(
         {
           projectId: project.id,
           agentId: agent.id,
           environmentId: env.id,
-          exp: Date.now() + CONNECT_STATE_TTL_MS,
+          userId: auth.user.id,
+          sessionId: auth.session.id,
+          nonce,
+          exp,
         },
         connectStateKey(),
       );

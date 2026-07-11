@@ -12,7 +12,7 @@ import { Logo } from "~/components/marketing/logo";
 export const REPO_URL = "https://github.com/zero8ai/eden";
 
 export function SiteHeader() {
-  // The root loader runs authkitLoader, so the WorkOS session is available app-wide.
+  // The root loader reads the Better Auth session, so identity is available app-wide.
   // When the visitor is already signed in, offer a Dashboard link instead of Sign in.
   const rootData = useRouteLoaderData<typeof rootLoader>("root");
   const isSignedIn = Boolean(rootData?.user);

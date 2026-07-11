@@ -1,1 +1,0 @@
-ALTER TABLE "secrets_metadata" ADD COLUMN "sandbox_exposed" boolean DEFAULT false NOT NULL;

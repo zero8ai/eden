@@ -7,7 +7,7 @@
  * the owning Eve instance is consulted only for bounded recovery and legacy backfill. First use
  * shows a provisioning state while the instance builds/deploys.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { Loader2, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -75,19 +75,13 @@ import { requireProject, requireRepo } from "~/project/guard.server";
 import type { Route } from "./+types/projects.$projectId.assistant";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       const project = requireRepo(
-        await requireProject(
-          {
-            user: auth.user,
-            organizationId: auth.organizationId,
-            role: auth.role,
-          },
-          args.params.projectId,
-          { request: args.request },
-        ),
+        await requireProject(auth, args.params.projectId, {
+          request: args.request,
+        }),
       );
       const [snapshot, roster] = await Promise.all([
         peekAssistantInstance(project.id),
@@ -212,17 +206,10 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
   const project = requireRepo(
-    await requireProject(
-      {
-        user: auth.user,
-        organizationId: auth.organizationId ?? null,
-        role: auth.role ?? null,
-      },
-      args.params.projectId,
-    ),
+    await requireProject(auth, args.params.projectId),
   );
   const form = await args.request.formData();
   const intent = String(form.get("intent"));

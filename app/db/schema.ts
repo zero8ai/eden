@@ -2,21 +2,22 @@
  * Eden control-plane schema (Drizzle + Postgres).
  *
  * Scope rules (see docs/PRD.md §9 cross-cutting concerns):
- *  - D2: a WorkOS Organization == an Eden tenant. `orgs`/`users` are keyed by WorkOS IDs
- *    (text), and we delegate roles/SSO/directory-sync to WorkOS. We keep only a thin mirror
- *    so we can foreign-key our own rows and cache display fields.
+ *  - D2: a Better Auth Organization == an Eden tenant. Better Auth owns users,
+ *    organizations, memberships, invitations, and sessions; Eden's operational tables
+ *    reference those generated canonical tables directly.
  *  - D3: the eve repo is the single source of truth. We DO NOT store agent config here —
  *    only pointers (repo coordinates, git SHAs, image refs) and operational state.
  *  - D9: a Release = an immutable merge-commit + content-addressed image. Deployments bind a
  *    release to an environment with a traffic weight for the multi-version splitter (D9/D10).
  *
  * IDs: every PK we mint is `varchar("id", { length: 12 }).primaryKey().$defaultFn(newId)`
- * with `newId` from ~/lib/id (12-char [a-zA-Z] nanoid). orgs/users keep WorkOS-issued text
- * ids. Legacy UUID rows were rewritten to nanoids in a one-off dev-DB pass (2026-07-04).
+ * with `newId` from ~/lib/id (12-char [a-zA-Z] nanoid). Better Auth owns its text IDs.
+ * Legacy UUID rows were rewritten to nanoids in a one-off dev-DB pass (2026-07-04).
  */
 import { sql } from "drizzle-orm";
 
 import { newId } from "~/lib/id";
+import { organization, session as authSession, user } from "./auth-schema";
 import {
   boolean,
   index,
@@ -36,48 +37,7 @@ const createdAt = () =>
 const updatedAt = () =>
   timestamp("updated_at", { withTimezone: true }).defaultNow().notNull();
 
-/** Tenant. `id` is the WorkOS Organization id (e.g. "org_..."). */
-export const orgs = pgTable("orgs", {
-  id: text("id").primaryKey(),
-  name: text("name").notNull(),
-  createdAt: createdAt(),
-});
-
-/** `id` is the WorkOS User id (e.g. "user_..."). Mirror for FKs + display. */
-export const users = pgTable("users", {
-  id: text("id").primaryKey(),
-  email: text("email").notNull(),
-  name: text("name"),
-  /**
-   * The workspace (org) this user was last active in — remembered so a returning user in
-   * several workspaces silently re-enters the right one instead of hitting the chooser. It is
-   * stamped at session mint (in `syncTenant`, on every org-scoped request), which can precede
-   * the `orgs` mirror row existing, so it deliberately carries NO foreign key. It is never
-   * trusted blindly: `ensureWorkspace` validates it against the user's live WorkOS memberships
-   * before entering it (a revoked membership must not resurrect a dead workspace).
-   */
-  lastOrgId: text("last_org_id"),
-  createdAt: createdAt(),
-});
-
-/**
- * A user's membership in an org. WorkOS is authoritative for roles; `role` is a cached
- * copy for fast authorization checks in loaders without a WorkOS round-trip.
- */
-export const memberships = pgTable(
-  "memberships",
-  {
-    orgId: text("org_id")
-      .notNull()
-      .references(() => orgs.id, { onDelete: "cascade" }),
-    userId: text("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    role: text("role").notNull().default("member"),
-    createdAt: createdAt(),
-  },
-  (t) => [primaryKey({ columns: [t.orgId, t.userId] })],
-);
+export * from "./auth-schema";
 
 /**
  * GitHub App installations known to a tenant (Connect pillar). Persisted the first time the
@@ -91,13 +51,18 @@ export const githubInstallations = pgTable(
     id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
     orgId: text("org_id")
       .notNull()
-      .references(() => orgs.id, { onDelete: "cascade" }),
+      .references(() => organization.id, { onDelete: "cascade" }),
     installationId: text("installation_id").notNull(),
     /** GitHub account (org/user login) the app is installed on, for display. */
     accountLogin: text("account_login"),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex("github_installations_org_install_uq").on(t.orgId, t.installationId)],
+  (t) => [
+    uniqueIndex("github_installations_org_install_uq").on(
+      t.orgId,
+      t.installationId,
+    ),
+  ],
 );
 
 /**
@@ -134,7 +99,12 @@ export const discordConnections = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex("discord_connections_guild_command_uq").on(t.guildId, t.commandName)],
+  (t) => [
+    uniqueIndex("discord_connections_guild_command_uq").on(
+      t.guildId,
+      t.commandName,
+    ),
+  ],
 );
 
 /**
@@ -182,7 +152,9 @@ export const connectionGrants = pgTable(
     refreshTokenCiphertext: text("refresh_token_ciphertext").notNull(),
     refreshTokenIv: text("refresh_token_iv").notNull(),
     refreshTokenAuthTag: text("refresh_token_auth_tag").notNull(),
-    createdBy: text("created_by").references(() => users.id),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -193,6 +165,44 @@ export const connectionGrants = pgTable(
   ],
 );
 
+/**
+ * One-time OAuth state nonces for control-plane connection flows. The signed state carries the
+ * nonce; an atomic delete on callback makes it impossible to replay, while the Better Auth FKs
+ * invalidate outstanding flows when their initiating user or session is removed.
+ */
+export const connectionOauthStates = pgTable(
+  "connection_oauth_states",
+  {
+    nonceHash: text("nonce_hash").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => authSession.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("connection_oauth_states_expires_idx").on(t.expiresAt)],
+);
+
+/**
+ * The workspace a user last worked in. Better Auth keeps `activeOrganizationId` on the SESSION,
+ * so every fresh sign-in (new device, expired session, post-password-reset revocation) starts
+ * org-less; this row lets `ensureWorkspace` return a multi-workspace user to their last
+ * workspace instead of the chooser. Cascades keep it consistent: a deleted org or user simply
+ * forgets the preference.
+ */
+export const userWorkspaceMemory = pgTable("user_workspace_memory", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  lastOrgId: text("last_org_id")
+    .notNull()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  updatedAt: updatedAt(),
+});
+
 /** A project == one connected eve repo. */
 export const projects = pgTable(
   "projects",
@@ -200,7 +210,7 @@ export const projects = pgTable(
     id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
     orgId: text("org_id")
       .notNull()
-      .references(() => orgs.id, { onDelete: "cascade" }),
+      .references(() => organization.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     /** Persisted repository shape; unlike the roster, this remains meaningful at zero members. */
@@ -293,7 +303,7 @@ export const releases = pgTable(
     gitSha: text("git_sha").notNull(),
     imageRef: text("image_ref"),
     changelog: text("changelog"),
-    createdBy: text("created_by").references(() => users.id),
+    createdBy: text("created_by").references(() => user.id),
     createdAt: createdAt(),
   },
   (t) => [
@@ -326,7 +336,7 @@ export const deployments = pgTable(
     url: text("url"),
     /** Why the deployment failed (build/deploy error surface for the UI). */
     errorDetail: text("error_detail"),
-    createdBy: text("created_by").references(() => users.id),
+    createdBy: text("created_by").references(() => user.id),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -361,7 +371,9 @@ export const draftChanges = pgTable(
      * The roster member the path belongs to (derived from the path's agent root). Null for
      * project-shared files outside every member (e.g. the root package.json).
      */
-    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
+      onDelete: "cascade",
+    }),
     /** Repo-relative path under the agent's root (e.g. "agent/instructions.md"). */
     path: text("path").notNull(),
     /**
@@ -372,7 +384,7 @@ export const draftChanges = pgTable(
     content: text("content"),
     /** Blob sha of the file when the edit was made (null = new file); future conflict hints. */
     baseSha: text("base_sha"),
-    createdBy: text("created_by").references(() => users.id),
+    createdBy: text("created_by").references(() => user.id),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -399,9 +411,12 @@ export const secretsMetadata = pgTable(
       onDelete: "cascade",
     }),
     // null environmentId == agent-wide secret (all of that agent's environments)
-    environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
-      onDelete: "cascade",
-    }),
+    environmentId: varchar("environment_id", { length: 12 }).references(
+      () => environments.id,
+      {
+        onDelete: "cascade",
+      },
+    ),
     key: text("key").notNull(),
     /**
      * Expose this secret to the agent's SANDBOX shell (not just its tools). Deploys join the
@@ -418,7 +433,7 @@ export const secretsMetadata = pgTable(
      * revealing the stored one. Null for rows written before fingerprints existed (backfill-free).
      */
     fingerprint: text("fingerprint"),
-    updatedBy: text("updated_by").references(() => users.id),
+    updatedBy: text("updated_by").references(() => user.id),
     updatedAt: updatedAt(),
   },
   (t) => [
@@ -441,13 +456,21 @@ export const runs = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     /** Roster member the run belongs to; nullable — telemetry may arrive unattributed. */
-    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, { onDelete: "set null" }),
-    deploymentId: varchar("deployment_id", { length: 12 }).references(() => deployments.id, {
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
       onDelete: "set null",
     }),
-    releaseId: varchar("release_id", { length: 12 }).references(() => releases.id, {
-      onDelete: "set null",
-    }),
+    deploymentId: varchar("deployment_id", { length: 12 }).references(
+      () => deployments.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    releaseId: varchar("release_id", { length: 12 }).references(
+      () => releases.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     sessionId: varchar("session_id", { length: 12 }),
     // Correlates to the eve/Workflow run id in the telemetry store.
     externalRunId: text("external_run_id"),
@@ -458,7 +481,9 @@ export const runs = pgTable(
     tokensOutput: integer("tokens_output"),
     wallClockMs: integer("wall_clock_ms"),
     error: text("error"),
-    metadata: jsonb("metadata").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
     startedAt: timestamp("started_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -483,7 +508,9 @@ export const sessions = pgTable(
     projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, { onDelete: "set null" }),
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
+      onDelete: "set null",
+    }),
     externalSessionId: text("external_session_id"),
     trigger: text("trigger"),
     channel: text("channel"),
@@ -521,7 +548,9 @@ export const runSteps = pgTable(
     durationMs: integer("duration_ms"),
     isError: boolean("is_error").notNull().default(false),
     approvalGated: boolean("approval_gated").notNull().default(false),
-    data: jsonb("data").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    data: jsonb("data")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
     startedAt: timestamp("started_at", { withTimezone: true }),
   },
   (t) => [index("run_steps_run_seq_idx").on(t.runId, t.seq)],
@@ -563,9 +592,12 @@ export const secretValues = pgTable(
     agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
       onDelete: "cascade",
     }),
-    environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
-      onDelete: "cascade",
-    }),
+    environmentId: varchar("environment_id", { length: 12 }).references(
+      () => environments.id,
+      {
+        onDelete: "cascade",
+      },
+    ),
     key: text("key").notNull(),
     ciphertext: text("ciphertext").notNull(),
     iv: text("iv").notNull(),
@@ -598,7 +630,7 @@ export const secretAttachments = pgTable(
       .references(() => agents.id, { onDelete: "cascade" }),
     key: text("key").notNull(),
     sandboxExposed: boolean("sandbox_exposed").notNull().default(false),
-    createdBy: text("created_by").references(() => users.id),
+    createdBy: text("created_by").references(() => user.id),
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex("secret_attachments_agent_key_uq").on(t.agentId, t.key)],
@@ -622,10 +654,12 @@ export const secretRequirementDismissals = pgTable(
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
     key: text("key").notNull(),
-    createdBy: text("created_by").references(() => users.id),
+    createdBy: text("created_by").references(() => user.id),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex("secret_req_dismissals_agent_key_uq").on(t.agentId, t.key)],
+  (t) => [
+    uniqueIndex("secret_req_dismissals_agent_key_uq").on(t.agentId, t.key),
+  ],
 );
 
 /**
@@ -654,11 +688,15 @@ export const pendingSecrets = pgTable(
     sandboxExposed: boolean("sandbox_exposed").notNull().default(false),
     /** Set when the wizard recorded "use the project-level shared secret" instead of a value. */
     attachShared: boolean("attach_shared").notNull().default(false),
-    createdBy: text("created_by").references(() => users.id),
+    createdBy: text("created_by").references(() => user.id),
     createdAt: createdAt(),
   },
   (t) => [
-    uniqueIndex("pending_secrets_scope_key_uq").on(t.projectId, t.memberName, t.key),
+    uniqueIndex("pending_secrets_scope_key_uq").on(
+      t.projectId,
+      t.memberName,
+      t.key,
+    ),
   ],
 );
 
@@ -683,12 +721,12 @@ export const schedules = pgTable(
 /**
  * Per-tenant spend controls (managed mode — ARCH §3.2/§3.4/§8). The model gateway checks these
  * before allowing a turn: a monthly token cap and a kill-switch. OSS leaves rows absent
- * (unlimited). Keyed by WorkOS org id.
+ * (unlimited). Keyed by Better Auth organization id.
  */
 export const spendLimits = pgTable("spend_limits", {
   orgId: text("org_id")
     .primaryKey()
-    .references(() => orgs.id, { onDelete: "cascade" }),
+    .references(() => organization.id, { onDelete: "cascade" }),
   monthlyTokenCap: integer("monthly_token_cap"),
   killSwitch: boolean("kill_switch").notNull().default(false),
   updatedAt: updatedAt(),
@@ -696,7 +734,7 @@ export const spendLimits = pgTable("spend_limits", {
 
 /**
  * Operational audit log (ARCH §3.8) — deploys, rollbacks, secret changes, spend-limit edits.
- * This is the audit of *operations*; identity/auth audit is delegated to WorkOS. Keyed by org.
+ * This is the audit of *operations*; authentication state is owned by Better Auth. Keyed by org.
  */
 export const auditLog = pgTable(
   "audit_log",
@@ -704,13 +742,15 @@ export const auditLog = pgTable(
     id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
     orgId: text("org_id")
       .notNull()
-      .references(() => orgs.id, { onDelete: "cascade" }),
-    actorUserId: text("actor_user_id").references(() => users.id, {
+      .references(() => organization.id, { onDelete: "cascade" }),
+    actorUserId: text("actor_user_id").references(() => user.id, {
       onDelete: "set null",
     }),
     action: text("action").notNull(),
     target: text("target"),
-    meta: jsonb("meta").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    meta: jsonb("meta")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
     createdAt: createdAt(),
   },
   (t) => [index("audit_log_org_created_idx").on(t.orgId, t.createdAt)],
@@ -726,15 +766,20 @@ export const usageEvents = pgTable(
     id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
     orgId: text("org_id")
       .notNull()
-      .references(() => orgs.id, { onDelete: "cascade" }),
-    deploymentId: varchar("deployment_id", { length: 12 }).references(() => deployments.id, {
-      onDelete: "set null",
-    }),
+      .references(() => organization.id, { onDelete: "cascade" }),
+    deploymentId: varchar("deployment_id", { length: 12 }).references(
+      () => deployments.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     // model_tokens | compute_seconds | sandbox_exec
     kind: text("kind").notNull(),
     quantity: integer("quantity").notNull(),
     at: timestamp("at", { withTimezone: true }).notNull(),
-    meta: jsonb("meta").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
+    meta: jsonb("meta")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
   },
   (t) => [index("usage_events_org_at_idx").on(t.orgId, t.at)],
 );
@@ -772,7 +817,7 @@ export const jobs = pgTable(
 export const workspaceSettings = pgTable("workspace_settings", {
   orgId: text("org_id")
     .primaryKey()
-    .references(() => orgs.id, { onDelete: "cascade" }),
+    .references(() => organization.id, { onDelete: "cascade" }),
   modelKeyCiphertext: text("model_key_ciphertext"),
   modelKeyIv: text("model_key_iv"),
   modelKeyAuthTag: text("model_key_auth_tag"),
@@ -796,14 +841,17 @@ export const playgroundSessions = pgTable(
     agentId: varchar("agent_id", { length: 12 })
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
-    environmentId: varchar("environment_id", { length: 12 }).references(() => environments.id, {
-      onDelete: "cascade",
-    }),
+    environmentId: varchar("environment_id", { length: 12 }).references(
+      () => environments.id,
+      {
+        onDelete: "cascade",
+      },
+    ),
     /** Same value passed to DeployRequest.worldKey; currently the environment id. */
     worldKey: text("world_key"),
     createdBy: text("created_by")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+      .references(() => user.id, { onDelete: "cascade" }),
     /** Eve runtime-owned stream/inspect handle. */
     externalSessionId: text("external_session_id"),
     /** Eve channel-owned resume handle. */
@@ -817,9 +865,12 @@ export const playgroundSessions = pgTable(
       () => deployments.id,
       { onDelete: "set null" },
     ),
-    lastReleaseId: varchar("last_release_id", { length: 12 }).references(() => releases.id, {
-      onDelete: "set null",
-    }),
+    lastReleaseId: varchar("last_release_id", { length: 12 }).references(
+      () => releases.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     lastVersion: text("last_version"),
     /**
      * Per-conversation model override (an OpenRouter id) applied to subsequent turns via the
@@ -837,7 +888,10 @@ export const playgroundSessions = pgTable(
       t.createdBy,
       t.updatedAt,
     ),
-    uniqueIndex("playground_sessions_external_uq").on(t.projectId, t.externalSessionId),
+    uniqueIndex("playground_sessions_external_uq").on(
+      t.projectId,
+      t.externalSessionId,
+    ),
   ],
 );
 
@@ -908,7 +962,9 @@ export const assistantCheckouts = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex("assistant_checkouts_conversation_uq").on(t.conversationId)],
+  (t) => [
+    uniqueIndex("assistant_checkouts_conversation_uq").on(t.conversationId),
+  ],
 );
 
 /**
@@ -954,13 +1010,19 @@ export const delegations = pgTable(
     projectId: varchar("project_id", { length: 12 })
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    fromAgentId: varchar("from_agent_id", { length: 12 }).references(() => agents.id, {
-      onDelete: "set null",
-    }),
+    fromAgentId: varchar("from_agent_id", { length: 12 }).references(
+      () => agents.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     fromEnvironmentId: varchar("from_environment_id", { length: 12 }),
-    toAgentId: varchar("to_agent_id", { length: 12 }).references(() => agents.id, {
-      onDelete: "set null",
-    }),
+    toAgentId: varchar("to_agent_id", { length: 12 }).references(
+      () => agents.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     toEnvironmentId: varchar("to_environment_id", { length: 12 }),
     /** The peer eve session the relay opened for this ask. */
     externalSessionId: text("external_session_id"),
@@ -972,5 +1034,7 @@ export const delegations = pgTable(
     startedAt: createdAt(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
-  (t) => [index("delegations_project_started_idx").on(t.projectId, t.startedAt)],
+  (t) => [
+    index("delegations_project_started_idx").on(t.projectId, t.startedAt),
+  ],
 );

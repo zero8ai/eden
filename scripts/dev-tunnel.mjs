@@ -7,7 +7,6 @@ import {
   cloudflaredEnvironment,
   parseQuickTunnelUrl,
   readJson,
-  registerWorkosRedirect,
   replaceManagedConnector,
   tunnelPaths,
   tunnelSettings,
@@ -178,20 +177,12 @@ async function main() {
     publicUrl = `https://${entry.tunnelHost}`;
   }
 
-  try {
-    registerWorkosRedirect(
-      `${publicUrl}/callback`,
-      fileEnv.WORKOS_API_KEY || process.env.WORKOS_API_KEY,
-      childEnv,
-    );
-  } catch (err) {
-    if (tunnelChild) tunnelChild.kill("SIGTERM");
-    die(err.message);
-  }
-  childEnv.WORKOS_REDIRECT_URI = `${publicUrl}/callback`;
+  // Better Auth is served by this app under /api/auth, so a tunnel only needs the
+  // public same-origin base URL. There is no third-party callback registry to mutate.
+  childEnv.BETTER_AUTH_URL = publicUrl;
   childEnv.EDEN_TUNNEL_URL = publicUrl;
   console.log(`dev-tunnel: public URL ${publicUrl}`);
-  console.log(`dev-tunnel: WorkOS callback ${publicUrl}/callback`);
+  console.log(`dev-tunnel: Better Auth URL ${publicUrl}`);
   console.log(
     "dev-tunnel: WARNING: this development server is publicly reachable",
   );

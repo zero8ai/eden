@@ -21,7 +21,8 @@ describe.runIf(LIVE)(
   () => {
     it("persists raw events and reprojects the transcript from the cache, idempotently", async () => {
       const { db } = await import("~/db/client.server");
-      const { orgs, users, projects, agents, playgroundSessions } =
+      const { organization, user } = await import("~/db/auth-schema");
+      const { projects, agents, playgroundSessions } =
         await import("~/db/schema");
       const {
         createPlaygroundSession,
@@ -35,11 +36,24 @@ describe.runIf(LIVE)(
 
       const ORG = "org_pgcache_smoke";
       const USER = "user_pgcache_smoke";
+      const now = new Date();
       // Fresh scope each run (cascades clean up the session + its cached events).
-      await db.delete(orgs).where(eq(orgs.id, ORG));
-      await db.delete(users).where(eq(users.id, USER));
-      await db.insert(orgs).values({ id: ORG, name: "pgcache smoke" });
-      await db.insert(users).values({ id: USER, email: "pgcache@smoke.test" });
+      await db.delete(organization).where(eq(organization.id, ORG));
+      await db.delete(user).where(eq(user.id, USER));
+      await db.insert(organization).values({
+        id: ORG,
+        name: "pgcache smoke",
+        slug: "pgcache-smoke",
+        createdAt: now,
+      });
+      await db.insert(user).values({
+        id: USER,
+        name: "Playground Cache Smoke",
+        email: "pgcache@smoke.test",
+        emailVerified: true,
+        createdAt: now,
+        updatedAt: now,
+      });
       const [project] = await db
         .insert(projects)
         .values({ orgId: ORG, name: "pgcache", slug: "pgcache-smoke" })
@@ -140,8 +154,8 @@ describe.runIf(LIVE)(
       });
 
       // Cleanup.
-      await db.delete(orgs).where(eq(orgs.id, ORG));
-      await db.delete(users).where(eq(users.id, USER));
+      await db.delete(organization).where(eq(organization.id, ORG));
+      await db.delete(user).where(eq(user.id, USER));
     });
   },
 );

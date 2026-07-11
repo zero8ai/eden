@@ -1,6 +1,6 @@
 import type { Route } from "./+types/case-studies";
 import { Link } from "react-router";
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import type { LoaderFunctionArgs } from "react-router";
 
 import { SiteHeader, SiteFooter } from "~/components/marketing/site-chrome";
@@ -8,7 +8,7 @@ import { Reveal, Parallax } from "~/components/landing-motion";
 import { caseStudies } from "~/lib/case-studies";
 import { pageMeta } from "~/lib/seo";
 
-export const loader = (args: LoaderFunctionArgs) => authkitLoader(args);
+export const loader = (args: LoaderFunctionArgs) => sessionLoader(args);
 
 export function meta({}: Route.MetaArgs) {
   return pageMeta({

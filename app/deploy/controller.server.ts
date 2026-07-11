@@ -337,8 +337,8 @@ export async function deployRelease(
       delete envVars[key];
     }
     if (isTeamMember && project && agent) {
-      // Default relay port matches how Eden is actually served: react-router-serve defaults to
-      // 3000 in production, the vite dev server to 5173 (vite.config.ts). PORT wins when set.
+      // Default relay port matches Eden's production host (3000) and Vite dev server (5173,
+      // vite.config.ts). PORT wins when set.
       envVars.EDEN_TEAM_URL =
         process.env.EDEN_TEAM_RELAY_URL ??
         `http://host.docker.internal:${process.env.PORT ?? (process.env.NODE_ENV === "production" ? "3000" : "5173")}`;

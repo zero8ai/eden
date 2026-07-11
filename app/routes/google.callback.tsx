@@ -7,7 +7,7 @@
  * and stores the grant, and returns the user to the wizard/Deployment tab it came from. Mirrors the
  * Discord callback's readable-error (`fail`) pattern.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import { Plug } from "lucide-react";
 import { Link, redirect, type LoaderFunctionArgs } from "react-router";
 
@@ -16,6 +16,11 @@ import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { getGoogleOAuthConfig } from "~/connections/config.server";
 import {
+  isGoogleCallbackStagingRequest,
+  readStagedGoogleCallback,
+  stageGoogleCallback,
+} from "~/connections/google-callback.server";
+import {
   connectStateKey,
   exchangeCode,
   fetchAccountEmail,
@@ -23,6 +28,7 @@ import {
   verifyConnectState,
 } from "~/connections/google.server";
 import { upsertGrant } from "~/connections/grants.server";
+import { consumeOAuthStateNonce } from "~/connections/oauth-state.server";
 import { redeployAfterConnect } from "~/connections/redeploy.server";
 import { listAgents } from "~/db/queries.server";
 import { publicOrigin } from "~/lib/ingress";
@@ -45,46 +51,83 @@ function withParams(backUrl: string, params: Record<string, string>): string {
   return url.pathname + url.search;
 }
 
-export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+export const loader = (args: LoaderFunctionArgs) => {
+  // Google's response contains a one-time authorization code and signed state. Leave that URL
+  // before session/database work so credentials never survive in history, logs, rendered errors,
+  // or a framework error document. The encrypted HttpOnly cookie is cleared by root middleware.
+  if (isGoogleCallbackStagingRequest(args.request)) {
+    return stageGoogleCallback(args.request);
+  }
+
+  return sessionLoader(
     args,
     async ({ auth }) => {
-      const url = new URL(args.request.url);
-      const stateToken = url.searchParams.get("state");
-      const code = url.searchParams.get("code");
-      const oauthError = url.searchParams.get("error");
+      // A staging failure is authoritative. Never allow an older valid cookie to be processed
+      // after a malformed/oversized callback has replaced it.
+      const stagingFailed = new URL(args.request.url).searchParams.has(
+        "failure",
+      );
+      const callback = stagingFailed
+        ? null
+        : readStagedGoogleCallback(args.request);
 
-      const fail = (error: string, backUrl = "/dashboard") => ({ error, backUrl });
+      const fail = (error: string, backUrl = "/dashboard") => ({
+        error,
+        backUrl,
+      });
 
-      if (oauthError) {
+      if (!callback?.state) {
         return fail(
-          "Google authorization was cancelled or denied — the connection was not made. " +
-            "Start again from the agent's install page or Deployment tab.",
+          "This Google callback is invalid or has expired. Start again from the agent's " +
+            "install page or Deployment tab.",
         );
       }
-      if (!stateToken || !code) {
-        return fail(
-          "Google didn't send back an authorization code — the connection was not made. " +
-            "Start again from the agent's install page or Deployment tab.",
-        );
-      }
-      const state = verifyConnectState(stateToken, connectStateKey());
+      const state = verifyConnectState(callback.state, connectStateKey());
       if (!state) {
         return fail(
           "This link is invalid or has expired (it lives one hour). Start again from the " +
             "agent's install page or Deployment tab.",
         );
       }
+      if (
+        state.userId !== auth.user.id ||
+        state.sessionId !== auth.session.id
+      ) {
+        return fail(
+          "This Google connection was started in a different Eden session. Start again from " +
+            "the agent's install page or Deployment tab.",
+        );
+      }
+
+      // Consume before exchanging the authorization code. DELETE ... RETURNING makes concurrent
+      // callbacks race safely: exactly one request can proceed, even across multiple app replicas.
+      const consumed = await consumeOAuthStateNonce({
+        nonce: state.nonce,
+        userId: auth.user.id,
+        sessionId: auth.session.id,
+      });
+      if (!consumed) {
+        return fail(
+          "This Google connection link is invalid, expired, or has already been used. Start " +
+            "again from the agent's install page or Deployment tab.",
+        );
+      }
+
+      if (callback.error) {
+        return fail(
+          "Google authorization was cancelled or denied — the connection was not made. " +
+            "Start again from the agent's install page or Deployment tab.",
+        );
+      }
+      if (!callback.code) {
+        return fail(
+          "Google didn't send back an authorization code — the connection was not made. " +
+            "Start again from the agent's install page or Deployment tab.",
+        );
+      }
 
       // Tenancy: the signed state names the project, but the SESSION must own it too.
-      const project = await requireProject(
-        {
-          user: auth.user,
-          organizationId: auth.organizationId ?? null,
-          role: auth.role ?? null,
-        },
-        state.projectId,
-      );
+      const project = await requireProject(auth, state.projectId);
       const backUrl = safeReturnTo(state.returnTo) ?? "/dashboard";
 
       const roster = (await listAgents(project.id)).filter(
@@ -107,7 +150,11 @@ export const loader = (args: LoaderFunctionArgs) =>
       const redirectUri = `${publicOrigin(args.request)}/google/callback`;
       let grant;
       try {
-        grant = await exchangeCode({ config, code, redirectUri });
+        grant = await exchangeCode({
+          config,
+          code: callback.code,
+          redirectUri,
+        });
       } catch (error) {
         return fail((error as Error).message, backUrl);
       }
@@ -141,7 +188,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         actorUserId: auth.user.id,
         action: "connection.connect",
         target: agent.name,
-        meta: { provider: "google", accountEmail, scopes: grant.scope || state.scopes },
+        meta: {
+          provider: "google",
+          accountEmail,
+          scopes: grant.scope || state.scopes,
+        },
       });
 
       // Auto-redeploy (issue #69): the grant only reaches the RUNNING container on the next deploy,
@@ -168,17 +219,20 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
       throw redirect(withParams(backUrl, params));
     },
-    { ensureSignedIn: true },
+    // OAuth state is bound to the initiating Better Auth session. If that session expired, the
+    // round-trip cannot safely resume; keep Google's code/state out of the login returnTo URL.
+    { ensureSignedIn: true, returnTo: "/dashboard" },
   );
+};
 
 export function meta() {
   return [{ title: "Connect Google · eden" }, ...noindexMeta];
 }
 
 export default function GoogleCallback({ loaderData }: Route.ComponentProps) {
-  const { error, backUrl } = loaderData;
+  const { error, backUrl, user } = loaderData;
   return (
-    <AppShell>
+    <AppShell userEmail={user.email}>
       <PageHeader
         icon={Plug}
         accent="brand"

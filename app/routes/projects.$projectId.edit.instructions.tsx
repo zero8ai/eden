@@ -5,7 +5,7 @@
  * change-set into a PR happens on the Changes tab (PRD §7.3: edits accumulate; publish opens
  * the PR). The loader overlays any staged draft over the repo content.
  */
-import { authkitLoader, withAuth } from "@workos-inc/authkit-react-router";
+import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { FileText } from "lucide-react";
 import { useState } from "react";
 import {
@@ -23,7 +23,7 @@ import { FileStateBanner } from "~/components/file-state-banner";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
-import { syncTenant } from "~/auth/tenant.server";
+import { resolveActiveWorkspace } from "~/auth/workspace.server";
 import { getProject } from "~/db/queries.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import { resolveFileView, stageDraft } from "~/drafts/drafts.server";
@@ -37,21 +37,15 @@ import {
 import type { Route } from "./+types/projects.$projectId.edit.instructions";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       // Passing the request opts into cross-workspace deep-link auto-switch + org-less
       // provisioning (issue #56); requireRepo narrows to a connected repo as before.
       const project = requireRepo(
-        await requireProject(
-          {
-            user: auth.user,
-            organizationId: auth.organizationId,
-            role: auth.role,
-          },
-          args.params.projectId,
-          { request: args.request },
-        ),
+        await requireProject(auth, args.params.projectId, {
+          request: args.request,
+        }),
       );
 
       const agentName = agentFromParams(args.params);
@@ -93,14 +87,11 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action(args: ActionFunctionArgs) {
-  const auth = await withAuth(args);
+  const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
 
-  const { org } = await syncTenant({
-    user: auth.user,
-    organizationId: auth.organizationId ?? null,
-    role: auth.role ?? null,
-  });
+  const activeWorkspace = await resolveActiveWorkspace(auth);
+  const org = activeWorkspace?.org;
   if (!org) return { error: "You must belong to an organization." };
 
   const project = await getProject(org.id, args.params.projectId!);

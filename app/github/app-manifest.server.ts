@@ -124,6 +124,11 @@ export interface ManifestState {
   projectId: string;
   agentId: string;
   environmentId: string;
+  /** Better Auth user + session that started the flow — the callback must match both. */
+  userId: string;
+  sessionId: string;
+  /** Random server-recorded nonce consumed atomically by the callback (single use). */
+  nonce: string;
   /** Unix ms after which the token is dead. GitHub's code lives 1h; so do we. */
   exp: number;
 }
@@ -166,6 +171,9 @@ export function verifyManifestState(
       typeof parsed?.projectId !== "string" ||
       typeof parsed?.agentId !== "string" ||
       typeof parsed?.environmentId !== "string" ||
+      typeof parsed?.userId !== "string" ||
+      typeof parsed?.sessionId !== "string" ||
+      typeof parsed?.nonce !== "string" ||
       typeof parsed?.exp !== "number"
     ) {
       return null;

@@ -7,7 +7,7 @@
  * fetch degrades to `{ models: null }` and the UI falls back to a free-text field. Auth-gated
  * like the other api routes (`ensureSignedIn`) — no project scope, the catalog is global.
  */
-import { authkitLoader } from "@workos-inc/authkit-react-router";
+import { sessionLoader } from "~/auth/session.server";
 import type { LoaderFunctionArgs } from "react-router";
 
 import {
@@ -16,7 +16,7 @@ import {
 } from "~/models/catalog.server";
 
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async (): Promise<{ models: ModelCatalogEntry[] | null }> => {
       try {

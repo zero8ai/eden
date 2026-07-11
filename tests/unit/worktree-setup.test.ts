@@ -5,6 +5,7 @@ import {
   applyEnvOverrides,
   parseDatabaseUrl,
   parseEnvFile,
+  resolveBetterAuthSecret,
   withDatabaseName,
   withWorktreeAppendix,
 } from "../../scripts/worktree-setup.mjs";
@@ -143,6 +144,21 @@ describe("parseEnvFile", () => {
   test("parses keys, ignores comments and blanks, strips quotes", () => {
     const parsed = parseEnvFile("# c\n\nA=1\nB=\"two\"\nC='three'\n");
     expect(parsed).toEqual({ A: "1", B: "two", C: "three" });
+  });
+});
+
+describe("resolveBetterAuthSecret", () => {
+  test("preserves an existing valid worktree secret", () => {
+    const existing = "x".repeat(32);
+    expect(resolveBetterAuthSecret(existing)).toBe(existing);
+  });
+
+  test("generates a high-entropy URL-safe secret when absent or invalid", () => {
+    const first = resolveBetterAuthSecret();
+    const second = resolveBetterAuthSecret("too-short");
+    expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(second).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(second).not.toBe(first);
   });
 });
 

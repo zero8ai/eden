@@ -1,14 +1,22 @@
 /**
  * Shared loader/action guards for project routes. Centralizes the "resolve the tenant, load
- * the org-scoped project, require a connected repo" steps so every editor/route enforces the
+ * the organization-scoped project, require a connected repo" steps so every editor/route enforces the
  * same tenant-isolation + connected-repo invariants.
  */
-import { getWorkOS, switchToOrganization } from "@workos-inc/authkit-react-router";
-import { data } from "react-router";
+import { data, redirect } from "react-router";
 
-import { syncTenant, type SessionAuth } from "~/auth/tenant.server";
-import { ensureWorkspace } from "~/auth/workspace.server";
-import { findProjectAnyOrg, getProject, type Project } from "~/db/queries.server";
+import type { SessionAuth } from "~/auth/session.server";
+import {
+  ensureWorkspace,
+  listUserWorkspaces,
+  resolveActiveWorkspace,
+  setActiveWorkspace,
+} from "~/auth/workspace.server";
+import {
+  findProjectAnyOrg,
+  getProject,
+  type Project,
+} from "~/db/queries.server";
 import { ASSISTANT_CONFIG_ROOT } from "~/eve/parse";
 
 /** A project guaranteed to have a connected GitHub repo. */
@@ -21,7 +29,7 @@ export type ConnectedProject = Project & {
 /**
  * Decide whether a project miss in the current org is actually a deep link into ANOTHER
  * workspace the viewer belongs to (issue #56). Pure over its injected lookups so the branching
- * is unit-testable without a DB or WorkOS:
+ * is unit-testable without a DB or auth provider:
  *  - project unknown, or already in the current org → null (the normal 404 / no-op).
  *  - project in another org where the viewer IS a member → that org id (auto-switch target).
  *  - project in another org where the viewer is NOT a member → null (stays a 404).
@@ -39,7 +47,8 @@ export async function resolveCrossWorkspaceRedirect(input: {
 }
 
 /**
- * Sync the session's tenant and load the org-scoped project, or throw 403/404.
+ * Validate the Better Auth organization membership and load the org-scoped project, or throw
+ * 403/404.
  *
  * Pass `opts.request` from page-document GET loaders (never from actions or api routes) to opt
  * into two request-aware behaviors (issue #56): an org-less session provisions/adopts/chooses a
@@ -52,38 +61,33 @@ export async function requireProject(
   projectId: string | undefined,
   opts?: { request?: Request },
 ): Promise<Project> {
-  let { org } = await syncTenant(auth);
-  if (!org) {
+  let active = await resolveActiveWorkspace(auth);
+  if (!active) {
     if (!opts?.request) throw data("No organization", { status: 403 });
-    // Provision/adopt/choose a workspace, then re-sync (ensureWorkspace throws a replay redirect
-    // when it acted; reaching here means the session was already usable).
+    // Provision/adopt/choose a workspace. It redirects to replay whenever it changes the
+    // Better Auth session, so reaching the next line means this session was already usable.
     await ensureWorkspace(opts.request, auth);
-    ({ org } = await syncTenant(auth));
-    if (!org) throw data("No organization", { status: 403 });
+    active = await resolveActiveWorkspace(auth);
+    if (!active) throw data("No organization", { status: 403 });
   }
-  const project = projectId ? await getProject(org.id, projectId) : undefined;
+  const project = projectId
+    ? await getProject(active.org.id, projectId)
+    : undefined;
   if (!project) {
     if (opts?.request && projectId) {
       const target = await resolveCrossWorkspaceRedirect({
         projectId,
-        currentOrgId: org.id,
+        currentOrgId: active.org.id,
         findById: (id) => findProjectAnyOrg(id),
-        isMember: async (orgId) => {
-          const { data: memberships } =
-            await getWorkOS().userManagement.listOrganizationMemberships({
-              userId: auth.user.id,
-              organizationId: orgId,
-              statuses: ["active"],
-            });
-          return memberships.length > 0;
-        },
+        isMember: async (orgId) =>
+          (await listUserWorkspaces(auth)).some(
+            (workspace) => workspace.id === orgId,
+          ),
       });
       if (target) {
         const url = new URL(opts.request.url);
-        const switched = await switchToOrganization(opts.request, target, {
-          returnTo: url.pathname + url.search,
-        });
-        if (switched instanceof Response) throw switched;
+        await setActiveWorkspace(auth, target);
+        throw redirect(url.pathname + url.search);
       }
     }
     throw data("Project not found", { status: 404 });
@@ -106,7 +110,8 @@ export function requireRepo(project: Project): ConnectedProject {
  * outside those and path-traversal. Returns the normalized path or null if invalid.
  */
 const ROOT_FILE_ALLOWLIST = new Set(["package.json", "package-lock.json"]);
-const MEMBER_PATH = /^agents\/[A-Za-z0-9][\w.-]*\/(agent\/.+|package\.json|package-lock\.json)$/;
+const MEMBER_PATH =
+  /^agents\/[A-Za-z0-9][\w.-]*\/(agent\/.+|package\.json|package-lock\.json)$/;
 
 /** The assistant's user-config surface: markdown config + the JSON model override, never code. */
 export { ASSISTANT_CONFIG_ROOT };

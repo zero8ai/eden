@@ -1,8 +1,17 @@
-import { authkitLoader, signOut } from "@workos-inc/authkit-react-router";
 import { Bot, FolderGit2, Users } from "lucide-react";
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Link } from "react-router";
+import {
+  data,
+  Link,
+  redirect,
+  type ActionFunctionArgs,
+  type LoaderFunctionArgs,
+} from "react-router";
 
+import { sessionLoader } from "~/auth/session.server";
+import {
+  ensureWorkspace,
+  resolveActiveWorkspace,
+} from "~/auth/workspace.server";
 import { AppShell, PageHeader, accentText } from "~/components/shell";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -13,8 +22,7 @@ import {
   CardTitle,
 } from "~/components/ui/card";
 import { listAgents, listProjects, type Project } from "~/db/queries.server";
-import { syncTenant } from "~/auth/tenant.server";
-import { ensureWorkspace } from "~/auth/workspace.server";
+import { auth } from "~/lib/auth.server";
 import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/dashboard";
 
@@ -26,15 +34,15 @@ interface ProjectCard {
   isTeam: boolean;
 }
 
-// `ensureSignedIn: true` redirects anonymous visitors to WorkOS sign-in. The inner
+// `ensureSignedIn: true` redirects anonymous visitors to the local sign-in. The inner
 // loader only runs for authenticated users, so `auth` is always populated here.
 export const loader = (args: LoaderFunctionArgs) =>
-  authkitLoader(
+  sessionLoader(
     args,
     async ({ auth }) => {
       // First org-less login: provision the user's workspace and replay (redirect).
       await ensureWorkspace(args.request, auth);
-      const { org } = await syncTenant(auth);
+      const org = (await resolveActiveWorkspace(auth))?.org ?? null;
       const projects = org ? await listProjects(org.id) : [];
       const cards: ProjectCard[] = await Promise.all(
         projects.map(async (project) => {
@@ -52,20 +60,21 @@ export const loader = (args: LoaderFunctionArgs) =>
   );
 
 export async function action({ request }: ActionFunctionArgs) {
-  // Without an explicit returnTo, WorkOS falls back to the dashboard's "App Homepage
-  // URL" setting and shows an error page when it's unset (#24). Send users back to
-  // this deployment's home page. Derived from WORKOS_REDIRECT_URI (not request.url,
-  // whose origin is the container's internal host behind the nginx proxy). The URL
-  // must be allowlisted under Logout redirects in the WorkOS dashboard.
-  const returnTo = new URL("/", process.env.WORKOS_REDIRECT_URI).toString();
-  return await signOut(request, { returnTo });
+  // Only an explicit sign-out submission may end the session — a future same-origin form that
+  // happens to POST to /dashboard must not sign the user out as a side effect.
+  const form = await request.formData();
+  if (String(form.get("intent") ?? "") !== "sign-out") {
+    return data("Unknown action.", { status: 400 });
+  }
+  const response = await auth.api.signOut({
+    headers: request.headers,
+    asResponse: true,
+  });
+  return redirect("/", { headers: response.headers });
 }
 
 export function meta() {
-  return [
-    { title: "Repositories · eden" },
-    ...noindexMeta,
-  ];
+  return [{ title: "Repositories · eden" }, ...noindexMeta];
 }
 
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
@@ -95,7 +104,8 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
             </div>
             <CardTitle className="text-lg">No repositories yet</CardTitle>
             <CardDescription>
-              Connect an existing eve repository or create a new one to get started.
+              Connect an existing eve repository or create a new one to get
+              started.
             </CardDescription>
             <Button asChild className="mt-4">
               <Link to="/connect">Connect a repository</Link>
@@ -107,7 +117,11 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
           {teams.length > 0 && (
             <section>
               <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-                <Users className={`h-4 w-4 ${accentText.emerald}`} aria-hidden /> Teams
+                <Users
+                  className={`h-4 w-4 ${accentText.emerald}`}
+                  aria-hidden
+                />{" "}
+                Teams
               </h2>
               <div className="grid gap-4 sm:grid-cols-2">
                 {teams.map((c) => (
@@ -120,7 +134,8 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
             <section>
               {teams.length > 0 && (
                 <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-                  <Bot className={`h-4 w-4 ${accentText.brand}`} aria-hidden /> Agents
+                  <Bot className={`h-4 w-4 ${accentText.brand}`} aria-hidden />{" "}
+                  Agents
                 </h2>
               )}
               <div className="grid gap-4 sm:grid-cols-2">
@@ -145,7 +160,10 @@ function TeamCard({ card }: { card: ProjectCard }) {
         <CardHeader>
           <div className="flex items-center justify-between gap-2">
             <CardTitle className="flex items-center gap-2 truncate text-base">
-              <Users className={`h-4 w-4 shrink-0 ${accentText.emerald}`} aria-hidden />
+              <Users
+                className={`h-4 w-4 shrink-0 ${accentText.emerald}`}
+                aria-hidden
+              />
               {project.name}
             </CardTitle>
             <Badge className="shrink-0">
@@ -171,7 +189,10 @@ function AgentCard({ project }: { project: Project }) {
         <CardHeader>
           <div className="flex items-center justify-between gap-2">
             <CardTitle className="flex items-center gap-2 truncate text-base">
-              <Bot className={`h-4 w-4 shrink-0 ${accentText.brand}`} aria-hidden />
+              <Bot
+                className={`h-4 w-4 shrink-0 ${accentText.brand}`}
+                aria-hidden
+              />
               {project.name}
             </CardTitle>
             {project.repoOwner ? (
@@ -185,7 +206,8 @@ function AgentCard({ project }: { project: Project }) {
             )}
           </div>
           <CardDescription>
-            Default branch <span className="font-mono">{project.defaultBranch}</span>
+            Default branch{" "}
+            <span className="font-mono">{project.defaultBranch}</span>
           </CardDescription>
         </CardHeader>
       </Card>

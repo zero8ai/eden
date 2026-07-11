@@ -28,6 +28,10 @@
  *   1. Allocates a unique (dev, splitter, instance) port triple for the
  *      worktree, tracked in `.worktrees/_ports.json`. Starts at dev=5273,
  *      splitter=8887, instance=3100 (main uses 5173 / 8787 / 3000).
+ *      Allocation and the tunnel-config render happen under a cross-process
+ *      lock (`.worktrees/_setup.lock`) so concurrent setups — e.g. an
+ *      orchestrator launching several `clawd -w` worktrees at once — can't
+ *      double-allocate ports or render the config from a stale registry.
  *   2. Copies the main checkout's `.env.local` into the worktree, overriding
  *      PORT + BETTER_AUTH_URL + DATABASE_URL + the port vars above. Each
  *      worktree gets a stable, independently generated BETTER_AUTH_SECRET.
@@ -56,6 +60,7 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -65,6 +70,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   enrichPortEntry,
+  processIsRunning,
   readJson,
   renderAndValidateConfig,
   resolveTunnelDomain,
@@ -188,6 +194,56 @@ function saveRegistry(path, registry) {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(registry, null, 2)}\n`);
   renameSync(tmp, path);
+}
+
+/**
+ * Mutual exclusion for the shared-state section of setup: the ports-registry
+ * read-modify-write and the tunnel ingress config rendered from it. Parallel
+ * `clawd -w` invocations (e.g. an orchestrator launching several worktrees at
+ * once) would otherwise double-allocate ports or render the config from a
+ * stale registry.
+ *
+ * mkdir is atomic, so the directory is the lock; the holder's pid inside lets
+ * a later run steal a lock whose holder died (die() exits without cleanup).
+ * Throws (rather than dies) on timeout so callers and tests can handle it.
+ */
+export function acquireSetupLock(
+  lockDir,
+  { timeoutMs = 120_000, pollMs = 250, pid = process.pid } = {},
+) {
+  const pidFile = join(lockDir, "pid");
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      mkdirSync(lockDir);
+      writeFileSync(pidFile, String(pid));
+      return;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+    }
+    let holder = NaN;
+    try {
+      holder = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+    } catch {
+      // pid file not written yet — the holder is mid-acquire; treat as live.
+    }
+    if (Number.isInteger(holder) && !processIsRunning(holder)) {
+      rmSync(lockDir, { recursive: true, force: true });
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `timed out waiting for the setup lock at ${lockDir}` +
+          (Number.isInteger(holder) ? ` (held by pid ${holder})` : "") +
+          `; if no other worktree setup is running, remove that directory and retry`,
+      );
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pollMs);
+  }
+}
+
+export function releaseSetupLock(lockDir) {
+  rmSync(lockDir, { recursive: true, force: true });
 }
 
 /**
@@ -597,10 +653,31 @@ function main() {
   ensurePgContainerRunning();
 
   const registryPath = repoPath(root, WORKTREE_ROOT_DIR, "_ports.json");
-  const registry = loadRegistry(registryPath);
-  const allocated = allocatePorts(registry, feat.dir);
   const paths = tunnelPaths(root, WORKTREE_ROOT_DIR);
   const tunnelMetadata = readJson(paths.metadata, null);
+
+  // The ports registry and the tunnel config rendered from it are shared
+  // across worktrees, so parallel setups must serialize from registry read
+  // through config render. Everything after (env files, npm install, DB
+  // clone) is per-worktree and runs unlocked. The exit hook releases the
+  // lock on the die() paths inside the section; the lockHeld flag keeps it
+  // from deleting a lock some later process has since acquired.
+  const lockDir = repoPath(root, WORKTREE_ROOT_DIR, "_setup.lock");
+  try {
+    acquireSetupLock(lockDir);
+  } catch (err) {
+    die(err.message);
+  }
+  let lockHeld = true;
+  const releaseLock = () => {
+    if (!lockHeld) return;
+    lockHeld = false;
+    releaseSetupLock(lockDir);
+  };
+  process.on("exit", releaseLock);
+
+  const registry = loadRegistry(registryPath);
+  const allocated = allocatePorts(registry, feat.dir);
   let ports;
   try {
     const tunnelDomain = resolveTunnelDomain(tunnelMetadata);
@@ -610,6 +687,14 @@ function main() {
   }
   registry[feat.dir] = ports;
   saveRegistry(registryPath, registry);
+  if (tunnelMetadata) {
+    try {
+      renderAndValidateConfig(paths, tunnelMetadata, registry);
+    } catch (err) {
+      die(`stable tunnel provisioning failed: ${err.message}`);
+    }
+  }
+  releaseLock();
 
   const mainEnvPath = join(root, ".env.local");
   if (!existsSync(mainEnvPath))
@@ -645,14 +730,6 @@ function main() {
     EDEN_INSTANCE_PORT: String(ports.instance),
     EDEN_TUNNEL_URL: `https://${ports.tunnelHost}`,
   });
-
-  if (tunnelMetadata) {
-    try {
-      renderAndValidateConfig(paths, tunnelMetadata, registry);
-    } catch (err) {
-      die(`stable tunnel provisioning failed: ${err.message}`);
-    }
-  }
 
   const worktreeMd = worktreeMdTemplate(
     feat,

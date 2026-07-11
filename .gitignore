@@ -17,3 +17,5 @@ docker-compose.yml
 .claude/worktrees/
 WORKTREE.md
 CLAUDE.local.md
+# Unattended work-issue runs write their outcome here (see the work-issue skill)
+RESULT.json

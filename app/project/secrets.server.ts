@@ -145,7 +145,7 @@ export async function handleSecretIntent(
     // Attach covers first attach AND the per-attachment sandbox flip (upsert semantics).
     case "secret-attach": {
       if (!key) return { ok: false, error: "Missing secret name." };
-      if (!agentId) return { ok: false, error: "Attachments are per-member." };
+      if (!agentId) return { ok: false, error: "Attachments are per-agent." };
       await attach({
         projectId: input.projectId,
         agentId,
@@ -158,7 +158,7 @@ export async function handleSecretIntent(
     }
 
     case "secret-detach": {
-      if (!agentId) return { ok: false, error: "Attachments are per-member." };
+      if (!agentId) return { ok: false, error: "Attachments are per-agent." };
       await attach({
         projectId: input.projectId,
         agentId,
@@ -169,7 +169,7 @@ export async function handleSecretIntent(
     }
 
     case "secret-dismiss": {
-      if (!agentId) return { ok: false, error: "Dismissals are per-member." };
+      if (!agentId) return { ok: false, error: "Dismissals are per-agent." };
       await dismiss({
         projectId: input.projectId,
         agentId,

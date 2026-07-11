@@ -338,11 +338,11 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     member = target.name;
     if (!isTemplateSlug(target.name)) {
       conflicts.push(
-        `"${target.name}" isn't a valid member name — use lowercase letters, digits, and single hyphens.`,
+        `"${target.name}" isn't a valid agent name — use lowercase letters, digits, and single hyphens.`,
       );
     } else if (rosterNames.includes(target.name)) {
       conflicts.push(
-        `A member named "${target.name}" already exists — pick another name, or install into it instead.`,
+        `An agent named "${target.name}" already exists — pick another name, or install into it instead.`,
       );
     }
     const dir = `agents/${target.name}/agent`;

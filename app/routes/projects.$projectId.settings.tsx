@@ -733,12 +733,12 @@ export async function action(args: ActionFunctionArgs) {
       const toAgentId = String(form.get("to") ?? "");
       const enabled = form.get("enabled") === "1";
       if (!fromAgentId || !toAgentId || fromAgentId === toAgentId) {
-        return { error: "Pick two different team members." };
+        return { error: "Pick two different agents." };
       }
       const { roster } = await resolveAgentContext(project.id, null);
       const ids = new Set(roster.map((a) => a.id));
       if (!ids.has(fromAgentId) || !ids.has(toAgentId)) {
-        return { error: "Unknown team member." };
+        return { error: "Unknown agent." };
       }
       await getRuntime().data.agentLinks.set({
         projectId: project.id,
@@ -755,7 +755,7 @@ export async function action(args: ActionFunctionArgs) {
       const { roster } = await resolveAgentContext(project.id, null);
       const member = roster.find((a) => a.name === name);
       if (!member || member.root === "agent") {
-        return { error: "Only team members (agents/<name>/) can be removed." };
+        return { error: "Only agents (agents/<name>/) can be removed." };
       }
       const source = await fetchAgentSource(project.repoInstallationId, repo);
       const memberDir = `agents/${name}/`;
@@ -768,16 +768,16 @@ export async function action(args: ActionFunctionArgs) {
         files.push({
           path: EMPTY_TEAM_MARKER,
           content:
-            "# Agents\n\nAdd each team member under `agents/<member>/` as a complete eve project.\n",
+            "# Agents\n\nAdd each agent under `agents/<name>/` as a complete eve project.\n",
         });
       }
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
         branch: `eden/remove-member-${name}`,
         files,
-        title: `Remove team member: ${name}`,
+        title: `Remove agent: ${name}`,
         body:
-          `Deletes \`agents/${name}/\` (${files.length} files). Merging removes the member; ` +
+          `Deletes \`agents/${name}/\` (${files.length} files). Merging removes the agent; ` +
           `its releases and run history remain until then.`,
       });
       return {
@@ -814,7 +814,7 @@ export async function action(args: ActionFunctionArgs) {
           (a.name === newName || a.pendingName === newName),
       );
       if (taken) {
-        return { error: `A member named "${newName}" already exists.` };
+        return { error: `An agent named "${newName}" already exists.` };
       }
       if (active.pendingName) {
         return {
@@ -892,12 +892,12 @@ export async function action(args: ActionFunctionArgs) {
           base: project.defaultBranch,
           branch: `eden/rename-member-${oldName}-${newName}`,
           files,
-          title: `Rename team member: ${oldName} → ${newName}`,
+          title: `Rename agent: ${oldName} → ${newName}`,
           body:
             `Moves \`agents/${oldName}/\` to \`agents/${newName}/\` (${memberPaths.length} files) ` +
-            `and retargets its package.json and marketplace installs. eden renames the member in ` +
+            `and retargets its package.json and marketplace installs. eden renames the agent in ` +
             `place on merge — its environments, versions, secrets and run history are preserved.\n\n` +
-            `Note: mentions of \`${oldName}\` in other members' instructions or tools are not ` +
+            `Note: mentions of \`${oldName}\` in other agents' instructions or tools are not ` +
             `rewritten automatically — update those separately if needed.`,
         });
       } catch (err) {
@@ -1007,10 +1007,10 @@ export default function Settings({
         title={level === "member" ? `Settings — ${activeAgent}` : "Settings"}
         description={
           level === "repo"
-            ? "Repository-wide configuration. Each member's model and secrets live in the member's own Settings."
+            ? "Repository-wide configuration. Each agent's model and secrets live in the agent's own Settings."
             : showRepo
               ? "This agent's runtime configuration and the repository connection."
-              : "This member's runtime configuration — model, credentials, membership."
+              : "This agent's runtime configuration — model, credentials, and team collaboration."
         }
       />
 
@@ -1465,7 +1465,7 @@ function RenameSection({
           <CardContent className="py-4 text-sm">
             <p className="font-medium">Rename to {pendingName} pending</p>
             <p className="text-muted-foreground">
-              A change request that renames this member is open. Merge or close
+              A change request that renames this agent is open. Merge or close
               it from the Deployment tab; the rename applies on merge.
             </p>
           </CardContent>
@@ -1490,7 +1490,7 @@ function RenameSection({
             </Form>
             <p className="text-sm text-muted-foreground">
               {isTeam
-                ? `Opens a change request that moves agents/${activeAgent}/ to the new name. Environments, versions, secrets and history are preserved on merge. Mentions of "${activeAgent}" in other members' instructions or tools are not rewritten automatically.`
+                ? `Opens a change request that moves agents/${activeAgent}/ to the new name. Environments, versions, secrets and history are preserved on merge. Mentions of "${activeAgent}" in other agents' instructions or tools are not rewritten automatically.`
                 : "Applies immediately across eden. The agent's repository directory is unaffected."}
             </p>
           </CardContent>
@@ -1541,7 +1541,7 @@ function DangerSection({
               <ConfirmDialog
                 trigger={
                   <Button variant="outline" disabled={busy}>
-                    Remove member
+                    Remove agent
                   </Button>
                 }
                 title={`Remove ${activeAgent} from the team?`}
@@ -1564,7 +1564,7 @@ function DangerSection({
                 </p>
                 <p className="text-sm text-muted-foreground">
                   Stops and destroys every running instance, then permanently
-                  deletes {isTeam ? "all members' " : "the agent's "}
+                  deletes {isTeam ? "all agents' " : "the agent's "}
                   versions, environments, secrets, drafts, and run history from
                   eden. The GitHub repository itself is not touched.
                 </p>

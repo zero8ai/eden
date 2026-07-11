@@ -151,8 +151,8 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
   );
 }
 
-/** A team: its roster is the headline — members are the thing you manage. */
-function TeamCard({ card }: { card: ProjectCard }) {
+/** A team: multiple agents sharing one repository under the agents/* layout. */
+export function TeamCard({ card }: { card: ProjectCard }) {
   const { project, members } = card;
   return (
     <Link to={`/repos/${project.id}`} className="group">
@@ -167,14 +167,24 @@ function TeamCard({ card }: { card: ProjectCard }) {
               {project.name}
             </CardTitle>
             <Badge className="shrink-0">
-              Team · {members.length} member{members.length === 1 ? "" : "s"}
+              Team · {members.length} agent{members.length === 1 ? "" : "s"}
             </Badge>
           </div>
           <CardDescription className="truncate">
-            <span className="font-mono">
-              {members.slice(0, 4).join(" · ")}
-              {members.length > 4 ? ` · +${members.length - 4}` : ""}
-            </span>
+            {project.repoOwner ? (
+              <>
+                <span className="font-mono">
+                  {project.repoOwner}/{project.repoName}
+                </span>
+                {" · "}
+                <span className="font-mono">{project.defaultBranch}</span>
+              </>
+            ) : (
+              <>
+                No repository linked ·{" "}
+                <span className="font-mono">{project.defaultBranch}</span>
+              </>
+            )}
           </CardDescription>
         </CardHeader>
       </Card>

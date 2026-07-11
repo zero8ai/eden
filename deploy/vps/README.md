@@ -1,5 +1,11 @@
 # Deploying Eden to a VPS
 
+> **Self-hosters:** this Docker Compose runbook remains the supported OSS deployment path. You do
+> not need Docker Swarm, GHCR, or Eden's GitHub Actions secrets. The repository's
+> [`docker-stack.production.yml`](../../docker-stack.production.yml) and
+> [maintainer deployment workflow](../../.github/workflows/deploy.yml) run the canonical hosted
+> Eden instance and are provided only as a reference for operators who want a similar CD setup.
+
 This is the supported production topology for self-hosted Eden today: **one Linux VPS runs
 everything** — the Eden dashboard, Postgres, every deployed agent instance, and their sandbox
 containers. That co-residency is by design (the `local-docker` deploy target addresses agent

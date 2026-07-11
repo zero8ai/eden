@@ -2,3 +2,16 @@
 build
 node_modules
 README.md
+.git
+.git/**
+.gitmodules
+.env
+.env.*
+**/.env
+**/.env.*
+*.env
+**/*.env
+!.env.example
+!**/.env.example
+*.log
+RESULT.json

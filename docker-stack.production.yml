@@ -1,0 +1,91 @@
+version: "3.8"
+
+# Maintainer-operated production stack. The supported self-hosted Compose setup
+# remains in deploy/vps; see deploy/production/README.md for this stack's runbook.
+services:
+  postgres:
+    image: postgres:17
+    command:
+      - postgres
+      - -p
+      - "5442"
+      - -c
+      - listen_addresses=127.0.0.1,172.17.0.1
+    environment:
+      POSTGRES_USER: eden
+      POSTGRES_PASSWORD: ${EDEN_PG_PASSWORD:?set EDEN_PG_PASSWORD}
+      POSTGRES_DB: eden
+    networks:
+      - host
+    volumes:
+      - /opt/eden/volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5442 -U eden -d eden"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 5
+        window: 60s
+      update_config:
+        parallelism: 1
+        monitor: 30s
+        failure_action: rollback
+        order: stop-first
+      rollback_config:
+        parallelism: 1
+        monitor: 30s
+        failure_action: pause
+        order: stop-first
+
+  eden:
+    image: ghcr.io/zero8ai/eden:${IMAGE_TAG:?set IMAGE_TAG}
+    env_file:
+      - ./production.env
+    networks:
+      - host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then(() => process.exit(0)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    deploy:
+      replicas: ${EDEN_REPLICAS:-1}
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+      update_config:
+        parallelism: 1
+        monitor: 60s
+        failure_action: rollback
+        order: stop-first
+      rollback_config:
+        parallelism: 1
+        monitor: 60s
+        failure_action: pause
+        order: stop-first
+
+networks:
+  host:
+    external: true
+    name: host

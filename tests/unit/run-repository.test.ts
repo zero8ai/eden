@@ -69,4 +69,16 @@ describe("run repository fake", () => {
       ),
     ).resolves.toBe(0);
   });
+
+  it("counts only running runs of the given deployment (the drain idle signal)", async () => {
+    const store = makeFakeStore();
+    store.seedRun({ id: "r1", projectId: "p", deploymentId: "d1", status: "running" });
+    store.seedRun({ id: "r2", projectId: "p", deploymentId: "d1", status: "running" });
+    store.seedRun({ id: "r3", projectId: "p", deploymentId: "d1", status: "completed" });
+    store.seedRun({ id: "r4", projectId: "p", deploymentId: "d2", status: "running" });
+
+    await expect(store.runs.countRunningByDeployment("d1")).resolves.toBe(2);
+    await expect(store.runs.countRunningByDeployment("d2")).resolves.toBe(1);
+    await expect(store.runs.countRunningByDeployment("d3")).resolves.toBe(0);
+  });
 });

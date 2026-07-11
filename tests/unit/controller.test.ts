@@ -18,8 +18,12 @@ import {
 } from "~/deploy/controller.server";
 import {
   cleanupDeploymentContainer,
-  DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS,
 } from "~/deploy/cleanup.server";
+import {
+  DEPLOYMENT_DRAIN_CEILING_MS,
+  DEPLOYMENT_DRAIN_POLL_MS,
+  drainDeployment,
+} from "~/deploy/drain.server";
 import type { DeployTarget } from "~/seams/types";
 import { fakeDeployTarget, fakeSecrets } from "../fakes/infra";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
@@ -427,28 +431,42 @@ describe("cutover on deploy", () => {
     vi.restoreAllMocks();
   });
 
-  it("redeploying the same release supersedes the previous live instance — never two live copies", async () => {
+  it("redeploying the same release DRAINS the previous live instance — never two live copies", async () => {
     const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "8".repeat(40) }, store);
+    const stoppedIds: string[] = [];
     const deps = {
       store,
-      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }),
+      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" }, stoppedIds }),
       secrets: fakeSecrets(),
     };
     const first = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
     expect(first.status).toBe("live");
 
+    const failRunningRuns = vi.spyOn(store.runs, "failRunningByDeployment");
     const second = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
     expect(second.status).toBe("live");
 
     const all = await listDeployments(ENV, store);
     const oldRow = all.find((d) => d.id === first.id);
-    expect(oldRow?.status).toBe("stopped");
+    // The old instance is DRAINING (weight 0), not stopped — it keeps running to finish turns.
+    expect(oldRow?.status).toBe("draining");
     expect(oldRow?.trafficWeight).toBe(0);
     // Exactly one live copy of the release remains.
     expect(all.filter((d) => d.status === "live")).toHaveLength(1);
+    // Cutover no longer stops infra or reconciles runs — that's the drain watcher's job.
+    expect(stoppedIds).not.toContain(first.id);
+    expect(failRunningRuns).not.toHaveBeenCalled();
+
+    // A drain job for the old deployment is scheduled one poll interval out (not immediately due).
+    expect(await store.jobs.claimNext(new Date())).toBeNull();
+    const drainJob = await store.jobs.claimNext(
+      new Date(Date.now() + DEPLOYMENT_DRAIN_POLL_MS + 1000),
+    );
+    expect(drainJob?.kind).toBe("drain_deployment");
+    expect(drainJob?.payload.deploymentId).toBe(first.id);
   });
 
-  it("deploying a DIFFERENT release demotes the previously live one (single live per env)", async () => {
+  it("deploying a DIFFERENT release drains the previously live one + schedules a ceilinged drain", async () => {
     const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "3".repeat(40) }, store);
     const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "4".repeat(40) }, store);
     const deps = {
@@ -459,46 +477,33 @@ describe("cutover on deploy", () => {
     const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
     expect(depA.status).toBe("live");
 
-    const cutoverOrder: string[] = [];
-    const updateDeployment = store.deployments.update.bind(store.deployments);
-    vi.spyOn(store.deployments, "update").mockImplementation(
-      async (id, patch) => {
-        if (id === depA.id && patch.status === "stopped")
-          cutoverOrder.push("stopped");
-        return updateDeployment(id, patch);
-      },
-    );
-    const failRuns = store.runs.failRunningByDeployment.bind(store.runs);
-    const failRunningRuns = vi
-      .spyOn(store.runs, "failRunningByDeployment")
-      .mockImplementation(async (...args) => {
-        cutoverOrder.push("reconciled");
-        return failRuns(...args);
-      });
+    const scheduledAt = Date.now();
     const depB = await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
     expect(depB.status).toBe("live");
 
     const all = await listDeployments(ENV, store);
     const oldRow = all.find((d) => d.id === depA.id);
-    expect(oldRow?.status).toBe("stopped");
+    expect(oldRow?.status).toBe("draining");
     expect(oldRow?.trafficWeight).toBe(0);
     expect(all.filter((d) => d.status === "live")).toHaveLength(1);
-    expect(failRunningRuns).toHaveBeenCalledOnce();
-    expect(failRunningRuns).toHaveBeenCalledWith(
-      depA.id,
-      expect.stringMatching(/redeploy|replac/i),
-    );
-    expect(cutoverOrder).toEqual(["stopped", "reconciled"]);
 
+    // Nothing is due immediately; the drain poll is one interval out and carries the ceiling as an
+    // absolute deadline anchored at cutover.
     expect(await store.jobs.claimNext(new Date())).toBeNull();
-    const cleanupJob = await store.jobs.claimNext(
-      new Date(Date.now() + DEPLOYMENT_CONTAINER_CLEANUP_GRACE_MS + 1000),
+    const drainJob = await store.jobs.claimNext(
+      new Date(Date.now() + DEPLOYMENT_DRAIN_POLL_MS + 1000),
     );
-    expect(cleanupJob?.kind).toBe("cleanup_deployment_container");
-    expect(cleanupJob?.payload).toEqual({ deploymentId: depA.id });
+    expect(drainJob?.kind).toBe("drain_deployment");
+    expect(drainJob?.payload.deploymentId).toBe(depA.id);
+    const deadline = Date.parse(drainJob!.payload.deadlineAt as string);
+    expect(deadline).toBeGreaterThanOrEqual(scheduledAt + DEPLOYMENT_DRAIN_CEILING_MS - 2000);
+    expect(deadline).toBeLessThanOrEqual(scheduledAt + DEPLOYMENT_DRAIN_CEILING_MS + 2000);
   });
 
-  it("does not hide a stale old instance when cutover cannot stop it", async () => {
+  it("fails the new deployment (old stays live) when the draining flip cannot be persisted", async () => {
+    // Stopping is now deferred to the drain job, so a broken docker-stop no longer fails a
+    // redeploy. The only cutover-time failure left is being unable to WRITE the draining flip —
+    // if that can't land, the new deployment is recorded failed and the old row stays live.
     const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a".repeat(40) }, store);
     const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b".repeat(40) }, store);
     const first = await deployRelease(
@@ -511,19 +516,25 @@ describe("cutover on deploy", () => {
     );
     expect(first.status).toBe("live");
 
-    const brokenStop = fakeDeployTarget({
-      health: { status: "live", url: "http://new" },
-      stopError: "docker daemon unreachable",
+    const realUpdate = store.deployments.update.bind(store.deployments);
+    vi.spyOn(store.deployments, "update").mockImplementation(async (id, patch) => {
+      if (id === first.id && patch.status === "draining") {
+        throw new Error("deployments row is locked");
+      }
+      return realUpdate(id, patch);
     });
-    delete (brokenStop as Partial<typeof brokenStop>).destroy;
     const failRunningRuns = vi.spyOn(store.runs, "failRunningByDeployment");
     const second = await deployRelease(
       { environmentId: ENV, releaseId: rB.id },
-      { store, deployTarget: brokenStop, secrets: fakeSecrets() },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://new" } }),
+        secrets: fakeSecrets(),
+      },
     );
 
     expect(second.status).toBe("failed");
-    expect(second.errorDetail).toMatch(/cutover failed while stopping the previous deployment/);
+    expect(second.errorDetail).toMatch(/cutover failed while draining the previous deployment/);
 
     const all = await listDeployments(ENV, store);
     expect(all.find((d) => d.id === first.id)?.status).toBe("live");
@@ -532,7 +543,9 @@ describe("cutover on deploy", () => {
     expect(failRunningRuns).not.toHaveBeenCalled();
   });
 
-  it("keeps a successful cutover live when run reconciliation fails", async () => {
+  it("keeps a successful cutover live even when scheduling the drain job fails", async () => {
+    // The drain schedule is best-effort: a lost job leaves a visible `draining` row, never fails a
+    // redeploy that has already gone live.
     const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "7".repeat(40) }, store);
     const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "9".repeat(40) }, store);
     const deps = {
@@ -541,19 +554,65 @@ describe("cutover on deploy", () => {
       secrets: fakeSecrets(),
     };
     const first = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
-    vi.spyOn(store.runs, "failRunningByDeployment").mockRejectedValueOnce(
-      new Error("telemetry store unavailable"),
-    );
+    vi.spyOn(store.jobs, "insert").mockRejectedValueOnce(new Error("queue unavailable"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     const second = await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
 
     expect(second.status).toBe("live");
-    expect((await store.deployments.findById(first.id))?.status).toBe("stopped");
+    expect((await store.deployments.findById(first.id))?.status).toBe("draining");
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("failed to reconcile running runs"),
+      expect.stringContaining("failed to schedule deployment drain"),
       expect.any(Error),
     );
+  });
+
+  it("end-to-end: A live → B live drains A → A idle → drain stops A and schedules cleanup", async () => {
+    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "e".repeat(40) }, store);
+    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "d".repeat(40) }, store);
+    const stoppedIds: string[] = [];
+    const deps = {
+      store,
+      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" }, stoppedIds }),
+      secrets: fakeSecrets(),
+    };
+    const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
+    const depB = await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
+    expect(depB.status).toBe("live");
+    expect((await store.deployments.findById(depA.id))?.status).toBe("draining");
+
+    // A turn is still in flight on the draining A → the watcher waits and re-polls.
+    store.seedRun({ id: "run_a", projectId: PROJECT, deploymentId: depA.id, status: "running" });
+    const deadline = new Date(Date.now() + DEPLOYMENT_DRAIN_CEILING_MS).toISOString();
+    const waiting = await drainDeployment({ deploymentId: depA.id, deadlineAt: deadline }, deps);
+    expect(waiting).toEqual({ status: "waiting", runningRuns: 1 });
+    expect(stoppedIds).not.toContain(depA.id);
+
+    // The turn settles → the next tick stops A.
+    store.seedRun({
+      id: "run_a",
+      projectId: PROJECT,
+      deploymentId: depA.id,
+      status: "completed",
+      finishedAt: new Date(),
+    });
+    const stopped = await drainDeployment({ deploymentId: depA.id, deadlineAt: deadline }, deps);
+    expect(stopped).toEqual({ status: "stopped", interruptedRuns: 0 });
+    expect(stoppedIds).toContain(depA.id);
+    expect((await store.deployments.findById(depA.id))?.status).toBe("stopped");
+
+    // Cleanup of A's container is scheduled once it has actually stopped. Drain jobs (the cutover
+    // schedule + the waiting re-poll) also sit in the queue, so drain everything due at a far-future
+    // time and assert one is the cleanup for A.
+    const far = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    const claimed: { kind: string; payload: Record<string, unknown> }[] = [];
+    for (let job = await store.jobs.claimNext(far); job; job = await store.jobs.claimNext(far)) {
+      claimed.push({ kind: job.kind, payload: job.payload });
+    }
+    expect(claimed).toContainEqual({
+      kind: "cleanup_deployment_container",
+      payload: { deploymentId: depA.id },
+    });
   });
 
   it("a FAILED deploy leaves the current live version serving (cutover only on success)", async () => {
@@ -588,6 +647,9 @@ describe("cleanupDeploymentContainer", () => {
 
     const old = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
     await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
+    // Cutover now leaves the old row `draining`; cleanup only reaps a `stopped` one. Simulate the
+    // drain having completed (the drain watcher owns that transition — see drain.test.ts).
+    await store.deployments.update(old.id, { status: "stopped", trafficWeight: 0 });
 
     const result = await cleanupDeploymentContainer(old.id, deps);
 
@@ -666,7 +728,8 @@ describe("rollbackTo", () => {
 
     const all = await listDeployments(ENV, store);
     const demoted = all.find((d) => d.id === depA.id);
-    expect(demoted?.status).toBe("stopped");
+    // Demotion drains rather than stops (the container finishes in-flight turns first — #81).
+    expect(demoted?.status).toBe("draining");
     expect(demoted?.trafficWeight).toBe(0);
     expect(all.filter((d) => d.status === "live")).toHaveLength(1);
   });

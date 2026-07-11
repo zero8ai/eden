@@ -716,6 +716,13 @@ export function makeFakeStore(): FakeStore {
         }
         return failed;
       },
+      async countRunningByDeployment(deploymentId) {
+        let running = 0;
+        for (const run of runs.values()) {
+          if (run.deploymentId === deploymentId && run.status === "running") running++;
+        }
+        return running;
+      },
     },
   };
 }

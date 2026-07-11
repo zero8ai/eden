@@ -277,6 +277,8 @@ export interface RunRepo {
     error: string,
     finishedAt?: Date,
   ): Promise<number>;
+  /** In-flight (`running`) runs currently attributed to one deployment — the drain watcher's idle signal. */
+  countRunningByDeployment(deploymentId: string): Promise<number>;
 }
 
 export interface DataStore {

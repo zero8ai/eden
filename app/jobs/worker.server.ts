@@ -56,6 +56,26 @@ async function execute(job: Job): Promise<void> {
       }
       return;
     }
+    case "drain_deployment": {
+      const { drainDeployment } = await import("~/deploy/drain.server");
+      const p = job.payload as { deploymentId?: string; deadlineAt?: string };
+      if (!p.deploymentId) throw new Error("drain job missing deploymentId");
+      if (!p.deadlineAt) throw new Error("drain job missing deadlineAt");
+      // A `waiting` result is a SUCCESS: the tick re-enqueued its own successor, so this job is
+      // done. Only a thrown error (e.g. the container refused to stop) is a retry.
+      const result = await drainDeployment({
+        deploymentId: p.deploymentId,
+        deadlineAt: p.deadlineAt,
+      });
+      const detail =
+        result.status === "waiting"
+          ? `waiting (${result.runningRuns} running)`
+          : result.status === "stopped"
+            ? `stopped (${result.interruptedRuns} interrupted)`
+            : `skipped: ${result.reason}`;
+      console.log(`[jobs] drain_deployment ${p.deploymentId}: ${detail}`);
+      return;
+    }
     default:
       throw new Error(`Unknown job kind: ${job.kind}`);
   }

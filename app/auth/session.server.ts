@@ -98,6 +98,13 @@ export function loginPath(
   return `/login?returnTo=${encodeURIComponent(returnTo)}`;
 }
 
+export function signupPath(
+  request: Request,
+  returnTo = safeReturnTo(request),
+): string {
+  return `/signup?returnTo=${encodeURIComponent(returnTo)}`;
+}
+
 function toSessionState(
   result: BetterAuthSession | null,
   requestHeaders: Headers,
@@ -229,25 +236,39 @@ export async function requireSession(input: RequestArgs): Promise<SessionAuth> {
   return session;
 }
 
+type SessionLoaderOptions = {
+  ensureSignedIn?: boolean;
+  returnTo?: string;
+  /**
+   * Where a signed-out visitor is sent. Defaults to the sign-in screen; invitation-style
+   * routes, whose typical visitor has no account yet, point at sign-up instead (both screens
+   * cross-link with `returnTo` preserved, so nobody is stranded).
+   */
+  signedOutRedirect?: "login" | "signup";
+};
+
 export function sessionLoader(
   args: RequestArgs,
 ): Promise<{ user: SessionState["user"] }>;
 export function sessionLoader<T extends object>(
   args: RequestArgs,
   callback: (context: { auth: SessionAuth }) => T | Promise<T>,
-  options?: { ensureSignedIn?: boolean; returnTo?: string },
+  options?: SessionLoaderOptions,
 ): Promise<T & { user: SessionAuth["user"] }>;
 export async function sessionLoader<T extends object>(
   args: RequestArgs,
   callback?: (context: { auth: SessionAuth }) => T | Promise<T>,
-  options?: { ensureSignedIn?: boolean; returnTo?: string },
+  options?: SessionLoaderOptions,
 ): Promise<
   (T & { user: SessionAuth["user"] }) | { user: SessionState["user"] }
 > {
   const session = await getSessionAuth(args);
   if (!session.user) {
-    if (options?.ensureSignedIn || callback)
-      throw redirect(loginPath(args.request, options?.returnTo));
+    if (options?.ensureSignedIn || callback) {
+      const toPath =
+        options?.signedOutRedirect === "signup" ? signupPath : loginPath;
+      throw redirect(toPath(args.request, options?.returnTo));
+    }
     return { user: null };
   }
   if (!callback) return { user: session.user };

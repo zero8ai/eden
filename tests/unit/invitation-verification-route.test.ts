@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   requireSession: vi.fn(),
   getInvitation: vi.fn(),
+  acceptInvitation: vi.fn(),
   handler: vi.fn(),
+  dbUpdate: vi.fn(),
+  dbWhere: vi.fn(),
 }));
 
 vi.mock("~/auth/session.server", () => ({
@@ -13,13 +16,21 @@ vi.mock("~/auth/session.server", () => ({
 
 vi.mock("~/lib/auth.server", () => ({
   auth: {
-    api: { getInvitation: mocks.getInvitation },
+    api: {
+      getInvitation: mocks.getInvitation,
+      acceptInvitation: mocks.acceptInvitation,
+    },
     handler: mocks.handler,
   },
 }));
 
+vi.mock("~/db/client.server", () => ({
+  db: { update: mocks.dbUpdate },
+}));
+
 const EMAIL = "invitee@example.com";
 const INVITATION_ID = "invitation-123";
+const KEY = Buffer.alloc(32, 7);
 
 function verificationRequest() {
   return new Request(
@@ -53,14 +64,20 @@ function actionArgs(request: Request) {
 describe("invitation verification route", () => {
   beforeEach(() => {
     vi.resetModules();
+    process.env.EDEN_SECRETS_KEY = KEY.toString("hex");
     mocks.requireSession.mockReset().mockResolvedValue({
-      user: { email: EMAIL },
+      user: { id: "user-1", email: EMAIL, emailVerified: false },
       requestHeaders: new Headers(),
     });
     mocks.getInvitation.mockReset().mockRejectedValue({
       body: { code: "EMAIL_VERIFICATION_REQUIRED_FOR_INVITATION" },
     });
+    mocks.acceptInvitation.mockReset();
     mocks.handler.mockReset();
+    mocks.dbWhere.mockReset().mockResolvedValue(undefined);
+    mocks.dbUpdate.mockReset().mockImplementation(() => ({
+      set: () => ({ where: mocks.dbWhere }),
+    }));
   });
 
   it("sends through Better Auth's rate-limited handler endpoint", async () => {
@@ -116,5 +133,111 @@ describe("invitation verification route", () => {
     await expect(action(actionArgs(verificationRequest()))).resolves.toEqual({
       error: "Could not send the verification email.",
     });
+  });
+
+  function acceptRequest(fields: Record<string, string>) {
+    return new Request(
+      `https://eden.example.com/accept-invitation/${INVITATION_ID}`,
+      {
+        method: "POST",
+        headers: {
+          cookie: "better-auth.session_token=test-cookie",
+          "content-type": "application/x-www-form-urlencoded",
+          origin: "https://eden.example.com",
+        },
+        body: new URLSearchParams({
+          invitationId: INVITATION_ID,
+          ...fields,
+        }),
+      },
+    );
+  }
+
+  async function mintToken(invitationId: string, email: string) {
+    const { mintInvitationToken } = await import(
+      "~/auth/invitation-token.server"
+    );
+    return mintInvitationToken(invitationId, email, KEY);
+  }
+
+  it("redeems an emailed delivery token as mailbox proof and accepts", async () => {
+    mocks.acceptInvitation.mockResolvedValue({});
+    const { action } = await import("~/routes/accept-invitation.$invitationId");
+
+    const request = acceptRequest({
+      token: await mintToken(INVITATION_ID, EMAIL),
+    });
+    let response: Response | undefined;
+    try {
+      await action(actionArgs(request));
+    } catch (error) {
+      if (error instanceof Response) response = error;
+      else throw error;
+    }
+
+    expect(mocks.dbUpdate).toHaveBeenCalledOnce();
+    expect(mocks.dbWhere).toHaveBeenCalledOnce();
+    expect(mocks.acceptInvitation).toHaveBeenCalledOnce();
+    expect(response?.status).toBe(302);
+    expect(response?.headers.get("location")).toBe("/dashboard");
+  });
+
+  it("ignores a delivery token bound to a different invitation", async () => {
+    mocks.acceptInvitation.mockRejectedValue({
+      body: {
+        code: "EMAIL_VERIFICATION_REQUIRED_BEFORE_ACCEPTING_OR_REJECTING_INVITATION",
+      },
+      statusCode: 403,
+    });
+    const { action } = await import("~/routes/accept-invitation.$invitationId");
+
+    const request = acceptRequest({
+      token: await mintToken("other-invitation", EMAIL),
+    });
+    const result = await action(actionArgs(request));
+
+    expect(mocks.dbUpdate).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ verificationRequired: true });
+  });
+
+  it("ignores a delivery token minted for a different email address", async () => {
+    mocks.acceptInvitation.mockRejectedValue({
+      body: {
+        code: "EMAIL_VERIFICATION_REQUIRED_BEFORE_ACCEPTING_OR_REJECTING_INVITATION",
+      },
+      statusCode: 403,
+    });
+    const { action } = await import("~/routes/accept-invitation.$invitationId");
+
+    const request = acceptRequest({
+      token: await mintToken(INVITATION_ID, "someone-else@example.com"),
+    });
+    const result = await action(actionArgs(request));
+
+    expect(mocks.dbUpdate).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ verificationRequired: true });
+  });
+
+  it("does not touch the verified flag for an already-verified account", async () => {
+    mocks.requireSession.mockResolvedValue({
+      user: { id: "user-1", email: EMAIL, emailVerified: true },
+      requestHeaders: new Headers(),
+    });
+    mocks.acceptInvitation.mockResolvedValue({});
+    const { action } = await import("~/routes/accept-invitation.$invitationId");
+
+    const request = acceptRequest({
+      token: await mintToken(INVITATION_ID, EMAIL),
+    });
+    let response: Response | undefined;
+    try {
+      await action(actionArgs(request));
+    } catch (error) {
+      if (error instanceof Response) response = error;
+      else throw error;
+    }
+
+    expect(mocks.dbUpdate).not.toHaveBeenCalled();
+    expect(response?.headers.get("location")).toBe("/dashboard");
   });
 });

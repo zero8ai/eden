@@ -1,6 +1,14 @@
 import { Form, Link, redirect } from "react-router";
+import { eq } from "drizzle-orm";
 
-import { requireSession, sessionLoader } from "~/auth/session.server";
+import { verifyInvitationToken } from "~/auth/invitation-token.server";
+import {
+  requireSession,
+  sessionLoader,
+  type SessionAuth,
+} from "~/auth/session.server";
+import { db } from "~/db/client.server";
+import { user } from "~/db/auth-schema";
 import { AppShell, PageHeader } from "~/components/shell";
 import { Button } from "~/components/ui/button";
 import {
@@ -42,6 +50,34 @@ function invitationCallbackUrl(request: Request, invitationId: string): string {
   ).toString();
 }
 
+/**
+ * Redeem the delivery token from the invitation email link as mailbox proof. The token is an
+ * HMAC over (invitationId, invited email) minted when the email was sent, so presenting it
+ * proves the bearer received that email — the same property a manual verification round-trip
+ * establishes. When the signed-in account's email matches the invited address, mark it
+ * verified so the organization plugin's invitation gate (kept ON against enumerable
+ * invitation ids, CVE-2026-53514) passes without a redundant second email.
+ */
+async function redeemDeliveryToken(
+  sessionUser: SessionAuth["user"],
+  invitationId: string,
+  token: string | null,
+): Promise<void> {
+  if (!token || sessionUser.emailVerified) return;
+  const delivery = verifyInvitationToken(token, invitationId);
+  if (!delivery) return;
+  if (
+    delivery.email.trim().toLowerCase() !==
+    sessionUser.email.trim().toLowerCase()
+  ) {
+    return;
+  }
+  await db
+    .update(user)
+    .set({ emailVerified: true })
+    .where(eq(user.id, sessionUser.id));
+}
+
 async function requestVerificationEmail(
   request: Request,
   email: string,
@@ -71,28 +107,37 @@ export const loader = (args: Route.LoaderArgs) =>
     args,
     async ({ auth: session }) => {
       const invitationId = args.params.invitationId;
+      // The delivery token from the emailed link; echoed to the accept form so the POST can
+      // redeem it too. It is already visible in the visitor's own URL, so returning it to the
+      // page discloses nothing new.
+      const token = new URL(args.request.url).searchParams.get("token");
       if (!invitationId)
         return {
           invitation: null,
           error: "Invitation not found.",
           verificationRequired: false,
+          token,
         };
+      await redeemDeliveryToken(session.user, invitationId, token);
       try {
         const invitation = await auth.api.getInvitation({
           query: { id: invitationId },
           headers: session.requestHeaders,
         });
-        return { invitation, error: null, verificationRequired: false };
+        return { invitation, error: null, verificationRequired: false, token };
       } catch (error) {
         const needsVerification = verificationRequired(error);
         return {
           invitation: null,
           error: needsVerification ? null : errorMessage(error),
           verificationRequired: needsVerification,
+          token,
         };
       }
     },
-    { ensureSignedIn: true },
+    // Invitees usually have no account yet, so a signed-out click on the emailed link lands on
+    // sign-up (which cross-links to sign-in); returnTo keeps the invitation URL — token included.
+    { ensureSignedIn: true, signedOutRedirect: "signup" },
   );
 
 export async function action(args: Route.ActionArgs) {
@@ -100,6 +145,13 @@ export async function action(args: Route.ActionArgs) {
   const form = await args.request.formData();
   const invitationId = String(form.get("invitationId") ?? "");
   const intent = String(form.get("intent") ?? "accept");
+  const token = form.get("token");
+
+  await redeemDeliveryToken(
+    session.user,
+    invitationId,
+    typeof token === "string" && token ? token : null,
+  );
 
   if (intent === "send-verification") {
     try {
@@ -202,7 +254,9 @@ export default function AcceptInvitation({
               ) : null}
               <p className="text-sm text-muted-foreground">
                 You're signed in as {loaderData.user.email}. This email address
-                must be verified before you can accept this invitation.
+                must be verified before you can accept this invitation. Opening
+                the invitation link from your email verifies it automatically —
+                or send a verification email below.
               </p>
               {verificationSent ? (
                 <p role="status" className="text-sm text-muted-foreground">
@@ -252,6 +306,13 @@ export default function AcceptInvitation({
                     name="invitationId"
                     value={invitation.id}
                   />
+                  {loaderData.token ? (
+                    <input
+                      type="hidden"
+                      name="token"
+                      value={loaderData.token}
+                    />
+                  ) : null}
                   <Button type="submit">Accept invitation</Button>
                 </Form>
               ) : null}

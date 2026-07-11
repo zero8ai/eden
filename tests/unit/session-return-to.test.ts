@@ -62,6 +62,31 @@ describe("explicit authentication return destinations", () => {
     expect(response?.headers.get("location")).not.toContain("signed-state");
   });
 
+  it("sends a signed-out invitation visitor to sign-up with the full invitation URL preserved", async () => {
+    getSession.mockResolvedValue({ response: null, headers: new Headers() });
+    const { sessionLoader } = await import("~/auth/session.server");
+    const request = new Request(
+      "https://eden.example.com/accept-invitation/inv-1?token=abc.def",
+    );
+
+    let response: Response | undefined;
+    try {
+      await sessionLoader(
+        { request, context: new RouterContextProvider() },
+        async () => ({ ok: true }),
+        { ensureSignedIn: true, signedOutRedirect: "signup" },
+      );
+    } catch (error) {
+      if (error instanceof Response) response = error;
+      else throw error;
+    }
+
+    expect(response?.status).toBe(302);
+    expect(response?.headers.get("location")).toBe(
+      `/signup?returnTo=${encodeURIComponent("/accept-invitation/inv-1?token=abc.def")}`,
+    );
+  });
+
   it("scrubs a Google callback before session I/O, then clears staging on the clean hop", async () => {
     const { betterAuthSessionMiddleware } =
       await import("~/auth/session.server");

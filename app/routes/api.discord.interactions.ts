@@ -113,9 +113,10 @@ export async function action({ request }: ActionFunctionArgs) {
   // components and modals resume existing work and therefore produce no new row here.
   const runStart = discordRunStart(payload, target);
   const startedAt = new Date();
+  let startRecorded: boolean | undefined;
   if (runStart) {
     try {
-      await within(
+      startRecorded = await within(
         recordTurnStart(runStart),
         Math.min(RUN_START_RECORD_BUDGET_MS, remainingBudget(deadlineAt)),
       );
@@ -127,6 +128,13 @@ export async function action({ request }: ActionFunctionArgs) {
         error,
       );
     }
+  }
+  if (startRecorded === false) {
+    // Teardown closed the deployment gate after target resolution. The old URL may still answer
+    // briefly, but forwarding there would accept untracked work that no later sweep could find.
+    return data("the connected agent deployment is no longer live", {
+      status: 503,
+    });
   }
 
   // Forward the raw request unchanged — the instance re-verifies the signature over this exact

@@ -180,11 +180,14 @@ function runMetadata(
   return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
-/** A `running` run row so the turn shows in the Runs tab while it's in flight. */
+/**
+ * Add a `running` row so the turn shows while in flight. False means the deployment gate closed
+ * before insertion; Discord uses that signal to avoid forwarding work to a stale target.
+ */
 export async function recordTurnStart(
   ids: TurnIds,
   now: Date = new Date(),
-): Promise<void> {
+): Promise<boolean> {
   const channel = ids.channel ?? "playground";
   const payload: IngestPayload = {
     externalRunId: ids.externalRunId,
@@ -200,7 +203,7 @@ export async function recordTurnStart(
       channel,
     },
   };
-  await ingestRunStart(ids.projectId, {
+  return ingestRunStart(ids.projectId, {
     ...payload,
     deploymentId: ids.deploymentId,
     status: "running",

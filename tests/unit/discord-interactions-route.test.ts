@@ -78,7 +78,7 @@ describe("Discord interactions resource action", () => {
   beforeEach(() => {
     mocks.discordRunStart.mockReset().mockReturnValue(RUN_START);
     mocks.recordTurnFailure.mockReset().mockResolvedValue(undefined);
-    mocks.recordTurnStart.mockReset().mockResolvedValue(undefined);
+    mocks.recordTurnStart.mockReset().mockResolvedValue(true);
     mocks.resolveRelayTarget.mockReset().mockResolvedValue({
       ok: true,
       url: "http://127.0.0.1:3700",
@@ -139,6 +139,17 @@ describe("Discord interactions resource action", () => {
       DISCORD_ACTION_BUDGET_MS - RUN_START_RECORD_BUDGET_MS,
     );
     expect(responseStatus(response)).toBe(200);
+  });
+
+  it("does not forward when teardown closed the deployment gate", async () => {
+    mocks.recordTurnStart.mockResolvedValue(false);
+    const { action } = await import("~/routes/api.discord.interactions");
+
+    const response = await action(args());
+
+    expect(response).toMatchObject({ init: { status: 503 } });
+    expect(mocks.fetch).not.toHaveBeenCalled();
+    expect(mocks.recordTurnFailure).not.toHaveBeenCalled();
   });
 
   it("settles a command as failed when the deployment rejects the forward", async () => {

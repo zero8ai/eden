@@ -232,7 +232,9 @@ export function streamTurnResponse(input: {
                     externalSessionId: sessionId,
                     userMessage: message,
                     channel,
-                  }).catch((e) => console.error(`${tag} recordTurnStart failed`, e));
+                  })
+                    .then(() => undefined)
+                    .catch((e) => console.error(`${tag} recordTurnStart failed`, e));
                 }
                 break;
               case "model":

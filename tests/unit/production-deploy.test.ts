@@ -173,6 +173,77 @@ describe("remote deployment transaction", () => {
     );
   });
 
+  it("verifies a first-bootstrap stack reapply by health", () => {
+    const transaction = script.slice(script.lastIndexOf("\nvalidate_inputs\n"));
+    const bootstrapDefault = transaction.indexOf("postgres_bootstrapped=false");
+    const absenceCheck = transaction.indexOf(
+      'if ! docker service inspect "$POSTGRES_SERVICE"',
+    );
+    const bootstrap = transaction.indexOf("deploy_stack 0");
+    const bootstrapRecorded = transaction.indexOf("postgres_bootstrapped=true");
+    const bootstrapEnd = transaction.indexOf(
+      "\nfi\n\nwait_for_postgres",
+      bootstrapRecorded,
+    );
+    const migration = transaction.indexOf("run_migrations");
+    const rollout = transaction.indexOf("deploy_stack 1");
+    const steadyStateSnapshot = transaction.indexOf(
+      'if [[ "$postgres_bootstrapped" == false ]]; then',
+    );
+    const steadyStateSnapshotEnd = transaction.indexOf(
+      "\nfi\ndeploy_stack 1",
+      steadyStateSnapshot,
+    );
+    const bootstrapVerification = transaction.indexOf(
+      'if [[ "$postgres_bootstrapped" == true ]]; then',
+      rollout,
+    );
+    const healthWait = transaction.indexOf(
+      "wait_for_postgres\n",
+      bootstrapVerification,
+    );
+    const steadyStateBranch = transaction.indexOf("else\n", healthWait);
+    const metadataComparison = transaction.indexOf(
+      'if [[ "$postgres_task_template_after" != "$postgres_task_template_before" ]]; then',
+      steadyStateBranch,
+    );
+    const rolloutWait = transaction.indexOf(
+      "wait_for_postgres_rollout \\\n",
+      metadataComparison,
+    );
+    const bootstrapBranchEnd = transaction.indexOf(
+      "\nfi\nwait_for_eden",
+      rolloutWait,
+    );
+
+    expect(transaction.match(/^postgres_bootstrapped=false$/gm)).toHaveLength(
+      1,
+    );
+    expect(transaction.match(/^\s*postgres_bootstrapped=true$/gm)).toHaveLength(
+      1,
+    );
+    expect(bootstrapDefault).toBeGreaterThan(-1);
+    expect(absenceCheck).toBeGreaterThan(bootstrapDefault);
+    expect(bootstrap).toBeGreaterThan(absenceCheck);
+    expect(bootstrapRecorded).toBeGreaterThan(bootstrap);
+    expect(bootstrapEnd).toBeGreaterThan(bootstrapRecorded);
+    expect(migration).toBeGreaterThan(bootstrapEnd);
+    expect(steadyStateSnapshot).toBeGreaterThan(migration);
+    expect(steadyStateSnapshotEnd).toBeGreaterThan(steadyStateSnapshot);
+    expect(rollout).toBeGreaterThan(steadyStateSnapshotEnd);
+    expect(bootstrapVerification).toBeGreaterThan(rollout);
+    expect(healthWait).toBeGreaterThan(bootstrapVerification);
+    expect(steadyStateBranch).toBeGreaterThan(healthWait);
+    expect(metadataComparison).toBeGreaterThan(steadyStateBranch);
+    expect(rolloutWait).toBeGreaterThan(metadataComparison);
+    expect(bootstrapBranchEnd).toBeGreaterThan(rolloutWait);
+    expect(
+      transaction.slice(bootstrapVerification, steadyStateBranch),
+    ).toContain(
+      "Swarm may advance service metadata without starting a task update",
+    );
+  });
+
   it("resolves mutable images only when their stack image changes", () => {
     expect(script).toContain("--resolve-image changed");
     expect(script).not.toContain("--resolve-image always");

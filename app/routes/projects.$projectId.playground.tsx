@@ -156,7 +156,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       let entries: ChatEntry[] = [];
       let historyError: string | null = null;
       let currentSessionOwnerLive: boolean | null = null;
-      let currentSessionContinuationBlocked = false;
+      let currentSessionWillReseed = false;
       if (currentSession) {
         // Recover a session whose drain died with the Eden process (restart/redeploy mid-turn):
         // stuck "running", or marked "failed" even though Eve actually finished. Reconciling
@@ -170,7 +170,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         // unknown sessions, so the read would just burn its timeout every load (#73).
         const ownerDeploymentLive = historyTarget !== null;
         currentSessionOwnerLive = ownerDeploymentLive;
-        currentSessionContinuationBlocked = sessionContinuationIsBlocked(
+        // Not a block: the playground reseeds a fresh eve session from the cache on the next turn
+        // (#71). Used only to show an informational "will reseed" notice.
+        currentSessionWillReseed = sessionContinuationIsBlocked(
           currentSession,
           targets,
         );
@@ -251,7 +253,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         currentSessionEnvironmentId: currentSession?.environmentId ?? null,
         currentSessionStatus: currentSession?.status ?? null,
         currentSessionOwnerLive,
-        currentSessionContinuationBlocked,
+        currentSessionWillReseed,
         currentSessionModelId: currentSession?.modelId ?? null,
         defaultModelId,
         entries,
@@ -347,7 +349,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     currentSessionEnvironmentId,
     currentSessionStatus,
     currentSessionOwnerLive,
-    currentSessionContinuationBlocked,
+    currentSessionWillReseed,
     currentSessionModelId,
     defaultModelId,
     entries,
@@ -441,7 +443,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     return (
       <Select
         value={currentSessionId}
-        disabled={busy && !currentSessionContinuationBlocked}
+        disabled={busy}
         onValueChange={(id) =>
           navigate(`${base}/playground?session=${encodeURIComponent(id)}`)
         }
@@ -461,14 +463,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         </SelectContent>
       </Select>
     );
-  }, [
-    base,
-    busy,
-    currentSessionContinuationBlocked,
-    currentSessionId,
-    navigate,
-    sessions,
-  ]);
+  }, [base, busy, currentSessionId, navigate, sessions]);
 
   // The client-streamed `live` turn and the loader's cached transcript can briefly hold the SAME
   // turn at once: the reconnect fix persists events as they stream, so any revalidation while
@@ -720,9 +715,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         <ModelSelect
           value={selectedModelId ?? defaultModelId}
           busy={false}
-          disabled={
-            busy || modelSwitchingLocked || currentSessionContinuationBlocked
-          }
+          disabled={busy || modelSwitchingLocked}
           placeholder="Deployed model"
           triggerClassName="h-9 w-auto max-w-56 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted sm:w-auto"
           onCommit={changeModel}
@@ -734,7 +727,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             next.set("deployment", nextDeploymentId);
             setSearchParams(next, { replace: true });
           }}
-          disabled={busy || currentSessionContinuationBlocked}
+          disabled={busy}
         >
           <SelectTrigger
             className="h-9 min-w-44 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
@@ -770,7 +763,6 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       defaultModelId,
       deploymentId,
       modelSwitchingLocked,
-      currentSessionContinuationBlocked,
       searchParams,
       selectedModelId,
       setSearchParams,
@@ -789,22 +781,14 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             type="submit"
             variant="outline"
             size="sm"
-            disabled={
-              (busy && !currentSessionContinuationBlocked) || creatingSession
-            }
+            disabled={busy || creatingSession}
           >
             New conversation
           </Button>
         </NewSessionForm>
       </div>
     ),
-    [
-      NewSessionForm,
-      busy,
-      creatingSession,
-      currentSessionContinuationBlocked,
-      sessionPicker,
-    ],
+    [NewSessionForm, busy, creatingSession, sessionPicker],
   );
 
   const transcriptLead = useMemo(
@@ -826,13 +810,13 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             </AlertDescription>
           </Alert>
         )}
-        {currentSessionContinuationBlocked && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertTitle>Start a new conversation</AlertTitle>
+        {currentSessionWillReseed && (
+          <Alert className="mb-4">
+            <AlertTitle>Deployment replaced</AlertTitle>
             <AlertDescription>
-              Cached history remains visible, but the replacement deployment
-              can&apos;t continue the old Eve session that owns this
-              conversation.
+              This conversation started on a deployment that has been replaced.
+              Your next message continues it on the current deployment — Eden
+              restores the saved history automatically.
             </AlertDescription>
           </Alert>
         )}
@@ -850,7 +834,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     ),
     [
       activeAgent,
-      currentSessionContinuationBlocked,
+      currentSessionWillReseed,
       headerActions,
       historyError,
       isTeam,
@@ -900,9 +884,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
               entry={e}
               // Only the newest turn's pending requests are answerable.
               onAnswer={
-                i === shownEntries.length - 1 &&
-                !visibleLive &&
-                !currentSessionContinuationBlocked
+                i === shownEntries.length - 1 && !visibleLive
                   ? send
                   : undefined
               }
@@ -929,7 +911,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
               <p className="text-sm text-muted-foreground">
                 {currentSessionOwnerLive
                   ? "This turn was interrupted before it finished. Send the message again to retry."
-                  : "This turn was interrupted before it finished — the deployment that owns this conversation is no longer live. Start a new conversation to continue."}
+                  : "This turn was interrupted before it finished — the deployment that was running it has been replaced. Send your message again to continue on the current deployment."}
               </p>
             </AssistantBubble>
           )}
@@ -989,14 +971,11 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           )}
           <ChatComposer
             placeholder={
-              currentSessionContinuationBlocked
-                ? "Start a new conversation to continue…"
-                : isTeam
-                  ? `Say something to ${activeAgent}...`
-                  : "Say something to the agent..."
+              isTeam
+                ? `Say something to ${activeAgent}...`
+                : "Say something to the agent..."
             }
             busy={busy}
-            disabled={currentSessionContinuationBlocked}
             onSend={send}
             controls={targetPicker}
           />

@@ -9,6 +9,7 @@ import {
   runtimeModelBase,
   stripModelDirective,
 } from "~/models/model-directive";
+import { stripSeedContext } from "~/playground/seed";
 import type { Target } from "~/chat/playground.server";
 
 export type PlaygroundSession = typeof playgroundSessions.$inferSelect;
@@ -224,10 +225,16 @@ export async function savePlaygroundSessionCursor(input: {
  * events arrive, so the transcript survives client disconnect AND instance death. The (session,
  * streamIndex) PK makes this idempotent: a re-drained index (e.g. a retried turn) is a no-op, so
  * callers can flush optimistically without tracking exactly what's already stored.
+ *
+ * `indexOffset` shifts the passed (eve-space) indices into cache space. It is 0 normally and
+ * `session.cacheIndexOffset` after a cross-redeploy reseed (#71): a fresh eve session re-indexes
+ * from 1, so without the offset its events would collide with the preserved history on the PK and
+ * silently vanish (ON CONFLICT DO NOTHING). The offset lands them after the preserved rows.
  */
 export async function savePlaygroundEvents(
   sessionId: string,
   events: Array<{ streamIndex: number } & RawEveEvent>,
+  indexOffset = 0,
 ): Promise<void> {
   if (events.length === 0) return;
   await db
@@ -235,7 +242,7 @@ export async function savePlaygroundEvents(
     .values(
       events.map((e) => ({
         sessionId,
-        streamIndex: e.streamIndex,
+        streamIndex: e.streamIndex + indexOffset,
         type: e.type,
         data: e.data,
         meta: e.meta ?? null,
@@ -245,9 +252,34 @@ export async function savePlaygroundEvents(
 }
 
 /**
- * Highest streamIndex already in the transcript cache for a session (0 if none). No production
- * caller today — the DB integration test (tests/integration/playground-cache.db.test.ts) uses it
- * to assert what the cache covers.
+ * Unbind a session from its dead eve session so the next turn seeds a FRESH eve session on the
+ * replacement deployment (#71). The cached transcript is untouched; `cacheIndexOffset` moves to
+ * the top of the cache so the new session's events (indexed from 1 by the drain) append after
+ * the preserved history instead of colliding with it on the (session, streamIndex) PK.
+ */
+export async function unbindPlaygroundSessionForReseed(
+  session: PlaygroundSession,
+): Promise<PlaygroundSession> {
+  const offset = await cachedStreamIndex(session.id);
+  const [row] = await db
+    .update(playgroundSessions)
+    .set({
+      externalSessionId: null,
+      continuationToken: null,
+      streamIndex: 0,
+      cacheIndexOffset: offset,
+      updatedAt: new Date(),
+    })
+    .where(eq(playgroundSessions.id, session.id))
+    .returning();
+  return row;
+}
+
+/**
+ * Highest streamIndex already in the transcript cache for a session (0 if none). Used by
+ * `unbindPlaygroundSessionForReseed` (#71) to compute the reseed offset — the top of the preserved
+ * history the fresh eve session's events must append after — and by the DB integration test to
+ * assert what the cache covers.
  */
 export async function cachedStreamIndex(sessionId: string): Promise<number> {
   const [row] = await db
@@ -301,6 +333,7 @@ export async function backfillPlaygroundEventsFromEve(input: {
   await savePlaygroundEvents(
     input.session.id,
     events.map((event, i) => ({ streamIndex: i + 1, ...event })),
+    input.session.cacheIndexOffset,
   );
 }
 
@@ -428,6 +461,7 @@ export async function reconcilePlaygroundSessionFromEve(input: {
       streamIndex: input.session.streamIndex + 1 + i,
       ...event,
     })),
+    input.session.cacheIndexOffset,
   );
 
   const nextStreamIndex = input.session.streamIndex + tail.events.length;
@@ -763,7 +797,9 @@ function projectEventsToEntries(
           const directive = parseModelDirective(raw);
           if (directive) turn.modelId = directive.id;
         }
-        turn.userText = stripModelDirective(raw);
+        // Strip both wrappers: the model directive and, for a cross-redeploy reseed turn (#71),
+        // the leading eden:context block seeded from the cached transcript.
+        turn.userText = stripSeedContext(stripModelDirective(raw));
         break;
       }
       case "step.started":

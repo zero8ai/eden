@@ -325,33 +325,42 @@ readonly EDEN_PG_PASSWORD
   exit 1
 }
 
+postgres_bootstrapped=false
 if ! docker service inspect "$POSTGRES_SERVICE" >/dev/null 2>&1; then
   log "Postgres service is absent; starting the one-time bootstrap"
   deploy_stack 0
+  postgres_bootstrapped=true
 fi
 
 wait_for_postgres
 run_migrations
-postgres_version_before="$(service_version "$POSTGRES_SERVICE")"
-postgres_task_template_before="$(service_task_template "$POSTGRES_SERVICE")"
-postgres_update_started_before="$(service_update_started_at "$POSTGRES_SERVICE")"
-deploy_stack 1
-postgres_version_after="$(service_version "$POSTGRES_SERVICE")"
-postgres_task_template_after="$(service_task_template "$POSTGRES_SERVICE")"
-postgres_update_started_after="$(service_update_started_at "$POSTGRES_SERVICE")"
-postgres_update_is_current=false
-if [[ "$postgres_task_template_after" != "$postgres_task_template_before" ]]; then
-  postgres_update_is_current=true
-elif [[ "$postgres_version_after" != "$postgres_version_before" ]] &&
-  [[ -n "$postgres_update_started_after" ]] &&
-  [[ "$postgres_update_started_after" != "$postgres_update_started_before" ]]; then
-  postgres_update_is_current=true
+if [[ "$postgres_bootstrapped" == false ]]; then
+  postgres_version_before="$(service_version "$POSTGRES_SERVICE")"
+  postgres_task_template_before="$(service_task_template "$POSTGRES_SERVICE")"
+  postgres_update_started_before="$(service_update_started_at "$POSTGRES_SERVICE")"
 fi
-wait_for_postgres_rollout \
-  "$postgres_update_is_current" \
-  "$postgres_version_before" \
-  "$postgres_version_after" \
-  "$postgres_update_started_before"
+deploy_stack 1
+if [[ "$postgres_bootstrapped" == true ]]; then
+  log "Postgres was bootstrapped in this deployment; verifying the stack reapply by health because Swarm may advance service metadata without starting a task update"
+  wait_for_postgres
+else
+  postgres_version_after="$(service_version "$POSTGRES_SERVICE")"
+  postgres_task_template_after="$(service_task_template "$POSTGRES_SERVICE")"
+  postgres_update_started_after="$(service_update_started_at "$POSTGRES_SERVICE")"
+  postgres_update_is_current=false
+  if [[ "$postgres_task_template_after" != "$postgres_task_template_before" ]]; then
+    postgres_update_is_current=true
+  elif [[ "$postgres_version_after" != "$postgres_version_before" ]] &&
+    [[ -n "$postgres_update_started_after" ]] &&
+    [[ "$postgres_update_started_after" != "$postgres_update_started_before" ]]; then
+    postgres_update_is_current=true
+  fi
+  wait_for_postgres_rollout \
+    "$postgres_update_is_current" \
+    "$postgres_version_before" \
+    "$postgres_version_after" \
+    "$postgres_update_started_before"
+fi
 wait_for_eden
 
 log "smoke-checking Eden on localhost:3000"

@@ -31,6 +31,7 @@ import {
   CardTitle,
 } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
+import { SecretInput } from "~/components/ui/secret-input";
 import { Label } from "~/components/ui/label";
 import {
   ensureWorkspace,
@@ -337,12 +338,13 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                 <input type="hidden" name="intent" value="set-model-key" />
                 <div className="flex-1 space-y-1.5">
                   <Label htmlFor="modelKey">OpenRouter API key</Label>
-                  <Input
+                  <SecretInput
                     id="modelKey"
                     name="modelKey"
-                    type="password"
                     placeholder="sk-or-v1-…"
-                    autoComplete="off"
+                    revealLabel="API key"
+                    wrapperClassName="w-full"
+                    className="w-full"
                   />
                 </div>
                 <Button type="submit">Save key</Button>

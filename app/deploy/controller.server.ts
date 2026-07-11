@@ -485,11 +485,27 @@ export async function deployRelease(
       await Promise.all(
         superseded.map(async (d) => {
           await stopDeploymentInfra(deployTarget, d.id);
+          // Publish the stopped state before reconciliation. `recordTurnStart` takes a shared
+          // lock on this row, so an in-flight start either commits before this update (and is
+          // caught below) or observes `stopped` and refuses to insert a stale running row.
           await store.deployments.update(d.id, {
             status: "stopped",
             trafficWeight: 0,
             errorDetail: null,
           });
+          try {
+            await store.runs.failRunningByDeployment(
+              d.id,
+              "Run interrupted because its deployment was replaced during a redeploy.",
+            );
+          } catch (error) {
+            // Infra lifecycle is authoritative. A telemetry bookkeeping failure must not turn a
+            // successful cutover into an outage after the old instance has already stopped.
+            console.warn(
+              `[deploy] failed to reconcile running runs for replaced deployment ${d.id}`,
+              error,
+            );
+          }
         }),
       );
     } catch (error) {

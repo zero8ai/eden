@@ -74,7 +74,7 @@ function makeDeps(over: Partial<AskDeps> = {}): AskDeps {
   return {
     store,
     sendTurn: async () => turnResult(),
-    recordStart: async () => {},
+    recordStart: async () => true,
     recordFinish: async () => {},
     resolveRunId: async () => "run_1",
     now: () => NOW,

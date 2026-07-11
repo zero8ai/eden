@@ -1,18 +1,19 @@
 /**
- * Discord interactions relay (issue #32). Two properties the route depends on: the Ed25519
- * signature check must accept Discord's real signing scheme and fail closed on anything off,
- * and target resolution must route commands by (guild, command name) with sensible fallbacks
- * for non-command interactions — all against injected deps, zero network/DB.
+ * Discord interactions relay (issues #32/#83). The signature check uses Discord's real signing
+ * scheme, target resolution carries deployment attribution without changing routing, and only
+ * application commands shape deterministic running-run records — all with zero network/DB.
  */
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import type { DiscordConnection } from "~/discord/connections.server";
 import {
+  discordRunStart,
   resolveRelayTarget,
   verifyDiscordSignature,
   type InteractionPayload,
   type RelayDeps,
+  type RelayTarget,
 } from "~/discord/relay.server";
 
 /** A real Ed25519 keypair; export the raw 32-byte public key as hex (last 32 bytes of SPKI DER). */
@@ -83,7 +84,11 @@ describe("resolveRelayTarget", () => {
   const deps = (over: Partial<RelayDeps>): RelayDeps => ({
     findConnection: async () => null,
     listConnections: async () => [],
-    findLiveUrl: async () => "http://127.0.0.1:3700",
+    findLiveDeployment: async () => ({
+      id: "dep_1",
+      releaseId: "rel_1",
+      url: "http://127.0.0.1:3700",
+    }),
     ...over,
   });
 
@@ -99,6 +104,8 @@ describe("resolveRelayTarget", () => {
     expect(result).toEqual({
       ok: true,
       url: "http://127.0.0.1:3700",
+      deploymentId: "dep_1",
+      releaseId: "rel_1",
       connection: c,
     });
   });
@@ -116,7 +123,7 @@ describe("resolveRelayTarget", () => {
       { type: 2, guild_id: "guild_1", data: { name: "triage" } },
       deps({
         findConnection: async () => conn({}),
-        findLiveUrl: async () => null,
+        findLiveDeployment: async () => null,
       }),
     );
     expect(result).toEqual({ ok: false, reason: "no-live-deployment" });
@@ -131,6 +138,8 @@ describe("resolveRelayTarget", () => {
     expect(result).toEqual({
       ok: true,
       url: "http://127.0.0.1:3700",
+      deploymentId: "dep_1",
+      releaseId: "rel_1",
       connection: c,
     });
   });
@@ -157,5 +166,136 @@ describe("resolveRelayTarget", () => {
       deps({ listConnections: async () => [a, b] }),
     );
     expect(result).toEqual({ ok: false, reason: "no-connection" });
+  });
+});
+
+describe("discordRunStart", () => {
+  const connection: DiscordConnection = {
+    id: "conn_1",
+    projectId: "proj_1",
+    agentId: "agent_1",
+    environmentId: "env_1",
+    guildId: "guild_1",
+    guildName: "Acme",
+    commandName: "triage",
+    commandId: "cmd_1",
+  };
+
+  const target: RelayTarget = {
+    ok: true,
+    url: "http://127.0.0.1:3700",
+    deploymentId: "dep_1",
+    releaseId: "rel_1",
+    connection,
+  };
+
+  it("builds an attributed deterministic start for an application command", () => {
+    const payload = {
+      id: "interaction_123",
+      application_id: "application_1",
+      channel_id: "channel_1",
+      guild_id: "guild_1",
+      type: 2,
+      data: {
+        id: "command_1",
+        name: "triage",
+        options: [
+          {
+            name: "project",
+            options: [
+              { name: "message", value: "Investigate the failed deploy" },
+            ],
+          },
+        ],
+      },
+      member: {
+        nick: "Ada",
+        user: {
+          id: "user_1",
+          username: "ada",
+          global_name: "Ada Lovelace",
+        },
+      },
+      // Discord includes this in the real payload; it must never be copied into run metadata.
+      token: "interaction-token-is-secret",
+    } as InteractionPayload & { token: string };
+
+    const result = discordRunStart(payload, target);
+
+    expect(result).toEqual({
+      projectId: "proj_1",
+      deploymentId: "dep_1",
+      releaseId: "rel_1",
+      externalRunId: "discord:interaction_123",
+      externalSessionId: "discord:interaction_123",
+      userMessage: "Investigate the failed deploy",
+      channel: "discord",
+      metadata: {
+        discordInteractionId: "interaction_123",
+        discordConnectionId: "conn_1",
+        discordApplicationId: "application_1",
+        discordGuildId: "guild_1",
+        discordGuildName: "Acme",
+        discordChannelId: "channel_1",
+        discordCommandId: "command_1",
+        discordCommandName: "triage",
+        discordUserId: "user_1",
+        discordUsername: "ada",
+        discordGlobalName: "Ada Lovelace",
+        discordMemberNickname: "Ada",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain(payload.token);
+  });
+
+  it("uses top-level user attribution and omits blank message options", () => {
+    const result = discordRunStart(
+      {
+        id: "interaction_456",
+        type: 2,
+        data: {
+          name: "triage",
+          options: [{ name: "message", value: "   " }],
+        },
+        user: { id: "user_2", username: "grace" },
+      },
+      target,
+    );
+
+    expect(result).not.toHaveProperty("userMessage");
+    expect(result?.metadata).toMatchObject({
+      discordInteractionId: "interaction_456",
+      discordUserId: "user_2",
+      discordUsername: "grace",
+    });
+  });
+
+  it.each([1, 3, 5])(
+    "does not create a run start for interaction type %i",
+    (type) => {
+      expect(
+        discordRunStart(
+          {
+            id: `interaction_${type}`,
+            type,
+            data: {
+              name: "triage",
+              options: [{ name: "message", value: "do not record this" }],
+            },
+          },
+          target,
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it("does not create a run start without a stable interaction id or live target", () => {
+    expect(discordRunStart({ type: 2 }, target)).toBeNull();
+    expect(
+      discordRunStart(
+        { id: "interaction_789", type: 2 },
+        { ok: false, reason: "no-live-deployment" },
+      ),
+    ).toBeNull();
   });
 });

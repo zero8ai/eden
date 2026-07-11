@@ -10,8 +10,18 @@ import crypto from "node:crypto";
 import { and, desc, eq, gte, sql, type SQL } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
-import { agents, ingestTokens, releases, runSteps, runs, sessions } from "~/db/schema";
+import {
+  agents,
+  deployments,
+  ingestTokens,
+  releases,
+  runSteps,
+  runs,
+  sessions,
+} from "~/db/schema";
 import { redactSecrets } from "~/observability/capture.server";
+
+type IngestDb = Pick<typeof db, "delete" | "insert" | "select">;
 
 function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -108,18 +118,19 @@ export interface IngestPayload {
  * unattributed (null) rather than guessing.
  */
 async function resolveRunAgent(
+  client: IngestDb,
   projectId: string,
   releaseId: string | undefined,
 ): Promise<string | null> {
   if (releaseId) {
-    const [rel] = await db
+    const [rel] = await client
       .select({ agentId: releases.agentId })
       .from(releases)
       .where(eq(releases.id, releaseId))
       .limit(1);
     if (rel) return rel.agentId;
   }
-  const roster = await db
+  const roster = await client
     .select({ id: agents.id })
     .from(agents)
     .where(eq(agents.projectId, projectId))
@@ -127,12 +138,16 @@ async function resolveRunAgent(
   return roster.length === 1 ? roster[0].id : null;
 }
 
-/** Ingest one run (+ optional session + steps) for a project. Idempotent per externalRunId. */
-export async function ingestRun(projectId: string, p: IngestPayload): Promise<void> {
-  const agentId = await resolveRunAgent(projectId, p.releaseId);
+/** Shared ingest implementation so a managed start can hold its deployment lock throughout. */
+async function ingestRunWith(
+  client: IngestDb,
+  projectId: string,
+  p: IngestPayload,
+): Promise<void> {
+  const agentId = await resolveRunAgent(client, projectId, p.releaseId);
   let sessionId: string | null = null;
   if (p.session?.externalSessionId) {
-    const [s] = await db
+    const [s] = await client
       .insert(sessions)
       .values({
         projectId,
@@ -153,9 +168,11 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
   // (rendered directly by the transcript) and tool errors can embed tokens. Same chokepoint
   // as step data, so BOTH producers (playground + BYO) are covered.
   const error = p.error != null ? (redactSecrets(p.error) as string) : null;
-  const metadata = (redactSecrets(p.metadata ?? {}) as Record<string, unknown>) ?? {};
+  const metadata =
+    (redactSecrets(p.metadata ?? {}) as Record<string, unknown>) ?? {};
 
-  const [run] = await db
+  const incomingStatus = p.status ?? "running";
+  const [run] = await client
     .insert(runs)
     .values({
       projectId,
@@ -165,7 +182,7 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
       sessionId,
       externalRunId: p.externalRunId,
       channel: p.channel ?? null,
-      status: p.status ?? "running",
+      status: incomingStatus,
       tokensInput: p.tokensInput ?? null,
       tokensOutput: p.tokensOutput ?? null,
       wallClockMs: p.wallClockMs ?? null,
@@ -176,12 +193,17 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
     })
     .onConflictDoUpdate({
       target: [runs.projectId, runs.externalRunId],
+      // A duplicated/replayed start may refresh a still-running row, but it can never resurrect
+      // a run that a completion or lifecycle reconciliation has already made terminal.
+      ...(incomingStatus === "running"
+        ? { setWhere: eq(runs.status, "running") }
+        : {}),
       set: {
         sessionId,
         agentId,
         deploymentId: p.deploymentId ?? null,
         releaseId: p.releaseId ?? null,
-        status: p.status ?? "running",
+        status: incomingStatus,
         tokensInput: p.tokensInput ?? null,
         tokensOutput: p.tokensOutput ?? null,
         wallClockMs: p.wallClockMs ?? null,
@@ -191,10 +213,14 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
     })
     .returning();
 
+  // A terminal row rejected a duplicate `running` update via setWhere. Its transcript and
+  // terminal fields are authoritative, so there is intentionally nothing else to mutate.
+  if (!run) return;
+
   if (p.steps && p.steps.length > 0) {
     // Replace steps for idempotency (a later event carries the full step list).
-    await db.delete(runSteps).where(eq(runSteps.runId, run.id));
-    await db.insert(runSteps).values(
+    await client.delete(runSteps).where(eq(runSteps.runId, run.id));
+    await client.insert(runSteps).values(
       p.steps.map((st) => ({
         runId: run.id,
         seq: st.seq,
@@ -212,6 +238,35 @@ export async function ingestRun(projectId: string, p: IngestPayload): Promise<vo
       })),
     );
   }
+}
+
+/** Ingest one run (+ optional session + steps) for a project. Idempotent per externalRunId. */
+export async function ingestRun(
+  projectId: string,
+  p: IngestPayload,
+): Promise<void> {
+  await ingestRunWith(db, projectId, p);
+}
+
+/**
+ * Persist a managed `running` row only while its deployment is still live. The shared row lock
+ * coordinates with deployment stop updates: a start either commits before the stop (and the
+ * following reconciliation catches it) or observes the stopped state and inserts nothing.
+ */
+export async function ingestRunStart(
+  projectId: string,
+  p: IngestPayload & { deploymentId: string; status: "running" },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [deployment] = await tx
+      .select({ status: deployments.status })
+      .from(deployments)
+      .where(eq(deployments.id, p.deploymentId))
+      .for("share");
+    if (deployment?.status !== "live") return false;
+    await ingestRunWith(tx, projectId, p);
+    return true;
+  });
 }
 
 export type RunSort = "newest" | "slowest" | "tokens" | "errors";

@@ -16,6 +16,7 @@ import type {
   Job,
   Project,
   Release,
+  Run,
 } from "~/data/ports";
 
 /** A collision error shaped like the Postgres one isVersionLabelCollision looks for. */
@@ -54,6 +55,9 @@ export interface FakeStore extends DataStore {
     agentId?: string;
     name?: string;
   }): Environment;
+  seedRun(r: Partial<Run> & { id: string; projectId: string }): Run;
+  /** Inspect a run seeded into this fake after repository operations. */
+  getRun(id: string): Run | null;
   /** Force the next N release inserts to raise a version-collision (exercises retry). */
   forceReleaseCollisions(n: number): void;
   /** Inspect recorded audit entries. */
@@ -73,6 +77,7 @@ export function makeFakeStore(): FakeStore {
   const drafts = new Map<string, DraftChange>(); // key: projectId|path
   const agentLinks = new Map<string, AgentLink>(); // key: fromAgentId|toAgentId
   const delegations = new Map<string, Delegation>();
+  const runs = new Map<string, Run>();
   const auditEntries: { action: string; target?: string | null; orgId: string }[] = [];
   let forcedCollisions = 0;
 
@@ -134,6 +139,31 @@ export function makeFakeStore(): FakeStore {
       };
       environments.set(row.id, row);
       return row;
+    },
+    seedRun(r) {
+      const row: Run = {
+        id: r.id,
+        projectId: r.projectId,
+        agentId: r.agentId ?? null,
+        deploymentId: r.deploymentId ?? null,
+        releaseId: r.releaseId ?? null,
+        sessionId: r.sessionId ?? null,
+        externalRunId: r.externalRunId ?? null,
+        channel: r.channel ?? null,
+        status: r.status ?? "running",
+        tokensInput: r.tokensInput ?? null,
+        tokensOutput: r.tokensOutput ?? null,
+        wallClockMs: r.wallClockMs ?? null,
+        error: r.error ?? null,
+        metadata: r.metadata ?? {},
+        startedAt: r.startedAt ?? new Date(0),
+        finishedAt: r.finishedAt ?? null,
+      };
+      runs.set(row.id, row);
+      return row;
+    },
+    getRun(rid) {
+      return runs.get(rid) ?? null;
     },
     forceReleaseCollisions(n) {
       forcedCollisions = n;
@@ -659,6 +689,32 @@ export function makeFakeStore(): FakeStore {
             d.status === "running" &&
             d.startedAt.getTime() > since.getTime(),
         ).length;
+      },
+    },
+
+    runs: {
+      async failRunningByDeployment(
+        deploymentId,
+        error,
+        finishedAt = new Date(),
+      ) {
+        let failed = 0;
+        for (const [rid, run] of runs) {
+          if (run.deploymentId !== deploymentId || run.status !== "running")
+            continue;
+          runs.set(rid, {
+            ...run,
+            status: "failed",
+            error,
+            finishedAt,
+            wallClockMs: Math.min(
+              2_147_483_647,
+              Math.max(0, finishedAt.getTime() - run.startedAt.getTime()),
+            ),
+          });
+          failed++;
+        }
+        return failed;
       },
     },
   };

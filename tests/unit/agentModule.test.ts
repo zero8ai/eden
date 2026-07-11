@@ -91,11 +91,14 @@ describe("readModelContextWindow", () => {
 
 /** Structural invariants of the dynamic model wrapper Eden writes. */
 function expectDynamicShape(source: string, model: string) {
-  expect(source).toContain(
-    `fallback: openrouter.chatModel('${model}')`,
-  );
+  // The fallback (and the directive resolver) route through the edenModel(...) helper so a codex/*
+  // id reaches Eden's gateway while everything else stays OpenRouter (issue #28).
+  expect(source).toContain(`fallback: edenModel('${model}')`);
   expect(source.match(/model\s*:\s*defineDynamic\s*\(/g)).toHaveLength(1);
   expect(source.match(/function edenSelectedModel/g)).toHaveLength(1);
+  expect(source.match(/function edenModel/g)).toHaveLength(1);
+  // The edenModel router needs both provider factories present exactly once.
+  expect(source.match(/const edenGateway = createOpenAICompatible/g)).toHaveLength(1);
   expect(source).toMatch(/import\s*\{[^}]*\bdefineDynamic\b[^}]*\}\s*from\s*['"]eve['"]/);
   expect(source).toContain("'step.started'");
   expect(readModel(source)).toBe(model);
@@ -122,10 +125,10 @@ describe("setModel", () => {
     expect(second.match(/EDEN_MODEL_DIRECTIVE/g)?.length).toBe(2); // const + one use
   });
 
-  it("rewires a user-authored gateway-string fallback to OpenRouter", () => {
+  it("rewires a user-authored gateway-string fallback to the edenModel router", () => {
     const source = `import { defineAgent, defineDynamic } from 'eve';\n\nexport default defineAgent({\n  model: defineDynamic({ fallback: 'anthropic/claude-sonnet-5', events: {} }),\n});\n`;
     const next = setModel(source, "z-ai/glm-5.2");
-    expect(next).toContain("fallback: openrouter.chatModel('z-ai/glm-5.2')");
+    expect(next).toContain("fallback: edenModel('z-ai/glm-5.2')");
     expect(next).toContain("@ai-sdk/openai-compatible");
     expect(readModel(next)).toBe("z-ai/glm-5.2");
   });
@@ -186,6 +189,17 @@ export default defineAgent({
     expect(next).toContain("@ai-sdk/openai-compatible");
     expectDynamicShape(next, "anthropic/claude-sonnet-5");
     expect(next).toContain("modelContextWindowTokens: 200000");
+  });
+
+  it("routes a codex/<connection>/<slug> model through the edenModel gateway wrapper (issue #28)", () => {
+    const id = "codex/conn_abc/gpt-5.5";
+    const next = setModel(WRAPPED, id, { contextWindowTokens: 272_000 });
+    expectDynamicShape(next, id);
+    // The gateway factory is wired so edenModel('codex/…') resolves at runtime.
+    expect(next).toContain(
+      "const edenGateway = createOpenAICompatible({ name: 'eden', baseURL: process.env.EDEN_MODEL_GATEWAY_URL ?? '', apiKey: process.env.EDEN_MODEL_GATEWAY_TOKEN ?? '' });",
+    );
+    expect(readModel(next)).toBe(id);
   });
 });
 

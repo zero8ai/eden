@@ -44,6 +44,48 @@ export default defineAgent({
 });
 `;
 
+// Eden's generated agent.ts before PR #112: it has the directive selector and dynamic wrapper,
+// but no edenModel router or gateway factory, and the resolver always chooses OpenRouter.
+const PRE_112 = `import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { defineAgent, defineDynamic } from 'eve';
+
+const openrouter = createOpenAICompatible({ name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY ?? '' });
+
+// Eden playground model override: the playground pins a model per conversation by
+// prefixing the sent message with one machine-readable line, e.g.
+//   <!-- eden:model anthropic/claude-sonnet-5 ctx=200000 -->
+// Eden strips that line from every transcript surface; here it picks the model per step.
+const EDEN_MODEL_DIRECTIVE = /<!--\\s*eden:model\\s+(\\S+?)(?:\\s+ctx=(\\d+))?\\s*-->/;
+function edenSelectedModel(
+  messages: ReadonlyArray<{ role: string; content: unknown }>,
+): { id: string; contextWindowTokens: number | undefined } | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const entry = messages[i];
+    if (!entry || entry.role !== 'user') continue;
+    const text = typeof entry.content === 'string' ? entry.content : '';
+    const match = text.match(EDEN_MODEL_DIRECTIVE);
+    if (match?.[1]) {
+      return { id: match[1], contextWindowTokens: match[2] ? Number(match[2]) : undefined };
+    }
+  }
+  return null;
+}
+
+export default defineAgent({
+  model: defineDynamic({
+    fallback: openrouter.chatModel('anthropic/claude-sonnet-5'),
+    events: {
+      'step.started': (_event, ctx) => {
+        const selected = edenSelectedModel(ctx.messages);
+        if (!selected) return null; // no directive -> the fallback model above
+        return { model: openrouter.chatModel(selected.id), modelContextWindowTokens: selected.contextWindowTokens };
+      },
+    },
+  }),
+  modelContextWindowTokens: 200000,
+});
+`;
+
 describe("readModel", () => {
   it("reads the string argument of a provider call", () => {
     expect(readModel(WRAPPED)).toBe("anthropic/claude-sonnet-4.5");
@@ -102,6 +144,10 @@ function expectDynamicShape(source: string, model: string) {
   expect(source).toMatch(/import\s*\{[^}]*\bdefineDynamic\b[^}]*\}\s*from\s*['"]eve['"]/);
   expect(source).toContain("'step.started'");
   expect(readModel(source)).toBe(model);
+  // Any generated edenModel call site must ship with its router definition.
+  if (/\bedenModel\s*\(/.test(source)) {
+    expect(source).toContain("function edenModel(");
+  }
 }
 
 describe("setModel", () => {
@@ -200,6 +246,34 @@ export default defineAgent({
       "const edenGateway = createOpenAICompatible({ name: 'eden', baseURL: process.env.EDEN_MODEL_GATEWAY_URL ?? '', apiKey: process.env.EDEN_MODEL_GATEWAY_TOKEN ?? '' });",
     );
     expect(readModel(next)).toBe(id);
+  });
+
+  it("upgrades pre-#112 generated wiring for a Codex model", () => {
+    const id = "codex/conn_abc/gpt-5.5";
+    const next = setModel(PRE_112, id);
+    expectDynamicShape(next, id);
+    expect(next).toContain("return { model: edenModel(selected.id)");
+    expect(next).not.toContain("openrouter.chatModel(selected.id)");
+    expect(next.match(/const edenGateway = createOpenAICompatible/g)).toHaveLength(1);
+  });
+
+  it("upgrades pre-#112 generated wiring for an OpenRouter model", () => {
+    const id = "openai/gpt-5.1";
+    const next = setModel(PRE_112, id);
+    expectDynamicShape(next, id);
+    expect(next).toContain("return { model: edenModel(selected.id)");
+    expect(next).not.toContain("openrouter.chatModel(selected.id)");
+  });
+
+  it("leaves current wiring byte-identical except for the requested fallback", () => {
+    const current = scaffoldAgentModule("anthropic/claude-sonnet-5");
+    const expected = current.replace(
+      "fallback: edenModel('anthropic/claude-sonnet-5')",
+      "fallback: edenModel('openai/gpt-5.1')",
+    );
+    const next = setModel(current, "openai/gpt-5.1");
+    expect(next).toBe(expected);
+    expectDynamicShape(next, "openai/gpt-5.1");
   });
 });
 

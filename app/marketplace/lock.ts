@@ -16,7 +16,7 @@
  */
 import { z } from "zod";
 
-import { TEMPLATE_TYPES } from "./manifest";
+import { TEMPLATE_TYPES, type TemplateType } from "./manifest";
 
 /** The lock schema version — bumped only on a breaking shape change (migration lives here). */
 export const LOCK_VERSION = 1;
@@ -151,6 +151,16 @@ export function findInstall(
   member: string | null,
 ): InstallEntry | undefined {
   return lock.installs.find((e) => e.id === id && e.member === member);
+}
+
+/** Stable "type/id" identity for matching a lock install against a catalog row. */
+export function installKey(type: TemplateType, id: string): string {
+  return `${type}/${id}`;
+}
+
+/** All (type/id) keys installed in a lock — the marketplace "Installed" facet reads this. */
+export function installedKeys(lock: EdenLock): string[] {
+  return lock.installs.map((e) => installKey(e.type, e.id));
 }
 
 /**

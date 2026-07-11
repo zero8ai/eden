@@ -12,6 +12,7 @@
 import { sessionLoader } from "~/auth/session.server";
 import {
   Bot,
+  CircleCheck,
   Hash,
   Package,
   Plug,
@@ -36,6 +37,10 @@ import {
   ensureWorkspace,
   resolveActiveWorkspace,
 } from "~/auth/workspace.server";
+import { listProjects } from "~/db/queries.server";
+import { getAgentSource } from "~/github/cached.server";
+import { listDrafts } from "~/drafts/drafts.server";
+import { overlayLock, installedKeys } from "~/marketplace/lock";
 import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/marketplace";
 
@@ -118,6 +123,42 @@ const TYPE_META: Record<TemplateType, TypeMeta> = {
   },
 };
 
+/**
+ * The set of installed "type/id" keys for the marketplace "Installed" facet. The browse listing
+ * has NO project/target context, so the scope is the UNION across ALL of the org's connected
+ * projects (any member): a template counts as installed if it appears in any project's effective
+ * `eden-lock.json`. Each project's fetch is wrapped in its own try/catch so one unreachable repo
+ * degrades to "nothing installed there" rather than breaking the browse page — the same ethos as
+ * the loader treating an unreachable catalog as an expected empty-state.
+ */
+async function collectInstalledKeys(
+  org: { id: string } | null | undefined,
+): Promise<string[]> {
+  if (!org) return [];
+  const projects = (await listProjects(org.id)).filter(
+    (p) => p.repoInstallationId && p.repoOwner && p.repoName,
+  );
+  const perProject = await Promise.all(
+    projects.map(async (p) => {
+      try {
+        const repo = { owner: p.repoOwner!, repo: p.repoName! };
+        const [source, drafts] = await Promise.all([
+          getAgentSource(p.repoInstallationId!, repo),
+          listDrafts(p.id),
+        ]);
+        const lock = overlayLock(
+          source.files["eden-lock.json"] ?? null,
+          drafts.map((d) => ({ path: d.path, content: d.content })),
+        );
+        return installedKeys(lock);
+      } catch {
+        return [];
+      }
+    }),
+  );
+  return [...new Set(perProject.flat())];
+}
+
 export const loader = (args: LoaderFunctionArgs) =>
   sessionLoader(
     args,
@@ -125,11 +166,14 @@ export const loader = (args: LoaderFunctionArgs) =>
       await ensureWorkspace(args.request, auth);
       const active = await resolveActiveWorkspace(auth);
       const org = active?.org;
+      // Installed keys are catalog-independent, so both return branches carry them.
+      const installed = await collectInstalledKeys(org);
       try {
         const index = await getRuntime().catalog.index();
         return {
           org,
           templates: index.templates,
+          installed,
           catalogError: null as string | null,
         };
       } catch (error) {
@@ -137,6 +181,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         return {
           org,
           templates: [],
+          installed,
           catalogError: (error as Error).message,
         };
       }
@@ -149,8 +194,10 @@ export function meta() {
 }
 
 export default function Marketplace({ loaderData }: Route.ComponentProps) {
-  const { user, templates, catalogError } = loaderData;
-  const [filter, setFilter] = useState<TemplateType | "all">("all");
+  const { user, templates, installed, catalogError } = loaderData;
+  const [filter, setFilter] = useState<TemplateType | "all" | "installed">(
+    "all",
+  );
 
   const counts = TEMPLATE_TYPES.reduce(
     (acc, t) => {
@@ -159,8 +206,16 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
     },
     {} as Record<TemplateType, number>,
   );
+  const installedSet = new Set(installed);
+  const isInstalled = (tpl: { type: TemplateType; id: string }) =>
+    installedSet.has(`${tpl.type}/${tpl.id}`);
+  const installedCount = templates.filter(isInstalled).length;
   const shown =
-    filter === "all" ? templates : templates.filter((t) => t.type === filter);
+    filter === "all"
+      ? templates
+      : filter === "installed"
+        ? templates.filter(isInstalled)
+        : templates.filter((t) => t.type === filter);
 
   return (
     <AppShell userEmail={user.email}>
@@ -193,6 +248,14 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
               count={templates.length}
               active={filter === "all"}
               onClick={() => setFilter("all")}
+            />
+            {/* Positive "show me what's installed" facet — mutually exclusive with the type tabs. */}
+            <FilterTab
+              label="Installed"
+              icon={CircleCheck}
+              count={installedCount}
+              active={filter === "installed"}
+              onClick={() => setFilter("installed")}
             />
             {DISPLAY_ORDER.map((t) => (
               <FilterTab
@@ -243,6 +306,7 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
                           <TemplateCard
                             key={`${tpl.type}/${tpl.id}`}
                             tpl={tpl}
+                            installed={isInstalled(tpl)}
                           />
                         ))}
                     </div>
@@ -253,7 +317,11 @@ export default function Marketplace({ loaderData }: Route.ComponentProps) {
           ) : (
             <div className="grid gap-4 sm:grid-cols-2">
               {shown.map((tpl) => (
-                <TemplateCard key={`${tpl.type}/${tpl.id}`} tpl={tpl} />
+                <TemplateCard
+                  key={`${tpl.type}/${tpl.id}`}
+                  tpl={tpl}
+                  installed={isInstalled(tpl)}
+                />
               ))}
             </div>
           )}
@@ -269,6 +337,7 @@ function FilterTab({
   active,
   onClick,
   dot,
+  icon: Icon,
 }: {
   label: string;
   count: number;
@@ -276,6 +345,8 @@ function FilterTab({
   onClick: () => void;
   /** Type accent swatch; omitted for the "All" tab. */
   dot?: string;
+  /** Leading icon (in place of `dot`) — e.g. the "Installed" facet's check. */
+  icon?: LucideIcon;
 }) {
   return (
     <button
@@ -286,7 +357,11 @@ function FilterTab({
         (active ? "bg-accent font-medium text-foreground" : "")
       }
     >
-      {dot && <span className={`size-1.5 rounded-full ${dot}`} />}
+      {Icon ? (
+        <Icon className="size-3.5" />
+      ) : (
+        dot && <span className={`size-1.5 rounded-full ${dot}`} />
+      )}
       {label}
       <span className="text-xs text-muted-foreground">{count}</span>
     </button>
@@ -310,8 +385,10 @@ function TypeBadge({ type }: { type: TemplateType }) {
 /** One catalog entry as a card, linking to its detail page. */
 function TemplateCard({
   tpl,
+  installed,
 }: {
   tpl: Route.ComponentProps["loaderData"]["templates"][number];
+  installed?: boolean;
 }) {
   return (
     <Link
@@ -328,9 +405,17 @@ function TemplateCard({
           <CardDescription className="line-clamp-2">
             {tpl.description}
           </CardDescription>
-          <p className="mt-1 font-mono text-xs text-muted-foreground">
-            v{tpl.version}
-          </p>
+          <div className="mt-1 flex items-center gap-2">
+            <span className="font-mono text-xs text-muted-foreground">
+              v{tpl.version}
+            </span>
+            {installed && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                <CircleCheck className="size-3" />
+                Installed
+              </span>
+            )}
+          </div>
         </CardHeader>
       </Card>
     </Link>

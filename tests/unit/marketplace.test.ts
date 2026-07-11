@@ -17,7 +17,16 @@ import {
   parseManifest,
   templateManifestSchema,
   type TemplateManifest,
+  type TemplateType,
 } from "~/marketplace/manifest";
+import {
+  emptyLock,
+  installKey,
+  installedKeys,
+  upsertInstall,
+  type EdenLock,
+  type InstallEntry,
+} from "~/marketplace/lock";
 import { resolveTemplate } from "~/marketplace/compose.server";
 import { fixtureCatalog } from "~/seams/oss/catalog.fixture.server";
 import type { CatalogTemplate } from "~/seams/types";
@@ -314,5 +323,84 @@ describe("fakeCatalog", () => {
 
   it("throws on an unknown id", async () => {
     await expect(catalog.template("tool", "nope")).rejects.toThrow();
+  });
+});
+
+/**
+ * The "Installed" facet (issue #72). The data path — aggregating install keys across the org's
+ * connected projects — can't be browser-exercised without a connected repo carrying an
+ * `eden-lock.json`, so the pure identity/aggregation logic is covered thoroughly here.
+ */
+function installEntry(over: {
+  id: string;
+  type?: TemplateType;
+  member?: string | null;
+}): InstallEntry {
+  return {
+    id: over.id,
+    type: over.type ?? "tool",
+    name: over.id,
+    version: "1.0.0",
+    hash: "sha",
+    registry: "fixture",
+    member: over.member ?? null,
+    files: [],
+  };
+}
+
+describe("installKey", () => {
+  it("joins type and id with a slash", () => {
+    expect(installKey("tool", "web-search")).toBe("tool/web-search");
+    expect(installKey("agent", "pm")).toBe("agent/pm");
+  });
+});
+
+describe("installedKeys", () => {
+  it("is empty for an empty lock", () => {
+    expect(installedKeys(emptyLock())).toEqual([]);
+  });
+
+  it("returns a 'type/id' key per install", () => {
+    let lock: EdenLock = emptyLock();
+    lock = upsertInstall(lock, installEntry({ id: "web-search", type: "tool" }));
+    lock = upsertInstall(lock, installEntry({ id: "pm", type: "agent" }));
+    expect(installedKeys(lock).sort()).toEqual(["agent/pm", "tool/web-search"]);
+  });
+
+  it("returns one key per install for the same id under two members, and the caller dedupes by set", () => {
+    // A team repo can host the same (type, id) under two members. `installedKeys` reports BOTH;
+    // the marketplace loader collapses them via `new Set(...)` so the facet counts it once.
+    const lock: EdenLock = {
+      version: 1,
+      installs: [
+        installEntry({ id: "web-search", type: "tool", member: "pm" }),
+        installEntry({ id: "web-search", type: "tool", member: "sales" }),
+      ],
+    };
+    expect(installedKeys(lock)).toEqual(["tool/web-search", "tool/web-search"]);
+    expect([...new Set(installedKeys(lock))]).toEqual(["tool/web-search"]);
+  });
+});
+
+describe("installed filter predicate", () => {
+  // Mirrors the browse component's `isInstalled` + the "installed"/"all" branch selection.
+  const templates = [
+    { type: "tool" as TemplateType, id: "web-search" },
+    { type: "agent" as TemplateType, id: "pm" },
+    { type: "skill" as TemplateType, id: "triage" },
+  ];
+  const installedSet = new Set(["tool/web-search", "skill/triage"]);
+  const isInstalled = (t: { type: TemplateType; id: string }) =>
+    installedSet.has(`${t.type}/${t.id}`);
+
+  it("'installed' selects exactly the installed rows", () => {
+    expect(templates.filter(isInstalled).map((t) => t.id)).toEqual([
+      "web-search",
+      "triage",
+    ]);
+  });
+
+  it("'all' selects everything", () => {
+    expect(templates.map((t) => t.id)).toEqual(["web-search", "pm", "triage"]);
   });
 });

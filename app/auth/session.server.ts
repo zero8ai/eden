@@ -45,6 +45,7 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const SIGNED_OR_BEARER_ENDPOINTS = new Set([
   "/api/discord/interactions",
   "/api/discord/send",
+  "/api/gateway/v1/chat/completions",
   "/api/github/webhook",
   "/api/ingest/runs",
   "/api/team/ask",

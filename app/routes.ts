@@ -169,6 +169,11 @@ export default [
   // tools + boot entrypoint call GET|POST /api/assistant/<action> with a Bearer assistant token.
   route("api/assistant/:action", "routes/api.assistant.$action.ts"),
   route("api/models", "routes/api.models.tsx"),
+  // Eden model gateway (issue #28): a deployed agent / the assistant set to a codex/<conn>/<slug>
+  // model reaches this route (Bearer edng_ token) to run on the org's connected Codex subscription.
+  route("api/gateway/v1/chat/completions", "routes/api.gateway.chat.ts"),
+  // Connect an OpenAI Codex subscription via device-code OAuth (Org settings dialog fetcher).
+  route("api/connections/codex", "routes/api.connections.codex.ts"),
   // Better Auth's documented React Router resource route. The splat forwards every
   // /api/auth/* request to the single server auth instance.
   route("api/auth/*", "routes/api.auth.$.ts"),

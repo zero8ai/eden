@@ -825,6 +825,87 @@ describe("team delegation env injection (D3)", () => {
   });
 });
 
+describe("Codex model-gateway env injection (issue #28)", () => {
+  const OLD_KEY = process.env.EDEN_SECRETS_KEY;
+  beforeEach(() => {
+    process.env.EDEN_SECRETS_KEY = "a".repeat(64); // gateway token is HMAC-minted from this
+  });
+  afterEach(() => {
+    if (OLD_KEY === undefined) delete process.env.EDEN_SECRETS_KEY;
+    else process.env.EDEN_SECRETS_KEY = OLD_KEY;
+  });
+
+  it("injects a verifiable gateway URL + token when the org has a Codex connection, stripping a squatter", async () => {
+    const { verifyGatewayToken } = await import("~/gateway/token.server");
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "c1".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        // A user secret trying to smuggle its own gateway token — Eden must strip it.
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          EDEN_MODEL_GATEWAY_TOKEN: "smuggled",
+          EDEN_MODEL_GATEWAY_URL: "http://evil",
+        }),
+        workspaceModelKey: async () => null,
+        hasCodexConnection: async () => true,
+      },
+    );
+    expect(dep.status).toBe("live");
+    const env = deployedEnvs[0];
+    expect(env.EDEN_MODEL_GATEWAY_URL).toContain("/api/gateway/v1");
+    expect(env.EDEN_MODEL_GATEWAY_URL).not.toBe("http://evil");
+    expect(verifyGatewayToken(env.EDEN_MODEL_GATEWAY_TOKEN)).toBe(ORG);
+  });
+
+  it("lets a codex-only org (no OpenRouter key) deploy — the gateway token satisfies the credential check", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "c2".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        secrets: fakeSecrets(),
+        workspaceModelKey: async () => null,
+        hasCodexConnection: async () => true,
+      },
+    );
+    expect(dep.status).toBe("live");
+    expect(deployedEnvs[0].OPENROUTER_API_KEY).toBeUndefined();
+    expect(deployedEnvs[0].EDEN_MODEL_GATEWAY_TOKEN).toBeTruthy();
+  });
+
+  it("injects no gateway env when the org has no Codex connection", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "c3".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+        workspaceModelKey: async () => "k",
+        hasCodexConnection: async () => false,
+      },
+    );
+    expect(deployedEnvs[0]).not.toHaveProperty("EDEN_MODEL_GATEWAY_URL");
+    expect(deployedEnvs[0]).not.toHaveProperty("EDEN_MODEL_GATEWAY_TOKEN");
+  });
+});
+
 describe("setTrafficSplit", () => {
   it("applies weights within the environment and clamps negatives to 0", async () => {
     const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "2".repeat(40) }, store);

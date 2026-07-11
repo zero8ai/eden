@@ -23,6 +23,8 @@ import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
 import { teammateRoster } from "~/team/roster.server";
 import { mintDelegationToken } from "~/team/token.server";
 import { getDiscordAppConfig } from "~/discord/config.server";
+import { gatewayBaseUrl } from "~/gateway/url.server";
+import { mintGatewayToken } from "~/gateway/token.server";
 import {
   DEPLOYMENT_DRAIN_CEILING_MS,
   scheduleDeploymentDrain,
@@ -39,6 +41,8 @@ export interface DeployDeps {
   secrets: SecretsProvider;
   /** Org-level OpenRouter key lookup used by the authoring assistant and deployed agents. */
   workspaceModelKey?: (orgId: string) => Promise<string | null>;
+  /** Whether the org has an active Codex connection — gates model-gateway env injection (#28). */
+  hasCodexConnection?: (orgId: string) => Promise<boolean>;
   /** Names of secrets marked "available in the agent's sandbox shell" for a deploy scope. */
   sandboxExposedNames?: (scope: SecretScope) => Promise<string[]>;
   /**
@@ -71,6 +75,10 @@ function deployDeps(): DeployDeps {
     secrets: r.secrets,
     workspaceModelKey: (orgId) =>
       import("~/org/workspace.server").then((m) => m.getWorkspaceModelKey(orgId)),
+    hasCodexConnection: (orgId) =>
+      import("~/models/provider-connections.server").then((m) =>
+        m.hasActiveCodexConnection(orgId),
+      ),
     sandboxExposedNames: (scope) =>
       import("~/seams/oss/secret-store").then((m) => m.listSandboxExposedNames(scope)),
     connectionGrantEnv: (scope, requiredScopes) =>
@@ -87,7 +95,10 @@ function deployDeps(): DeployDeps {
 
 function hasModelCredential(env: Record<string, string>): boolean {
   return Boolean(
-    env.OPENROUTER_API_KEY || env.AI_GATEWAY_API_KEY || env.VERCEL_OIDC_TOKEN,
+    env.OPENROUTER_API_KEY ||
+      env.AI_GATEWAY_API_KEY ||
+      env.VERCEL_OIDC_TOKEN ||
+      env.EDEN_MODEL_GATEWAY_TOKEN,
   );
 }
 
@@ -259,9 +270,22 @@ export async function deployRelease(
       const wsKey = await deps.workspaceModelKey(project.orgId);
       if (wsKey) envVars.OPENROUTER_API_KEY = wsKey;
     }
+
+    // Eden model gateway (issue #28): when the org has an active Codex connection, point the
+    // agent's edenGateway provider at Eden's translating gateway with an org-scoped token so a
+    // `codex/<connection>/<slug>` model runs on the connected subscription. Eden-owned (anti-
+    // shadowing like EDEN_SANDBOX_ENV): strip any user-set values first, then set. Additive — the
+    // OpenRouter path above is untouched; a codex-only org passes hasModelCredential via the token.
+    delete envVars.EDEN_MODEL_GATEWAY_URL;
+    delete envVars.EDEN_MODEL_GATEWAY_TOKEN;
+    if (project && (await deps.hasCodexConnection?.(project.orgId))) {
+      envVars.EDEN_MODEL_GATEWAY_URL = gatewayBaseUrl();
+      envVars.EDEN_MODEL_GATEWAY_TOKEN = mintGatewayToken(project.orgId);
+    }
+
     if (project && deps.workspaceModelKey && !hasModelCredential(envVars)) {
       throw new Error(
-        "No model provider key configured for this deployment. Add an OpenRouter key in Org settings -> Model provider, or set an agent/environment secret named OPENROUTER_API_KEY, then redeploy.",
+        "No model provider key configured for this deployment. Connect a model provider in Org settings -> Model providers (an OpenRouter key or an OpenAI Codex subscription), or set an agent/environment secret named OPENROUTER_API_KEY, then redeploy.",
       );
     }
 

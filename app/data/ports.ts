@@ -17,6 +17,7 @@ import type {
   jobs,
   projects,
   releases,
+  runs,
 } from "~/db/schema";
 
 export type Agent = typeof agents.$inferSelect;
@@ -28,6 +29,7 @@ export type Project = typeof projects.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type AgentLink = typeof agentLinks.$inferSelect;
 export type Delegation = typeof delegations.$inferSelect;
+export type Run = typeof runs.$inferSelect;
 
 /** A deployment row joined to its release's version/commit (the list/split view). */
 export interface DeploymentWithRelease {
@@ -265,6 +267,18 @@ export interface DelegationRepo {
   countActiveProject(projectId: string, since: Date): Promise<number>;
 }
 
+export interface RunRepo {
+  /**
+   * Settle runs interrupted when one deployment is stopped or replaced. The status guard makes
+   * this safe to call after a turn has already reported its own terminal result.
+   */
+  failRunningByDeployment(
+    deploymentId: string,
+    error: string,
+    finishedAt?: Date,
+  ): Promise<number>;
+}
+
 export interface DataStore {
   agents: AgentRepo;
   releases: ReleaseRepo;
@@ -276,4 +290,5 @@ export interface DataStore {
   audit: AuditRepo;
   agentLinks: AgentLinkRepo;
   delegations: DelegationRepo;
+  runs: RunRepo;
 }

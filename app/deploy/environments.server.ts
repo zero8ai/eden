@@ -19,9 +19,9 @@
  *
  * Delete is the loaded one: the row cascade removes the env's deployments (and schedules) plus
  * env-scoped secrets, but rows can't stop docker containers or drop the environment's Workflow
- * world DB — so per member row we tear infra down FIRST via the DeployTarget (`destroy` when it
- * has it, `stop` otherwise) per deployment, then `destroyWorld` once for the environment, all
- * best-effort.
+ * world DB — so per member row we close each deployment's control-plane gate, tear infra down via
+ * the DeployTarget (`destroy` when it has it, `stop` otherwise), then `destroyWorld` once for the
+ * environment. Runtime teardown is best-effort; the DB gate stays correctness-critical.
  */
 import type { Agent, DataStore } from "~/data/ports";
 import { getRuntime } from "~/seams/index.server";
@@ -169,11 +169,11 @@ export async function renameTeamEnvironment(
 }
 
 /**
- * Tear down ONE environment row's runtime infra: every deployment's container (`destroy` when
- * the target has it, `stop` otherwise), then the env's Workflow world DB. All best-effort — a
- * half-torn-down instance never blocks the row delete that follows. Shared by env delete and
- * the roster prune (member removal): both delete rows whose ids are the ONLY handle on this
- * infra, so infra always goes first.
+ * Tear down ONE environment row's runtime infra: close each deployment's run-start gate, destroy
+ * its container (`destroy` when supported, `stop` otherwise), then destroy the Workflow world DB.
+ * Container/world calls are best-effort, but the `stopped` marker must land before infra is
+ * touched so the following sweep cannot miss a late insert. Shared by env delete and roster prune:
+ * both delete rows whose ids are the ONLY handle on this infra, so teardown always goes first.
  */
 export async function destroyEnvironmentInfra(
   environmentId: string,
@@ -182,11 +182,31 @@ export async function destroyEnvironmentInfra(
   const { store, deployTarget } = deps;
   const deployments = await store.deployments.listByEnvironment(environmentId);
   for (const dep of deployments) {
+    // This gate is the one correctness-critical DB write in teardown. It happens before infra:
+    // if it cannot land, abort with the row intact so a retry can close the gate and sweep safely.
+    // Once stopped is visible, a concurrent start either already committed (and is swept below)
+    // or observes the stopped deployment and inserts nothing.
+    await store.deployments.update(dep.id, {
+      status: "stopped",
+      trafficWeight: 0,
+    });
     try {
       if (deployTarget.destroy) await deployTarget.destroy(dep.id);
       else await deployTarget.stop(dep.id);
     } catch {
       // container already gone / target unreachable — the row delete is authoritative
+    }
+    try {
+      await store.runs.failRunningByDeployment(
+        dep.id,
+        "Run interrupted because its deployment was stopped or removed.",
+      );
+    } catch (error) {
+      // The environment row is still deleted even if observability reconciliation is unavailable.
+      console.warn(
+        `[environment] failed to reconcile running runs for removed deployment ${dep.id}`,
+        error,
+      );
     }
   }
   try {

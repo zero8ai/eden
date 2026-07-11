@@ -2,11 +2,12 @@
  * Discord interactions relay (issue #32). Eden's shared app has ONE Interactions Endpoint URL
  * pointing at the control plane; this module verifies Discord's Ed25519 signature and resolves
  * which agent instance a given interaction routes to. The route (`api.discord.interactions.ts`)
- * then forwards the raw request to that instance's eve Discord channel untouched — a dumb pipe,
- * so the instance re-verifies and replies with the interaction token exactly as it does today.
+ * then forwards the raw request to that instance's eve Discord channel untouched. Application
+ * commands also produce a deterministic running-run record before that hop, so work remains
+ * visible even if the instance is interrupted before it can finish.
  *
- * The signature verify and target resolution are pure/injectable so they unit-test with a real
- * Ed25519 keypair and a fake store — zero network, zero database.
+ * Signature verification, target resolution, and run-start shaping are pure/injectable so they
+ * unit-test with a real Ed25519 keypair and a fake store — zero network, zero database.
  */
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 
@@ -51,19 +52,51 @@ export function verifyDiscordSignature(
 
 /* ─────────────────────────────── target resolution ─────────────────────────────── */
 
-/** A Discord interaction payload — only the fields the relay routes on. */
+/** A slash-command option. Subcommands and subcommand groups carry nested `options`. */
+export interface InteractionOption {
+  name?: string;
+  value?: string | number | boolean;
+  options?: InteractionOption[];
+}
+
+/** Public Discord user attribution included with an interaction. */
+export interface InteractionUser {
+  id?: string;
+  username?: string;
+  global_name?: string;
+}
+
+/** A Discord interaction payload — only the fields the relay routes or records on. */
 export interface InteractionPayload {
+  id?: string;
+  application_id?: string;
+  channel_id?: string;
   type?: number;
   guild_id?: string;
-  data?: { name?: string };
+  data?: { id?: string; name?: string; options?: InteractionOption[] };
+  member?: { nick?: string; user?: InteractionUser };
+  user?: InteractionUser;
   message?: {
     interaction_metadata?: { name?: string };
     interaction?: { name?: string };
   };
 }
 
+/** The deployment fields needed both to forward the request and attribute its run. */
+export interface LiveRelayDeployment {
+  id: string;
+  releaseId: string;
+  url: string;
+}
+
 export type RelayTarget =
-  | { ok: true; url: string; connection: DiscordConnection }
+  | {
+      ok: true;
+      url: string;
+      deploymentId: string;
+      releaseId: string;
+      connection: DiscordConnection;
+    }
   | { ok: false; reason: "no-connection" | "no-live-deployment" };
 
 export interface RelayDeps {
@@ -72,8 +105,10 @@ export interface RelayDeps {
     commandName: string,
   ) => Promise<DiscordConnection | null>;
   listConnections: (guildId: string) => Promise<DiscordConnection[]>;
-  /** The live (status='live', non-null url) deployment url for an environment, or null. */
-  findLiveUrl: (environmentId: string) => Promise<string | null>;
+  /** The live (status='live', non-null url) deployment for an environment, or null. */
+  findLiveDeployment: (
+    environmentId: string,
+  ) => Promise<LiveRelayDeployment | null>;
 }
 
 /** APPLICATION_COMMAND interaction type. */
@@ -111,9 +146,15 @@ export async function resolveRelayTarget(
   }
   if (!connection) return { ok: false, reason: "no-connection" };
 
-  const url = await deps.findLiveUrl(connection.environmentId);
-  if (!url) return { ok: false, reason: "no-live-deployment" };
-  return { ok: true, url, connection };
+  const deployment = await deps.findLiveDeployment(connection.environmentId);
+  if (!deployment) return { ok: false, reason: "no-live-deployment" };
+  return {
+    ok: true,
+    url: deployment.url,
+    deploymentId: deployment.id,
+    releaseId: deployment.releaseId,
+    connection,
+  };
 }
 
 /** Default deps: the real connection store + a live-deployment lookup over Drizzle. */
@@ -121,16 +162,20 @@ export function defaultRelayDeps(): RelayDeps {
   return {
     findConnection: findConnectionByGuildCommand,
     listConnections: listConnectionsForGuild,
-    findLiveUrl: findLiveDeploymentUrl,
+    findLiveDeployment,
   };
 }
 
-/** The loopback url (`http://127.0.0.1:<port>`) of an environment's live deployment, or null. */
-export async function findLiveDeploymentUrl(
+/** The attributed live deployment for an environment, including its loopback url, or null. */
+export async function findLiveDeployment(
   environmentId: string,
-): Promise<string | null> {
+): Promise<LiveRelayDeployment | null> {
   const rows = await db
-    .select({ url: deployments.url })
+    .select({
+      id: deployments.id,
+      releaseId: deployments.releaseId,
+      url: deployments.url,
+    })
     .from(deployments)
     .where(
       and(
@@ -138,5 +183,121 @@ export async function findLiveDeploymentUrl(
         eq(deployments.status, "live"),
       ),
     );
-  return rows.find((r) => !!r.url)?.url ?? null;
+  const deployment = rows.find((row) => !!row.url);
+  return deployment?.url
+    ? {
+        id: deployment.id,
+        releaseId: deployment.releaseId,
+        url: deployment.url,
+      }
+    : null;
+}
+
+/* ─────────────────────────────── run start shaping ─────────────────────────────── */
+
+/** The exact structural input accepted by `recordTurnStart`. */
+export interface DiscordRunStartInput {
+  projectId: string;
+  deploymentId: string;
+  releaseId: string;
+  externalRunId: string;
+  externalSessionId: string;
+  userMessage?: string;
+  channel: "discord";
+  metadata: Record<string, unknown>;
+}
+
+/**
+ * Build the start record for a Discord command that begins agent work. PINGs, components, and
+ * modal submissions may be routed to Eve, but they do not independently start agent turns and
+ * therefore must not create Runs rows.
+ */
+export function discordRunStart(
+  payload: InteractionPayload,
+  target: RelayTarget,
+): DiscordRunStartInput | null {
+  const interactionId = nonEmptyString(payload.id);
+  if (
+    payload.type !== TYPE_APPLICATION_COMMAND ||
+    !interactionId ||
+    !target.ok
+  ) {
+    return null;
+  }
+
+  const externalId = `discord:${interactionId}`;
+  const userMessage = commandMessageOption(payload.data?.options);
+  const actor = payload.member?.user ?? payload.user;
+  const metadata: Record<string, unknown> = {
+    discordInteractionId: interactionId,
+    discordConnectionId: target.connection.id,
+  };
+
+  addStringMetadata(metadata, "discordApplicationId", payload.application_id);
+  addStringMetadata(metadata, "discordGuildId", payload.guild_id);
+  addStringMetadata(metadata, "discordGuildName", target.connection.guildName);
+  addStringMetadata(metadata, "discordChannelId", payload.channel_id);
+  addStringMetadata(metadata, "discordCommandId", payload.data?.id);
+  addStringMetadata(metadata, "discordCommandName", payload.data?.name);
+  addStringMetadata(metadata, "discordUserId", actor?.id);
+  addStringMetadata(metadata, "discordUsername", actor?.username);
+  addStringMetadata(metadata, "discordGlobalName", actor?.global_name);
+  addStringMetadata(metadata, "discordMemberNickname", payload.member?.nick);
+
+  return {
+    projectId: target.connection.projectId,
+    deploymentId: target.deploymentId,
+    releaseId: target.releaseId,
+    externalRunId: externalId,
+    externalSessionId: externalId,
+    ...(userMessage ? { userMessage } : {}),
+    channel: "discord",
+    metadata,
+  };
+}
+
+/** Match Eve's recursive lookup for the first primitive option named `message`. */
+function commandMessageOption(options: unknown): string | undefined {
+  const value = findOptionValue(options, "message");
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function findOptionValue(
+  options: unknown,
+  name: string,
+): string | number | boolean | undefined {
+  if (!Array.isArray(options)) return undefined;
+  for (const value of options) {
+    if (!value || typeof value !== "object") continue;
+    const option = value as Record<string, unknown>;
+    const optionValue = option.value;
+    if (
+      option.name === name &&
+      (typeof optionValue === "string" ||
+        typeof optionValue === "number" ||
+        typeof optionValue === "boolean")
+    ) {
+      return optionValue;
+    }
+    const nested = findOptionValue(option.options, name);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function addStringMetadata(
+  metadata: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  const text = nonEmptyString(value);
+  if (text) metadata[key] = text;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
 }

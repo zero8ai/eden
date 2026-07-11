@@ -18,6 +18,7 @@ import {
   jobs,
   projects,
   releases,
+  runs,
 } from "~/db/schema";
 import { recordAudit } from "~/managed/audit.server";
 import type { DataStore } from "./ports";
@@ -549,6 +550,33 @@ export const drizzleDataStore: DataStore = {
           ),
         );
       return c ?? 0;
+    },
+  },
+
+  runs: {
+    async failRunningByDeployment(
+      deploymentId,
+      error,
+      finishedAt = new Date(),
+    ) {
+      // Raw SQL parameters do not receive the timestamp column encoder that `.set()` uses.
+      // Bind an ISO string so postgres.js can encode the timestamptz expression consistently.
+      const finishedAtIso = finishedAt.toISOString();
+      const failed = await db
+        .update(runs)
+        .set({
+          status: "failed",
+          error,
+          finishedAt,
+          // Clamp both ends: clock skew must not produce a negative duration, while a stale run
+          // older than Postgres integer milliseconds can represent must not abort reconciliation.
+          wallClockMs: sql<number>`least(2147483647, greatest(0, floor(extract(epoch from (${finishedAtIso}::timestamptz - ${runs.startedAt})) * 1000)))::int`,
+        })
+        .where(
+          and(eq(runs.deploymentId, deploymentId), eq(runs.status, "running")),
+        )
+        .returning({ id: runs.id });
+      return failed.length;
     },
   },
 };

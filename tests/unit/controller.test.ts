@@ -423,6 +423,10 @@ describe("queueDeploy", () => {
 });
 
 describe("cutover on deploy", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("redeploying the same release supersedes the previous live instance — never two live copies", async () => {
     const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "8".repeat(40) }, store);
     const deps = {
@@ -455,6 +459,22 @@ describe("cutover on deploy", () => {
     const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
     expect(depA.status).toBe("live");
 
+    const cutoverOrder: string[] = [];
+    const updateDeployment = store.deployments.update.bind(store.deployments);
+    vi.spyOn(store.deployments, "update").mockImplementation(
+      async (id, patch) => {
+        if (id === depA.id && patch.status === "stopped")
+          cutoverOrder.push("stopped");
+        return updateDeployment(id, patch);
+      },
+    );
+    const failRuns = store.runs.failRunningByDeployment.bind(store.runs);
+    const failRunningRuns = vi
+      .spyOn(store.runs, "failRunningByDeployment")
+      .mockImplementation(async (...args) => {
+        cutoverOrder.push("reconciled");
+        return failRuns(...args);
+      });
     const depB = await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
     expect(depB.status).toBe("live");
 
@@ -463,6 +483,12 @@ describe("cutover on deploy", () => {
     expect(oldRow?.status).toBe("stopped");
     expect(oldRow?.trafficWeight).toBe(0);
     expect(all.filter((d) => d.status === "live")).toHaveLength(1);
+    expect(failRunningRuns).toHaveBeenCalledOnce();
+    expect(failRunningRuns).toHaveBeenCalledWith(
+      depA.id,
+      expect.stringMatching(/redeploy|replac/i),
+    );
+    expect(cutoverOrder).toEqual(["stopped", "reconciled"]);
 
     expect(await store.jobs.claimNext(new Date())).toBeNull();
     const cleanupJob = await store.jobs.claimNext(
@@ -490,6 +516,7 @@ describe("cutover on deploy", () => {
       stopError: "docker daemon unreachable",
     });
     delete (brokenStop as Partial<typeof brokenStop>).destroy;
+    const failRunningRuns = vi.spyOn(store.runs, "failRunningByDeployment");
     const second = await deployRelease(
       { environmentId: ENV, releaseId: rB.id },
       { store, deployTarget: brokenStop, secrets: fakeSecrets() },
@@ -502,6 +529,31 @@ describe("cutover on deploy", () => {
     expect(all.find((d) => d.id === first.id)?.status).toBe("live");
     expect(all.find((d) => d.id === second.id)?.status).toBe("failed");
     expect(all.filter((d) => d.status === "live")).toHaveLength(1);
+    expect(failRunningRuns).not.toHaveBeenCalled();
+  });
+
+  it("keeps a successful cutover live when run reconciliation fails", async () => {
+    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "7".repeat(40) }, store);
+    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "9".repeat(40) }, store);
+    const deps = {
+      store,
+      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }),
+      secrets: fakeSecrets(),
+    };
+    const first = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
+    vi.spyOn(store.runs, "failRunningByDeployment").mockRejectedValueOnce(
+      new Error("telemetry store unavailable"),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const second = await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
+
+    expect(second.status).toBe("live");
+    expect((await store.deployments.findById(first.id))?.status).toBe("stopped");
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("failed to reconcile running runs"),
+      expect.any(Error),
+    );
   });
 
   it("a FAILED deploy leaves the current live version serving (cutover only on success)", async () => {

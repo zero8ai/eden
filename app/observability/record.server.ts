@@ -16,7 +16,12 @@
  */
 import type { TurnResult } from "~/agent/talk.server";
 import { capField, capString } from "~/observability/capture.server";
-import { ingestRun, type IngestPayload, type IngestStep } from "~/observability/store.server";
+import {
+  ingestRun,
+  ingestRunStart,
+  type IngestPayload,
+  type IngestStep,
+} from "~/observability/store.server";
 
 /**
  * eve turn ids (turn_0, turn_1, …) are only unique per session, and runs are unique per
@@ -149,7 +154,7 @@ function sumTokens(result: TurnResult): {
   return seen ? { tokensInput: input, tokensOutput: output } : {};
 }
 
-interface TurnIds {
+export interface TurnIds {
   projectId: string;
   deploymentId: string;
   releaseId: string;
@@ -195,7 +200,40 @@ export async function recordTurnStart(
       channel,
     },
   };
-  await ingestRun(ids.projectId, payload);
+  await ingestRunStart(ids.projectId, {
+    ...payload,
+    deploymentId: ids.deploymentId,
+    status: "running",
+  });
+}
+
+/** Settle a start that the producer knows was never accepted (for example, relay failure). */
+export async function recordTurnFailure(
+  input: TurnIds & {
+    error: string;
+    startedAt: Date;
+    finishedAt?: Date;
+  },
+): Promise<void> {
+  const finishedAt = input.finishedAt ?? new Date();
+  const channel = input.channel ?? "playground";
+  await ingestRun(input.projectId, {
+    externalRunId: input.externalRunId,
+    deploymentId: input.deploymentId,
+    releaseId: input.releaseId,
+    channel,
+    status: "failed",
+    error: input.error,
+    wallClockMs: Math.max(0, finishedAt.getTime() - input.startedAt.getTime()),
+    startedAt: input.startedAt.toISOString(),
+    finishedAt: finishedAt.toISOString(),
+    metadata: runMetadata(input.userMessage, input.metadata),
+    session: {
+      externalSessionId: input.externalSessionId,
+      trigger: channel,
+      channel,
+    },
+  });
 }
 
 /** Upsert the settled run: status, tokens, wall-clock, and the full step list. */

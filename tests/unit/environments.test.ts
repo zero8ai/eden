@@ -7,11 +7,12 @@
  * removed member's infra before the row cascade, and ensureTeamEnvironments converges drift
  * (a member missing a name gets it) and seeds 'default' when a roster has no envs at all.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createTeamEnvironment,
   deleteTeamEnvironment,
+  destroyEnvironmentInfra,
   ensureTeamEnvironments,
   listTeamEnvNames,
   renameTeamEnvironment,
@@ -26,6 +27,10 @@ const ORG = "org_1";
 
 beforeEach(() => {
   store = makeFakeStore();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 const TEAM = [
@@ -190,6 +195,22 @@ describe("deleteTeamEnvironment", () => {
 
     const destroyed: string[] = [];
     const destroyedWorlds: string[] = [];
+    const teardownOrder: string[] = [];
+    const updateDeployment = store.deployments.update.bind(store.deployments);
+    vi.spyOn(store.deployments, "update").mockImplementation(
+      async (id, patch) => {
+        if (id === dep.id && patch.status === "stopped")
+          teardownOrder.push("stopped");
+        return updateDeployment(id, patch);
+      },
+    );
+    const failRunningRuns = vi
+      .spyOn(store.runs, "failRunningByDeployment")
+      .mockImplementationOnce(async () => {
+        teardownOrder.push("reconciled");
+        throw new Error("telemetry store unavailable");
+      });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await deleteTeamEnvironment(
       { projectId: project.id, name: "staging", orgId: ORG },
       {
@@ -209,12 +230,68 @@ describe("deleteTeamEnvironment", () => {
     // The live instance was torn down; the world dropped once per member's staging row.
     expect(destroyed).toEqual([dep.id]);
     expect(destroyedWorlds).toContain(alphaStaging.id);
+    expect(failRunningRuns).toHaveBeenCalledWith(
+      dep.id,
+      expect.stringMatching(/stopped|removed/i),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("failed to reconcile running runs"),
+      expect.any(Error),
+    );
+    expect(teardownOrder).toEqual(["stopped", "reconciled"]);
     // "staging" is gone for the whole team; "default" survives.
     expect(await memberEnvNames(project.id, "alpha")).toEqual(["default"]);
     expect(await memberEnvNames(project.id, "beta")).toEqual(["default"]);
     expect(await store.environments.findById(alphaStaging.id)).toBeNull();
   });
 
+});
+
+describe("destroyEnvironmentInfra run-start gate", () => {
+  it("aborts before infra or reconciliation when the stopped marker cannot land", async () => {
+    store.seedProject({ id: "project_gate", orgId: ORG });
+    store.seedAgent({ id: "agent_gate", projectId: "project_gate" });
+    store.seedEnvironment({
+      id: "env_gate",
+      projectId: "project_gate",
+      agentId: "agent_gate",
+    });
+    const release = await store.releases.insert({
+      projectId: "project_gate",
+      agentId: "agent_gate",
+      version: "v1",
+      gitSha: "gate-marker-test",
+    });
+    const deployment = await store.deployments.insert({
+      environmentId: "env_gate",
+      releaseId: release.id,
+      status: "live",
+      trafficWeight: 100,
+    });
+    vi.spyOn(store.deployments, "update").mockRejectedValueOnce(
+      new Error("database unavailable"),
+    );
+    const failRunningRuns = vi.spyOn(
+      store.runs,
+      "failRunningByDeployment",
+    );
+    const destroy = vi.fn();
+
+    await expect(
+      destroyEnvironmentInfra("env_gate", {
+        store,
+        deployTarget: { ...fakeDeployTarget(), destroy },
+      }),
+    ).rejects.toThrow("database unavailable");
+
+    // Keeping the row live and aborting the caller's cascade is safer than opening a window in
+    // which a post-sweep start could land and lose its deployment id during cascade deletion.
+    expect(destroy).not.toHaveBeenCalled();
+    expect(failRunningRuns).not.toHaveBeenCalled();
+    expect((await store.deployments.findById(deployment.id))?.status).toBe(
+      "live",
+    );
+  });
 });
 
 describe("member removal (roster prune) tears down infra", () => {

@@ -28,9 +28,9 @@
       "id": "discord",
       "type": "channel",
       "name": "Discord",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "description": "Talk to this agent from Discord — one-click connect via Eden's shared Discord app, a slash command named after the agent, and signature-verified interactions via eve's discordChannel.",
-      "hash": "e51339781554da25d6801adfd57290aef6b1bb93"
+      "hash": "db731bd5248e663509fd1373570cbe56e3b16a4c"
     },
     {
       "id": "github",

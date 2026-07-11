@@ -238,6 +238,24 @@ describe("composition against the real seed", () => {
     expect(resolved.files["channels/discord.ts"]).toContain(
       'from "eve/channels/discord"',
     );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      "discordContinuationToken",
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      "renderInputRequestComponents",
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      "splitDiscordMessageContent",
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      'async "input.requested"(event, channel)',
+    );
+    expect(resolved.files["channels/discord.ts"]).toMatch(
+      /channel\.setContinuationToken\(\s*discordContinuationToken\(/,
+    );
+    expect(resolved.files["channels/discord.ts"]).toContain(
+      "discordContinuationToken(channel.discord.channelId, posted.id)",
+    );
     // The send tool now proxies through Eden's control plane (issue #32) — it reads the
     // injected send URL/token, not the shared bot token, and no longer imports eve's Discord.
     expect(resolved.files["tools/discord-send-message.ts"]).toContain(

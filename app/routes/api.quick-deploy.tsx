@@ -9,7 +9,7 @@
  * the whole roster: there is no "who deploys" question. The GET returns the file breakdown grouped
  * by owner (+ shared), the roster (for the "will deploy" list), and the team env names (for the
  * env picker). Any read failure — or a repo that isn't connected — returns an empty payload so the
- * button simply hides; a pill in the shared nav must never crash a page.
+ * UI can show Quick deploy as unavailable without letting a shared-nav control crash the page.
  *
  * POST publishes the staged drafts → merges → cuts a version → deploys the WHOLE team into the
  * chosen environment, then redirects to the scope's Overview with the `?shipped=…` params the
@@ -34,7 +34,7 @@ import { resolveAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 
 interface QuickDeployData {
-  /** Total staged drafts — the button hides at 0, and titles the dialog. */
+  /** Total staged drafts — 0 makes the loaded control unavailable; otherwise it titles the dialog. */
   draftCount: number;
   /** File breakdown for the dialog: one block per owning member, shared (member null) last. */
   groups: DraftGroup[];
@@ -56,7 +56,7 @@ export const loader = (args: LoaderFunctionArgs) =>
     args,
     async ({ auth }): Promise<QuickDeployData> => {
       const project = await requireProject(auth, args.params.projectId);
-      // No connected repo → nothing to ship; hide the button rather than error the whole page.
+      // No connected repo → nothing to ship; return the unavailable state rather than erroring.
       if (
         !project.repoInstallationId ||
         !project.repoOwner ||
@@ -66,7 +66,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
       try {
         const drafts = await listDrafts(project.id);
-        // Nothing staged → the button hides (Quick deploy only ships the staged path).
+        // Nothing staged → Quick deploy is unavailable (it only ships the staged path).
         if (drafts.length === 0) return EMPTY;
         // resolveAgentContext's roster is members-only, so the "will deploy" list and the file
         // breakdown are both roster-scoped for free. Env names are team-level.
@@ -79,7 +79,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           envNames,
         };
       } catch {
-        // A roster/env lookup blew up — hide the button, don't take the page down with it.
+        // A roster/env lookup blew up — degrade to unavailable, don't take the page down with it.
         return EMPTY;
       }
     },

@@ -4,10 +4,11 @@
  *
  * Its ONE job is the staged-changes short-circuit: publish the project's staged drafts → merge →
  * cut a version → deploy the WHOLE team into one environment. It never ships the branch head and
- * never redeploys a subset of the roster, so it renders nothing when nothing is staged. The click
- * ALWAYS opens a confirmation dialog (no instant deploy, no env-dropdown-as-button) — a ship is
- * irreversible enough to warrant a look at what it will do first. The current version keeps
- * serving until the new one is healthy, so shipping is never a step backwards.
+ * never redeploys a subset of the roster. When nothing is staged, it stays visible but unavailable
+ * and teaches the user how to stage a change. An available button ALWAYS opens a confirmation
+ * dialog (no instant deploy, no env-dropdown-as-button) — a ship is irreversible enough to warrant
+ * a look at what it will do first. The current version keeps serving until the new one is healthy,
+ * so shipping is never a step backwards.
  *
  * Like StagedChangesPill this self-fetches from a resource route (repos/<id>/quick-deploy) so it
  * lives in the shared nav without every page's loader threading ship data through; React Router
@@ -42,6 +43,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "~/components/ui/tooltip";
 
 // Local mirror of the resource route's GET payload (kept in sync with api.quick-deploy.tsx).
 interface QuickDeployData {
@@ -67,11 +73,46 @@ export function QuickDeploy({ base }: { base: string }) {
   }, [url, load]);
 
   const payload = data.data;
-  // Render nothing until data arrives, or when there is nothing staged (no repo, read error, or
-  // genuinely none) — a hidden button beats a broken one in the shared nav.
-  if (!url || !payload || payload.draftCount === 0) return null;
+  // There is no meaningful control before the resource URL or its payload exists. Once loaded,
+  // keep Quick deploy discoverable even when the empty payload represents no staged changes.
+  if (!url || !payload) return null;
 
-  return <QuickDeployDialog action={url} agent={agent} data={payload} />;
+  return <QuickDeployControl action={url} agent={agent} data={payload} />;
+}
+
+export function QuickDeployControl({
+  action,
+  agent,
+  data,
+}: {
+  action: string;
+  agent: string | null;
+  data: QuickDeployData;
+}) {
+  if (data.draftCount === 0) {
+    const instruction =
+      "Make and save an edit to stage a change, then use Quick deploy.";
+
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            className="inline-flex"
+            tabIndex={0}
+            aria-label={`Quick deploy unavailable. ${instruction}`}
+          >
+            <Button type="button" size="sm" disabled>
+              <Rocket className="h-4 w-4" aria-hidden />
+              Quick deploy
+            </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{instruction}</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return <QuickDeployDialog action={action} agent={agent} data={data} />;
 }
 
 function QuickDeployDialog({

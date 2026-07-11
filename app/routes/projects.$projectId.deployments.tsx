@@ -2012,8 +2012,8 @@ function TeamVersionHistory({
         )}
         {teamVersions.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No versions yet. Ship from the Overview, or merge a change request
-            above.
+            No versions yet. Make and save an edit, then use Quick deploy in the
+            tab row, or merge a change request above.
           </p>
         ) : (
           <ul className="divide-y rounded-lg border text-sm">
@@ -2272,7 +2272,8 @@ function EnvironmentsCard({
                     </>
                   ) : (
                     <span className="text-muted-foreground">
-                      Nothing deployed — use Ship on the Overview, or Deploy a
+                      Nothing deployed — stage an edit by making and saving a
+                      change, then use Quick deploy in the tab row, or Deploy a
                       version below.
                     </span>
                   )}
@@ -2654,8 +2655,8 @@ function VersionHistory({
         )}
         {releases.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No versions yet. Ship from the Overview, or merge a change request
-            above.
+            No versions yet. Make and save an edit, then use Quick deploy in the
+            tab row, or merge a change request above.
           </p>
         ) : (
           <ul className="divide-y rounded-lg border text-sm">

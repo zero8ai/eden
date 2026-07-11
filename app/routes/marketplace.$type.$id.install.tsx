@@ -40,6 +40,7 @@ import {
   CardTitle,
 } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
+import { SecretInput } from "~/components/ui/secret-input";
 import { Label } from "~/components/ui/label";
 import {
   Select,
@@ -1028,12 +1029,12 @@ function InstallSecretField({
             Enter a value for this agent
           </Label>
           {mode === "value" && (
-            <Input
+            <SecretInput
               name={`secret:${secret.name}`}
-              type="password"
-              autoComplete="off"
               placeholder="value (write-only)"
-              className="ml-6 w-full font-mono sm:w-72"
+              revealLabel="value"
+              wrapperClassName="ml-6 w-full sm:w-72"
+              className="w-full font-mono"
               value={value}
               onChange={(e) => setValue(e.target.value)}
             />
@@ -1050,12 +1051,12 @@ function InstallSecretField({
         </div>
       ) : (
         <div className="flex items-center gap-2">
-          <Input
+          <SecretInput
             name={`secret:${secret.name}`}
-            type="password"
-            autoComplete="off"
             placeholder="value (write-only)"
-            className="w-full min-w-0 font-mono sm:w-72"
+            revealLabel="value"
+            wrapperClassName="w-full min-w-0 sm:w-72"
+            className="w-full font-mono"
             value={mode === "skip" ? "" : value}
             disabled={mode === "skip"}
             onChange={(e) => setValue(e.target.value)}

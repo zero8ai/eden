@@ -19,7 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "~/components/ui/dialog";
-import { Input } from "~/components/ui/input";
+import { SecretInput } from "~/components/ui/secret-input";
 import { COPY } from "~/components/secrets-card";
 
 export interface GuardMissingSecret {
@@ -85,13 +85,13 @@ function GuardRow({
         <p className="text-xs text-muted-foreground">&ldquo;{secret.description}&rdquo;</p>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <Input
-          type="password"
+        <SecretInput
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder="value (write-only)"
-          autoComplete="off"
-          className="w-full sm:w-56 font-mono"
+          revealLabel="value"
+          wrapperClassName="w-full sm:w-56"
+          className="w-full font-mono"
         />
         <Button
           type="button"

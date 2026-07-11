@@ -19,7 +19,7 @@ import {
   type ReactNode,
 } from "react";
 import { useFetcher } from "react-router";
-import { Copy, Eye, EyeOff, KeyRound, Lock, MoreHorizontal } from "lucide-react";
+import { Copy, KeyRound, Lock, MoreHorizontal } from "lucide-react";
 
 import { RelativeTime } from "~/components/localized-values";
 import { SectionHeader } from "~/components/shell";
@@ -35,6 +35,7 @@ import {
 } from "~/components/ui/dropdown-menu";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
+import { SecretInput } from "~/components/ui/secret-input";
 import {
   Popover,
   PopoverContent,
@@ -313,7 +314,6 @@ function AgentSecretRow({
   }>();
   const [replacing, setReplacing] = useState(false);
   const [replaceValue, setReplaceValue] = useState("");
-  const [showValue, setShowValue] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const rowEnvValue = row.environmentId ?? ALL;
@@ -366,7 +366,6 @@ function AgentSecretRow({
     );
     setReplacing(false);
     setReplaceValue("");
-    setShowValue(false);
   };
 
   return (
@@ -485,31 +484,21 @@ function AgentSecretRow({
         <div className="mt-2 space-y-1.5 pl-6">
           <p className="text-xs text-muted-foreground">{COPY.replaceConfirm}</p>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative w-full sm:w-auto">
-              <Input
-                type={showValue ? "text" : "password"}
-                value={replaceValue}
-                onChange={(e) => setReplaceValue(e.target.value)}
-                placeholder="new value (write-only)"
-                autoComplete="off"
-                autoFocus
-                className="w-full pr-8 font-mono sm:w-64"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    submitReplace();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className="absolute inset-y-0 right-2 text-muted-foreground"
-                aria-label={showValue ? "Hide value" : "Show value"}
-                onClick={() => setShowValue((v) => !v)}
-              >
-                {showValue ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-              </button>
-            </div>
+            <SecretInput
+              value={replaceValue}
+              onChange={(e) => setReplaceValue(e.target.value)}
+              placeholder="new value (write-only)"
+              autoFocus
+              revealLabel="value"
+              wrapperClassName="w-full sm:w-auto"
+              className="w-full font-mono sm:w-64"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitReplace();
+                }
+              }}
+            />
             <Button type="button" size="sm" disabled={!replaceValue} onClick={submitReplace}>
               Save
             </Button>
@@ -520,7 +509,6 @@ function AgentSecretRow({
               onClick={() => {
                 setReplacing(false);
                 setReplaceValue("");
-                setShowValue(false);
               }}
             >
               Cancel
@@ -549,7 +537,6 @@ function RequiredSecretRow({
   const attachFetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const dismissFetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const [value, setValue] = useState("");
-  const [showValue, setShowValue] = useState(false);
   const [enteringOwn, setEnteringOwn] = useState(!req.sharedExists);
   const [sandbox, setSandbox] = useState(req.sandbox ?? false);
   const busy =
@@ -671,30 +658,20 @@ function RequiredSecretRow({
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative w-full sm:w-auto">
-              <Input
-                type={showValue ? "text" : "password"}
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                placeholder="value (write-only)"
-                autoComplete="off"
-                className="w-full pr-8 font-mono sm:w-64"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    save();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className="absolute inset-y-0 right-2 text-muted-foreground"
-                aria-label={showValue ? "Hide value" : "Show value"}
-                onClick={() => setShowValue((v) => !v)}
-              >
-                {showValue ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-              </button>
-            </div>
+            <SecretInput
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="value (write-only)"
+              revealLabel="value"
+              wrapperClassName="w-full sm:w-auto"
+              className="w-full font-mono sm:w-64"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  save();
+                }
+              }}
+            />
             <SandboxToggle
               name={req.name}
               checked={sandbox}
@@ -993,7 +970,6 @@ function AddSecretForm({
   const [name, setName] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [value, setValue] = useState("");
-  const [showValue, setShowValue] = useState(false);
   const [env, setEnv] = useState<string>(
     activeEnvId === ALL || activeEnvId === null ? ALL : activeEnvId,
   );
@@ -1023,7 +999,6 @@ function AddSecretForm({
     // Inputs clear immediately; focus returns to Name for rapid multi-add (§7).
     setName("");
     setValue("");
-    setShowValue(false);
     setExposed(false);
     setNameError(null);
     nameRef.current?.focus();
@@ -1046,6 +1021,9 @@ function AddSecretForm({
             value={name}
             placeholder="API_KEY"
             autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-bwignore=""
             className="w-full font-mono"
             aria-invalid={!!nameError || collision}
             onChange={(e) => {
@@ -1061,25 +1039,15 @@ function AddSecretForm({
         </div>
         <div className="grid min-w-0 flex-1 gap-1.5 sm:max-w-60">
           <Label htmlFor="secret-add-value">Value</Label>
-          <div className="relative w-full">
-            <Input
-              id="secret-add-value"
-              type={showValue ? "text" : "password"}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="value (write-only)"
-              autoComplete="off"
-              className="w-full pr-8 font-mono"
-            />
-            <button
-              type="button"
-              className="absolute inset-y-0 right-2 text-muted-foreground"
-              aria-label={showValue ? "Hide value" : "Show value"}
-              onClick={() => setShowValue((v) => !v)}
-            >
-              {showValue ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-            </button>
-          </div>
+          <SecretInput
+            id="secret-add-value"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="value (write-only)"
+            revealLabel="value"
+            wrapperClassName="w-full"
+            className="w-full font-mono"
+          />
         </div>
         <div className="grid gap-1.5">
           <Label>Env</Label>

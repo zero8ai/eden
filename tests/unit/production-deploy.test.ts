@@ -13,15 +13,23 @@ const dockerignore = read(".dockerignore");
 const gitignore = read(".gitignore");
 
 describe("production deployment workflow", () => {
-  it("runs after main pushes and by manual dispatch", () => {
+  it("runs checks after main pushes and by manual dispatch", () => {
+    const checks = workflow.slice(
+      workflow.indexOf("  checks:\n"),
+      workflow.indexOf("\n  build:\n"),
+    );
+
     expect(workflow).toMatch(/push:\s*\n\s+branches:\s*\n\s+- main/);
     expect(workflow).toMatch(/^\s{2}workflow_dispatch:\s*$/m);
     expect(workflow).toContain("cancel-in-progress: false");
+    expect(checks).not.toMatch(/^\s+if:/m);
   });
 
-  it("keeps both image publication and deployment canonical-repo only", () => {
+  it("keeps image publication and deployment canonical-main only", () => {
     expect(
-      workflow.match(/if: github\.repository == 'zero8ai\/eden'/g),
+      workflow.match(
+        /if: github\.repository == 'zero8ai\/eden' && github\.ref == 'refs\/heads\/main'/g,
+      ),
     ).toHaveLength(2);
     expect(workflow).toContain("packages: write");
     expect(workflow).toContain("environment: production");
@@ -41,15 +49,32 @@ describe("production deployment workflow", () => {
     expect(gitignore).toMatch(/^\/production\.env$/m);
   });
 
-  it("uses only the three production VPS Environment secrets", () => {
+  it("uses only the four production VPS Environment secrets", () => {
     const secretNames = [
       ...workflow.matchAll(/secrets\.([A-Z][A-Z0-9_]*)/g),
     ].map((match) => match[1]);
 
     expect(new Set(secretNames)).toEqual(
-      new Set(["PROD_VPS_HOST", "PROD_VPS_USER", "PROD_VPS_SSH_KEY"]),
+      new Set([
+        "PROD_VPS_HOST",
+        "PROD_VPS_USER",
+        "PROD_VPS_SSH_KEY",
+        "PROD_VPS_KNOWN_HOSTS",
+      ]),
     );
     expect(workflow).toContain("GHCR_TOKEN: ${{ github.token }}");
+  });
+
+  it("pins the trusted SSH host identity without live key discovery", () => {
+    expect(workflow).toContain('test -n "$PROD_VPS_KNOWN_HOSTS"');
+    expect(workflow).toContain(
+      'printf \'%s\\n\' "$PROD_VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"',
+    );
+    expect(workflow).toContain(
+      'ssh-keygen -F "$PROD_VPS_HOST" -f "$HOME/.ssh/known_hosts" >/dev/null',
+    );
+    expect(workflow).toContain("StrictHostKeyChecking=yes");
+    expect(workflow).not.toContain("ssh-keyscan");
   });
 });
 
@@ -126,12 +151,69 @@ describe("remote deployment transaction", () => {
     const bootstrap = transaction.indexOf("deploy_stack 0");
     const migration = transaction.indexOf("run_migrations");
     const rollout = transaction.indexOf("deploy_stack 1");
+    const postgresRollout = transaction.indexOf("wait_for_postgres_rollout");
+    const edenRollout = transaction.indexOf("wait_for_eden");
 
     expect(bootstrap).toBeGreaterThan(-1);
     expect(migration).toBeGreaterThan(bootstrap);
     expect(rollout).toBeGreaterThan(migration);
-    expect(transaction).toContain("wait_for_postgres");
-    expect(transaction).toContain("wait_for_eden");
+    expect(postgresRollout).toBeGreaterThan(rollout);
+    expect(edenRollout).toBeGreaterThan(postgresRollout);
+    expect(transaction).toContain(
+      'postgres_version_before="$(service_version "$POSTGRES_SERVICE")"',
+    );
+    expect(transaction).toContain(
+      'postgres_version_after="$(service_version "$POSTGRES_SERVICE")"',
+    );
+    expect(transaction).toContain(
+      'postgres_task_template_before="$(service_task_template "$POSTGRES_SERVICE")"',
+    );
+    expect(transaction).toContain(
+      'postgres_update_started_before="$(service_update_started_at "$POSTGRES_SERVICE")"',
+    );
+  });
+
+  it("resolves mutable images only when their stack image changes", () => {
+    expect(script).toContain("--resolve-image changed");
+    expect(script).not.toContain("--resolve-image always");
+  });
+
+  it("ignores historical Postgres rollback metadata but monitors a current update", () => {
+    const readiness = script.slice(
+      script.indexOf("wait_for_postgres() {"),
+      script.indexOf("wait_for_postgres_rollout() {"),
+    );
+    const rollout = script.slice(
+      script.indexOf("wait_for_postgres_rollout() {"),
+      script.indexOf("run_migrations() {"),
+    );
+
+    expect(readiness).not.toContain("assert_update_not_failed");
+    expect(rollout).toContain('if [[ "$update_is_current" == true ]]');
+    expect(rollout).toContain(
+      'update_started="$(service_update_started_at "$POSTGRES_SERVICE")"',
+    );
+    expect(rollout).toContain('"$update_started" == "$update_started_before"');
+    expect(rollout).toContain('assert_update_not_failed "$POSTGRES_SERVICE"');
+    expect(rollout).toContain('[[ "$update_state" == "completed" ]]');
+  });
+
+  it("requires the requested Eden task container to be Docker-healthy", () => {
+    const helper = script.slice(
+      script.indexOf("service_has_one_healthy_container() {"),
+      script.indexOf("wait_for_postgres() {"),
+    );
+    const edenWait = script.slice(
+      script.indexOf("wait_for_eden() {"),
+      script.lastIndexOf("\nvalidate_inputs\n"),
+    );
+
+    expect(helper).toContain(".State.Health.Status");
+    expect(helper).toContain("com.docker.swarm.task.id");
+    expect(helper).toContain("docker inspect --type task");
+    expect(edenWait).toContain(
+      'service_has_one_healthy_container "$EDEN_SERVICE" "$RUNTIME_IMAGE"',
+    );
   });
 
   it("does not execute the production env file as shell code", () => {

@@ -29,7 +29,7 @@ jobs:
 
   build:
     needs: checks
-    if: github.repository == 'zero8ai/eden'
+    if: github.repository == 'zero8ai/eden' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -81,7 +81,7 @@ jobs:
     needs:
       - checks
       - build
-    if: github.repository == 'zero8ai/eden'
+    if: github.repository == 'zero8ai/eden' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: production
@@ -92,6 +92,7 @@ jobs:
       PROD_VPS_HOST: ${{ secrets.PROD_VPS_HOST }}
       PROD_VPS_USER: ${{ secrets.PROD_VPS_USER }}
       PROD_VPS_SSH_KEY: ${{ secrets.PROD_VPS_SSH_KEY }}
+      PROD_VPS_KNOWN_HOSTS: ${{ secrets.PROD_VPS_KNOWN_HOSTS }}
       GHCR_TOKEN: ${{ github.token }}
       IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
     steps:
@@ -101,14 +102,19 @@ jobs:
         run: |
           install -m 700 -d "$HOME/.ssh"
           printf '%s\n' "$PROD_VPS_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          test -n "$PROD_VPS_KNOWN_HOSTS"
+          printf '%s\n' "$PROD_VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_ed25519"
-          ssh-keyscan -T 15 -H "$PROD_VPS_HOST" >> "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          test -s "$HOME/.ssh/known_hosts"
+          ssh-keygen -F "$PROD_VPS_HOST" -f "$HOME/.ssh/known_hosts" >/dev/null
       - name: Copy deployment files
         shell: bash
         run: |
           scp \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
             docker-stack.production.yml \
             deploy/production/deploy.sh \
             "${PROD_VPS_USER}@${PROD_VPS_HOST}:/opt/eden/"
@@ -118,8 +124,9 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | ssh \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
             "${PROD_VPS_USER}@${PROD_VPS_HOST}" \
             "docker login ghcr.io --username '${{ github.actor }}' --password-stdin"
-          ssh -o BatchMode=yes -o ConnectTimeout=15 \
+          ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
             "${PROD_VPS_USER}@${PROD_VPS_HOST}" \
             "chmod 700 /opt/eden/deploy.sh && IMAGE_TAG='${IMAGE_TAG}' /opt/eden/deploy.sh"

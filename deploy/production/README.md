@@ -7,11 +7,12 @@
 
 The root [`docker-stack.production.yml`](../../docker-stack.production.yml) and
 [`deploy.yml`](../../.github/workflows/deploy.yml) implement continuous deployment for
-`zero8ai/eden`. A push to `main` (or a manual workflow dispatch) runs the same typecheck and tests as
-CI, builds immutable runtime and migration images, pushes them to GHCR, applies migrations, and
-updates the `eden` Swarm stack on the maintained VPS. The deploy job is guarded by the canonical
-repository name and uses secrets scoped to GitHub's `production` Environment, so forks cannot deploy
-to this host.
+`zero8ai/eden`. A push to `main` runs the same typecheck and tests as CI, builds immutable runtime and
+migration images, pushes them to GHCR, applies migrations, and updates the `eden` Swarm stack on the
+maintained VPS. A manual workflow dispatch must select `main` to do the same. Dispatching another
+branch runs the checks only; only `refs/heads/main` in the canonical repository may publish images
+or deploy. The deploy job also uses secrets scoped to GitHub's `production` Environment, so forks
+cannot deploy to this host.
 
 ## Production topology
 
@@ -36,6 +37,12 @@ Eden is intentionally single-process and owns fixed host ports, so its update po
 replica with `order: stop-first`. Expect a short control-plane interruption during each rollout.
 Health-check failure triggers Swarm rollback to the previous service specification, but there cannot
 be a start-first, zero-downtime handoff until Eden supports multiple control-plane replicas.
+
+The deployment uses `docker stack deploy --resolve-image changed`, so the unchanged `postgres:17`
+service is not re-resolved on every Eden release. The final deploy transaction still waits for any
+current Postgres update to finish and for its container to be healthy. It also requires the Eden
+service to converge on exactly one task for the requested SHA, that task's container health check to
+pass, and the localhost smoke check to succeed.
 
 ## One-time host provisioning
 
@@ -86,19 +93,47 @@ workflow will use.
 Create an Environment named exactly `production` under **Repository settings → Environments** and
 add these Environment secrets:
 
-| Secret             | Value                                                      |
-| ------------------ | ---------------------------------------------------------- |
-| `PROD_VPS_HOST`    | DNS name or IP address of the maintained VPS               |
-| `PROD_VPS_USER`    | SSH user provisioned above                                 |
-| `PROD_VPS_SSH_KEY` | Private key for that user, including its header and footer |
+| Secret                 | Value                                                                |
+| ---------------------- | -------------------------------------------------------------------- |
+| `PROD_VPS_HOST`        | DNS name or IP address of the maintained VPS                         |
+| `PROD_VPS_USER`        | SSH user provisioned above                                           |
+| `PROD_VPS_SSH_KEY`     | Private key for that user, including its header and footer           |
+| `PROD_VPS_KNOWN_HOSTS` | Verified `known_hosts` record or records for exactly `PROD_VPS_HOST` |
 
-The corresponding public key must be in the user's `~/.ssh/authorized_keys`. GHCR authentication
-uses the workflow's built-in `GITHUB_TOKEN`; do not create a long-lived package token or put registry
-credentials in `production.env`.
+The corresponding user public key must be in `~/.ssh/authorized_keys`. Pin the server host key in
+`PROD_VPS_KNOWN_HOSTS`; do not have the deployment job trust a key discovered with `ssh-keyscan` over
+the connection it is about to use. The most direct trusted setup is to obtain the public host key and
+its fingerprint through the VPS provider's console:
+
+```bash
+# Run in the trusted VPS console. Use the exact value stored in PROD_VPS_HOST.
+PROD_VPS_HOST=eden.example.com
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
+sudo awk -v host="$PROD_VPS_HOST" '{print host, $1, $2}' \
+  /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+Store the `awk` output as the secret. If an operator instead acquires the record from a trusted
+workstation, verify it out of band before storing it:
+
+```bash
+ssh-keyscan -t ed25519 eden.example.com > production-known-hosts
+ssh-keygen -lf production-known-hosts -E sha256
+```
+
+The second fingerprint must exactly match the fingerprint displayed in the VPS console. The
+`ssh-keyscan` output is not trusted merely because it was fetched; the independent fingerprint
+comparison is what authenticates it. Include a verified record for each hostname or address that
+may be used as `PROD_VPS_HOST`.
+
+Before copying or running anything, the workflow rejects an empty `PROD_VPS_KNOWN_HOSTS`, checks
+that it contains a record matching `PROD_VPS_HOST`, and requires SSH to match the presented key
+against that pinned record. GHCR authentication uses the workflow's built-in `GITHUB_TOKEN`; do not
+create a long-lived package token or put registry credentials in `production.env`.
 
 Environment protection rules are optional, but any required reviewer turns automatic `main`
-deployments into approval-gated deployments. The repository-name guard remains in force for both
-push and manual runs.
+deployments into approval-gated deployments. The canonical-repository and `main`-ref guards remain
+in force for both push and manual runs.
 
 ## One-time Compose-to-Swarm cutover
 
@@ -144,10 +179,11 @@ discover the real source from the container instead of guessing Compose's volume
    and `postgres` services. Keeping the source intact gives the operator a recovery copy; the old
    services must remain stopped because they would contend for the same host ports and database.
 
-5. Run **Deploy production** from the Actions tab with the `main` branch, or let the next push to
-   `main` trigger it. The workflow copies the stack definition to `/opt/eden`, runs the migration
-   image against Postgres, deploys the stack, and waits for the services to converge on the new
-   image before succeeding.
+5. Run **Deploy production** from the Actions tab and explicitly select the `main` branch, or let the
+   next push to `main` trigger it. A dispatch from any other branch runs checks only and cannot
+   publish or deploy. The workflow copies the stack definition to `/opt/eden`, runs the migration
+   image against Postgres, deploys the stack, and waits for both services to finish their current
+   update and pass their container health checks before succeeding.
 
 The existing certbot renewal command remains valid. The old Compose project still owns nginx,
 certbot, and their certificate volumes; only its Eden and Postgres services are retired.

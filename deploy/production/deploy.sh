@@ -98,7 +98,7 @@ deploy_stack() {
     export EDEN_REPLICAS="$replicas"
     docker stack deploy \
       --with-registry-auth \
-      --resolve-image always \
+      --resolve-image changed \
       --detach=true \
       --compose-file "$STACK_FILE" \
       "$STACK_NAME"
@@ -122,34 +122,119 @@ assert_update_not_failed() {
   esac
 }
 
+service_version() {
+  docker service inspect --format '{{.Version.Index}}' "$1"
+}
+
+service_task_template() {
+  docker service inspect --format '{{json .Spec.TaskTemplate}}' "$1"
+}
+
+service_update_started_at() {
+  docker service inspect \
+    --format '{{if .UpdateStatus}}{{.UpdateStatus.StartedAt}}{{end}}' "$1"
+}
+
+service_has_one_healthy_container() {
+  local service="$1"
+  local expected_image="${2:-}"
+  local container_id container_ids current_state health task_id task_image
+
+  container_ids="$(docker ps --quiet \
+    --filter "label=com.docker.swarm.service.name=${service}")"
+  [[ -n "$container_ids" && "$container_ids" != *$'\n'* ]] || return 1
+  container_id="$container_ids"
+
+  current_state="$(docker inspect --format '{{.State.Status}}' "$container_id")"
+  health="$(docker inspect \
+    --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+    "$container_id")"
+  [[ "$current_state" == "running" && "$health" == "healthy" ]] || return 1
+
+  if [[ -n "$expected_image" ]]; then
+    task_id="$(docker inspect \
+      --format '{{index .Config.Labels "com.docker.swarm.task.id"}}' \
+      "$container_id")"
+    [[ -n "$task_id" ]] || return 1
+    task_image="$(docker inspect --type task \
+      --format '{{.Spec.ContainerSpec.Image}}' "$task_id")"
+    [[ "$task_image" == "$expected_image" || "$task_image" == "$expected_image@"* ]] ||
+      return 1
+  fi
+}
+
 wait_for_postgres() {
   local deadline=$((SECONDS + DEPLOY_TIMEOUT))
-  local desired container_id container_ids health current_state
+  local desired
 
-  log "waiting for ${POSTGRES_SERVICE} to converge and become healthy"
+  # Pre-migration readiness is deliberately health-based. Docker retains a
+  # completed rollback in UpdateStatus indefinitely, so historical metadata
+  # must not prevent a later healthy deployment from migrating.
+  log "waiting for ${POSTGRES_SERVICE} to have one healthy replica"
   while ((SECONDS < deadline)); do
     if docker service inspect "$POSTGRES_SERVICE" >/dev/null 2>&1; then
-      assert_update_not_failed "$POSTGRES_SERVICE"
       desired="$(docker service inspect \
         --format '{{.Spec.Mode.Replicated.Replicas}}' "$POSTGRES_SERVICE")"
-      container_ids="$(docker ps --quiet \
-        --filter "label=com.docker.swarm.service.name=${POSTGRES_SERVICE}")"
-      container_id="${container_ids%%$'\n'*}"
-      if [[ "$desired" == "1" && -n "$container_id" ]]; then
-        current_state="$(docker inspect --format '{{.State.Status}}' "$container_id")"
-        health="$(docker inspect \
-          --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
-          "$container_id")"
-        if [[ "$current_state" == "running" && "$health" == "healthy" ]]; then
-          log "Postgres is healthy"
-          return 0
-        fi
+      if [[ "$desired" == "1" ]] &&
+        service_has_one_healthy_container "$POSTGRES_SERVICE"; then
+        log "Postgres is healthy"
+        return 0
       fi
     fi
     sleep 2
   done
 
   printf '[deploy] timed out waiting for %s\n' "$POSTGRES_SERVICE" >&2
+  return 1
+}
+
+wait_for_postgres_rollout() {
+  local update_is_current="$1"
+  local version_before="$2"
+  local version_after="$3"
+  local update_started_before="$4"
+  local deadline=$((SECONDS + DEPLOY_TIMEOUT))
+  local desired update_started update_state
+
+  if [[ "$update_is_current" == true ]]; then
+    log "waiting for this deployment's Postgres update (${version_before} -> ${version_after})"
+  else
+    log "Postgres task spec did not change (${version_before} -> ${version_after}); ignoring historical update metadata"
+  fi
+
+  while ((SECONDS < deadline)); do
+    if docker service inspect "$POSTGRES_SERVICE" >/dev/null 2>&1; then
+      desired="$(docker service inspect \
+        --format '{{.Spec.Mode.Replicated.Replicas}}' "$POSTGRES_SERVICE")"
+
+      if [[ "$update_is_current" == true ]]; then
+        update_started="$(service_update_started_at "$POSTGRES_SERVICE")"
+        # The task template changed in this transaction, but Swarm may not
+        # have replaced historical UpdateStatus metadata yet. Only interpret
+        # the state after a new StartedAt identifies this rollout.
+        if [[ -z "$update_started" || "$update_started" == "$update_started_before" ]]; then
+          sleep 2
+          continue
+        fi
+        assert_update_not_failed "$POSTGRES_SERVICE"
+        update_state="$(service_update_state "$POSTGRES_SERVICE")"
+        [[ "$update_state" == "completed" ]] || {
+          sleep 2
+          continue
+        }
+      fi
+
+      if [[ "$desired" == "1" ]] &&
+        service_has_one_healthy_container "$POSTGRES_SERVICE"; then
+        log "Postgres rollout is complete and healthy"
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+
+  printf '[deploy] timed out waiting for %s after stack deploy\n' \
+    "$POSTGRES_SERVICE" >&2
   return 1
 }
 
@@ -205,8 +290,9 @@ wait_for_eden() {
 
       if [[ "$desired" == "1" ]] &&
         [[ -z "$update_state" || "$update_state" == "completed" ]] &&
-        requested_image_is_running "$spec_image"; then
-        log "Eden rollout completed"
+        requested_image_is_running "$spec_image" &&
+        service_has_one_healthy_container "$EDEN_SERVICE" "$RUNTIME_IMAGE"; then
+        log "Eden rollout completed with one healthy container"
         return 0
       fi
     fi
@@ -246,7 +332,26 @@ fi
 
 wait_for_postgres
 run_migrations
+postgres_version_before="$(service_version "$POSTGRES_SERVICE")"
+postgres_task_template_before="$(service_task_template "$POSTGRES_SERVICE")"
+postgres_update_started_before="$(service_update_started_at "$POSTGRES_SERVICE")"
 deploy_stack 1
+postgres_version_after="$(service_version "$POSTGRES_SERVICE")"
+postgres_task_template_after="$(service_task_template "$POSTGRES_SERVICE")"
+postgres_update_started_after="$(service_update_started_at "$POSTGRES_SERVICE")"
+postgres_update_is_current=false
+if [[ "$postgres_task_template_after" != "$postgres_task_template_before" ]]; then
+  postgres_update_is_current=true
+elif [[ "$postgres_version_after" != "$postgres_version_before" ]] &&
+  [[ -n "$postgres_update_started_after" ]] &&
+  [[ "$postgres_update_started_after" != "$postgres_update_started_before" ]]; then
+  postgres_update_is_current=true
+fi
+wait_for_postgres_rollout \
+  "$postgres_update_is_current" \
+  "$postgres_version_before" \
+  "$postgres_version_after" \
+  "$postgres_update_started_before"
 wait_for_eden
 
 log "smoke-checking Eden on localhost:3000"

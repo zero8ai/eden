@@ -3,27 +3,19 @@
   "type": "agent",
   "name": "Engineer",
   "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "eve": ">=0.22.0",
   "model": "z-ai/glm-5.2",
   "includes": [
     { "type": "channel", "id": "github" },
     { "type": "channel", "id": "discord" },
-    { "type": "tool", "id": "discord-send-message" }
+    { "type": "tool", "id": "discord-send-message" },
+    { "type": "skill", "id": "dev-toolchain" }
   ],
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.5",
     "eve": "^0.22.0",
     "zod": "^4.4.3"
   },
-  "files": ["instructions.md", "agent.ts", "sandbox.ts"],
-  "sandbox": {
-    "bootstrap": [
-      "apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip rsync openssh-client build-essential pkg-config python3 python3-pip ripgrep fd-find shellcheck less nano && rm -rf /var/lib/apt/lists/*",
-      "command -v fd >/dev/null || (command -v fdfind >/dev/null && ln -s \"$(command -v fdfind)\" /usr/local/bin/fd) || true",
-      "corepack enable || true",
-      "set -e; command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@latest; command -v yarn >/dev/null 2>&1 || npm install -g yarn@latest"
-    ],
-    "revalidationKey": "engineer-sandbox@2026-07-08"
-  }
+  "files": ["instructions.md", "agent.ts", "sandbox.ts"]
 }

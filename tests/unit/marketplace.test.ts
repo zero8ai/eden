@@ -278,6 +278,9 @@ describe("composition against the real seed", () => {
     const discordToolRow = index.templates.find(
       (t) => t.type === "tool" && t.id === "discord-send-message",
     )!;
+    const toolchainRow = index.templates.find(
+      (t) => t.type === "skill" && t.id === "dev-toolchain",
+    )!;
     expect(resolved.hash).toBe(engineerRow.hash);
     expect(resolved.includes).toEqual([
       {
@@ -300,6 +303,13 @@ describe("composition against the real seed", () => {
         name: "Discord Send Message",
         version: discordToolRow.version,
         hash: discordToolRow.hash,
+      },
+      {
+        id: "dev-toolchain",
+        type: "skill",
+        name: "Developer toolchain",
+        version: toolchainRow.version,
+        hash: toolchainRow.hash,
       },
     ]);
   });

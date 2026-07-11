@@ -64,6 +64,29 @@ describe("production Swarm stack", () => {
     expect(stack).toContain("node.role == manager");
   });
 
+  it("fails Eden health on non-2xx responses within the update monitor", () => {
+    const eden = stack.slice(stack.indexOf("  eden:\n"));
+
+    expect(eden).toContain("process.exit(response.ok ? 0 : 1)");
+    expect(eden).not.toContain(".then(() => process.exit(0))");
+    expect(eden).toMatch(
+      /interval: 10s\n\s+timeout: 5s\n\s+retries: 3\n\s+start_period: 20s/,
+    );
+    expect(eden.match(/monitor: 60s/g)).toHaveLength(2);
+  });
+
+  it("detects persistent Postgres health failure within its update monitor", () => {
+    const postgres = stack.slice(
+      stack.indexOf("  postgres:\n"),
+      stack.indexOf("\n  eden:\n"),
+    );
+
+    expect(postgres).toMatch(
+      /interval: 5s\n\s+timeout: 5s\n\s+retries: 5\n\s+start_period: 10s/,
+    );
+    expect(postgres.match(/monitor: 60s/g)).toHaveLength(2);
+  });
+
   it("keeps Postgres on its fixed data path and exact host addresses", () => {
     expect(stack).toContain(
       "/opt/eden/volumes/postgres:/var/lib/postgresql/data",

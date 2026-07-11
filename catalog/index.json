@@ -4,9 +4,9 @@
       "id": "engineer",
       "type": "agent",
       "name": "Engineer",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-      "hash": "0b862fa85809a3b5e5eb25e88c09e341b1fd099b"
+      "hash": "1aca21dc43ce29c4a6e32e9ee22cea0c67464010"
     },
     {
       "id": "github-bundle",
@@ -73,12 +73,20 @@
       "hash": "fcfeb9fec37e3017f8f0410923f36dbc5934596e"
     },
     {
+      "id": "dev-toolchain",
+      "type": "skill",
+      "name": "Developer toolchain",
+      "version": "0.1.0",
+      "description": "A broad developer toolchain preinstalled in the agent's sandbox — git, gh, jq, ripgrep, build tools, python3, pnpm/yarn, and friends — plus a skill inventorying what's there. A deliberate superset: install once, stop apt-getting per session.",
+      "hash": "41984ed836ce423397e415bc44ee1ea027833f8d"
+    },
+    {
       "id": "github-app-auth",
       "type": "skill",
       "name": "GitHub App auth",
-      "version": "0.2.0",
-      "description": "Exchange the agent's GitHub App private key for a short-lived installation token (GH_TOKEN), with gh and git preinstalled in the sandbox — the credential mechanics every GitHub-using agent needs, and nothing else.",
-      "hash": "b9e18b81d8044aeefeb29fb6b5b8d8ca8de1c789"
+      "version": "0.3.0",
+      "description": "Exchange the agent's GitHub App private key for a short-lived installation token (GH_TOKEN) and commit as the App's bot identity, with gh and git preinstalled in the sandbox — the credential mechanics every GitHub-using agent needs, and nothing else.",
+      "hash": "b60148da599768ef4fbf72a8b4d1f0756cb92aae"
     },
     {
       "id": "google-sheets-skill",
@@ -95,6 +103,14 @@
       "version": "0.2.0",
       "description": "Two-axis PR review from a local checkout — standards (repo conventions plus a code-smell baseline) and spec (does it do what the issue asked) — delivered as one ranked review.",
       "hash": "5dbaed44109ffb17db1f219915f893c5038dd298"
+    },
+    {
+      "id": "vercel-preview-url",
+      "type": "skill",
+      "name": "Vercel preview URL",
+      "version": "0.1.0",
+      "description": "Get a pull request's Vercel preview deployment URL with zero Vercel access — the agent polls the vercel[bot] comment on the PR with its own GitHub App token and extracts the link.",
+      "hash": "08c8ac292314699ac0bc863fde064930dcc5e310"
     },
     {
       "id": "discord-send-message",

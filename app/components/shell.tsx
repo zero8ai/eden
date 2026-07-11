@@ -611,7 +611,7 @@ function AgentSwitcher({
           navigate(`${pathname}${location.search}`);
         }}
       >
-        <SelectTrigger className="h-8 min-w-36 font-mono text-xs" aria-label="Team member">
+        <SelectTrigger className="h-8 min-w-36 font-mono text-xs" aria-label="Agent">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

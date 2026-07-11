@@ -421,7 +421,7 @@ export async function publishDrafts(
       `Can't publish — ${orphaned.length} staged change${plural} ${
         orphaned.length === 1 ? "belongs" : "belong"
       } to ${
-        names.length === 1 ? `"${names[0]}"` : `members (${names.map((n) => `"${n}"`).join(", ")})`
+        names.length === 1 ? `"${names[0]}"` : `agents (${names.map((n) => `"${n}"`).join(", ")})`
       }, which is no longer part of this team. Discard ${
         orphaned.length === 1 ? "it" : "them"
       } below, then publish again:\n\n${orphaned.map((d) => `- \`${d.path}\``).join("\n")}`,

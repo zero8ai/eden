@@ -142,7 +142,7 @@ export function teamFiles(name: string): FileChange[] {
   return [
     {
       path: EMPTY_TEAM_MARKER,
-      content: "# Agents\n\nAdd each team member under `agents/<member>/` as a complete eve project.\n",
+      content: "# Agents\n\nAdd each agent under `agents/<name>/` as a complete eve project.\n",
     },
     {
       path: "package.json",

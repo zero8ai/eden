@@ -31,7 +31,9 @@
  *   2. Copies the main checkout's `.env.local` into the worktree, overriding
  *      PORT + BETTER_AUTH_URL + DATABASE_URL + the port vars above. Each
  *      worktree gets a stable, independently generated BETTER_AUTH_SECRET.
- *      All other keys (API keys, deploy target) are shared with main.
+ *      All other keys (API keys, deploy target) are shared with main. The
+ *      shared `.env` (dev SMTP_URL + FROM_EMAIL) is also copied verbatim so
+ *      Better Auth's transactional email works in the worktree.
  *   3. Writes a `WORKTREE.md` at the worktree root so humans can inspect the
  *      worktree URL and ports (gitignored), and appends the same context plus
  *      a git-safety section to the worktree's `AGENTS.md` so every agent
@@ -663,6 +665,20 @@ function main() {
   );
 
   writeFileSync(join(worktreePath, ".env.local"), worktreeEnv);
+
+  // Propagate the shared dev `.env` (SMTP_URL + FROM_EMAIL) verbatim. Better Auth's
+  // transactional email — invitations, password reset, verification — reads these,
+  // and they're environment-agnostic (one Mailtrap sandbox for every worktree), so
+  // no per-worktree overrides apply. Without this a fresh worktree silently drops
+  // every auth email.
+  const mainSharedEnvPath = join(root, ".env");
+  if (existsSync(mainSharedEnvPath)) {
+    writeFileSync(
+      join(worktreePath, ".env"),
+      readFileSync(mainSharedEnvPath, "utf8"),
+    );
+  }
+
   writeFileSync(join(worktreePath, "WORKTREE.md"), worktreeMd);
 
   // Append the worktree context + git safety rules to AGENTS.md so every

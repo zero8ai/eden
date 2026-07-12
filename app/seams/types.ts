@@ -98,6 +98,16 @@ export interface InstanceHealth {
   detail?: string;
 }
 
+/** One durable eve session in an environment's Workflow world (the reconciler's discovery unit). */
+export interface WorldSessionSummary {
+  sessionId: string; // eve session id (wrun_…) — workflow run id
+  trigger?: string; // $eve.trigger (http | schedule | discord | …)
+  title?: string; // $eve.title
+  status: string; // workflow run status: running | completed | failed | …
+  createdAt: string; // ISO (UTC)
+  updatedAt: string; // ISO (UTC)
+}
+
 export interface DeployTarget {
   readonly name: string;
   build(req: BuildRequest): Promise<BuiltArtifact>;
@@ -135,6 +145,17 @@ export interface DeployTarget {
    * Optional — targets without a sidecar simply have no coding-agent sync surface.
    */
   auxEndpoint?(deploymentId: string): Promise<string | null>;
+  /**
+   * List the durable eve sessions in an environment's Workflow world — the channel-run
+   * reconciler's discovery surface (issue #119). Reads the world's `workflow.workflow_runs`
+   * table directly (there is no eve HTTP endpoint that lists sessions), projecting eve's
+   * framework-owned `$eve.*` observability attributes. Optional: targets without world access
+   * (nomad/vercel adapters) omit it and their instances report via the BYO ingest API instead.
+   */
+  listWorldSessions?(
+    worldKey: string,
+    opts?: { since?: Date },
+  ): Promise<WorldSessionSummary[]>;
 }
 
 // ── SecretsProvider ─────────────────────────────────────────────────────────

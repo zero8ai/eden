@@ -557,6 +557,36 @@ export const runSteps = pgTable(
 );
 
 /**
+ * Per-eve-session reconcile cursor for the channel-run reconciler (issue #119): how far into a
+ * session's durable replay stream the reconciler has folded runs, plus session state (modelId)
+ * that lives before the cursor. One row per (project, eve session). Cron/Discord/other-channel
+ * turns produce no in-process telemetry (only playground does), so a background loop pulls eve's
+ * durable stream and folds it into runs — this cursor makes that drain incremental + idempotent.
+ */
+export const runReconcileCursors = pgTable(
+  "run_reconcile_cursors",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    externalSessionId: text("external_session_id").notNull(),
+    streamIndex: integer("stream_index").notNull().default(0),
+    state: jsonb("state")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique("run_reconcile_cursors_session_uq").on(
+      t.projectId,
+      t.externalSessionId,
+    ),
+  ],
+);
+
+/**
  * Per-project ingest tokens for the authenticated OTLP/runs endpoint (ARCH §3.7). BYO
  * instances ship telemetry back with one of these Bearer tokens. Only the hash is stored.
  */

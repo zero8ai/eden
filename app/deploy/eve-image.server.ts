@@ -97,21 +97,33 @@ export const EVE_DOCKER_SHIM = `#!/bin/sh
 # eve-docker — Eden's EVE_DOCKER_PATH shim (rationale in eve-image.server.ts).
 REAL="\${EVE_DOCKER_REAL:-/usr/local/bin/docker}"
 
-# Scan argv for eve's session-container label pair (separate argv entries).
+# Scan argv for eve's session-container label pair (separate argv entries). While here, also
+# capture the channel/sessionId tag labels so a session-sandbox start is visible in the instance
+# log (issue #118: cron turns stall BEFORE their first step, so their sandbox is the only trace).
 is_session=0
+sbx_channel=""
+sbx_session=""
 prev=""
 for a in "$@"; do
-  if [ "$prev" = "--label" ] && [ "$a" = "eve.sandbox.role=session" ]; then
-    is_session=1
+  if [ "$prev" = "--label" ]; then
+    [ "$a" = "eve.sandbox.role=session" ] && is_session=1
+    case "$a" in
+      eve.sandbox.tag.channel=*) sbx_channel="\${a#eve.sandbox.tag.channel=}" ;;
+      eve.sandbox.tag.sessionId=*) sbx_session="\${a#eve.sandbox.tag.sessionId=}" ;;
+    esac
   fi
   prev="$a"
 done
 
-if [ "$1" = "run" ] && [ "$is_session" = "1" ] && [ -n "$EDEN_HOME_VOLUME" ]; then
-  # Inject the agent's home volume immediately after the run token; keep every other arg in order.
-  shift
-  set -- run -v "$EDEN_HOME_VOLUME:/workspace/home" "$@"
-  exec "$REAL" "$@"
+if [ "$1" = "run" ] && [ "$is_session" = "1" ]; then
+  # STDERR only: eve reads \`run -d\`'s STDOUT for the container id — never pollute it.
+  echo "[eden] session sandbox starting: channel=\${sbx_channel} session=\${sbx_session}" >&2
+  if [ -n "$EDEN_HOME_VOLUME" ]; then
+    # Inject the agent's home volume immediately after the run token; keep every other arg in order.
+    shift
+    set -- run -v "$EDEN_HOME_VOLUME:/workspace/home" "$@"
+    exec "$REAL" "$@"
+  fi
 fi
 
 exec "$REAL" "$@"

@@ -7,6 +7,7 @@
  * resource use predictable on a dev box.
  */
 import { deployRelease, rollbackTo } from "~/deploy/controller.server";
+import { ensureSandboxReaperStarted } from "~/deploy/sandbox-reaper.server";
 import { getRuntime } from "~/seams/index.server";
 import type { DeployReleasePayload, Job } from "./queue.server";
 import { claimNext, markDone, markFailed } from "./queue.server";
@@ -136,6 +137,11 @@ const globalForWorker = globalThis as unknown as {
 
 /** Start the worker once per process; safe to call from any server module. */
 export function ensureWorkerStarted(): void {
-  if (process.env.EDEN_DISABLE_WORKER === "1") return;
-  globalForWorker.__edenJobWorker ??= startWorker();
+  if (process.env.EDEN_DISABLE_WORKER !== "1") {
+    globalForWorker.__edenJobWorker ??= startWorker();
+  }
+  // The sandbox reaper (issue #118) is a sibling periodic sweep with its own env gate and the
+  // local-docker guard. Start it here so every existing worker call site gets it; it is a no-op on
+  // other deploy targets and when EDEN_DISABLE_SANDBOX_REAPER=1.
+  ensureSandboxReaperStarted();
 }

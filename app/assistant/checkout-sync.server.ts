@@ -50,10 +50,18 @@ async function repoCtx(projectId: string, store: DataStore): Promise<RepoCtx | n
   };
 }
 
-async function auxBase(deploymentId: string): Promise<string | null> {
+interface AuxBase {
+  /** False when the deploy target has no checkout sidecar at all (no `auxEndpoint`). */
+  supported: boolean;
+  /** The sidecar base URL — null when unsupported OR when a supporting target failed to resolve it. */
+  base: string | null;
+}
+
+async function auxBase(deploymentId: string): Promise<AuxBase> {
   const target = getRuntime().deployTarget;
-  if (!target.auxEndpoint) return null;
-  return target.auxEndpoint(deploymentId).catch(() => null);
+  if (!target.auxEndpoint) return { supported: false, base: null };
+  const base = await target.auxEndpoint(deploymentId).catch(() => null);
+  return { supported: true, base };
 }
 
 // ── Checkout link row ──────────────────────────────────────────────────────────
@@ -108,6 +116,8 @@ async function upsertCheckoutRow(input: {
 
 export interface EnsureResult {
   ok: boolean;
+  /** True when the deploy target has no checkout sidecar at all — checkouts unsupported, not failed. */
+  unsupported?: boolean;
   /** A one-line note to inject for the model (e.g. base advanced) — null when nothing to say. */
   note: string | null;
   reason?: string;
@@ -122,8 +132,10 @@ export async function ensureConversationCheckout(input: {
   conversationId: string;
   deploymentId: string;
 }): Promise<EnsureResult> {
-  const base = await auxBase(input.deploymentId);
-  if (!base) return { ok: false, note: null, reason: "no sidecar endpoint" };
+  const aux = await auxBase(input.deploymentId);
+  if (!aux.supported) return { ok: false, unsupported: true, note: null, reason: "no sidecar endpoint" };
+  const base = aux.base;
+  if (!base) return { ok: false, note: null, reason: "couldn't resolve the sidecar endpoint" };
   try {
     const res = await fetch(`${base}/ensure`, {
       method: "POST",
@@ -173,7 +185,7 @@ export async function syncConversationCheckout(input: {
   const ctx = await repoCtx(input.projectId, store);
   if (!ctx) return { synced: false, reason: "project has no connected repo" };
 
-  const base = await auxBase(input.deploymentId);
+  const { base } = await auxBase(input.deploymentId);
   if (!base) return { synced: false, reason: "no sidecar endpoint" };
 
   let tree: (TreeState & { missing?: boolean }) | null = null;

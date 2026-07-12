@@ -4,9 +4,9 @@
       "id": "engineer",
       "type": "agent",
       "name": "Engineer",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-      "hash": "05a3dddb2028d02c5d9e5338059c8611e856a47a"
+      "hash": "4fa48780f46d1989c3daf46efd53c8bcec201b7f"
     },
     {
       "id": "github-bundle",
@@ -84,9 +84,9 @@
       "id": "github-app-auth",
       "type": "skill",
       "name": "GitHub App auth",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "description": "Exchange the agent's GitHub App private key for a short-lived installation token (GH_TOKEN) and commit as the App's bot identity, with gh and git preinstalled in the sandbox — the credential mechanics every GitHub-using agent needs, and nothing else.",
-      "hash": "00ff5a0c36204f22c7c9f9862bd570a50b5c3dcf"
+      "hash": "9e498e92ac01d6f9869c44b59c8d8c742217667d"
     },
     {
       "id": "google-sheets-skill",

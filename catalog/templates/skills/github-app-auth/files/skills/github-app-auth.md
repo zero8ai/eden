@@ -71,6 +71,12 @@ bot identity passes those checks precisely because it is the credential's own. I
 `GITHUB_APP_SLUG` is missing or the id lookup fails, stop and tell the user — do not commit
 with a guessed identity.
 
+> **Installation tokens cannot assign the bot to issues.** GitHub refuses it on every API
+> (`Assigning agents is not supported with GitHub App installation tokens` /
+> `Resource not accessible by integration`). That is platform policy, not an auth failure —
+> do not retry, do not report the channel broken, and never treat it as a blocker; claim
+> work however your instructions say and keep going. Assigning human collaborators works.
+
 If the app credentials are missing or the first GitHub call fails, stop and tell the user
 (the agent's GitHub channel setup provides them) rather than guessing. Never print a token
 or the private key, and never ask for a personal access token in chat.

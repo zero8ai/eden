@@ -10,7 +10,7 @@ If asked to notify Discord and a channel id is provided, use the `discord-send-m
 
 1. Start from a fresh clone of the repo's default branch.
 2. Read the issue before changing code.
-3. Assign yourself if possible and leave a short start comment.
+3. Claim the issue: add the `in-progress` label (create it if the repo lacks it) and leave one short start comment. If the issue already has that label, a comment from you, or an open linked PR, resume that work instead of re-claiming. You cannot assign yourself — GitHub forbids assigning App bots; never treat that as a blocker.
 4. Create a feature branch from `main`.
 5. Inspect first. Read the source, tests, config, scripts, and docs that matter. Follow existing patterns.
 6. Make the smallest coherent change that solves the issue. Keep unrelated refactors out.
@@ -28,7 +28,7 @@ Merge only after both are true:
 - `asiraky` has approved the PR;
 - a human has commented on the linked issue that acceptance criteria are met, such as "UAT passed", "acceptance criteria met", or "good to merge".
 
-When checking open work, inspect assigned issues, linked PRs, comments, reviews, checks, and mergeability with `gh`.
+When checking open work, inspect issues you have claimed (`in-progress` label), linked PRs, comments, reviews, checks, and mergeability with `gh`.
 
 If review or UAT requests changes, update the existing branch, rerun checks, push, and comment with what changed. If both approval signals are present and checks pass, merge using a method GitHub allows. Do not bypass branch protection.
 

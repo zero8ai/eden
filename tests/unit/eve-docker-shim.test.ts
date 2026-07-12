@@ -48,14 +48,26 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** Run the shim; return the argv the fake client received. */
-function runShim(args: string[], env: Record<string, string>): string[] {
+/** Run the shim; return the argv the fake client received plus its captured stdio. */
+function runShimFull(
+  args: string[],
+  env: Record<string, string>,
+): { argv: string[]; stdout: string; stderr: string } {
   const res = spawnSync(shimPath, args, {
     env: { EDEN_TEST_CAPTURE: capturePath, EVE_DOCKER_REAL: fakeDocker, ...env },
     encoding: "utf8",
   });
   expect(res.status).toBe(0);
-  return readFileSync(capturePath, "utf8").split("\n").filter((l) => l.length > 0);
+  return {
+    argv: readFileSync(capturePath, "utf8").split("\n").filter((l) => l.length > 0),
+    stdout: res.stdout,
+    stderr: res.stderr,
+  };
+}
+
+/** Run the shim; return the argv the fake client received. */
+function runShim(args: string[], env: Record<string, string>): string[] {
+  return runShimFull(args, env).argv;
 }
 
 // eve's exact session-container argv (bindings/*.ts), minus the trailing entrypoint args.
@@ -110,6 +122,56 @@ describe("eve-docker shim", () => {
 
   it("is a no-op when EDEN_HOME_VOLUME is empty, even for a session run", () => {
     expect(runShim(SESSION_RUN, { EDEN_HOME_VOLUME: "" })).toEqual(SESSION_RUN);
+  });
+
+  it("echoes a session-sandbox start line to STDERR (issue #118), capturing channel + session", () => {
+    // eve stamps the channel/sessionId as their own --label pairs on the session container.
+    const argv = [
+      "run",
+      "-d",
+      "--label",
+      "eve.sandbox.role=session",
+      "--label",
+      "eve.sandbox.tag.channel=schedule",
+      "--label",
+      "eve.sandbox.tag.sessionId=wrun_ABC123",
+      "ghcr.io/vercel/eve:latest",
+    ];
+    const res = runShimFull(argv, { EDEN_HOME_VOLUME: "eden-home-x" });
+    expect(res.stderr).toContain(
+      "[eden] session sandbox starting: channel=schedule session=wrun_ABC123",
+    );
+    // STDOUT must stay clean — eve reads `run -d`'s stdout for the container id.
+    expect(res.stdout).toBe("");
+    // The volume injection still happens for a session run.
+    expect(res.argv.slice(0, 3)).toEqual(["run", "-v", "eden-home-x:/workspace/home"]);
+  });
+
+  it("emits the start line even when EDEN_HOME_VOLUME is unset (no injection, still visible)", () => {
+    const argv = [
+      "run",
+      "--label",
+      "eve.sandbox.role=session",
+      "--label",
+      "eve.sandbox.tag.channel=discord",
+      "ghcr.io/vercel/eve:latest",
+    ];
+    const res = runShimFull(argv, { EDEN_HOME_VOLUME: "" });
+    expect(res.stderr).toContain("channel=discord session=");
+    expect(res.argv).toEqual(argv); // no volume injected
+  });
+
+  it("emits NO start line for non-session invocations", () => {
+    const tmplRun = runShimFull(
+      ["run", "--label", "eve.sandbox.role=template-build", "ghcr.io/vercel/eve:latest"],
+      { EDEN_HOME_VOLUME: "eden-home-x" },
+    );
+    expect(tmplRun.stderr).not.toContain("[eden] session sandbox starting");
+
+    const nonRun = runShimFull(["exec", "sess1", "/bin/sh", "-c", "echo hi"], {
+      EDEN_HOME_VOLUME: "eden-home-x",
+    });
+    expect(nonRun.stderr).not.toContain("[eden] session sandbox starting");
   });
 
   it("streams the real client's exit code through (exec, not fork)", () => {

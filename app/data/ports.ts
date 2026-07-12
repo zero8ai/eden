@@ -133,6 +133,12 @@ export interface EnvironmentRepo {
   findById(id: string): Promise<Environment | null>;
   /** All environments across a project's roster (legacy views; per-agent is the norm). */
   listByProject(projectId: string): Promise<Environment[]>;
+  /**
+   * Every environment in the control plane, unscoped. Internal maintenance only (the sandbox
+   * reaper maps a leaked home-volume name back to its owning environment/project); never a
+   * tenant-facing read.
+   */
+  listAll(): Promise<Environment[]>;
   listByAgent(agentId: string): Promise<Environment[]>;
   /**
    * Guarantee the ≥1-environment invariant: insert an env named "default" ONLY when the

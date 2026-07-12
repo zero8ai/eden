@@ -84,9 +84,9 @@
       "id": "github-app-auth",
       "type": "skill",
       "name": "GitHub App auth",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "description": "Exchange the agent's GitHub App private key for a short-lived installation token (GH_TOKEN) and commit as the App's bot identity, with gh and git preinstalled in the sandbox — the credential mechanics every GitHub-using agent needs, and nothing else.",
-      "hash": "b60148da599768ef4fbf72a8b4d1f0756cb92aae"
+      "hash": "00ff5a0c36204f22c7c9f9862bd570a50b5c3dcf"
     },
     {
       "id": "google-sheets-skill",

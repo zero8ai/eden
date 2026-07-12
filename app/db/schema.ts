@@ -840,34 +840,26 @@ export const jobs = pgTable(
   (t) => [index("jobs_status_run_at_idx").on(t.status, t.runAt)],
 );
 
-/**
- * Workspace-level OpenRouter settings: encrypted key plus the default model id inherited by
- * the authoring assistant and agents with no local model.
- */
+/** Workspace default model inherited by the authoring assistant and agents with no local model. */
 export const workspaceSettings = pgTable("workspace_settings", {
   orgId: text("org_id")
     .primaryKey()
     .references(() => organization.id, { onDelete: "cascade" }),
-  modelKeyCiphertext: text("model_key_ciphertext"),
-  modelKeyIv: text("model_key_iv"),
-  modelKeyAuthTag: text("model_key_auth_tag"),
-  /** Workspace default OpenRouter model id (null = Eden's default). */
+  /** Connection-qualified workspace default model id. */
   assistantModel: text("assistant_model"),
   updatedAt: updatedAt(),
 });
 
 /**
- * Connectable model providers beyond the workspace OpenRouter key (issue #28). Phase 1 adds
- * "codex" — an OpenAI Codex ChatGPT subscription connected via device-code OAuth. A workspace
- * may hold several connections (including multiple Codex accounts), each with a human label; the
- * model pickers surface `codex/<connectionId>/<slug>` ids qualified by that label and Eden's
- * gateway route runs the connection's subscription tokens against the Codex backend.
+ * Connectable model providers (issue #28). API-key providers (OpenRouter, Anthropic, and OpenAI
+ * Platform) keep a sealed key; Codex keeps its device-code OAuth token pair. A workspace may hold
+ * several connections, including multiple accounts for one provider, each with a human label.
+ * Model references identify the exact connection as `<provider>/<connectionId>/<upstream-id>`.
  *
- * Credentials are write-only, AES-256-GCM sealed with the same secretbox as `secret_values`:
- * loader-facing code returns only display metadata (label, accountEmail, status); only the
- * gateway/refresh path unseals the token triplets. `accountId` (the ChatGPT account id) is a
- * request HEADER, not a secret, so it is stored plain. Additive: the OpenRouter key path is
- * untouched.
+ * Credentials are write-only, AES-256-GCM sealed with the same secretbox as `secret_values`.
+ * Loader-facing code returns display metadata only; catalog, deploy, gateway, and refresh paths
+ * are the only consumers that unseal credentials. `accountId` is a Codex request header rather
+ * than a secret, so it remains plain.
  */
 export const modelProviderConnections = pgTable(
   "model_provider_connections",
@@ -876,7 +868,7 @@ export const modelProviderConnections = pgTable(
     orgId: text("org_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    /** Provider id — "codex" in Phase 1. */
+    /** `openrouter` | `anthropic` | `openai` | `codex`. */
     provider: varchar("provider", { length: 32 }).notNull(),
     /** Human-readable label shown in the connections list + model picker suffixes. */
     label: text("label").notNull(),
@@ -884,6 +876,10 @@ export const modelProviderConnections = pgTable(
     accountEmail: text("account_email"),
     /** ChatGPT account id — sent as the `ChatGPT-Account-ID` request header (not a secret). */
     accountId: text("account_id"),
+    /** Sealed API key for key-authenticated providers. */
+    apiKeyCiphertext: text("api_key_ciphertext"),
+    apiKeyIv: text("api_key_iv"),
+    apiKeyAuthTag: text("api_key_auth_tag"),
     /** Sealed OAuth access token (AES-256-GCM, same secretbox as secret_values). */
     accessTokenCiphertext: text("access_token_ciphertext"),
     accessTokenIv: text("access_token_iv"),
@@ -962,7 +958,7 @@ export const playgroundSessions = pgTable(
     ),
     lastVersion: text("last_version"),
     /**
-     * Per-conversation model override (an OpenRouter id) applied to subsequent turns via the
+     * Per-conversation connection-qualified model override applied to subsequent turns via the
      * playground model directive; null = the deployed default model.
      */
     modelId: text("model_id"),

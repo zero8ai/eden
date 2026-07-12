@@ -9,8 +9,11 @@ import { data, redirect, type ActionFunctionArgs } from "react-router";
 
 import { liveTargets } from "~/chat/playground.server";
 import { asString, streamTurnResponse } from "~/chat/turn-stream.server";
-import { findModel } from "~/models/catalog.server";
-import { buildModelDirective } from "~/models/model-directive";
+import { signModelDirective } from "~/models/model-directive.server";
+import {
+  findWorkspaceModel,
+  ownsWorkspaceModelReference,
+} from "~/models/union.server";
 import {
   createPlaygroundSession,
   getPlaygroundSession,
@@ -48,6 +51,18 @@ export async function action(args: ActionFunctionArgs) {
   if (!message) throw data({ error: "Type a message first." }, { status: 400 });
   // The composer's current model selection; absent = keep the session's stored override.
   const requestedModelId = asString(form.get("modelId")).trim() || null;
+  const requestedModel = requestedModelId
+    ? await findWorkspaceModel(project.orgId, requestedModelId)
+    : null;
+  if (requestedModelId && !requestedModel) {
+    throw data(
+      {
+        error:
+          "That model is not available from an active provider connection in this workspace.",
+      },
+      { status: 400 },
+    );
+  }
 
   // Only talk to live deployments that belong to THIS agent (tenancy guard) — reject with
   // JSON, not a stream, so the client can surface it.
@@ -77,6 +92,21 @@ export async function action(args: ActionFunctionArgs) {
       { status: 404 },
     );
   }
+  const effectiveModel = requestedModelId ?? playgroundSession?.modelId ?? null;
+  const effectiveModelOwned = effectiveModel
+    ? requestedModelId === effectiveModel
+      ? Boolean(requestedModel)
+      : await ownsWorkspaceModelReference(project.orgId, effectiveModel)
+    : false;
+  if (effectiveModel && !effectiveModelOwned) {
+    throw data(
+      {
+        error:
+          "This conversation's model is no longer available. Choose a model from an active provider connection.",
+      },
+      { status: 400 },
+    );
+  }
   // #71: continue a conversation whose owning eve session lives on a deployment that was replaced
   // (or was explicitly de-selected for a different live one). That eve session can't be migrated —
   // it died with the old container's runtime — so instead of 409ing, seed a FRESH eve session on
@@ -91,7 +121,8 @@ export async function action(args: ActionFunctionArgs) {
     seedContext = buildSeedContext(
       await loadPlaygroundEntriesFromCache(playgroundSession),
     );
-    playgroundSession = await unbindPlaygroundSessionForReseed(playgroundSession);
+    playgroundSession =
+      await unbindPlaygroundSessionForReseed(playgroundSession);
   }
   const title = playgroundSession?.title ? null : titleFromMessage(message);
   if (!playgroundSession) {
@@ -130,13 +161,18 @@ export async function action(args: ActionFunctionArgs) {
   // session API has no per-turn model field); the deployed agent's dynamic-model resolver reads
   // it, and every display surface strips it. The catalog lookup supplies the model's context
   // window; when the catalog is unreachable the directive simply omits it.
-  const effectiveModel = requestedModelId ?? playgroundSession.modelId;
+  const directiveBody = [seedContext, message].filter(Boolean).join("\n\n");
   const directive = effectiveModel
-    ? buildModelDirective({
-        id: effectiveModel,
-        contextWindowTokens:
-          (await findModel(effectiveModel))?.contextWindow ?? undefined,
-      })
+    ? signModelDirective(
+        {
+          id: effectiveModel,
+          // A newly requested selection was catalog-validated above. An already-stored selection
+          // uses active ownership only, so a transient catalog outage does not block inference.
+          contextWindowTokens: requestedModel?.contextWindow ?? undefined,
+        },
+        target.deploymentId,
+        directiveBody,
+      )
     : null;
   // Order matters: the model directive MUST stay the first line of the sent message (both the
   // agent-side resolver and `stripModelDirective` anchor to start-of-string); the reseed context

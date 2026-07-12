@@ -25,6 +25,7 @@ import { mintDelegationToken } from "~/team/token.server";
 import { getDiscordAppConfig } from "~/discord/config.server";
 import { gatewayBaseUrl } from "~/gateway/url.server";
 import { mintGatewayToken } from "~/gateway/token.server";
+import { modelDirectiveSecret } from "~/models/model-directive.server";
 import {
   DEPLOYMENT_DRAIN_CEILING_MS,
   scheduleDeploymentDrain,
@@ -39,8 +40,10 @@ export interface DeployDeps {
   store: DataStore;
   deployTarget: DeployTarget;
   secrets: SecretsProvider;
-  /** Org-level OpenRouter key lookup used by the authoring assistant and deployed agents. */
-  workspaceModelKey?: (orgId: string) => Promise<string | null>;
+  /** All active API-key connection env for the org (exact vars + deterministic aliases). */
+  providerDeploymentEnv?: (orgId: string) => Promise<Record<string, string>>;
+  /** Per-deployment verifier secret for signed playground model directives. */
+  modelDirectiveSecret?: (deploymentId: string) => string;
   /** Whether the org has an active Codex connection — gates model-gateway env injection (#28). */
   hasCodexConnection?: (orgId: string) => Promise<boolean>;
   /** Names of secrets marked "available in the agent's sandbox shell" for a deploy scope. */
@@ -73,14 +76,19 @@ function deployDeps(): DeployDeps {
     store: r.data,
     deployTarget: r.deployTarget,
     secrets: r.secrets,
-    workspaceModelKey: (orgId) =>
-      import("~/org/workspace.server").then((m) => m.getWorkspaceModelKey(orgId)),
+    providerDeploymentEnv: (orgId) =>
+      import("~/models/provider-connections.server").then((m) =>
+        m.getProviderDeploymentEnv(orgId),
+      ),
+    modelDirectiveSecret,
     hasCodexConnection: (orgId) =>
       import("~/models/provider-connections.server").then((m) =>
         m.hasActiveCodexConnection(orgId),
       ),
     sandboxExposedNames: (scope) =>
-      import("~/seams/oss/secret-store").then((m) => m.listSandboxExposedNames(scope)),
+      import("~/seams/oss/secret-store").then((m) =>
+        m.listSandboxExposedNames(scope),
+      ),
     connectionGrantEnv: (scope, requiredScopes) =>
       import("~/connections/deploy.server").then((m) =>
         m.connectionGrantEnv(scope, fetch, undefined, requiredScopes),
@@ -95,10 +103,27 @@ function deployDeps(): DeployDeps {
 
 function hasModelCredential(env: Record<string, string>): boolean {
   return Boolean(
+    Object.keys(env).some((name) =>
+      /^EDEN_PROVIDER_(?:ANTHROPIC|OPENAI|OPENROUTER)_[A-Z]{12}_API_KEY$/.test(
+        name,
+      ),
+    ) ||
+    env.ANTHROPIC_API_KEY ||
+    env.OPENAI_API_KEY ||
     env.OPENROUTER_API_KEY ||
-      env.AI_GATEWAY_API_KEY ||
-      env.VERCEL_OIDC_TOKEN ||
-      env.EDEN_MODEL_GATEWAY_TOKEN,
+    env.AI_GATEWAY_API_KEY ||
+    env.VERCEL_OIDC_TOKEN ||
+    env.EDEN_MODEL_GATEWAY_TOKEN,
+  );
+}
+
+/** Exact connection credentials and routing coordinates reserved to Eden. */
+function isReservedModelEnvName(name: string): boolean {
+  return (
+    /^EDEN_PROVIDER_.*_API_KEY$/.test(name) ||
+    name === "EDEN_MODEL_GATEWAY_URL" ||
+    name === "EDEN_MODEL_GATEWAY_TOKEN" ||
+    name === "EDEN_MODEL_DIRECTIVE_SECRET"
   );
 }
 
@@ -136,7 +161,10 @@ export async function createRelease(
   const attempt = async (round: number): Promise<Release> => {
     const count = await store.releases.countByAgent(input.agentId);
     try {
-      return await store.releases.insert({ ...input, version: versionLabel(count) });
+      return await store.releases.insert({
+        ...input,
+        version: versionLabel(count),
+      });
     } catch (err) {
       if (!isVersionLabelCollision(err) || round >= 8) throw err;
       return attempt(round + 1);
@@ -161,7 +189,10 @@ export async function ensureReleaseForCommit(
   },
   store: DataStore = getRuntime().data,
 ): Promise<{ release: Release; created: boolean }> {
-  const existing = await store.releases.findByCommit(input.agentId, input.gitSha);
+  const existing = await store.releases.findByCommit(
+    input.agentId,
+    input.gitSha,
+  );
   if (existing) return { release: existing, created: false };
   const release = await createRelease(input, store);
   return { release, created: true };
@@ -193,7 +224,10 @@ export async function ensureReleasesForCommit(
 }
 
 /** Deployments for an environment, newest first, joined to their release version. */
-export function listDeployments(environmentId: string, store: DataStore = getRuntime().data) {
+export function listDeployments(
+  environmentId: string,
+  store: DataStore = getRuntime().data,
+) {
   return store.deployments.listByEnvironment(environmentId);
 }
 
@@ -248,7 +282,8 @@ export async function deployRelease(
   // and the env is set; EDEN_TEAMMATES is simply an empty roster.
   // Roster for teammate wiring is real members only (never the built-in assistant).
   const roster = allAgents.filter((a) => a.kind === "member");
-  const isTeamMember = !!agent && agent.kind === "member" && agent.root !== "agent";
+  const isTeamMember =
+    !!agent && agent.kind === "member" && agent.root !== "agent";
 
   try {
     const scope: SecretScope = {
@@ -264,28 +299,40 @@ export async function deployRelease(
       if (!envVars[key] && value) envVars[key] = value;
     }
 
-    // Eden's primary model path: OpenRouter key inherited from the workspace unless an
-    // agent/environment secret explicitly overrides it.
-    if (!envVars.OPENROUTER_API_KEY && project && deps.workspaceModelKey) {
-      const wsKey = await deps.workspaceModelKey(project.orgId);
-      if (wsKey) envVars.OPENROUTER_API_KEY = wsKey;
+    // Exact model credentials are Eden-owned: a user secret cannot impersonate another workspace
+    // connection. Standard provider aliases retain the ordinary secret-cascade override contract
+    // for legacy/custom code; Eden's qualified generated wiring consumes exact vars only.
+    for (const key of Object.keys(envVars)) {
+      if (isReservedModelEnvName(key)) delete envVars[key];
+    }
+    if (project && deps.providerDeploymentEnv) {
+      const providerEnv = await deps.providerDeploymentEnv(project.orgId);
+      for (const [key, value] of Object.entries(providerEnv)) {
+        if (/^EDEN_PROVIDER_.*_API_KEY$/.test(key) || !envVars[key]) {
+          envVars[key] = value;
+        }
+      }
     }
 
     // Eden model gateway (issue #28): when the org has an active Codex connection, point the
     // agent's edenGateway provider at Eden's translating gateway with an org-scoped token so a
     // `codex/<connection>/<slug>` model runs on the connected subscription. Eden-owned (anti-
-    // shadowing like EDEN_SANDBOX_ENV): strip any user-set values first, then set. Additive — the
-    // OpenRouter path above is untouched; a codex-only org passes hasModelCredential via the token.
+    // shadowing like EDEN_SANDBOX_ENV): strip any user-set values first, then set. A Codex-only
+    // org passes hasModelCredential via the gateway token.
     delete envVars.EDEN_MODEL_GATEWAY_URL;
     delete envVars.EDEN_MODEL_GATEWAY_TOKEN;
     if (project && (await deps.hasCodexConnection?.(project.orgId))) {
       envVars.EDEN_MODEL_GATEWAY_URL = gatewayBaseUrl();
       envVars.EDEN_MODEL_GATEWAY_TOKEN = mintGatewayToken(project.orgId);
     }
+    delete envVars.EDEN_MODEL_DIRECTIVE_SECRET;
+    if (project && deps.modelDirectiveSecret) {
+      envVars.EDEN_MODEL_DIRECTIVE_SECRET = deps.modelDirectiveSecret(dep.id);
+    }
 
-    if (project && deps.workspaceModelKey && !hasModelCredential(envVars)) {
+    if (project && deps.providerDeploymentEnv && !hasModelCredential(envVars)) {
       throw new Error(
-        "No model provider key configured for this deployment. Connect a model provider in Org settings -> Model providers (an OpenRouter key or an OpenAI Codex subscription), or set an agent/environment secret named OPENROUTER_API_KEY, then redeploy.",
+        "No model provider credential is available for this deployment. Connect Anthropic, OpenAI Platform, OpenRouter, or OpenAI Codex in Org settings -> Model providers, then redeploy.",
       );
     }
 
@@ -296,8 +343,14 @@ export async function deployRelease(
     // own allowlist. Names only — never values — and only names that actually resolved to an
     // injected env var (exposing a secret that doesn't exist in scope forwards nothing).
     delete envVars.EDEN_SANDBOX_ENV;
-    const exposed = deps.sandboxExposedNames ? await deps.sandboxExposedNames(scope) : [];
-    const allowlist = exposed.filter((name) => name in envVars);
+    const exposed = deps.sandboxExposedNames
+      ? await deps.sandboxExposedNames(scope)
+      : [];
+    // A dummy exposed secret must not squat on a name Eden later overwrites with a real provider
+    // credential (or Codex gateway token), which would leak that credential into the sandbox.
+    const allowlist = exposed.filter(
+      (name) => !isReservedModelEnvName(name) && name in envVars,
+    );
     if (allowlist.length > 0) envVars.EDEN_SANDBOX_ENV = allowlist.join(",");
 
     // Team delegation (D3): a team member gets the relay coordinates, an HMAC token identifying
@@ -331,7 +384,8 @@ export async function deployRelease(
       envVars.EDEN_TEAMMATES = JSON.stringify(teammates);
       // Keep the tool's fetch budget aligned with the relay's when an operator overrides it.
       if (process.env.EDEN_DELEGATION_TIMEOUT_MS) {
-        envVars.EDEN_DELEGATION_TIMEOUT_MS = process.env.EDEN_DELEGATION_TIMEOUT_MS;
+        envVars.EDEN_DELEGATION_TIMEOUT_MS =
+          process.env.EDEN_DELEGATION_TIMEOUT_MS;
       }
     }
 
@@ -377,7 +431,12 @@ export async function deployRelease(
     // matches the loader's: a team member is keyed by name, the single-agent root by null.
     let requiredGoogleScopes: string | null = null;
     try {
-      if (deps.agentLock && project?.repoOwner && project.repoName && project.repoInstallationId) {
+      if (
+        deps.agentLock &&
+        project?.repoOwner &&
+        project.repoName &&
+        project.repoInstallationId
+      ) {
         const lockJson = await deps.agentLock({
           installationId: project.repoInstallationId,
           owner: project.repoOwner,
@@ -386,7 +445,9 @@ export async function deployRelease(
         });
         const lock = overlayLock(lockJson, []);
         const member = isTeamMember && agent ? agent.name : null;
-        requiredGoogleScopes = requiredScopesByProvider(lock, member).get("google")?.join(" ") ?? null;
+        requiredGoogleScopes =
+          requiredScopesByProvider(lock, member).get("google")?.join(" ") ??
+          null;
       }
     } catch {
       requiredGoogleScopes = null; // best-effort: never block a deploy on a lock-fetch hiccup
@@ -411,7 +472,9 @@ export async function deployRelease(
     const shouldBuild = input.rebuild || !imageRef;
     if (shouldBuild) {
       if (!project?.repoOwner || !project.repoName) {
-        throw new Error("Cannot build release: project is not connected to a GitHub repo.");
+        throw new Error(
+          "Cannot build release: project is not connected to a GitHub repo.",
+        );
       }
       const built = await deployTarget.build({
         projectId: release.projectId,
@@ -435,7 +498,10 @@ export async function deployRelease(
     });
 
     if (health.status !== "live") {
-      const cleanupError = await cleanupNewDeploymentInfra(deployTarget, dep.id);
+      const cleanupError = await cleanupNewDeploymentInfra(
+        deployTarget,
+        dep.id,
+      );
       return store.deployments.update(dep.id, {
         status: health.status,
         url: health.url ?? null,
@@ -460,8 +526,12 @@ export async function deployRelease(
     // The old version keeps serving until this moment, so a failed deploy never takes anything down.
     // (The weighted multi-version splitter survives in the data model, but the product model is
     // single-live-per-environment for now.)
-    const siblings = await store.deployments.listByEnvironment(input.environmentId);
-    const superseded = siblings.filter((d) => d.id !== dep.id && d.status === "live");
+    const siblings = await store.deployments.listByEnvironment(
+      input.environmentId,
+    );
+    const superseded = siblings.filter(
+      (d) => d.id !== dep.id && d.status === "live",
+    );
     try {
       await Promise.all(
         superseded.map((d) =>
@@ -473,7 +543,10 @@ export async function deployRelease(
         ),
       );
     } catch (error) {
-      const cleanupError = await cleanupNewDeploymentInfra(deployTarget, dep.id);
+      const cleanupError = await cleanupNewDeploymentInfra(
+        deployTarget,
+        dep.id,
+      );
       const detail = error instanceof Error ? error.message : String(error);
       return store.deployments.update(dep.id, {
         status: "failed",
@@ -506,7 +579,9 @@ export async function deployRelease(
     // how long individual ticks take. The watcher stops the container and schedules its cleanup.
     const drainDeadline = new Date(Date.now() + DEPLOYMENT_DRAIN_CEILING_MS);
     await Promise.all(
-      superseded.map((d) => scheduleDeploymentDrain(store, d.id, drainDeadline)),
+      superseded.map((d) =>
+        scheduleDeploymentDrain(store, d.id, drainDeadline),
+      ),
     );
     return updated;
   } catch (error) {
@@ -514,7 +589,10 @@ export async function deployRelease(
     // Record WHY it failed — a bare `failed` row is undebuggable (and while the eve
     // toolchain is young, build failures are the expected failure mode).
     const detail = error instanceof Error ? error.message : String(error);
-    return store.deployments.update(dep.id, { status: "failed", errorDetail: detail });
+    return store.deployments.update(dep.id, {
+      status: "failed",
+      errorDetail: detail,
+    });
   }
 }
 

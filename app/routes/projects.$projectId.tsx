@@ -74,6 +74,7 @@ import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { RelativeTime } from "~/components/localized-values";
 import { cn } from "~/lib/utils";
 import { getWorkspaceAssistantModel } from "~/org/workspace.server";
+import { ownsWorkspaceModelReference } from "~/models/union.server";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -439,13 +440,22 @@ export async function action(args: ActionFunctionArgs) {
       if (roster.some((a) => a.name === name)) {
         return { error: `An agent named "${name}" already exists.` };
       }
-      const model = await getWorkspaceAssistantModel(project.orgId).catch(
+      let model = await getWorkspaceAssistantModel(project.orgId).catch(
         () => null,
       );
+      if (model && !(await ownsWorkspaceModelReference(project.orgId, model))) {
+        model = null;
+      }
+      if (!model) {
+        return {
+          error:
+            "Choose a connected workspace default model in Org settings before adding an agent.",
+        };
+      }
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
         branch: `eden/add-member-${name}`,
-        files: memberScaffold(name, model ?? undefined),
+        files: memberScaffold(name, model),
         title: `Add agent: ${name}`,
         body:
           `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, a ` +

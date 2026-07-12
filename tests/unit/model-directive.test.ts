@@ -15,7 +15,10 @@ import {
 describe("buildModelDirective", () => {
   it("builds the id + context window line", () => {
     expect(
-      buildModelDirective({ id: "anthropic/claude-sonnet-5", contextWindowTokens: 200_000 }),
+      buildModelDirective({
+        id: "anthropic/claude-sonnet-5",
+        contextWindowTokens: 200_000,
+      }),
     ).toBe("<!-- eden:model anthropic/claude-sonnet-5 ctx=200000 -->");
   });
 
@@ -42,7 +45,9 @@ describe("parseModelDirective", () => {
   });
 
   it("parses a directive without a context window", () => {
-    expect(parseModelDirective("<!-- eden:model openai/gpt-5.1 -->\n\nhi")).toEqual({
+    expect(
+      parseModelDirective("<!-- eden:model openai/gpt-5.1 -->\n\nhi"),
+    ).toEqual({
       id: "openai/gpt-5.1",
       contextWindowTokens: undefined,
     });
@@ -65,7 +70,8 @@ describe("parseModelDirective", () => {
 
 describe("stripModelDirective", () => {
   it("removes the directive line and the blank line after it", () => {
-    const sent = "<!-- eden:model anthropic/claude-sonnet-5 ctx=200000 -->\n\nwhat model are you?";
+    const sent =
+      "<!-- eden:model anthropic/claude-sonnet-5 ctx=200000 -->\n\nwhat model are you?";
     expect(stripModelDirective(sent)).toBe("what model are you?");
   });
 
@@ -83,7 +89,10 @@ describe("stripModelDirective", () => {
 describe("effectiveModelId", () => {
   it("returns the static runtime id as-is, ignoring any directive", () => {
     expect(
-      effectiveModelId("anthropic/claude-sonnet-5", "<!-- eden:model openai/gpt-5.1 -->\n\nhi"),
+      effectiveModelId(
+        "anthropic/claude-sonnet-5",
+        "<!-- eden:model openai/gpt-5.1 -->\n\nhi",
+      ),
     ).toBe("anthropic/claude-sonnet-5");
   });
 
@@ -105,20 +114,44 @@ describe("effectiveModelId", () => {
   it("strips the gateway provider segment from a live-model fallback id", () => {
     // A live openrouter.chatModel fallback is reported as dynamic:openrouter/<id> — the
     // fallback-served turn must display the same bare id directive-served turns do.
-    expect(effectiveModelId("dynamic:openrouter/anthropic/claude-haiku-4.5", "hi")).toBe(
-      "anthropic/claude-haiku-4.5",
-    );
+    expect(
+      effectiveModelId(
+        "dynamic:openrouter.chat/anthropic/claude-haiku-4.5",
+        "hi",
+      ),
+    ).toBe("anthropic/claude-haiku-4.5");
     // A model under OpenRouter's own vendor namespace survives the single-segment strip.
-    expect(effectiveModelId("dynamic:openrouter/openrouter/auto", "hi")).toBe(
-      "openrouter/auto",
-    );
+    expect(
+      effectiveModelId("dynamic:openrouter.chat/openrouter/auto", "hi"),
+    ).toBe("openrouter/auto");
+  });
+
+  it("keeps a connection-qualified direct-provider fallback reference", () => {
+    expect(
+      effectiveModelId(
+        "dynamic:anthropic/abcdefghijkl/claude-sonnet-4-5",
+        "hi",
+      ),
+    ).toBe("anthropic/abcdefghijkl/claude-sonnet-4-5");
+    expect(
+      effectiveModelId(
+        "dynamic:openrouter/abcdefghijkl.chat/anthropic/claude-sonnet-4-5",
+        "hi",
+      ),
+    ).toBe("openrouter/abcdefghijkl/anthropic/claude-sonnet-4-5");
+  });
+
+  it("normalizes the OpenAI SDK's runtime flavor suffix back to the selected reference", () => {
+    expect(
+      effectiveModelId("dynamic:openai/abcdefghijkl.responses/gpt-5.4", "hi"),
+    ).toBe("openai/abcdefghijkl/gpt-5.4");
   });
 
   it("strips the eden gateway segment but keeps a codex/<conn>/<slug> id intact (issue #28)", () => {
     // A codex fallback runs through the edenGateway provider (named "eden"), so eve reports
     // dynamic:eden/codex/<conn>/<slug>. Only the leading provider segment is stripped.
     expect(
-      effectiveModelId("dynamic:eden/codex/conn_1/gpt-5.5", "hi"),
-    ).toBe("codex/conn_1/gpt-5.5");
+      effectiveModelId("dynamic:eden.chat/codex/abcdefghijkl/gpt-5.5", "hi"),
+    ).toBe("codex/abcdefghijkl/gpt-5.5");
   });
 });

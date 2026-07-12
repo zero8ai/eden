@@ -20,30 +20,58 @@
  * the model that actually served the turn.
  */
 
+import { parseProviderModelReference } from "~/models/provider-reference";
+
 /** Eve prefixes `runtime.modelId` with this when the agent's model is a `defineDynamic`. */
 export const DYNAMIC_MODEL_ID_PREFIX = "dynamic:";
 
 export interface ModelDirective {
-  /** OpenRouter model id, e.g. "anthropic/claude-sonnet-5". */
+  /** Connection-qualified model reference (legacy bare OpenRouter ids remain parseable). */
   id: string;
-  /** Context window of that model when known (from the OpenRouter catalog). */
+  /** Context window of that model when known from its provider catalog. */
   contextWindowTokens?: number;
 }
 
 /** Must stay in sync with EDEN_MODEL_HELPER in `~/eve/agentModule` (the agent-side parser). */
-const DIRECTIVE_RE = /^<!--\s*eden:model\s+(\S+?)(?:\s+ctx=(\d+))?\s*-->/;
-const DIRECTIVE_LINE_RE = /^<!--\s*eden:model[^>]*-->[ \t]*\n*/;
+const DIRECTIVE_RE =
+  /^<!--\s*eden:model\s+(\S+?)(?:\s+ctx=(\d+))?\s*-->(?:\n<!--\s*eden:sig\s+([a-f0-9]{64})\s*-->)?/;
+const DIRECTIVE_LINE_RE =
+  /^<!--\s*eden:model[^>]*-->(?:\n<!--\s*eden:sig\s+[a-f0-9]{64}\s*-->)?[ \t]*\n*/;
 
-/** The one-line directive to prepend to the sent message. */
-export function buildModelDirective(directive: ModelDirective): string {
+function normalizedDirective(directive: ModelDirective): {
+  id: string;
+  contextWindowTokens?: number;
+} {
   // The id lands inside an HTML comment and a regex — keep it to safe id characters.
   const id = directive.id.replace(/[^\w./:@-]/g, "");
   const ctx = directive.contextWindowTokens;
-  const window =
+  const contextWindowTokens =
     typeof ctx === "number" && Number.isFinite(ctx) && ctx > 0
-      ? ` ctx=${Math.round(ctx)}`
-      : "";
-  return `<!-- eden:model ${id}${window} -->`;
+      ? Math.round(ctx)
+      : undefined;
+  return { id, contextWindowTokens };
+}
+
+/** Canonical bytes signed by Eden and independently reconstructed in generated agent code. */
+export function modelDirectiveSignaturePayload(
+  directive: ModelDirective,
+  body: string,
+): string {
+  const normalized = normalizedDirective(directive);
+  return `${normalized.id}\n${normalized.contextWindowTokens ?? ""}\n${body}`;
+}
+
+/** The one-line directive to prepend to the sent message. */
+export function buildModelDirective(
+  directive: ModelDirective,
+  signature?: string,
+): string {
+  const normalized = normalizedDirective(directive);
+  const window = normalized.contextWindowTokens
+    ? ` ctx=${normalized.contextWindowTokens}`
+    : "";
+  const signed = signature ? `\n<!-- eden:sig ${signature} -->` : "";
+  return `<!-- eden:model ${normalized.id}${window} -->${signed}`;
 }
 
 /** Parse the directive off the front of a sent message, or null when absent/malformed. */
@@ -62,13 +90,37 @@ export function stripModelDirective(text: string): string {
 }
 
 /**
- * Eden's generated wiring names its providers "openrouter" and (for codex/* ids, issue #28)
- * "eden", and eve formats a live fallback model's id as `<provider>/<modelId>` — so a dynamic
- * agent reports `dynamic:openrouter/anthropic/claude-…` or `dynamic:eden/codex/<conn>/<slug>`.
- * Strip that leading provider segment so fallback-served turns display the same bare id
- * directive-served turns do (a codex id keeps its own `codex/…` prefix intact).
+ * Eve reports a dynamic fallback as `<runtime provider>/<upstream model>`. Eden names direct
+ * provider instances with their connection id, preserving the qualified reference. OpenAI's
+ * SDK appends its API flavor (`.responses`) to that provider name, so normalize it away. The
+ * older OpenRouter scaffold and the Codex gateway add one wrapper segment which is also removed.
  */
-const GATEWAY_PROVIDER_PREFIXES = ["openrouter/", "eden/"] as const;
+function normalizeDynamicRuntimeId(runtimeId: string): string {
+  const openai = runtimeId.match(
+    /^openai\/([a-z]{12})\.(?:chat|responses)\/(.+)$/,
+  );
+  if (openai) return `openai/${openai[1]}/${openai[2]}`;
+
+  // `@ai-sdk/openai-compatible` appends its API flavor to the configured provider name.
+  const exactOpenRouter = runtimeId.match(
+    /^openrouter\/([a-z]{12})\.(?:chat|completion)\/(.+)$/,
+  );
+  if (exactOpenRouter) {
+    return `openrouter/${exactOpenRouter[1]}/${exactOpenRouter[2]}`;
+  }
+  const compatibleWrapper = runtimeId.match(
+    /^(openrouter|eden)\.(?:chat|completion)\/(.+)$/,
+  );
+  if (compatibleWrapper) return compatibleWrapper[2];
+
+  // Retain compatibility with runtime ids produced before the AI SDK provider-flavor suffix.
+  if (parseProviderModelReference(runtimeId)) return runtimeId;
+  if (runtimeId.startsWith("eden/")) return runtimeId.slice("eden/".length);
+  if (runtimeId.startsWith("openrouter/")) {
+    return runtimeId.slice("openrouter/".length);
+  }
+  return runtimeId;
+}
 
 /** Split eve's reported runtime id into the displayable base id + the dynamic-model flag. */
 export function runtimeModelBase(runtimeModelId: string): {
@@ -77,13 +129,9 @@ export function runtimeModelBase(runtimeModelId: string): {
 } {
   const dynamic = runtimeModelId.startsWith(DYNAMIC_MODEL_ID_PREFIX);
   if (!dynamic) return { id: runtimeModelId, dynamic };
-  let id = runtimeModelId.slice(DYNAMIC_MODEL_ID_PREFIX.length);
-  for (const prefix of GATEWAY_PROVIDER_PREFIXES) {
-    if (id.startsWith(prefix)) {
-      id = id.slice(prefix.length);
-      break;
-    }
-  }
+  const id = normalizeDynamicRuntimeId(
+    runtimeModelId.slice(DYNAMIC_MODEL_ID_PREFIX.length),
+  );
   return { id, dynamic };
 }
 

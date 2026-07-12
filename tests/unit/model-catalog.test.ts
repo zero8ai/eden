@@ -6,8 +6,11 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { normalizeCatalog, type ModelCatalogEntry } from "~/models/catalog.server";
-import { filterModels } from "~/models/filter";
+import {
+  normalizeCatalog,
+  type ModelCatalogEntry,
+} from "~/models/catalog.server";
+import { filterModels, limitModelsPerConnection } from "~/models/filter";
 
 /** A minimal OpenRouter `/api/v1/models` payload. */
 const models = (data: unknown[]) => ({ data, extra: "ignored" });
@@ -21,10 +24,7 @@ describe("normalizeCatalog", () => {
         { id: "c/missing-architecture" },
       ]),
     );
-    expect(out.map((m) => m.id)).toEqual([
-      "a/text",
-      "c/missing-architecture",
-    ]);
+    expect(out.map((m) => m.id)).toEqual(["a/text", "c/missing-architecture"]);
   });
 
   it("treats missing pricing and context metadata as null", () => {
@@ -53,9 +53,7 @@ describe("normalizeCatalog", () => {
 
   it("yields null for unparseable pricing", () => {
     const [m] = normalizeCatalog(
-      models([
-        { id: "a/model", pricing: { prompt: "abc", completion: null } },
-      ]),
+      models([{ id: "a/model", pricing: { prompt: "abc", completion: null } }]),
     );
     expect(m.inputPerMTok).toBeNull();
     expect(m.outputPerMTok).toBeNull();
@@ -84,7 +82,11 @@ describe("normalizeCatalog", () => {
           id: "a/model",
           name: "A",
           someNewField: 123,
-          pricing: { prompt: "0.000001", completion: "0.000002", newPriceKey: "x" },
+          pricing: {
+            prompt: "0.000001",
+            completion: "0.000002",
+            newPriceKey: "x",
+          },
         },
       ]),
     );
@@ -94,18 +96,16 @@ describe("normalizeCatalog", () => {
 
   it("sorts by id", () => {
     const out = normalizeCatalog(
-      models([
-        { id: "z/last" },
-        { id: "a/first" },
-        { id: "m/mid" },
-      ]),
+      models([{ id: "z/last" }, { id: "a/first" }, { id: "m/mid" }]),
     );
     expect(out.map((m) => m.id)).toEqual(["a/first", "m/mid", "z/last"]);
   });
 
   it("truncates long descriptions", () => {
     const long = "x".repeat(400);
-    const [m] = normalizeCatalog(models([{ id: "a/model", description: long }]));
+    const [m] = normalizeCatalog(
+      models([{ id: "a/model", description: long }]),
+    );
     expect(m.description).not.toBeNull();
     expect(m.description!.length).toBeLessThanOrEqual(163); // 160 + "..."
     expect(m.description!.endsWith("...")).toBe(true);
@@ -153,5 +153,34 @@ describe("filterModels", () => {
 
   it("returns nothing when no id or name matches", () => {
     expect(filterModels(catalog, "nomatch")).toEqual([]);
+  });
+});
+
+describe("limitModelsPerConnection", () => {
+  it("keeps later provider and same-provider connection groups visible", () => {
+    const first = Array.from({ length: 120 }, (_, index) => ({
+      id: `openrouter/aaaaaaaaaaaa/vendor/model-${index}`,
+      name: `Router ${index}`,
+      provider: "openrouter",
+      connectionId: "aaaaaaaaaaaa",
+    }));
+    const later = [
+      {
+        id: "anthropic/bbbbbbbbbbbb/claude",
+        name: "Claude",
+        provider: "anthropic",
+        connectionId: "bbbbbbbbbbbb",
+      },
+      {
+        id: "openrouter/cccccccccccc/vendor/other",
+        name: "Other router",
+        provider: "openrouter",
+        connectionId: "cccccccccccc",
+      },
+    ];
+
+    const visible = limitModelsPerConnection([...first, ...later], 50);
+    expect(visible).toHaveLength(52);
+    expect(visible).toEqual(expect.arrayContaining(later));
   });
 });

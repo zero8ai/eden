@@ -1,3 +1,5 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { defineAgent } from "eve";
 
@@ -10,21 +12,62 @@ const openrouter = createOpenAICompatible({
   baseURL: "https://openrouter.ai/api/v1",
   apiKey: process.env.OPENROUTER_API_KEY ?? "",
 });
-// Eden's model gateway (issue #28): a `codex/<connection>/<slug>` assistant model runs on the
-// org's connected Codex subscription. The base URL + token are injected at deploy only when a
-// Codex connection exists; OpenRouter model ids never touch it.
+// Eden's model gateway is Codex-OAuth-only. API-key providers connect directly below.
 const edenGateway = createOpenAICompatible({
   name: "eden",
   baseURL: process.env.EDEN_MODEL_GATEWAY_URL ?? "",
   apiKey: process.env.EDEN_MODEL_GATEWAY_TOKEN ?? "",
 });
 
-const assistantModelId = process.env.EDEN_ASSISTANT_MODEL ?? "z-ai/glm-5.2";
+const assistantModelId = process.env.EDEN_ASSISTANT_MODEL;
+if (!assistantModelId) {
+  throw new Error("EDEN_ASSISTANT_MODEL is required.");
+}
+
+function assistantModel(id: string) {
+  const qualified = id.match(
+    /^(anthropic|codex|openai|openrouter)\/([a-z]{12})\/(.+)$/,
+  );
+  // Runtime compatibility for assistants configured with a pre-Phase-2 bare OpenRouter id.
+  if (!qualified) return openrouter.chatModel(id);
+  const provider = qualified[1];
+  const connectionId = qualified[2];
+  const upstreamModelId = qualified[3];
+  if (provider === "codex") return edenGateway.chatModel(id);
+  const envName =
+    "EDEN_PROVIDER_" +
+    provider.toUpperCase() +
+    "_" +
+    connectionId.toUpperCase() +
+    "_API_KEY";
+  const apiKey = process.env[envName];
+  if (!apiKey) {
+    throw new Error(
+      "No credential was deployed for the selected " +
+        provider +
+        " connection.",
+    );
+  }
+  if (provider === "anthropic") {
+    return createAnthropic({
+      name: "anthropic/" + connectionId,
+      apiKey,
+    }).chat(upstreamModelId);
+  }
+  if (provider === "openai") {
+    return createOpenAI({ name: "openai/" + connectionId, apiKey }).responses(
+      upstreamModelId,
+    );
+  }
+  return createOpenAICompatible({
+    name: "openrouter/" + connectionId,
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey,
+  }).chatModel(upstreamModelId);
+}
 
 export default defineAgent({
-  model: assistantModelId.startsWith("codex/")
-    ? edenGateway.chatModel(assistantModelId)
-    : openrouter.chatModel(assistantModelId),
+  model: assistantModel(assistantModelId),
   modelContextWindowTokens: 200000,
   // Deployable off-Vercel: declare + externalize the Postgres Workflow world.
   build: { externalDependencies: ["@workflow/world-postgres"] },

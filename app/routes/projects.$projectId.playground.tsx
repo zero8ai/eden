@@ -52,6 +52,7 @@ import { buildAgentConfig } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
 import { contextPath } from "~/lib/paths";
 import { stageModelSwitchingUpgrade } from "~/models/stage-model.server";
+import { findWorkspaceModel } from "~/models/union.server";
 import {
   cacheCoversCompletedLiveTurn,
   liveTurnIsForDifferentSession,
@@ -293,6 +294,12 @@ export async function action(args: ActionFunctionArgs) {
     const sessionId = String(form.get("playgroundSessionId") ?? "");
     const modelId = String(form.get("modelId") ?? "").trim();
     if (sessionId && modelId) {
+      if (!(await findWorkspaceModel(project.orgId, modelId))) {
+        return {
+          error:
+            "That model is not available from an active provider connection in this workspace.",
+        };
+      }
       await setPlaygroundSessionModel({
         id: sessionId,
         projectId: project.id,
@@ -432,9 +439,14 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   // the selector and offer the staged migration instead of letting it silently no-op. An
   // unknown flag (null — the release read failed) leaves the selector alone.
   const modelSwitchingLocked = selectedTarget?.supportsModelSwitching === false;
-  const enableStaged = enableFetcher.data?.ok === true;
+  const enableStaged =
+    enableFetcher.data &&
+    "ok" in enableFetcher.data &&
+    enableFetcher.data.ok === true;
   const enableError =
-    enableFetcher.data && enableFetcher.data.ok === false
+    enableFetcher.data &&
+    "ok" in enableFetcher.data &&
+    enableFetcher.data.ok === false
       ? enableFetcher.data.error
       : null;
 
@@ -884,9 +896,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
               entry={e}
               // Only the newest turn's pending requests are answerable.
               onAnswer={
-                i === shownEntries.length - 1 && !visibleLive
-                  ? send
-                  : undefined
+                i === shownEntries.length - 1 && !visibleLive ? send : undefined
               }
               busy={busy}
               running={replayingRunningSession && i === shownEntries.length - 1}

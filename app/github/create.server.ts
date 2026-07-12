@@ -15,8 +15,14 @@
  * clear error pointing the user at "connect an existing repo".
  */
 import {
+  ANTHROPIC_PROVIDER_PACKAGE,
+  ANTHROPIC_PROVIDER_VERSION,
+  OPENAI_PROVIDER_PACKAGE,
+  OPENAI_PROVIDER_VERSION,
   OPENROUTER_PROVIDER_PACKAGE,
   OPENROUTER_PROVIDER_VERSION,
+  ZOD_PACKAGE,
+  ZOD_VERSION,
   scaffoldAgentModule,
 } from "~/eve/agentModule";
 import { DEFAULT_SANDBOX_MODULE, sandboxPath } from "~/eve/templates";
@@ -31,6 +37,7 @@ export interface CreateRepoInput {
   name: string;
   private?: boolean;
   description?: string;
+  /** Connected, provider-qualified workspace model used by a new single agent. */
   model?: string;
   /** Repo layout: one agent at the root, or a team monorepo. Defaults to "single". */
   layout?: RepoLayout;
@@ -47,13 +54,19 @@ export interface CreatedRepo {
   htmlUrl: string;
 }
 
-// Scaffolds ship with a deliberately CHEAP model: the customer never chose one at this
-// point, and a silent default must not be able to run up a real bill. Picking the model
-// they actually want is a Settings-tab decision, not something we guess for them. This is
-// the platform-wide default (assistant, scaffolds, marketplace agents all share it).
-const DEFAULT_MODEL = "z-ai/glm-5.2";
 const GITIGNORE =
   ".eve/\n.output/\n.workflow-data/\nnode_modules/\n.env\n.env.*\n";
+
+/** Dependencies required by the provider-qualified router emitted by `scaffoldAgentModule`. */
+function modelProviderDependencies(): Record<string, string> {
+  return {
+    [ANTHROPIC_PROVIDER_PACKAGE]: ANTHROPIC_PROVIDER_VERSION,
+    [OPENAI_PROVIDER_PACKAGE]: OPENAI_PROVIDER_VERSION,
+    [OPENROUTER_PROVIDER_PACKAGE]: OPENROUTER_PROVIDER_VERSION,
+    [ZOD_PACKAGE]: ZOD_VERSION,
+    eve: "latest",
+  };
+}
 
 /** The files every eve agent directory starts with, under `root` (e.g. "agent"). */
 function agentDirFiles(
@@ -93,10 +106,7 @@ function singleAgentFiles(
         private: true,
         type: "module",
         scripts: { dev: "eve dev", build: "eve build" },
-        dependencies: {
-          [OPENROUTER_PROVIDER_PACKAGE]: OPENROUTER_PROVIDER_VERSION,
-          eve: "latest",
-        },
+        dependencies: modelProviderDependencies(),
       }),
     },
     {
@@ -111,10 +121,7 @@ function singleAgentFiles(
  * The files for ONE team member: a complete eve project under `agents/<member>/`. Used by
  * the team scaffold and by the add-member flow (which lands them as a change-set).
  */
-export function memberScaffold(
-  member: string,
-  model: string = DEFAULT_MODEL,
-): FileChange[] {
+export function memberScaffold(member: string, model: string): FileChange[] {
   const memberDir = `agents/${member}`;
   return [
     ...agentDirFiles(`${memberDir}/agent`, member, model),
@@ -125,10 +132,7 @@ export function memberScaffold(
         private: true,
         type: "module",
         scripts: { dev: "eve dev", build: "eve build" },
-        dependencies: {
-          [OPENROUTER_PROVIDER_PACKAGE]: OPENROUTER_PROVIDER_VERSION,
-          eve: "latest",
-        },
+        dependencies: modelProviderDependencies(),
       }),
     },
   ];
@@ -142,7 +146,8 @@ export function teamFiles(name: string): FileChange[] {
   return [
     {
       path: EMPTY_TEAM_MARKER,
-      content: "# Agents\n\nAdd each agent under `agents/<name>/` as a complete eve project.\n",
+      content:
+        "# Agents\n\nAdd each agent under `agents/<name>/` as a complete eve project.\n",
     },
     {
       path: "package.json",
@@ -207,6 +212,11 @@ export async function createEveRepo(
 ): Promise<CreatedRepo> {
   const octokit = await getInstallationOctokit(installationId);
   const layout = input.layout ?? "single";
+  if (layout === "single" && !input.model) {
+    throw new Error(
+      "A connected, provider-qualified model is required to scaffold an agent repository.",
+    );
+  }
 
   let created;
   try {
@@ -263,11 +273,14 @@ export async function createEveRepo(
 
   // Commit the skeleton directly to the default branch — a brand-new repo needs no PR.
   // One commit for the whole scaffold via the Git Data API (blobs upload in parallel).
-  const model = input.model ?? DEFAULT_MODEL;
   const files =
     layout === "team"
       ? teamFiles(input.name)
-      : singleAgentFiles(input.name, model, input.agentName || input.name);
+      : singleAgentFiles(
+          input.name,
+          input.model!,
+          input.agentName || input.name,
+        );
   await commitFiles(
     octokit,
     { owner: input.owner, repo: input.name },

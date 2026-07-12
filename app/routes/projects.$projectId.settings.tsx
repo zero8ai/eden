@@ -97,6 +97,7 @@ import {
 } from "~/marketplace/compose.server";
 import type { TemplateType } from "~/marketplace/manifest";
 import { stageModelChange } from "~/models/stage-model.server";
+import { ownsWorkspaceModelReference } from "~/models/union.server";
 import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
   agentFromParams,
@@ -604,6 +605,37 @@ export async function action(args: ActionFunctionArgs) {
         pkgDraft !== undefined
           ? pkgDraft.content
           : await readAgentFile(project.repoInstallationId, repo, pkgPath);
+      let installModel: string | null = null;
+      if (template.manifest.type === "agent") {
+        const agentPath = `${active.root}/agent.ts`;
+        const agentDraft = drafts.find((draft) => draft.path === agentPath);
+        const agentSource =
+          agentDraft !== undefined
+            ? agentDraft.content
+            : (source.files[agentPath] ?? null);
+        const currentModel = agentSource ? readModel(agentSource) : null;
+        if (
+          currentModel &&
+          (await ownsWorkspaceModelReference(project.orgId, currentModel))
+        ) {
+          installModel = currentModel;
+        } else {
+          const workspaceModel = await getWorkspaceAssistantModel(
+            project.orgId,
+          ).catch(() => null);
+          installModel =
+            workspaceModel &&
+            (await ownsWorkspaceModelReference(project.orgId, workspaceModel))
+              ? workspaceModel
+              : null;
+        }
+        if (!installModel) {
+          return {
+            error:
+              "Choose a connected workspace default model before updating this agent template.",
+          };
+        }
+      }
       const plan = planInstall({
         template,
         registry: catalogLocator(),
@@ -612,6 +644,7 @@ export async function action(args: ActionFunctionArgs) {
         packageJson,
         lock,
         rosterNames: roster.map((a) => a.name),
+        model: installModel,
         target: { kind: "member", memberName: member, root: active.root },
       });
       if (plan.conflicts.length > 0) {
@@ -1419,7 +1452,9 @@ function IngestSection({
                 <>
                   {" · "}last used <LocalizedDate value={t.lastUsedAt} />
                 </>
-              ) : " · never used"}
+              ) : (
+                " · never used"
+              )}
             </li>
           ))}
         </ul>

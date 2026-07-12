@@ -3,9 +3,9 @@
   "type": "agent",
   "name": "Engineer",
   "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "eve": ">=0.22.0",
-  "model": "z-ai/glm-5.2",
+  "model": "workspace default (selected at install)",
   "includes": [
     { "type": "channel", "id": "github" },
     { "type": "channel", "id": "discord" },
@@ -13,7 +13,9 @@
     { "type": "skill", "id": "dev-toolchain" }
   ],
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^3.0.5",
+    "@ai-sdk/anthropic": "^4.0.12",
+    "@ai-sdk/openai": "^4.0.11",
+    "@ai-sdk/openai-compatible": "^3.0.7",
     "eve": "^0.22.0",
     "zod": "^4.4.3"
   },

@@ -17,7 +17,6 @@ import {
 
 import {
   assistantFixedLayer,
-  DEFAULT_MODEL,
   ensureAssistantAgent,
 } from "~/assistant/instance.server";
 import { MarkdownText } from "~/components/chat";
@@ -44,6 +43,7 @@ import { slugifyResourceName } from "~/eve/templates";
 import { getAgentSource } from "~/github/cached.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import { getWorkspaceAssistantModel } from "~/org/workspace.server";
+import { findWorkspaceModel } from "~/models/union.server";
 import type { Route } from "./+types/projects.$projectId.assistant.config";
 
 const INSTRUCTIONS = `${ASSISTANT_CONFIG_ROOT}/instructions.md`;
@@ -83,9 +83,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           assistantFixedLayer(),
           getWorkspaceAssistantModel(project.orgId).catch(() => null),
         ]);
-      // What the assistant falls back to when no per-project override is set: the workspace
-      // default, or Eden's built-in default if the workspace hasn't set one either.
-      const inheritedModel = workspaceModel ?? DEFAULT_MODEL;
+      // An unset project override inherits only the connected workspace default. There is no
+      // implicit provider/model when the workspace has no connection.
+      const inheritedModel = workspaceModel;
 
       const prefix = `${ASSISTANT_CONFIG_ROOT}/`;
       const skills = source.paths
@@ -163,6 +163,12 @@ export async function action(args: ActionFunctionArgs) {
     }
     case "save-model": {
       const model = String(form.get("model") ?? "").trim();
+      if (model && !(await findWorkspaceModel(project.orgId, model))) {
+        return {
+          error:
+            "That model is not available from an active provider connection in this workspace.",
+        };
+      }
       await stage(
         MODEL_FILE,
         model ? `${JSON.stringify({ model }, null, 2)}\n` : null,
@@ -511,7 +517,7 @@ function ModelField({
 }: {
   projectId: string;
   model: string | null;
-  inheritedModel: string;
+  inheritedModel: string | null;
 }) {
   const fetcher = useFetcher<{
     ok?: boolean;
@@ -540,16 +546,31 @@ function ModelField({
       {/* Always show what an unset override resolves to, so nobody re-pins the same model by
           hand (as happened before): unset here just inherits this value. */}
       <p className="text-sm text-muted-foreground">
-        {model ? (
+        {model && inheritedModel ? (
           <>
             Overriding the default of{" "}
             <span className="font-mono text-xs">{inheritedModel}</span>. Reset
             to inherit it.
           </>
-        ) : (
+        ) : model ? (
+          <>
+            Using project override{" "}
+            <span className="font-mono text-xs">{model}</span>. The workspace
+            has no default.
+          </>
+        ) : inheritedModel ? (
           <>
             No override — inheriting the workspace default{" "}
             <span className="font-mono text-xs">{inheritedModel}</span>.
+          </>
+        ) : (
+          <>
+            No workspace default is configured. Connect a model provider and
+            choose a default in{" "}
+            <Link to="/org/settings" className="underline">
+              Org settings
+            </Link>
+            .
           </>
         )}
       </p>

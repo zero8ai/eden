@@ -50,6 +50,7 @@ import {
 } from "~/github/installations.server";
 import { warmAgentSource } from "~/github/cached.server";
 import { getWorkspaceAssistantModel } from "~/org/workspace.server";
+import { ownsWorkspaceModelReference } from "~/models/union.server";
 import {
   fetchAgentSource,
   listInstallationRepos,
@@ -172,13 +173,25 @@ export async function action(args: ActionFunctionArgs) {
     if (layout === "single" && !agentName)
       return { error: "Agent name is required." };
     try {
-      const model = await getWorkspaceAssistantModel(org.id).catch(() => null);
+      let model =
+        layout === "single"
+          ? await getWorkspaceAssistantModel(org.id).catch(() => null)
+          : null;
+      if (model && !(await ownsWorkspaceModelReference(org.id, model))) {
+        model = null;
+      }
+      if (layout === "single" && !model) {
+        return {
+          error:
+            "Choose a connected workspace default model in Org settings before creating an agent repository.",
+        };
+      }
       const repo = await createEveRepo(installationId, {
         owner,
         name,
         layout,
         ...(layout === "single" ? { agentName } : {}),
-        model: model ?? undefined,
+        ...(model ? { model } : {}),
       });
       const project = await createProject({
         orgId: org.id,

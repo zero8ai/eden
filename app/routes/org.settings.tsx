@@ -4,7 +4,14 @@
  * organization plugin.
  */
 import { getSessionAuth, sessionLoader } from "~/auth/session.server";
-import { Building2, Cpu, Gauge, Plug, ScrollText, ShieldAlert } from "lucide-react";
+import {
+  Building2,
+  Cpu,
+  Gauge,
+  Plug,
+  ScrollText,
+  ShieldAlert,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   Form,
@@ -41,16 +48,22 @@ import {
 import { listAudit, recordAudit } from "~/managed/audit.server";
 import {
   getWorkspaceAssistantModel,
-  hasWorkspaceModelKey,
   setWorkspaceAssistantModel,
-  setWorkspaceModelKey,
 } from "~/org/workspace.server";
 import {
+  createApiKeyConnection,
   deleteModelConnection,
   listModelConnections,
   renameModelConnection,
   type ModelConnection,
 } from "~/models/provider-connections.server";
+import {
+  MODEL_PROVIDERS,
+  isApiKeyProviderId,
+  parseProviderModelReference,
+  type ApiKeyProviderId,
+} from "~/models/provider-reference";
+import { findWorkspaceModel } from "~/models/union.server";
 import {
   Dialog,
   DialogContent,
@@ -78,9 +91,7 @@ interface OrgSettingsView {
   limit: SpendLimit | null;
   used: number;
   audit: (typeof auditLog.$inferSelect)[];
-  /** A workspace OpenRouter key is configured (value never leaves the server). */
-  hasModelKey: boolean;
-  /** Workspace default OpenRouter model id (null = Eden default). */
+  /** Connected workspace default (null = no default). */
   assistantModel: string | null;
   /** Connected model providers (issue #28) — display metadata only, never a token. */
   connections: ModelConnection[];
@@ -117,36 +128,26 @@ export const loader = (args: LoaderFunctionArgs) =>
           limit: null,
           used: 0,
           audit: [],
-          hasModelKey: false,
           assistantModel: null,
           connections: [],
           canManage: false,
         };
       }
-      const [
-        limit,
-        used,
-        audit,
-        hasModelKey,
-        assistantModel,
-        connections,
-        canManage,
-      ] = await Promise.all([
-        getSpendLimit(org.id),
-        tokensUsedSince(org.id),
-        listAudit(org.id, 50),
-        hasWorkspaceModelKey(org.id),
-        getWorkspaceAssistantModel(org.id),
-        listModelConnections(org.id),
-        canManageWorkspace(org.id, auth.requestHeaders),
-      ]);
+      const [limit, used, audit, assistantModel, connections, canManage] =
+        await Promise.all([
+          getSpendLimit(org.id),
+          tokensUsedSince(org.id),
+          listAudit(org.id, 50),
+          getWorkspaceAssistantModel(org.id),
+          listModelConnections(org.id),
+          canManageWorkspace(org.id, auth.requestHeaders),
+        ]);
       return {
         org,
         mode: getRuntime().mode,
         limit: limit ?? null,
         used,
         audit,
-        hasModelKey,
         assistantModel,
         connections,
         canManage,
@@ -167,23 +168,41 @@ export async function action(args: ActionFunctionArgs) {
 
   const form = await args.request.formData();
 
-  // ── Workspace model key: set or clear the org's OpenRouter key ──
   const intent = String(form.get("intent") ?? "");
-  if (intent === "set-model-key" || intent === "clear-model-key") {
-    const value =
-      intent === "set-model-key"
-        ? String(form.get("modelKey") ?? "").trim()
-        : "";
-    if (intent === "set-model-key" && !value) {
-      return { error: "Paste an OpenRouter API key." };
+
+  if (intent === "connect-api-key") {
+    const provider = String(form.get("provider") ?? "");
+    const label = String(form.get("label") ?? "").trim();
+    const apiKey = String(form.get("apiKey") ?? "").trim();
+    if (!isApiKeyProviderId(provider)) {
+      return { error: "Choose an API-key provider." };
     }
-    await setWorkspaceModelKey(org.id, value || null);
-    await recordAudit({
-      orgId: org.id,
-      actorUserId: auth.user.id,
-      action: value ? "workspace_model_key_set" : "workspace_model_key_cleared",
-    });
-    throw redirect("/org/settings");
+    if (!label) return { error: "Give the connection a name." };
+    if (!apiKey) return { error: "Paste the provider API key." };
+    try {
+      const connection = await createApiKeyConnection({
+        orgId: org.id,
+        provider,
+        label,
+        apiKey,
+        createdBy: auth.user.id,
+      });
+      await recordAudit({
+        orgId: org.id,
+        actorUserId: auth.user.id,
+        action: "model_provider_connected",
+        target: connection.id,
+        meta: { provider },
+      });
+    } catch (error) {
+      return {
+        error:
+          error instanceof Error
+            ? error.message
+            : "The provider could not validate that API key.",
+      };
+    }
+    return { ok: true as const };
   }
 
   // ── Model provider connections (issue #28): rename / remove a connected provider ──
@@ -204,6 +223,12 @@ export async function action(args: ActionFunctionArgs) {
   if (intent === "remove-connection") {
     const id = String(form.get("connectionId") ?? "");
     if (!id) return { error: "No connection specified." };
+    const currentDefault = await getWorkspaceAssistantModel(org.id);
+    if (
+      parseProviderModelReference(currentDefault ?? "")?.connectionId === id
+    ) {
+      await setWorkspaceAssistantModel(org.id, null);
+    }
     await deleteModelConnection(org.id, id);
     await recordAudit({
       orgId: org.id,
@@ -216,12 +241,18 @@ export async function action(args: ActionFunctionArgs) {
 
   if (intent === "set-assistant-model") {
     const model = String(form.get("assistantModel") ?? "").trim();
+    if (model && !(await findWorkspaceModel(org.id, model))) {
+      return {
+        error:
+          "That model is not available from an active provider connection in this workspace.",
+      };
+    }
     await setWorkspaceAssistantModel(org.id, model || null);
     await recordAudit({
       orgId: org.id,
       actorUserId: auth.user.id,
       action: "workspace_assistant_model_set",
-      meta: { model: model || "(default)" },
+      meta: { model: model || "(none)" },
     });
     throw redirect("/org/settings");
   }
@@ -253,7 +284,6 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
     limit,
     used,
     audit,
-    hasModelKey,
     assistantModel,
     connections,
     canManage,
@@ -291,7 +321,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
       />
 
       <div className="space-y-6">
-        {/* Model provider: OpenRouter key + default model for authoring and agents */}
+        {/* Connected model providers + workspace default */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -299,62 +329,55 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
               Model providers
             </CardTitle>
             <CardDescription>
-              OpenRouter is the default model provider. eden injects this key as{" "}
-              <span className="font-mono">OPENROUTER_API_KEY</span> for
-              deployments, and the default model below is used by the authoring
-              assistant and by agents that do not have their own model set. You
-              can also connect an OpenAI Codex subscription — its models then
-              appear in every model picker as{" "}
-              <span className="font-mono">codex/&lt;connection&gt;/&lt;model&gt;</span>,
-              alongside OpenRouter.
+              Connect one or more provider accounts. API keys are injected
+              directly into agent instances for their matching connection; Codex
+              subscription traffic uses Eden's OAuth gateway. Model pickers show
+              only models from active connections.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            {!canManage ? (
-              <div className="space-y-2 text-sm">
-                <p>OpenRouter key: {hasModelKey ? "configured" : "not set"}</p>
-                <p>Default model: {assistantModel ?? "eden default"}</p>
-                <p className="text-muted-foreground">
-                  Only workspace owners and admins can change model provider
-                  settings.
-                </p>
+          <CardContent className="space-y-6">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label className="flex items-center gap-2">
+                  <Plug className="size-4" aria-hidden />
+                  Connected providers
+                </Label>
+                {canManage && (
+                  <div className="flex flex-wrap gap-2">
+                    <ConnectApiKeyDialog />
+                    <ConnectCodexDialog />
+                  </div>
+                )}
               </div>
-            ) : hasModelKey ? (
-              <Form method="post" className="flex flex-wrap items-center gap-3">
-                <input type="hidden" name="intent" value="clear-model-key" />
-                <p className="text-sm">
-                  OpenRouter key:{" "}
-                  <span className="font-medium">configured</span>{" "}
-                  <span className="text-muted-foreground">
-                    (write-only; value never shown)
-                  </span>
-                </p>
-                <Button type="submit" variant="outline" size="sm">
-                  Remove key
-                </Button>
-              </Form>
-            ) : (
-              <Form method="post" className="flex max-w-xl items-end gap-2">
-                <input type="hidden" name="intent" value="set-model-key" />
-                <div className="flex-1 space-y-1.5">
-                  <Label htmlFor="modelKey">OpenRouter API key</Label>
-                  <SecretInput
-                    id="modelKey"
-                    name="modelKey"
-                    placeholder="sk-or-v1-…"
-                    revealLabel="API key"
-                    wrapperClassName="w-full"
-                    className="w-full"
-                  />
+              {connections.length === 0 ? (
+                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                  No model providers are connected. Connect OpenRouter,
+                  Anthropic, OpenAI Platform, or an OpenAI Codex subscription to
+                  make models available.
                 </div>
-                <Button type="submit">Save key</Button>
-              </Form>
-            )}
+              ) : (
+                <ul className="divide-y rounded-lg border text-sm">
+                  {connections.map((conn) => (
+                    <ConnectionRow
+                      key={conn.id}
+                      conn={conn}
+                      canManage={canManage}
+                    />
+                  ))}
+                </ul>
+              )}
+              {!canManage && (
+                <p className="text-xs text-muted-foreground">
+                  Only workspace owners and admins can change provider
+                  connections.
+                </p>
+              )}
+            </div>
 
-            {canManage && (
-              <div className="mt-6 max-w-xl space-y-2 border-t pt-4">
-                <Label>Default model</Label>
-                <div className="flex flex-wrap items-center gap-2">
+            <div className="max-w-xl space-y-2 border-t pt-4">
+              <Label>Default model</Label>
+              {canManage ? (
+                <div className="flex flex-wrap items-start gap-2">
                   <ModelSelect
                     value={assistantModel}
                     busy={modelFetcher.state !== "idle"}
@@ -381,50 +404,27 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                         )
                       }
                     >
-                      Use eden default
+                      Clear default
                     </Button>
                   )}
                 </div>
-                <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground">
-                    Any OpenRouter model id. Needs tool-calling support for
-                    tool-using agents.
-                  </p>
-                  {!assistantModel && (
-                    <p className="text-xs text-muted-foreground">
-                      No workspace default set; eden's built-in default is used.
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Connected providers (issue #28): OpenAI Codex subscriptions */}
-            <div className="mt-6 space-y-3 border-t pt-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <Label className="flex items-center gap-2">
-                  <Plug className="size-4" aria-hidden />
-                  Connected providers
-                </Label>
-                {canManage && <ConnectCodexDialog />}
-              </div>
-              {connections.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No provider accounts connected. OpenRouter (above) still works
-                  on its own; connect an OpenAI Codex subscription to run agents
-                  on your ChatGPT plan.
-                </p>
               ) : (
-                <ul className="divide-y rounded-lg border text-sm">
-                  {connections.map((conn) => (
-                    <ConnectionRow
-                      key={conn.id}
-                      conn={conn}
-                      canManage={canManage}
-                    />
-                  ))}
-                </ul>
+                <p className="font-mono text-sm">
+                  {assistantModel ?? "No default configured"}
+                </p>
               )}
+              <p className="text-xs text-muted-foreground">
+                Used by the authoring assistant and agents that do not set their
+                own model. A workspace with no default has no implicit
+                OpenRouter fallback.
+              </p>
+              {modelFetcher.data &&
+                "error" in modelFetcher.data &&
+                modelFetcher.data.error && (
+                  <p className="text-sm text-destructive">
+                    {modelFetcher.data.error}
+                  </p>
+                )}
             </div>
           </CardContent>
         </Card>
@@ -549,7 +549,7 @@ function ConnectionRow({
       <div className="space-y-0.5">
         <div className="flex items-center gap-2">
           <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
-            OpenAI Codex
+            {MODEL_PROVIDERS[conn.provider].displayName}
           </span>
           {editing && canManage ? (
             <rename.Form
@@ -585,6 +585,11 @@ function ConnectionRow({
         {conn.accountEmail && (
           <p className="text-xs text-muted-foreground">{conn.accountEmail}</p>
         )}
+        {MODEL_PROVIDERS[conn.provider].authKind === "api-key" && (
+          <p className="text-xs text-muted-foreground">
+            API key configured (write-only)
+          </p>
+        )}
         {!active && (
           <p className="text-xs text-amber-600 dark:text-amber-400">
             Reconnect needed — this connection is {conn.status}.
@@ -604,8 +609,104 @@ function ConnectionRow({
   );
 }
 
+/** Add a validated write-only OpenRouter, Anthropic, or OpenAI Platform key connection. */
+function ConnectApiKeyDialog() {
+  const [open, setOpen] = useState(false);
+  const [provider, setProvider] = useState<ApiKeyProviderId>("openrouter");
+  const fetcher = useFetcher<typeof action>();
+
+  useEffect(() => {
+    if (
+      fetcher.state === "idle" &&
+      fetcher.data &&
+      "ok" in fetcher.data &&
+      fetcher.data.ok
+    ) {
+      setOpen(false);
+    }
+  }, [fetcher.data, fetcher.state]);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button type="button" size="sm">
+          Connect API key
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Connect an API-key provider</DialogTitle>
+          <DialogDescription>
+            Eden validates the key before sealing it. Keys are write-only and
+            are sent directly to agent instances for this exact connection.
+          </DialogDescription>
+        </DialogHeader>
+        <fetcher.Form method="post" className="space-y-4">
+          <input type="hidden" name="intent" value="connect-api-key" />
+          <div className="space-y-1.5">
+            <Label htmlFor="provider">Provider</Label>
+            <select
+              id="provider"
+              name="provider"
+              aria-label="Provider"
+              value={provider}
+              onChange={(event) =>
+                setProvider(event.target.value as ApiKeyProviderId)
+              }
+              className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+            >
+              <option value="openrouter">OpenRouter</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI Platform</option>
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="connectionLabel">Connection name</Label>
+            <Input
+              id="connectionLabel"
+              name="label"
+              required
+              maxLength={80}
+              placeholder={`e.g. ${MODEL_PROVIDERS[provider].displayName} production`}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="providerApiKey">
+              {MODEL_PROVIDERS[provider].displayName} API key
+            </Label>
+            <SecretInput
+              id="providerApiKey"
+              name="apiKey"
+              required
+              revealLabel="API key"
+              wrapperClassName="w-full"
+              className="w-full"
+              placeholder={
+                provider === "openrouter" ? "sk-or-v1-…" : "Paste API key"
+              }
+            />
+          </div>
+          {fetcher.data && "error" in fetcher.data && fetcher.data.error && (
+            <p role="alert" className="text-sm text-destructive">
+              {fetcher.data.error}
+            </p>
+          )}
+          <Button type="submit" disabled={fetcher.state !== "idle"}>
+            {fetcher.state === "idle" ? "Connect provider" : "Validating…"}
+          </Button>
+        </fetcher.Form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 type CodexConnectResponse =
-  | { deviceAuthId: string; userCode: string; interval: number; verificationUrl: string }
+  | {
+      deviceAuthId: string;
+      userCode: string;
+      interval: number;
+      verificationUrl: string;
+    }
   | { pending: true }
   | { done: true }
   | { error: string };

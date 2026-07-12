@@ -1,10 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { buildAssistantImage } = vi.hoisted(() => ({
+  buildAssistantImage: vi.fn(),
+}));
+
+vi.mock("~/deploy/eve-image.server", () => ({ buildAssistantImage }));
 
 import {
   assistantTemplateHash,
   ensureAssistantAgent,
   ensureAssistantInstance,
   peekAssistantInstance,
+  runAssistantDeploy,
 } from "~/assistant/instance.server";
 import { makeFakeStore } from "../fakes/store";
 
@@ -29,7 +36,6 @@ describe("assistant instance: agent + environment", () => {
     expect(agent.kind).toBe("assistant");
   });
 });
-
 describe("assistant instance: template hash", () => {
   it("is a stable 16-char hex of the bundled template", async () => {
     const a = await assistantTemplateHash();
@@ -52,6 +58,29 @@ describe("assistant instance: provisioning", () => {
     expect(snapshot.status).toBe("provisioning");
     const stats = await store.jobs.statsByStatus();
     expect((stats.queued ?? 0) >= 1).toBe(true);
+  });
+
+  it("marks the pending deployment failed when the assistant image build fails", async () => {
+    const store = makeFakeStore();
+    store.seedProject({ id: "p", orgId: "o", repoOwner: "a", repoName: "r", repoInstallationId: "i" });
+    const pending = await ensureAssistantInstance("p", store);
+    buildAssistantImage.mockRejectedValueOnce(new Error("assistant image build exploded"));
+
+    await expect(runAssistantDeploy({ projectId: "p" }, store)).rejects.toThrow(
+      "assistant image build exploded",
+    );
+
+    const { environment } = await ensureAssistantAgent("p", store);
+    const deployments = await store.deployments.listByEnvironment(environment.id);
+    expect(deployments).toHaveLength(1);
+    expect(deployments[0]).toMatchObject({
+      id: pending.deploymentId,
+      status: "failed",
+      errorDetail: expect.stringContaining("assistant image build exploded"),
+    });
+    expect(await peekAssistantInstance("p", store)).toMatchObject({
+      status: "failed",
+    });
   });
 
   it("does not enqueue a second deploy while one is already pending", async () => {

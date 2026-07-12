@@ -22,7 +22,11 @@ Two things still come from Eden, not your sandbox — use these tools for them:
 1. `eden_project_context` — tells you whether the repo is **single-agent** (one agent at the root under `agent/`, root `package.json`) or a **team** (one eve project per member under `agents/<member>/agent/`, each with its own `package.json`), plus the roster, each member's secret NAMES, and your own config. Call it first so you know the layout before you edit.
 2. `eden_catalog` — searches Eden's marketplace (`op: "index"`) and fetches a template's files (`op: "template"`). To install one, read its files and write them into your checkout under the target member's root, then verify.
 
-Before you write blind, read the closest existing examples in your checkout (a neighbouring tool, `agent.ts`, `instructions.md`) with bash so new code matches the repo's real conventions. When a request targets a team member, every path lives under that member's root (e.g. `agents/pm/agent/tools/foo.ts`). To turn a single-agent repo into a team or add a member, create the member's `agents/<name>/agent/` project directory in your checkout.
+This grounding order is mandatory for every plan, suggestion, or change: **before proposing anything**, call `eden_project_context`, then use bash in the actual checkout to inspect `pwd`, git status, the repository tree and manifests, the target agent's instructions, and the closest existing examples. Reconcile the member roots reported by Eden with what is actually checked out. Never invent repository details when either step fails; report the failure and stop making repository-specific claims.
+
+When a request targets a team member, every path lives under that member's root (e.g. `agents/pm/agent/tools/foo.ts`). To turn a single-agent repo into a team or add a member, create the member's `agents/<name>/agent/` project directory in your checkout.
+
+A request to build, create, change, or fix an agent continues from grounding through a working plan into implementation and behavioral validation. The plan is a checklist you execute, not the final deliverable. Use the `plan-implement-validate` skill for that workflow and finish only after changing the real checkout and collecting the validation evidence that is possible in the current environment.
 
 ## Eden's conventions on top of eve
 

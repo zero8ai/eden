@@ -16,6 +16,7 @@ Consult the eve docs for the framework conventions before authoring — they're 
 ## Eden's rules on top of the framework
 
 - Secrets are `process.env.NAME`, `SCREAMING_SNAKE_CASE`, never hardcoded. The human sets values on Eden's Secrets page; Eden injects them at deploy time. The sandbox shell is sealed — it only sees names in the `EDEN_SANDBOX_ENV` allowlist, so preserve that block when editing an existing `sandbox.ts`.
-- Change dependencies only through `eden_add_dependency` (it regenerates the lockfile). Prefer `fetch()` + Node built-ins first — most integrations are one HTTPS call.
+- Prefer `fetch()` + Node built-ins first — most integrations are one HTTPS call. When a dependency is justified, run `npm install <pkg>` in the correct agent project so its manifest and lockfile change together; never hand-edit the lockfile.
 - Keep tools small and single-purpose, and handle failure paths with useful error shapes; the model picks a tool by reading its `description`, so make descriptions precise.
-- Everything the assistant writes is a **staged draft** — reviewed on the Changes tab, published as a pull request, merged, then deployed as an immutable release. Nothing reaches the running agent until merged and deployed. Verify with `eden_run_checks` before finishing.
+- Ground every plan or change in `eden_project_context` and the actual git checkout. Make changes in that checkout and use its native npm scripts and `npx eve` commands for verification.
+- For create/build/change/fix requests, follow the `plan-implement-validate` skill through implementation and behavioral checks. A compilation-only check is not enough when the requested behavior can be exercised with evals, skill-load assertions, schedule dispatch, or a running instance.

@@ -93,6 +93,8 @@ import { listProjects } from "~/db/queries.server";
 import { resolveSyncedAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
+import { getWorkspaceAssistantModel } from "~/org/workspace.server";
+import { ownsWorkspaceModelReference } from "~/models/union.server";
 import type { Route } from "./+types/marketplace.$type.$id.install";
 
 /** Narrow a URL param to a TemplateType, 404-ing on anything else. */
@@ -105,6 +107,13 @@ function parseType(param: string | undefined): TemplateType {
 /** An agent template lands as a NEW member; everything else installs into an existing one. */
 function isAgentTemplate(type: TemplateType): boolean {
   return type === "agent";
+}
+
+async function activeWorkspaceDefaultModel(orgId: string) {
+  const model = await getWorkspaceAssistantModel(orgId).catch(() => null);
+  return model && (await ownsWorkspaceModelReference(orgId, model))
+    ? model
+    : null;
 }
 
 /**
@@ -191,6 +200,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         isTeam: false,
         newMemberTemplate: isAgentTemplate(type),
         singleAgentInvalid: false,
+        missingModelDefault: false,
         selectedMember,
         newMemberName,
         preview: null as PreviewData | null,
@@ -203,9 +213,12 @@ export const loader = (args: LoaderFunctionArgs) =>
       // Tenancy: never trust the id — requireProject scopes it to the org.
       const project = requireRepo(await requireProject(auth, projectId));
       const repo = { owner: project.repoOwner, repo: project.repoName };
-      const [source, drafts] = await Promise.all([
+      const [source, drafts, workspaceModel] = await Promise.all([
         getAgentSource(project.repoInstallationId, repo),
         listDrafts(project.id),
+        isAgentTemplate(type)
+          ? activeWorkspaceDefaultModel(project.orgId)
+          : Promise.resolve(null),
       ]);
       const ctx = await resolveSyncedAgentContext(
         project.id,
@@ -214,6 +227,8 @@ export const loader = (args: LoaderFunctionArgs) =>
       );
       base.projectName = project.name;
       base.isTeam = ctx.isTeam;
+      base.missingModelDefault =
+        isAgentTemplate(type) && workspaceModel === null;
       base.roster = ctx.roster.map((a) => ({ name: a.name }));
       if ((template.manifest.secrets?.length ?? 0) > 0) {
         try {
@@ -241,6 +256,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           base.singleAgentInvalid = true;
           return base;
         }
+        if (!workspaceModel) return base;
         if (!newMemberName) return base;
         const plan = planInstall({
           template,
@@ -250,6 +266,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           packageJson: null,
           lock,
           rosterNames: ctx.roster.map((a) => a.name),
+          model: workspaceModel,
           target: { kind: "new-member", name: newMemberName },
         });
         base.preview = {
@@ -344,10 +361,13 @@ export async function action(args: ActionFunctionArgs) {
     const repo = { owner: project.repoOwner, repo: project.repoName };
     // ACTIONS read raw — a stale read composed into a write could clobber newer content. The
     // resolver re-flattens composition server-side by construction (never trusting the preview).
-    const [template, source, drafts] = await Promise.all([
+    const [template, source, drafts, workspaceModel] = await Promise.all([
       resolveTemplate(getRuntime().catalog, type, id),
       fetchAgentSource(project.repoInstallationId, repo),
       listDrafts(project.id),
+      isAgentTemplate(type)
+        ? activeWorkspaceDefaultModel(project.orgId)
+        : Promise.resolve(null),
     ]);
     const ctx = await resolveSyncedAgentContext(project.id, null, source.paths);
     const registry = catalogLocator();
@@ -372,6 +392,12 @@ export async function action(args: ActionFunctionArgs) {
       }
       const name = String(form.get("newMember") ?? "").trim();
       if (!name) return { error: "Name the new agent." };
+      if (!workspaceModel) {
+        return {
+          error:
+            "Choose a connected workspace default model in Org settings before installing an agent template.",
+        };
+      }
       target = { kind: "new-member", name };
     } else {
       const selectedName = String(form.get("member") ?? "");
@@ -406,6 +432,7 @@ export async function action(args: ActionFunctionArgs) {
       packageJson,
       lock,
       rosterNames: ctx.roster.map((a) => a.name),
+      model: workspaceModel,
       target,
     });
     if (plan.conflicts.length > 0) {
@@ -573,6 +600,7 @@ export default function InstallWizard({
     isTeam,
     newMemberTemplate,
     singleAgentInvalid,
+    missingModelDefault,
     selectedMember,
     newMemberName,
     preview,
@@ -594,7 +622,8 @@ export default function InstallWizard({
     !!selectedProjectId &&
     targetChosen &&
     !hasConflicts &&
-    !singleAgentInvalid;
+    !singleAgentInvalid &&
+    !missingModelDefault;
 
   /** Navigate to this route with an updated query, preserving the rest. */
   const go = (patch: Record<string, string | null>) => {
@@ -713,12 +742,28 @@ export default function InstallWizard({
                 <AlertDescription>
                   <span className="font-medium">{projectName}</span> is a
                   single-agent repository. Agent templates install as a new
-                  agent in a <span className="font-medium">team</span> repo.
-                  Add this to a team, or (punted) install it as its own new
-                  repo.
+                  agent in a <span className="font-medium">team</span> repo. Add
+                  this to a team, or (punted) install it as its own new repo.
                 </AlertDescription>
               </Alert>
             )}
+
+            {selectedProjectId &&
+              newMemberTemplate &&
+              !singleAgentInvalid &&
+              missingModelDefault && (
+                <Alert>
+                  <AlertTitle>Choose a workspace model first</AlertTitle>
+                  <AlertDescription>
+                    Agent templates need a connected, provider-qualified model.
+                    Select a default in{" "}
+                    <Link to="/org/settings" className="underline">
+                      Org settings
+                    </Link>{" "}
+                    before installing this agent.
+                  </AlertDescription>
+                </Alert>
+              )}
 
             {selectedProjectId && newMemberTemplate && !singleAgentInvalid && (
               <Form method="get" className="grid max-w-sm gap-1.5">
@@ -965,7 +1010,8 @@ export default function InstallWizard({
                 Stage install
               </Button>
               <span className="text-sm text-muted-foreground">
-                Stages a change-set — review and publish it on the Deployment tab.
+                Stages a change-set — review and publish it on the Deployment
+                tab.
               </span>
             </div>
           </Form>

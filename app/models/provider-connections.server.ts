@@ -1,18 +1,16 @@
 /**
- * Model-provider connections accessor (issue #28, Phase 1) — the CRUD + credential seal/open
- * behind the "Model providers" list in Org settings and the model gateway.
+ * Model-provider connections accessor (issue #28) — display-safe CRUD plus server-only
+ * credential access for catalogs, deployments, and the Codex gateway.
  *
- * A row holds one connected provider account (Phase 1: a Codex ChatGPT subscription) for an org:
- * a label, the connected account's display email/id, and the AES-256-GCM sealed access + refresh
- * token triplets. Loader-facing functions (`listModelConnections`) return ONLY display metadata —
- * never a token; only the gateway path (`getConnectionForGateway` / `getFreshAccessToken`) unseals.
+ * A row holds either an AES-256-GCM sealed API key (OpenRouter, Anthropic, OpenAI Platform) or a
+ * sealed OAuth token pair (Codex). Loader-facing functions return ONLY display metadata.
  *
  * Refresh is central: `getFreshAccessToken` refreshes when the access token is within 5 minutes of
  * expiry, single-flighted per connection (the control plane is one process, so an in-process
  * promise map collapses concurrent gateway requests onto one refresh) and always persists a rotated
  * refresh token. A dead grant marks the connection `expired` and throws `InvalidGrantError`.
  */
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import { modelProviderConnections } from "~/db/schema";
@@ -21,13 +19,22 @@ import {
   InvalidGrantError,
   refreshCodexTokens,
 } from "~/connections/codex.server";
+import { validateProviderApiKey } from "~/models/provider-catalog.server";
+import {
+  MODEL_PROVIDERS,
+  isApiKeyProviderId,
+  isModelProviderId,
+  providerConnectionApiKeyEnvName,
+  type ApiKeyProviderId,
+  type ModelProviderId,
+} from "~/models/provider-reference";
 
 export type ConnectionStatus = "active" | "expired" | "revoked";
 
 /** Display-safe connection — everything but the sealed tokens. Safe to return to loaders. */
 export interface ModelConnection {
   id: string;
-  provider: string;
+  provider: ModelProviderId;
   label: string;
   accountEmail: string | null;
   status: ConnectionStatus;
@@ -38,7 +45,7 @@ export interface ModelConnection {
 export interface GatewayConnection {
   id: string;
   orgId: string;
-  provider: string;
+  provider: ModelProviderId;
   status: ConnectionStatus;
   accountId: string | null;
   accessToken: string | null;
@@ -50,9 +57,12 @@ function secretsKey(): Buffer {
   return decodeKey(process.env.EDEN_SECRETS_KEY);
 }
 
-function toDisplay(
+export function toDisplayModelConnection(
   row: typeof modelProviderConnections.$inferSelect,
 ): ModelConnection {
+  if (!isModelProviderId(row.provider)) {
+    throw new Error(`Unknown model provider on connection ${row.id}.`);
+  }
   return {
     id: row.id,
     provider: row.provider,
@@ -61,6 +71,90 @@ function toDisplay(
     status: row.status as ConnectionStatus,
     createdAt: row.createdAt,
   };
+}
+
+export interface SealedApiKeyCredential {
+  apiKeyCiphertext: string;
+  apiKeyIv: string;
+  apiKeyAuthTag: string;
+}
+
+/** Pure credential boundary used by API-key create/read paths. */
+export function sealApiKeyCredential(
+  apiKey: string,
+  key: Buffer = secretsKey(),
+): SealedApiKeyCredential {
+  const value = seal(key, apiKey);
+  return {
+    apiKeyCiphertext: value.ciphertext,
+    apiKeyIv: value.iv,
+    apiKeyAuthTag: value.authTag,
+  };
+}
+
+/** Server-only inverse of `sealApiKeyCredential`. Incomplete triplets are rejected as absent. */
+export function openApiKeyCredential(
+  value: {
+    apiKeyCiphertext: string | null;
+    apiKeyIv: string | null;
+    apiKeyAuthTag: string | null;
+  },
+  key: Buffer = secretsKey(),
+): string | null {
+  return openSealed(key, {
+    ciphertext: value.apiKeyCiphertext,
+    iv: value.apiKeyIv,
+    authTag: value.apiKeyAuthTag,
+  });
+}
+
+function openSealed(
+  key: Buffer,
+  value: {
+    ciphertext: string | null;
+    iv: string | null;
+    authTag: string | null;
+  },
+): string | null {
+  if (!value.ciphertext || !value.iv || !value.authTag) return null;
+  return open(key, {
+    ciphertext: value.ciphertext,
+    iv: value.iv,
+    authTag: value.authTag,
+  });
+}
+
+/** Validate and create an active API-key connection. The plaintext key is never persisted. */
+export async function createApiKeyConnection(
+  input: {
+    orgId: string;
+    provider: ApiKeyProviderId;
+    label: string;
+    apiKey: string;
+    createdBy?: string | null;
+  },
+  deps: { validate?: typeof validateProviderApiKey } = {},
+): Promise<ModelConnection> {
+  if (!isApiKeyProviderId(input.provider)) {
+    throw new Error("This provider does not accept API-key connections.");
+  }
+  const apiKey = input.apiKey.trim();
+  await (deps.validate ?? validateProviderApiKey)(input.provider, apiKey);
+  const sealed = sealApiKeyCredential(apiKey);
+  const [row] = await db
+    .insert(modelProviderConnections)
+    .values({
+      orgId: input.orgId,
+      provider: input.provider,
+      label: input.label,
+      apiKeyCiphertext: sealed.apiKeyCiphertext,
+      apiKeyIv: sealed.apiKeyIv,
+      apiKeyAuthTag: sealed.apiKeyAuthTag,
+      status: "active",
+      createdBy: input.createdBy ?? null,
+    })
+    .returning();
+  return toDisplayModelConnection(row);
 }
 
 /** Create a Codex connection, sealing its access + refresh tokens. Returns the display row. */
@@ -96,7 +190,7 @@ export async function createCodexConnection(input: {
       createdBy: input.createdBy ?? null,
     })
     .returning();
-  return toDisplay(row);
+  return toDisplayModelConnection(row);
 }
 
 /** Every connection for an org, newest first — display metadata only. */
@@ -108,10 +202,49 @@ export async function listModelConnections(
     .from(modelProviderConnections)
     .where(eq(modelProviderConnections.orgId, orgId))
     .orderBy(desc(modelProviderConnections.createdAt));
-  return rows.map(toDisplay);
+  return rows.map(toDisplayModelConnection);
 }
 
-/** Active Codex connections for an org (drives the model-picker union + deploy injection). */
+/** Every active connection for an org, oldest/id first for deterministic credential aliases. */
+export async function listActiveModelConnections(
+  orgId: string,
+): Promise<ModelConnection[]> {
+  const rows = await db
+    .select()
+    .from(modelProviderConnections)
+    .where(
+      and(
+        eq(modelProviderConnections.orgId, orgId),
+        eq(modelProviderConnections.status, "active"),
+      ),
+    )
+    .orderBy(
+      asc(modelProviderConnections.createdAt),
+      asc(modelProviderConnections.id),
+    );
+  return rows.map(toDisplayModelConnection);
+}
+
+/** Resolve one exact active connection, scoped to its owning org. */
+export async function getActiveModelConnection(
+  orgId: string,
+  id: string,
+): Promise<ModelConnection | null> {
+  const [row] = await db
+    .select()
+    .from(modelProviderConnections)
+    .where(
+      and(
+        eq(modelProviderConnections.id, id),
+        eq(modelProviderConnections.orgId, orgId),
+        eq(modelProviderConnections.status, "active"),
+      ),
+    )
+    .limit(1);
+  return row ? toDisplayModelConnection(row) : null;
+}
+
+/** Active Codex connections for an org (drives the model-picker union + gateway injection). */
 export async function listActiveCodexConnections(
   orgId: string,
 ): Promise<ModelConnection[]> {
@@ -126,11 +259,13 @@ export async function listActiveCodexConnections(
       ),
     )
     .orderBy(desc(modelProviderConnections.createdAt));
-  return rows.map(toDisplay);
+  return rows.map(toDisplayModelConnection);
 }
 
 /** Whether the org has at least one active Codex connection (deploy-injection gate). */
-export async function hasActiveCodexConnection(orgId: string): Promise<boolean> {
+export async function hasActiveCodexConnection(
+  orgId: string,
+): Promise<boolean> {
   const rows = await listActiveCodexConnections(orgId);
   return rows.length > 0;
 }
@@ -178,6 +313,98 @@ export async function markConnectionStatus(
     .where(eq(modelProviderConnections.id, id));
 }
 
+/** Server-only view of one API-key connection. Never return this object from a loader. */
+export interface ApiKeyConnectionSecret {
+  id: string;
+  orgId: string;
+  provider: ApiKeyProviderId;
+  apiKey: string;
+}
+
+/** Pure env projection; input order decides each provider's conventional default alias. */
+export function buildProviderDeploymentEnv(
+  connections: ApiKeyConnectionSecret[],
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const connection of connections) {
+    const exactName = providerConnectionApiKeyEnvName(
+      connection.provider,
+      connection.id,
+    );
+    if (!exactName) continue;
+    result[exactName] = connection.apiKey;
+    const standardName = MODEL_PROVIDERS[connection.provider].standardEnv;
+    if (standardName && result[standardName] === undefined) {
+      result[standardName] = connection.apiKey;
+    }
+  }
+  return result;
+}
+
+/** Unseal one exact active API-key connection after checking its workspace ownership. */
+export async function getApiKeyConnection(
+  orgId: string,
+  id: string,
+): Promise<ApiKeyConnectionSecret | null> {
+  const [row] = await db
+    .select()
+    .from(modelProviderConnections)
+    .where(
+      and(
+        eq(modelProviderConnections.id, id),
+        eq(modelProviderConnections.orgId, orgId),
+        eq(modelProviderConnections.status, "active"),
+      ),
+    )
+    .limit(1);
+  if (!row || !isApiKeyProviderId(row.provider)) return null;
+  const apiKey = openApiKeyCredential(row);
+  return apiKey
+    ? { id: row.id, orgId: row.orgId, provider: row.provider, apiKey }
+    : null;
+}
+
+/**
+ * Runtime credentials for every active API-key connection in an org. Exact variables support
+ * switching between same-provider connections; the oldest/id-first connection also receives the
+ * provider's conventional variable for compatibility with provider SDK defaults.
+ */
+export async function getProviderDeploymentEnv(
+  orgId: string,
+): Promise<Record<string, string>> {
+  const rows = await db
+    .select()
+    .from(modelProviderConnections)
+    .where(
+      and(
+        eq(modelProviderConnections.orgId, orgId),
+        eq(modelProviderConnections.status, "active"),
+      ),
+    )
+    .orderBy(
+      asc(modelProviderConnections.createdAt),
+      asc(modelProviderConnections.id),
+    );
+  const connections: ApiKeyConnectionSecret[] = [];
+  let key: Buffer | null = null;
+
+  for (const row of rows) {
+    if (!isApiKeyProviderId(row.provider)) continue;
+    const exactName = providerConnectionApiKeyEnvName(row.provider, row.id);
+    if (!exactName) continue;
+    key ??= secretsKey();
+    const apiKey = openApiKeyCredential(row, key);
+    if (!apiKey) continue;
+    connections.push({
+      id: row.id,
+      orgId: row.orgId,
+      provider: row.provider,
+      apiKey,
+    });
+  }
+  return buildProviderDeploymentEnv(connections);
+}
+
 /** Load a connection with its tokens unsealed. Gateway/refresh-side only. */
 export async function getConnectionForGateway(
   id: string,
@@ -189,22 +416,19 @@ export async function getConnectionForGateway(
     .limit(1);
   if (!row) return null;
   const key = secretsKey();
-  const accessToken =
-    row.accessTokenCiphertext && row.accessTokenIv && row.accessTokenAuthTag
-      ? open(key, {
-          ciphertext: row.accessTokenCiphertext,
-          iv: row.accessTokenIv,
-          authTag: row.accessTokenAuthTag,
-        })
-      : null;
-  const refreshToken =
-    row.refreshTokenCiphertext && row.refreshTokenIv && row.refreshTokenAuthTag
-      ? open(key, {
-          ciphertext: row.refreshTokenCiphertext,
-          iv: row.refreshTokenIv,
-          authTag: row.refreshTokenAuthTag,
-        })
-      : null;
+  const accessToken = openSealed(key, {
+    ciphertext: row.accessTokenCiphertext,
+    iv: row.accessTokenIv,
+    authTag: row.accessTokenAuthTag,
+  });
+  const refreshToken = openSealed(key, {
+    ciphertext: row.refreshTokenCiphertext,
+    iv: row.refreshTokenIv,
+    authTag: row.refreshTokenAuthTag,
+  });
+  if (!isModelProviderId(row.provider)) {
+    throw new Error(`Unknown model provider on connection ${row.id}.`);
+  }
   return {
     id: row.id,
     orgId: row.orgId,

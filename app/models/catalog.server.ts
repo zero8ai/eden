@@ -9,9 +9,9 @@
 import { z } from "zod";
 
 import { SwrCache } from "~/github/cache.server";
+import type { ModelProviderId } from "~/models/provider-reference";
 
-const MODELS_URL = "https://openrouter.ai/api/v1/models";
-const CACHE_KEY = "openrouter:models";
+const DEFAULT_OPENROUTER_API_BASE_URL = "https://openrouter.ai";
 const TTL_MS = 60 * 60 * 1000; // 1 hour — model metadata changes on the order of days.
 const DESCRIPTION_MAX = 160;
 
@@ -28,6 +28,13 @@ export interface ModelCatalogEntry {
   /** USD per 1M output tokens. */
   outputPerMTok: number | null;
   providers: string[];
+  /** Connection metadata is populated after a raw provider catalog is qualified for a workspace. */
+  provider?: ModelProviderId;
+  providerName?: string;
+  connectionId?: string;
+  connectionLabel?: string;
+  /** Provider-native id sent upstream after Eden removes the connection qualification. */
+  upstreamModelId?: string;
 }
 
 const modelSchema = z
@@ -97,6 +104,7 @@ export function normalizeCatalog(payload: unknown): ModelCatalogEntry[] {
         inputPerMTok: perMTok(m.pricing?.prompt),
         outputPerMTok: perMTok(m.pricing?.completion),
         providers: [],
+        upstreamModelId: m.id,
       };
     })
     .sort((a, b) => a.id.localeCompare(b.id));
@@ -121,17 +129,23 @@ async function fetchJson(url: string): Promise<unknown> {
   return res.json();
 }
 
+/** OpenRouter host, overridable for self-hosted proxies and deterministic integration tests. */
+export function openRouterApiBase(): string {
+  return (
+    process.env.EDEN_OPENROUTER_API_BASE_URL ?? DEFAULT_OPENROUTER_API_BASE_URL
+  ).replace(/\/+$/, "");
+}
+
 /** The full picker catalog, SWR-cached for an hour. */
 export function listOpenRouterModels(): Promise<ModelCatalogEntry[]> {
-  return catalogCache.get(CACHE_KEY, TTL_MS, async () =>
-    normalizeCatalog(await fetchJson(MODELS_URL)),
+  const baseUrl = openRouterApiBase();
+  return catalogCache.get(`openrouter:models:${baseUrl}`, TTL_MS, async () =>
+    normalizeCatalog(await fetchJson(`${baseUrl}/api/v1/models`)),
   );
 }
 
 /** Returns null when the catalog cannot be loaded or the id is absent. */
-export async function findModel(
-  id: string,
-): Promise<ModelCatalogEntry | null> {
+export async function findModel(id: string): Promise<ModelCatalogEntry | null> {
   try {
     const models = await listOpenRouterModels();
     return models.find((m) => m.id === id) ?? null;

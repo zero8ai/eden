@@ -16,9 +16,7 @@ import {
   rollbackTo,
   setTrafficSplit,
 } from "~/deploy/controller.server";
-import {
-  cleanupDeploymentContainer,
-} from "~/deploy/cleanup.server";
+import { cleanupDeploymentContainer } from "~/deploy/cleanup.server";
 import {
   DEPLOYMENT_DRAIN_CEILING_MS,
   DEPLOYMENT_DRAIN_POLL_MS,
@@ -34,7 +32,8 @@ vi.mock("~/github/cached.server", () => ({
   getAgentSource: vi.fn(async () => ({
     paths: [],
     files: {
-      "agents/deployer/agent/instructions.md": "# Deployer\n\nDeploys builds to production.",
+      "agents/deployer/agent/instructions.md":
+        "# Deployer\n\nDeploys builds to production.",
     },
     ref: "main",
     truncated: false,
@@ -49,22 +48,41 @@ const ENV = "env_1";
 
 beforeEach(() => {
   store = makeFakeStore();
-  store.seedProject({ id: PROJECT, orgId: ORG, repoOwner: "acme", repoName: "agent" });
+  store.seedProject({
+    id: PROJECT,
+    orgId: ORG,
+    repoOwner: "acme",
+    repoName: "agent",
+  });
   store.seedAgent({ id: AGENT, projectId: PROJECT });
-  store.seedEnvironment({ id: ENV, projectId: PROJECT, agentId: AGENT, name: "production" });
+  store.seedEnvironment({
+    id: ENV,
+    projectId: PROJECT,
+    agentId: AGENT,
+    name: "production",
+  });
 });
 
 describe("createRelease", () => {
   it("labels releases v1, v2, … per agent", async () => {
-    const r1 = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a".repeat(40) }, store);
-    const r2 = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b".repeat(40) }, store);
+    const r1 = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "a".repeat(40) },
+      store,
+    );
+    const r2 = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "b".repeat(40) },
+      store,
+    );
     expect(r1.version).toBe("v1");
     expect(r2.version).toBe("v2");
   });
 
   it("retries past a version-label collision and still lands", async () => {
     store.forceReleaseCollisions(2); // first two inserts raise 23505, third succeeds
-    const r = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "c".repeat(40) }, store);
+    const r = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "c".repeat(40) },
+      store,
+    );
     expect(r.version).toBe("v1");
   });
 });
@@ -72,8 +90,14 @@ describe("createRelease", () => {
 describe("ensureReleaseForCommit", () => {
   it("is idempotent per merge commit (in-app merge + webhook converge)", async () => {
     const sha = "d".repeat(40);
-    const first = await ensureReleaseForCommit({ projectId: PROJECT, agentId: AGENT, gitSha: sha }, store);
-    const second = await ensureReleaseForCommit({ projectId: PROJECT, agentId: AGENT, gitSha: sha }, store);
+    const first = await ensureReleaseForCommit(
+      { projectId: PROJECT, agentId: AGENT, gitSha: sha },
+      store,
+    );
+    const second = await ensureReleaseForCommit(
+      { projectId: PROJECT, agentId: AGENT, gitSha: sha },
+      store,
+    );
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
     expect(second.release.id).toBe(first.release.id);
@@ -82,24 +106,51 @@ describe("ensureReleaseForCommit", () => {
 
 describe("deployRelease", () => {
   it("builds, deploys live, records the image + an audit entry", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "e".repeat(40) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "e".repeat(40) },
+      store,
+    );
     const dep = await deployRelease(
       { environmentId: ENV, releaseId: release.id },
-      { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://x" } }), secrets: fakeSecrets() },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live", url: "http://x" },
+        }),
+        secrets: fakeSecrets(),
+      },
     );
     expect(dep.status).toBe("live");
     expect(dep.url).toBe("http://x");
-    expect((await store.releases.findById(release.id))?.imageRef).toBe("img:fake");
-    expect(store.auditEntries).toContainEqual({ action: "deploy", target: "v1", orgId: ORG });
+    expect((await store.releases.findById(release.id))?.imageRef).toBe(
+      "img:fake",
+    );
+    expect(store.auditEntries).toContainEqual({
+      action: "deploy",
+      target: "v1",
+      orgId: ORG,
+    });
   });
 
-  it("inherits the workspace OpenRouter key unless a secret overrides it (PRD §12)", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a1".repeat(20) }, store);
+  it("protects exact connection credentials while preserving standard-alias overrides", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "a1".repeat(20) },
+      store,
+    );
     const deployedEnvs: Record<string, string>[] = [];
     const base = {
       store,
-      deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedEnvs }),
-      workspaceModelKey: async () => "sk-or-workspace",
+      deployTarget: fakeDeployTarget({
+        health: { status: "live" as const },
+        deployedEnvs,
+      }),
+      providerDeploymentEnv: async () => ({
+        EDEN_PROVIDER_OPENROUTER_ABCDEFGHIJKL_API_KEY: "sk-or-workspace",
+        OPENROUTER_API_KEY: "sk-or-workspace",
+        EDEN_PROVIDER_ANTHROPIC_MNOPQRSTUVWX_API_KEY: "sk-ant-workspace",
+        ANTHROPIC_API_KEY: "sk-ant-workspace",
+      }),
+      modelDirectiveSecret: () => "directive-secret",
     };
 
     // No project secret → the workspace key is injected.
@@ -109,16 +160,41 @@ describe("deployRelease", () => {
     );
     expect(deployedEnvs[0].OPENROUTER_API_KEY).toBe("sk-or-workspace");
 
-    // A project/environment secret with the same name wins.
+    // Scoped secrets cannot shadow either the exact credential or its standard alias.
     await deployRelease(
       { environmentId: ENV, releaseId: release.id },
-      { ...base, secrets: fakeSecrets({ OPENROUTER_API_KEY: "sk-or-project" }) },
+      {
+        ...base,
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "sk-or-project",
+          EDEN_PROVIDER_OPENROUTER_ABCDEFGHIJKL_API_KEY: "smuggled",
+          ANTHROPIC_API_KEY: "sk-ant-project",
+          EDEN_MODEL_DIRECTIVE_SECRET: "smuggled",
+          SAFE_TOKEN: "safe",
+        }),
+        sandboxExposedNames: async () => [
+          "EDEN_PROVIDER_OPENROUTER_ABCDEFGHIJKL_API_KEY",
+          "EDEN_MODEL_DIRECTIVE_SECRET",
+          "SAFE_TOKEN",
+        ],
+      },
     );
     expect(deployedEnvs[1].OPENROUTER_API_KEY).toBe("sk-or-project");
+    expect(deployedEnvs[1].EDEN_PROVIDER_OPENROUTER_ABCDEFGHIJKL_API_KEY).toBe(
+      "sk-or-workspace",
+    );
+    expect(deployedEnvs[1].ANTHROPIC_API_KEY).toBe("sk-ant-project");
+    expect(deployedEnvs[1].EDEN_SANDBOX_ENV).toBe("SAFE_TOKEN");
+    expect(deployedEnvs[1].EDEN_MODEL_DIRECTIVE_SECRET).toBe(
+      "directive-secret",
+    );
   });
 
   it("fails before deploy with a clear setup message when no model key is configured", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b2".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "b2".repeat(20) },
+      store,
+    );
     const builtRefs: string[] = [];
     const deployedEnvs: Record<string, string>[] = [];
 
@@ -128,12 +204,14 @@ describe("deployRelease", () => {
         store,
         deployTarget: fakeDeployTarget({ builtRefs, deployedEnvs }),
         secrets: fakeSecrets(),
-        workspaceModelKey: async () => null,
+        providerDeploymentEnv: async () => ({}),
       },
     );
 
     expect(dep.status).toBe("failed");
-    expect(dep.errorDetail).toContain("No model provider key configured");
+    expect(dep.errorDetail).toContain(
+      "No model provider credential is available",
+    );
     expect(builtRefs).toEqual([]);
     expect(deployedEnvs).toEqual([]);
   });
@@ -145,11 +223,17 @@ describe("deployRelease", () => {
     process.env.VERCEL_OIDC_TOKEN = "oidc-local";
 
     try {
-      const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "c3".repeat(20) }, store);
+      const release = await createRelease(
+        { projectId: PROJECT, agentId: AGENT, gitSha: "c3".repeat(20) },
+        store,
+      );
       const deployedEnvs: Record<string, string>[] = [];
       const base = {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedEnvs }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" as const },
+          deployedEnvs,
+        }),
       };
 
       await deployRelease(
@@ -180,11 +264,17 @@ describe("deployRelease", () => {
   });
 
   it("joins sandbox-exposed secret names into EDEN_SANDBOX_ENV (names only, after the spread)", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "c3".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "c3".repeat(20) },
+      store,
+    );
     const deployedEnvs: Record<string, string>[] = [];
     const base = {
       store,
-      deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedEnvs }),
+      deployTarget: fakeDeployTarget({
+        health: { status: "live" as const },
+        deployedEnvs,
+      }),
     };
 
     // Exposed + resolved → the allowlist carries exactly those names.
@@ -192,7 +282,11 @@ describe("deployRelease", () => {
       { environmentId: ENV, releaseId: release.id },
       {
         ...base,
-        secrets: fakeSecrets({ GH_TOKEN: "gho_x", NPM_TOKEN: "npm_y", PRIVATE: "keep-out" }),
+        secrets: fakeSecrets({
+          GH_TOKEN: "gho_x",
+          NPM_TOKEN: "npm_y",
+          PRIVATE: "keep-out",
+        }),
         sandboxExposedNames: async () => ["GH_TOKEN", "NPM_TOKEN"],
       },
     );
@@ -212,16 +306,26 @@ describe("deployRelease", () => {
   });
 
   it("omits EDEN_SANDBOX_ENV when nothing is exposed, and strips a user secret squatting the name", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "d4".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "d4".repeat(20) },
+      store,
+    );
     const deployedEnvs: Record<string, string>[] = [];
     const base = {
       store,
-      deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedEnvs }),
+      deployTarget: fakeDeployTarget({
+        health: { status: "live" as const },
+        deployedEnvs,
+      }),
     };
 
     await deployRelease(
       { environmentId: ENV, releaseId: release.id },
-      { ...base, secrets: fakeSecrets({ GH_TOKEN: "gho_x" }), sandboxExposedNames: async () => [] },
+      {
+        ...base,
+        secrets: fakeSecrets({ GH_TOKEN: "gho_x" }),
+        sandboxExposedNames: async () => [],
+      },
     );
     expect(deployedEnvs[0]).not.toHaveProperty("EDEN_SANDBOX_ENV");
 
@@ -231,7 +335,10 @@ describe("deployRelease", () => {
       { environmentId: ENV, releaseId: release.id },
       {
         ...base,
-        secrets: fakeSecrets({ EDEN_SANDBOX_ENV: "PRIVATE", PRIVATE: "keep-out" }),
+        secrets: fakeSecrets({
+          EDEN_SANDBOX_ENV: "PRIVATE",
+          PRIVATE: "keep-out",
+        }),
         sandboxExposedNames: async () => [],
       },
     );
@@ -247,7 +354,8 @@ describe("deployRelease", () => {
 
   it("strips a SHARED secret squatting EDEN_SANDBOX_ENV after the merged resolve (§11.9)", async () => {
     const crypto = await import("node:crypto");
-    const { makeLocalSecretsProvider } = await import("~/seams/oss/secrets.local.server");
+    const { makeLocalSecretsProvider } =
+      await import("~/seams/oss/secrets.local.server");
     const { makeFakeSecretKV } = await import("../fakes/secret-kv");
     const release = await createRelease(
       { projectId: PROJECT, agentId: AGENT, gitSha: "e5".repeat(20) },
@@ -261,11 +369,21 @@ describe("deployRelease", () => {
     const boxKey = crypto.randomBytes(32);
     const secrets = makeLocalSecretsProvider(kv, () => boxKey);
     await secrets.set(
-      { projectId: PROJECT, agentId: null, environmentId: null, key: "EDEN_SANDBOX_ENV" },
+      {
+        projectId: PROJECT,
+        agentId: null,
+        environmentId: null,
+        key: "EDEN_SANDBOX_ENV",
+      },
       "SMUGGLED",
     );
     await secrets.set(
-      { projectId: PROJECT, agentId: AGENT, environmentId: null, key: "GH_TOKEN" },
+      {
+        projectId: PROJECT,
+        agentId: AGENT,
+        environmentId: null,
+        key: "GH_TOKEN",
+      },
       "gho_x",
     );
     kv.attach(AGENT, "EDEN_SANDBOX_ENV");
@@ -274,7 +392,10 @@ describe("deployRelease", () => {
       { environmentId: ENV, releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedEnvs }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" as const },
+          deployedEnvs,
+        }),
         secrets,
         sandboxExposedNames: async () => ["GH_TOKEN"],
       },
@@ -287,21 +408,36 @@ describe("deployRelease", () => {
     // The durability invariant this feature exists for: a redeploy reuses the environment's
     // world (so sessions + their sandboxes survive), which means the worldKey must be stable
     // across deploys and equal to the environment id — never the (per-deploy) deployment id.
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b2".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "b2".repeat(20) },
+      store,
+    );
     const deployedWorldKeys: string[] = [];
     const deps = {
       store,
-      deployTarget: fakeDeployTarget({ health: { status: "live" as const }, deployedWorldKeys }),
+      deployTarget: fakeDeployTarget({
+        health: { status: "live" as const },
+        deployedWorldKeys,
+      }),
       secrets: fakeSecrets(),
     };
-    const d1 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
-    const d2 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+    const d1 = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      deps,
+    );
+    const d2 = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      deps,
+    );
     expect(d1.id).not.toBe(d2.id); // two distinct deployments…
     expect(deployedWorldKeys).toEqual([ENV, ENV]); // …one shared, env-keyed world
   });
 
   it("rebuilds an already-built release when requested", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "ab".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "ab".repeat(20) },
+      store,
+    );
     const builtRefs: string[] = [];
 
     const first = await deployRelease(
@@ -317,7 +453,9 @@ describe("deployRelease", () => {
       },
     );
     expect(first.status).toBe("live");
-    expect((await store.releases.findById(release.id))?.imageRef).toBe("img:first");
+    expect((await store.releases.findById(release.id))?.imageRef).toBe(
+      "img:first",
+    );
 
     const rebuilt = await deployRelease(
       { environmentId: ENV, releaseId: release.id, rebuild: true },
@@ -333,22 +471,34 @@ describe("deployRelease", () => {
     );
 
     expect(rebuilt.status).toBe("live");
-    expect((await store.releases.findById(release.id))?.imageRef).toBe("img:rebuilt");
+    expect((await store.releases.findById(release.id))?.imageRef).toBe(
+      "img:rebuilt",
+    );
     expect(builtRefs).toEqual(["img:first", "img:rebuilt"]);
   });
 
   it("records failed status WITH the reason when the target throws", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "f".repeat(40) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "f".repeat(40) },
+      store,
+    );
     const dep = await deployRelease(
       { environmentId: ENV, releaseId: release.id },
-      { store, deployTarget: fakeDeployTarget({ deployError: "docker unavailable" }), secrets: fakeSecrets() },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ deployError: "docker unavailable" }),
+        secrets: fakeSecrets(),
+      },
     );
     expect(dep.status).toBe("failed");
     expect(dep.errorDetail).toBe("docker unavailable");
   });
 
   it("stops a failed/unhealthy new instance so its schedules cannot keep running", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "7".repeat(40) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "7".repeat(40) },
+      store,
+    );
     const stoppedIds: string[] = [];
     const dep = await deployRelease(
       { environmentId: ENV, releaseId: release.id },
@@ -370,12 +520,14 @@ describe("deployRelease", () => {
     expect(dep.errorDetail).toBe("container did not become healthy");
     expect(stoppedIds).toContain(dep.id);
   });
-
 });
 
 describe("queueDeploy", () => {
   it("creates the queued row FIRST, and the job takes over that same row (no duplicate)", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "9".repeat(40) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "9".repeat(40) },
+      store,
+    );
 
     // Click: row exists immediately in `queued` — this is the UI's instant feedback.
     const queued = await queueDeploy(
@@ -383,7 +535,9 @@ describe("queueDeploy", () => {
       store,
     );
     expect(queued.status).toBe("queued");
-    expect((await listDeployments(ENV, store)).map((d) => d.id)).toEqual([queued.id]);
+    expect((await listDeployments(ENV, store)).map((d) => d.id)).toEqual([
+      queued.id,
+    ]);
 
     // Worker: claims the job, whose payload points at the pre-created row.
     const job = await store.jobs.claimNext(new Date());
@@ -392,8 +546,18 @@ describe("queueDeploy", () => {
 
     // Executing the deploy updates that row — never inserts a second one.
     const done = await deployRelease(
-      job!.payload as { environmentId: string; releaseId: string; deploymentId: string },
-      { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://z" } }), secrets: fakeSecrets() },
+      job!.payload as {
+        environmentId: string;
+        releaseId: string;
+        deploymentId: string;
+      },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live", url: "http://z" },
+        }),
+        secrets: fakeSecrets(),
+      },
     );
     expect(done.id).toBe(queued.id);
     expect(done.status).toBe("live");
@@ -401,7 +565,10 @@ describe("queueDeploy", () => {
   });
 
   it("preserves the rebuild flag in the queued deploy job", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a9".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "a9".repeat(20) },
+      store,
+    );
 
     const queued = await queueDeploy(
       {
@@ -432,18 +599,30 @@ describe("cutover on deploy", () => {
   });
 
   it("redeploying the same release DRAINS the previous live instance — never two live copies", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "8".repeat(40) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "8".repeat(40) },
+      store,
+    );
     const stoppedIds: string[] = [];
     const deps = {
       store,
-      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" }, stoppedIds }),
+      deployTarget: fakeDeployTarget({
+        health: { status: "live", url: "http://a" },
+        stoppedIds,
+      }),
       secrets: fakeSecrets(),
     };
-    const first = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+    const first = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      deps,
+    );
     expect(first.status).toBe("live");
 
     const failRunningRuns = vi.spyOn(store.runs, "failRunningByDeployment");
-    const second = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+    const second = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      deps,
+    );
     expect(second.status).toBe("live");
 
     const all = await listDeployments(ENV, store);
@@ -467,18 +646,32 @@ describe("cutover on deploy", () => {
   });
 
   it("deploying a DIFFERENT release drains the previously live one + schedules a ceilinged drain", async () => {
-    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "3".repeat(40) }, store);
-    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "4".repeat(40) }, store);
+    const rA = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "3".repeat(40) },
+      store,
+    );
+    const rB = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "4".repeat(40) },
+      store,
+    );
     const deps = {
       store,
-      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }),
+      deployTarget: fakeDeployTarget({
+        health: { status: "live", url: "http://a" },
+      }),
       secrets: fakeSecrets(),
     };
-    const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
+    const depA = await deployRelease(
+      { environmentId: ENV, releaseId: rA.id },
+      deps,
+    );
     expect(depA.status).toBe("live");
 
     const scheduledAt = Date.now();
-    const depB = await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
+    const depB = await deployRelease(
+      { environmentId: ENV, releaseId: rB.id },
+      deps,
+    );
     expect(depB.status).toBe("live");
 
     const all = await listDeployments(ENV, store);
@@ -496,45 +689,63 @@ describe("cutover on deploy", () => {
     expect(drainJob?.kind).toBe("drain_deployment");
     expect(drainJob?.payload.deploymentId).toBe(depA.id);
     const deadline = Date.parse(drainJob!.payload.deadlineAt as string);
-    expect(deadline).toBeGreaterThanOrEqual(scheduledAt + DEPLOYMENT_DRAIN_CEILING_MS - 2000);
-    expect(deadline).toBeLessThanOrEqual(scheduledAt + DEPLOYMENT_DRAIN_CEILING_MS + 2000);
+    expect(deadline).toBeGreaterThanOrEqual(
+      scheduledAt + DEPLOYMENT_DRAIN_CEILING_MS - 2000,
+    );
+    expect(deadline).toBeLessThanOrEqual(
+      scheduledAt + DEPLOYMENT_DRAIN_CEILING_MS + 2000,
+    );
   });
 
   it("fails the new deployment (old stays live) when the draining flip cannot be persisted", async () => {
     // Stopping is now deferred to the drain job, so a broken docker-stop no longer fails a
     // redeploy. The only cutover-time failure left is being unable to WRITE the draining flip —
     // if that can't land, the new deployment is recorded failed and the old row stays live.
-    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a".repeat(40) }, store);
-    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b".repeat(40) }, store);
+    const rA = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "a".repeat(40) },
+      store,
+    );
+    const rB = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "b".repeat(40) },
+      store,
+    );
     const first = await deployRelease(
       { environmentId: ENV, releaseId: rA.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://old" } }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live", url: "http://old" },
+        }),
         secrets: fakeSecrets(),
       },
     );
     expect(first.status).toBe("live");
 
     const realUpdate = store.deployments.update.bind(store.deployments);
-    vi.spyOn(store.deployments, "update").mockImplementation(async (id, patch) => {
-      if (id === first.id && patch.status === "draining") {
-        throw new Error("deployments row is locked");
-      }
-      return realUpdate(id, patch);
-    });
+    vi.spyOn(store.deployments, "update").mockImplementation(
+      async (id, patch) => {
+        if (id === first.id && patch.status === "draining") {
+          throw new Error("deployments row is locked");
+        }
+        return realUpdate(id, patch);
+      },
+    );
     const failRunningRuns = vi.spyOn(store.runs, "failRunningByDeployment");
     const second = await deployRelease(
       { environmentId: ENV, releaseId: rB.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://new" } }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live", url: "http://new" },
+        }),
         secrets: fakeSecrets(),
       },
     );
 
     expect(second.status).toBe("failed");
-    expect(second.errorDetail).toMatch(/cutover failed while draining the previous deployment/);
+    expect(second.errorDetail).toMatch(
+      /cutover failed while draining the previous deployment/,
+    );
 
     const all = await listDeployments(ENV, store);
     expect(all.find((d) => d.id === first.id)?.status).toBe("live");
@@ -546,21 +757,39 @@ describe("cutover on deploy", () => {
   it("keeps a successful cutover live even when scheduling the drain job fails", async () => {
     // The drain schedule is best-effort: a lost job leaves a visible `draining` row, never fails a
     // redeploy that has already gone live.
-    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "7".repeat(40) }, store);
-    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "9".repeat(40) }, store);
+    const rA = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "7".repeat(40) },
+      store,
+    );
+    const rB = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "9".repeat(40) },
+      store,
+    );
     const deps = {
       store,
-      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }),
+      deployTarget: fakeDeployTarget({
+        health: { status: "live", url: "http://a" },
+      }),
       secrets: fakeSecrets(),
     };
-    const first = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
-    vi.spyOn(store.jobs, "insert").mockRejectedValueOnce(new Error("queue unavailable"));
+    const first = await deployRelease(
+      { environmentId: ENV, releaseId: rA.id },
+      deps,
+    );
+    vi.spyOn(store.jobs, "insert").mockRejectedValueOnce(
+      new Error("queue unavailable"),
+    );
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    const second = await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
+    const second = await deployRelease(
+      { environmentId: ENV, releaseId: rB.id },
+      deps,
+    );
 
     expect(second.status).toBe("live");
-    expect((await store.deployments.findById(first.id))?.status).toBe("draining");
+    expect((await store.deployments.findById(first.id))?.status).toBe(
+      "draining",
+    );
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("failed to schedule deployment drain"),
       expect.any(Error),
@@ -568,23 +797,50 @@ describe("cutover on deploy", () => {
   });
 
   it("end-to-end: A live → B live drains A → A idle → drain stops A and schedules cleanup", async () => {
-    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "e".repeat(40) }, store);
-    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "d".repeat(40) }, store);
+    const rA = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "e".repeat(40) },
+      store,
+    );
+    const rB = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "d".repeat(40) },
+      store,
+    );
     const stoppedIds: string[] = [];
     const deps = {
       store,
-      deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" }, stoppedIds }),
+      deployTarget: fakeDeployTarget({
+        health: { status: "live", url: "http://a" },
+        stoppedIds,
+      }),
       secrets: fakeSecrets(),
     };
-    const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
-    const depB = await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
+    const depA = await deployRelease(
+      { environmentId: ENV, releaseId: rA.id },
+      deps,
+    );
+    const depB = await deployRelease(
+      { environmentId: ENV, releaseId: rB.id },
+      deps,
+    );
     expect(depB.status).toBe("live");
-    expect((await store.deployments.findById(depA.id))?.status).toBe("draining");
+    expect((await store.deployments.findById(depA.id))?.status).toBe(
+      "draining",
+    );
 
     // A turn is still in flight on the draining A → the watcher waits and re-polls.
-    store.seedRun({ id: "run_a", projectId: PROJECT, deploymentId: depA.id, status: "running" });
-    const deadline = new Date(Date.now() + DEPLOYMENT_DRAIN_CEILING_MS).toISOString();
-    const waiting = await drainDeployment({ deploymentId: depA.id, deadlineAt: deadline }, deps);
+    store.seedRun({
+      id: "run_a",
+      projectId: PROJECT,
+      deploymentId: depA.id,
+      status: "running",
+    });
+    const deadline = new Date(
+      Date.now() + DEPLOYMENT_DRAIN_CEILING_MS,
+    ).toISOString();
+    const waiting = await drainDeployment(
+      { deploymentId: depA.id, deadlineAt: deadline },
+      deps,
+    );
     expect(waiting).toEqual({ status: "waiting", runningRuns: 1 });
     expect(stoppedIds).not.toContain(depA.id);
 
@@ -596,7 +852,10 @@ describe("cutover on deploy", () => {
       status: "completed",
       finishedAt: new Date(),
     });
-    const stopped = await drainDeployment({ deploymentId: depA.id, deadlineAt: deadline }, deps);
+    const stopped = await drainDeployment(
+      { deploymentId: depA.id, deadlineAt: deadline },
+      deps,
+    );
     expect(stopped).toEqual({ status: "stopped", interruptedRuns: 0 });
     expect(stoppedIds).toContain(depA.id);
     expect((await store.deployments.findById(depA.id))?.status).toBe("stopped");
@@ -606,7 +865,11 @@ describe("cutover on deploy", () => {
     // time and assert one is the cleanup for A.
     const far = new Date(Date.now() + 48 * 60 * 60 * 1000);
     const claimed: { kind: string; payload: Record<string, unknown> }[] = [];
-    for (let job = await store.jobs.claimNext(far); job; job = await store.jobs.claimNext(far)) {
+    for (
+      let job = await store.jobs.claimNext(far);
+      job;
+      job = await store.jobs.claimNext(far)
+    ) {
       claimed.push({ kind: job.kind, payload: job.payload });
     }
     expect(claimed).toContainEqual({
@@ -616,14 +879,36 @@ describe("cutover on deploy", () => {
   });
 
   it("a FAILED deploy leaves the current live version serving (cutover only on success)", async () => {
-    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "5".repeat(40) }, store);
-    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "6".repeat(40) }, store);
-    const good = { store, deployTarget: fakeDeployTarget({ health: { status: "live" as const, url: "http://a" } }), secrets: fakeSecrets() };
-    const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, good);
+    const rA = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "5".repeat(40) },
+      store,
+    );
+    const rB = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "6".repeat(40) },
+      store,
+    );
+    const good = {
+      store,
+      deployTarget: fakeDeployTarget({
+        health: { status: "live" as const, url: "http://a" },
+      }),
+      secrets: fakeSecrets(),
+    };
+    const depA = await deployRelease(
+      { environmentId: ENV, releaseId: rA.id },
+      good,
+    );
     expect(depA.status).toBe("live");
 
-    const bad = { store, deployTarget: fakeDeployTarget({ deployError: "boom" }), secrets: fakeSecrets() };
-    const depB = await deployRelease({ environmentId: ENV, releaseId: rB.id }, bad);
+    const bad = {
+      store,
+      deployTarget: fakeDeployTarget({ deployError: "boom" }),
+      secrets: fakeSecrets(),
+    };
+    const depB = await deployRelease(
+      { environmentId: ENV, releaseId: rB.id },
+      bad,
+    );
     expect(depB.status).toBe("failed");
 
     const all = await listDeployments(ENV, store);
@@ -633,8 +918,14 @@ describe("cutover on deploy", () => {
 
 describe("cleanupDeploymentContainer", () => {
   it("destroys a stopped, zero-weight deployment only when a live replacement exists", async () => {
-    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "c".repeat(40) }, store);
-    const rB = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "d".repeat(40) }, store);
+    const rA = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "c".repeat(40) },
+      store,
+    );
+    const rB = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "d".repeat(40) },
+      store,
+    );
     const destroyedIds: string[] = [];
     const deps = {
       store,
@@ -645,11 +936,17 @@ describe("cleanupDeploymentContainer", () => {
       secrets: fakeSecrets(),
     };
 
-    const old = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
+    const old = await deployRelease(
+      { environmentId: ENV, releaseId: rA.id },
+      deps,
+    );
     await deployRelease({ environmentId: ENV, releaseId: rB.id }, deps);
     // Cutover now leaves the old row `draining`; cleanup only reaps a `stopped` one. Simulate the
     // drain having completed (the drain watcher owns that transition — see drain.test.ts).
-    await store.deployments.update(old.id, { status: "stopped", trafficWeight: 0 });
+    await store.deployments.update(old.id, {
+      status: "stopped",
+      trafficWeight: 0,
+    });
 
     const result = await cleanupDeploymentContainer(old.id, deps);
 
@@ -658,14 +955,20 @@ describe("cleanupDeploymentContainer", () => {
   });
 
   it("skips cleanup for live deployments", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "e".repeat(40) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "e".repeat(40) },
+      store,
+    );
     const destroyedIds: string[] = [];
     const deps = {
       store,
       deployTarget: fakeDeployTarget({ destroyedIds }),
       secrets: fakeSecrets(),
     };
-    const dep = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      deps,
+    );
 
     const result = await cleanupDeploymentContainer(dep.id, deps);
 
@@ -674,7 +977,10 @@ describe("cleanupDeploymentContainer", () => {
   });
 
   it("skips stopped deployments without a live replacement", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "f".repeat(40) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "f".repeat(40) },
+      store,
+    );
     const destroyedIds: string[] = [];
     const dep = await store.deployments.insert({
       environmentId: ENV,
@@ -696,7 +1002,10 @@ describe("cleanupDeploymentContainer", () => {
   });
 
   it("destroys failed deployments even when no replacement exists", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "0".repeat(40) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "0".repeat(40) },
+      store,
+    );
     const destroyedIds: string[] = [];
     const dep = await store.deployments.insert({
       environmentId: ENV,
@@ -717,12 +1026,27 @@ describe("cleanupDeploymentContainer", () => {
 
 describe("rollbackTo", () => {
   it("redeploys the prior release at 100 and demotes the current live version", async () => {
-    const rA = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "1".repeat(40) }, store);
-    const deps = { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://a" } }), secrets: fakeSecrets() };
-    const depA = await deployRelease({ environmentId: ENV, releaseId: rA.id }, deps);
+    const rA = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "1".repeat(40) },
+      store,
+    );
+    const deps = {
+      store,
+      deployTarget: fakeDeployTarget({
+        health: { status: "live", url: "http://a" },
+      }),
+      secrets: fakeSecrets(),
+    };
+    const depA = await deployRelease(
+      { environmentId: ENV, releaseId: rA.id },
+      deps,
+    );
     expect(depA.status).toBe("live");
 
-    const rolled = await rollbackTo({ environmentId: ENV, releaseId: rA.id }, deps);
+    const rolled = await rollbackTo(
+      { environmentId: ENV, releaseId: rA.id },
+      deps,
+    );
     expect(rolled.status).toBe("live");
     expect(rolled.trafficWeight).toBe(100);
 
@@ -739,14 +1063,24 @@ describe("team delegation env injection (D3)", () => {
   const OLD_KEY = process.env.EDEN_SECRETS_KEY;
   beforeEach(() => {
     process.env.EDEN_SECRETS_KEY = "a".repeat(64); // 32-byte key as 64 hex chars
-    store.seedAgent({ id: "pm", projectId: PROJECT, name: "pm", root: "agents/pm/agent" });
+    store.seedAgent({
+      id: "pm",
+      projectId: PROJECT,
+      name: "pm",
+      root: "agents/pm/agent",
+    });
     store.seedAgent({
       id: "deployer",
       projectId: PROJECT,
       name: "deployer",
       root: "agents/deployer/agent",
     });
-    store.seedEnvironment({ id: "env_pm", projectId: PROJECT, agentId: "pm", name: "production" });
+    store.seedEnvironment({
+      id: "env_pm",
+      projectId: PROJECT,
+      agentId: "pm",
+      name: "production",
+    });
   });
   afterEach(() => {
     if (OLD_KEY === undefined) delete process.env.EDEN_SECRETS_KEY;
@@ -798,7 +1132,10 @@ describe("team delegation env injection (D3)", () => {
     expect(env.EDEN_TEAM_URL).toBeTruthy();
     expect(env.EDEN_TEAM_TOKEN.startsWith("ednt_")).toBe(true);
     // Roster excludes self (pm); the description blurb is the deployer's first paragraph.
-    const teammates = JSON.parse(env.EDEN_TEAMMATES) as { name: string; role: string }[];
+    const teammates = JSON.parse(env.EDEN_TEAMMATES) as {
+      name: string;
+      role: string;
+    }[];
     expect(teammates).toContainEqual({
       name: "deployer",
       role: "Deploys builds to production.",
@@ -816,7 +1153,10 @@ describe("team delegation env injection (D3)", () => {
       { environmentId: ENV, releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
         secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
       },
     );
@@ -846,15 +1186,22 @@ describe("Codex model-gateway env injection (issue #28)", () => {
       { environmentId: ENV, releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
         // A user secret trying to smuggle its own gateway token — Eden must strip it.
         secrets: fakeSecrets({
           OPENROUTER_API_KEY: "k",
           EDEN_MODEL_GATEWAY_TOKEN: "smuggled",
           EDEN_MODEL_GATEWAY_URL: "http://evil",
         }),
-        workspaceModelKey: async () => null,
+        providerDeploymentEnv: async () => ({}),
         hasCodexConnection: async () => true,
+        sandboxExposedNames: async () => [
+          "EDEN_MODEL_GATEWAY_TOKEN",
+          "EDEN_MODEL_GATEWAY_URL",
+        ],
       },
     );
     expect(dep.status).toBe("live");
@@ -862,6 +1209,7 @@ describe("Codex model-gateway env injection (issue #28)", () => {
     expect(env.EDEN_MODEL_GATEWAY_URL).toContain("/api/gateway/v1");
     expect(env.EDEN_MODEL_GATEWAY_URL).not.toBe("http://evil");
     expect(verifyGatewayToken(env.EDEN_MODEL_GATEWAY_TOKEN)).toBe(ORG);
+    expect(env).not.toHaveProperty("EDEN_SANDBOX_ENV");
   });
 
   it("lets a codex-only org (no OpenRouter key) deploy — the gateway token satisfies the credential check", async () => {
@@ -874,9 +1222,12 @@ describe("Codex model-gateway env injection (issue #28)", () => {
       { environmentId: ENV, releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
         secrets: fakeSecrets(),
-        workspaceModelKey: async () => null,
+        providerDeploymentEnv: async () => ({}),
         hasCodexConnection: async () => true,
       },
     );
@@ -895,9 +1246,15 @@ describe("Codex model-gateway env injection (issue #28)", () => {
       { environmentId: ENV, releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
-        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
-        workspaceModelKey: async () => "k",
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "smuggled" }),
+        providerDeploymentEnv: async () => ({
+          EDEN_PROVIDER_OPENROUTER_ABCDEFGHIJKL_API_KEY: "k",
+          OPENROUTER_API_KEY: "k",
+        }),
         hasCodexConnection: async () => false,
       },
     );
@@ -908,15 +1265,34 @@ describe("Codex model-gateway env injection (issue #28)", () => {
 
 describe("setTrafficSplit", () => {
   it("applies weights within the environment and clamps negatives to 0", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "2".repeat(40) }, store);
-    const deps = { store, deployTarget: fakeDeployTarget({ health: { status: "live", url: "http://y" } }), secrets: fakeSecrets() };
-    const d1 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
-    const d2 = await deployRelease({ environmentId: ENV, releaseId: release.id }, deps);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "2".repeat(40) },
+      store,
+    );
+    const deps = {
+      store,
+      deployTarget: fakeDeployTarget({
+        health: { status: "live", url: "http://y" },
+      }),
+      secrets: fakeSecrets(),
+    };
+    const d1 = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      deps,
+    );
+    const d2 = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      deps,
+    );
 
-    await setTrafficSplit(ENV, [
-      { deploymentId: d1.id, weight: 90 },
-      { deploymentId: d2.id, weight: 10 },
-    ], store);
+    await setTrafficSplit(
+      ENV,
+      [
+        { deploymentId: d1.id, weight: 90 },
+        { deploymentId: d2.id, weight: 10 },
+      ],
+      store,
+    );
     let all = await listDeployments(ENV, store);
     expect(all.find((d) => d.id === d1.id)?.trafficWeight).toBe(90);
     expect(all.find((d) => d.id === d2.id)?.trafficWeight).toBe(10);
@@ -955,14 +1331,24 @@ describe("shared Discord app env injection (issue #32)", () => {
   it("injects the public credentials + send URL and strips the bot token, even if a user secret sets it", async () => {
     configureSharedApp();
     const deployedEnvs: Record<string, string>[] = [];
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "f6".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "f6".repeat(20) },
+      store,
+    );
     await deployRelease(
       { environmentId: ENV, releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
         // A user secret trying to smuggle a bot token — Eden must strip it.
-        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k", DISCORD_BOT_TOKEN: "user_bot", DISCORD_APPLICATION_ID: "user_app" }),
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          DISCORD_BOT_TOKEN: "user_bot",
+          DISCORD_APPLICATION_ID: "user_app",
+        }),
       },
     );
     const env = deployedEnvs[0];
@@ -978,12 +1364,18 @@ describe("shared Discord app env injection (issue #32)", () => {
     const deployedEnvs: Record<string, string>[] = [];
     // The default seeded AGENT has root "agent" — never a team member, so the team block above
     // sets no token; the Discord block must mint one or discord-send-message can't authenticate.
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "b8".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "b8".repeat(20) },
+      store,
+    );
     const dep = await deployRelease(
       { environmentId: ENV, releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
         secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
       },
     );
@@ -995,15 +1387,31 @@ describe("shared Discord app env injection (issue #32)", () => {
   it("keeps the team block's EDEN_TEAM_TOKEN for a team member (??= never clobbers)", async () => {
     configureSharedApp();
     const { verifyDelegationToken } = await import("~/team/token.server");
-    store.seedAgent({ id: "pm2", projectId: PROJECT, name: "pm2", root: "agents/pm2/agent" });
-    store.seedEnvironment({ id: "env_pm2", projectId: PROJECT, agentId: "pm2", name: "production" });
+    store.seedAgent({
+      id: "pm2",
+      projectId: PROJECT,
+      name: "pm2",
+      root: "agents/pm2/agent",
+    });
+    store.seedEnvironment({
+      id: "env_pm2",
+      projectId: PROJECT,
+      agentId: "pm2",
+      name: "production",
+    });
     const deployedEnvs: Record<string, string>[] = [];
-    const release = await createRelease({ projectId: PROJECT, agentId: "pm2", gitSha: "c9".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: "pm2", gitSha: "c9".repeat(20) },
+      store,
+    );
     const dep = await deployRelease(
       { environmentId: "env_pm2", releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
         secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
       },
     );
@@ -1018,13 +1426,23 @@ describe("shared Discord app env injection (issue #32)", () => {
     delete process.env.EDEN_DISCORD_BOT_TOKEN;
     delete process.env.EDEN_DISCORD_PUBLIC_KEY;
     const deployedEnvs: Record<string, string>[] = [];
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "a7".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "a7".repeat(20) },
+      store,
+    );
     await deployRelease(
       { environmentId: ENV, releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
-        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k", DISCORD_BOT_TOKEN: "user_bot", DISCORD_APPLICATION_ID: "user_app" }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          DISCORD_BOT_TOKEN: "user_bot",
+          DISCORD_APPLICATION_ID: "user_app",
+        }),
       },
     );
     const env = deployedEnvs[0];
@@ -1038,12 +1456,18 @@ describe("shared Discord app env injection (issue #32)", () => {
 describe("Google connection env injection (issue #30)", () => {
   it("leaves a self-hoster's manually-set GOOGLE_OAUTH_* untouched when there's no grant to broker", async () => {
     const deployedEnvs: Record<string, string>[] = [];
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "d1".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "d1".repeat(20) },
+      store,
+    );
     await deployRelease(
       { environmentId: ENV, releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
         // The self-hoster runs their OWN Google client + token — no broker grant exists.
         secrets: fakeSecrets({
           OPENROUTER_API_KEY: "k",
@@ -1062,14 +1486,23 @@ describe("Google connection env injection (issue #30)", () => {
 
   it("replaces user-set GOOGLE_OAUTH_* with Eden's brokered creds when a grant is injected", async () => {
     const deployedEnvs: Record<string, string>[] = [];
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "d2".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "d2".repeat(20) },
+      store,
+    );
     await deployRelease(
       { environmentId: ENV, releaseId: release.id },
       {
         store,
-        deployTarget: fakeDeployTarget({ health: { status: "live" }, deployedEnvs }),
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
         // A user secret trying to shadow the brokered token — Eden owns these keys when it brokers.
-        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k", GOOGLE_OAUTH_REFRESH_TOKEN: "user_token" }),
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          GOOGLE_OAUTH_REFRESH_TOKEN: "user_token",
+        }),
         connectionGrantEnv: async () => ({
           GOOGLE_OAUTH_CLIENT_ID: "broker_client",
           GOOGLE_OAUTH_CLIENT_SECRET: "broker_secret",
@@ -1120,7 +1553,10 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
   });
 
   it("passes the lock's required google scopes through to connectionGrantEnv", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "aa".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "aa".repeat(20) },
+      store,
+    );
     const seen: (string | null | undefined)[] = [];
     await deployRelease(
       { environmentId: ENV, releaseId: release.id },
@@ -1139,7 +1575,10 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
   });
 
   it("fails the deploy when connectionGrantEnv rejects an under-scoped grant", async () => {
-    const release = await createRelease({ projectId: PROJECT, agentId: AGENT, gitSha: "bb".repeat(20) }, store);
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "bb".repeat(20) },
+      store,
+    );
     const dep = await deployRelease(
       { environmentId: ENV, releaseId: release.id },
       {
@@ -1148,7 +1587,8 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
         secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
         agentLock: async () => LOCK,
         connectionGrantEnv: async (_scope, requiredScopes) => {
-          if (requiredScopes) throw new Error("missing required permission(s): spreadsheets");
+          if (requiredScopes)
+            throw new Error("missing required permission(s): spreadsheets");
           return {};
         },
       },

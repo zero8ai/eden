@@ -55,8 +55,14 @@ beforeEach(() => {
 
 describe("staging", () => {
   it("persists a draft per path and re-save overwrites it (refresh-proof)", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/instructions.md", content: "v1" }, store);
-    await stageDraft({ projectId: PROJECT.id, path: "agent/instructions.md", content: "v2" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/instructions.md", content: "v1" },
+      store,
+    );
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/instructions.md", content: "v2" },
+      store,
+    );
 
     const draft = await getDraft(PROJECT.id, "agent/instructions.md", store);
     expect(draft?.content).toBe("v2");
@@ -64,20 +70,37 @@ describe("staging", () => {
   });
 
   it("discards path-exactly", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "a" }, store);
-    await stageDraft({ projectId: PROJECT.id, path: "agent/b.md", content: "b" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/a.md", content: "a" },
+      store,
+    );
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/b.md", content: "b" },
+      store,
+    );
     await discardDrafts(PROJECT.id, ["agent/a.md"], store);
 
     expect(await getDraft(PROJECT.id, "agent/a.md", store)).toBeNull();
-    expect((await getDraft(PROJECT.id, "agent/b.md", store))?.content).toBe("b");
+    expect((await getDraft(PROJECT.id, "agent/b.md", store))?.content).toBe(
+      "b",
+    );
   });
 });
 
 describe("publishDrafts", () => {
   it("publishes ONLY the selected drafts as one change-set and keeps the rest staged", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "A" }, store);
-    await stageDraft({ projectId: PROJECT.id, path: "agent/b.md", content: "B" }, store);
-    await stageDraft({ projectId: PROJECT.id, path: "agent/c.md", content: "C" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/a.md", content: "A" },
+      store,
+    );
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/b.md", content: "B" },
+      store,
+    );
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/c.md", content: "C" },
+      store,
+    );
 
     const propose = vi.fn().mockResolvedValue(proposed);
     const change = await publishDrafts(
@@ -103,14 +126,24 @@ describe("publishDrafts", () => {
   });
 
   it("uses the single path as the title for a one-file publish", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/tools/x.ts", content: "X" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/tools/x.ts", content: "X" },
+      store,
+    );
     const propose = vi.fn().mockResolvedValue(proposed);
-    await publishDrafts({ project: PROJECT, paths: ["agent/tools/x.ts"] }, store, propose);
+    await publishDrafts(
+      { project: PROJECT, paths: ["agent/tools/x.ts"] },
+      store,
+      propose,
+    );
     expect(propose.mock.calls[0][2].title).toBe("Update agent/tools/x.ts");
   });
 
   it("rejects an empty selection", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "A" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/a.md", content: "A" },
+      store,
+    );
     await expect(
       publishDrafts({ project: PROJECT, paths: [] }, store, vi.fn()),
     ).rejects.toThrow(/No staged changes selected/);
@@ -118,11 +151,17 @@ describe("publishDrafts", () => {
 
   it("skips the build gate for an assistant-only (.eden/assistant) changeset", async () => {
     await stageDraft(
-      { projectId: PROJECT.id, path: ".eden/assistant/instructions.md", content: "hi" },
+      {
+        projectId: PROJECT.id,
+        path: ".eden/assistant/instructions.md",
+        content: "hi",
+      },
       store,
     );
     const propose = vi.fn().mockResolvedValue(proposed);
-    const checkBuild = vi.fn().mockResolvedValue({ ok: false, output: "should not run" });
+    const checkBuild = vi
+      .fn()
+      .mockResolvedValue({ ok: false, output: "should not run" });
     await publishDrafts(
       { project: PROJECT, paths: [".eden/assistant/instructions.md"] },
       store,
@@ -135,14 +174,24 @@ describe("publishDrafts", () => {
 
   it("still runs the build gate when a member file is in the selection", async () => {
     await stageDraft(
-      { projectId: PROJECT.id, path: ".eden/assistant/instructions.md", content: "hi" },
+      {
+        projectId: PROJECT.id,
+        path: ".eden/assistant/instructions.md",
+        content: "hi",
+      },
       store,
     );
-    await stageDraft({ projectId: PROJECT.id, path: "agent/tools/x.ts", content: "X" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/tools/x.ts", content: "X" },
+      store,
+    );
     const propose = vi.fn().mockResolvedValue(proposed);
     const checkBuild = vi.fn().mockResolvedValue({ ok: true });
     await publishDrafts(
-      { project: PROJECT, paths: [".eden/assistant/instructions.md", "agent/tools/x.ts"] },
+      {
+        project: PROJECT,
+        paths: [".eden/assistant/instructions.md", "agent/tools/x.ts"],
+      },
       store,
       propose,
       checkBuild,
@@ -151,10 +200,17 @@ describe("publishDrafts", () => {
   });
 
   it("keeps drafts staged when the propose call fails", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "A" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/a.md", content: "A" },
+      store,
+    );
     const propose = vi.fn().mockRejectedValue(new Error("github down"));
     await expect(
-      publishDrafts({ project: PROJECT, paths: ["agent/a.md"] }, store, propose),
+      publishDrafts(
+        { project: PROJECT, paths: ["agent/a.md"] },
+        store,
+        propose,
+      ),
     ).rejects.toThrow("github down");
     // Nothing was deleted — the human can retry.
     expect(await listDrafts(PROJECT.id, store)).toHaveLength(1);
@@ -163,7 +219,10 @@ describe("publishDrafts", () => {
 
 describe("deletion drafts", () => {
   it("stageDeletions stacks null-content drafts alongside edits (one change-set)", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/agent.ts", content: "model" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/agent.ts", content: "model" },
+      store,
+    );
     await stageDeletions(
       { projectId: PROJECT.id, paths: ["agent/schedules/daily.md"] },
       store,
@@ -171,17 +230,30 @@ describe("deletion drafts", () => {
 
     const drafts = await listDrafts(PROJECT.id, store);
     expect(drafts).toHaveLength(2);
-    expect(drafts.find((d) => d.path === "agent/schedules/daily.md")?.content).toBeNull();
+    expect(
+      drafts.find((d) => d.path === "agent/schedules/daily.md")?.content,
+    ).toBeNull();
   });
 
   it("a deletion supersedes a staged edit on the same path", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/tools/x.ts", content: "edit" }, store);
-    await stageDeletions({ projectId: PROJECT.id, paths: ["agent/tools/x.ts"] }, store);
-    expect((await getDraft(PROJECT.id, "agent/tools/x.ts", store))?.content).toBeNull();
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/tools/x.ts", content: "edit" },
+      store,
+    );
+    await stageDeletions(
+      { projectId: PROJECT.id, paths: ["agent/tools/x.ts"] },
+      store,
+    );
+    expect(
+      (await getDraft(PROJECT.id, "agent/tools/x.ts", store))?.content,
+    ).toBeNull();
   });
 
   it("publishes edits and deletions as ONE change request (null content = delete)", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/agent.ts", content: "model" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/agent.ts", content: "model" },
+      store,
+    );
     await stageDeletions(
       { projectId: PROJECT.id, paths: ["agent/schedules/daily.md"] },
       store,
@@ -189,7 +261,10 @@ describe("deletion drafts", () => {
     const propose = vi.fn().mockResolvedValue(proposed);
 
     await publishDrafts(
-      { project: PROJECT, paths: ["agent/agent.ts", "agent/schedules/daily.md"] },
+      {
+        project: PROJECT,
+        paths: ["agent/agent.ts", "agent/schedules/daily.md"],
+      },
       store,
       propose,
     );
@@ -197,19 +272,32 @@ describe("deletion drafts", () => {
     expect(propose).toHaveBeenCalledTimes(1);
     const { files } = propose.mock.calls[0][2];
     expect(files).toContainEqual({ path: "agent/agent.ts", content: "model" });
-    expect(files).toContainEqual({ path: "agent/schedules/daily.md", content: null });
+    expect(files).toContainEqual({
+      path: "agent/schedules/daily.md",
+      content: null,
+    });
     expect(await listDrafts(PROJECT.id, store)).toHaveLength(0);
   });
 
   it("titles a one-file deletion publish as a removal", async () => {
-    await stageDeletions({ projectId: PROJECT.id, paths: ["agent/tools/x.ts"] }, store);
+    await stageDeletions(
+      { projectId: PROJECT.id, paths: ["agent/tools/x.ts"] },
+      store,
+    );
     const propose = vi.fn().mockResolvedValue(proposed);
-    await publishDrafts({ project: PROJECT, paths: ["agent/tools/x.ts"] }, store, propose);
+    await publishDrafts(
+      { project: PROJECT, paths: ["agent/tools/x.ts"] },
+      store,
+      propose,
+    );
     expect(propose.mock.calls[0][2].title).toBe("Remove agent/tools/x.ts");
   });
 
   it("the build gate sees the deletion (null overlay entry checks the post-merge tree)", async () => {
-    await stageDeletions({ projectId: PROJECT.id, paths: ["agent/tools/x.ts"] }, store);
+    await stageDeletions(
+      { projectId: PROJECT.id, paths: ["agent/tools/x.ts"] },
+      store,
+    );
     const checkBuild = vi.fn().mockResolvedValue({ ok: true });
     await publishDrafts(
       { project: PROJECT, paths: ["agent/tools/x.ts"] },
@@ -225,14 +313,23 @@ describe("deletion drafts", () => {
 
 describe("publish gate (build check)", () => {
   it("a failing check blocks the change request and keeps drafts staged", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/tools/w.ts", content: "bad" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/tools/w.ts", content: "bad" },
+      store,
+    );
     const propose = vi.fn().mockResolvedValue(proposed);
-    const failCheck = vi
-      .fn()
-      .mockResolvedValue({ ok: false, output: "'eve' does not provide defineTool" });
+    const failCheck = vi.fn().mockResolvedValue({
+      ok: false,
+      output: "'eve' does not provide defineTool",
+    });
 
     await expect(
-      publishDrafts({ project: PROJECT, paths: ["agent/tools/w.ts"] }, store, propose, failCheck),
+      publishDrafts(
+        { project: PROJECT, paths: ["agent/tools/w.ts"] },
+        store,
+        propose,
+        failCheck,
+      ),
     ).rejects.toThrow(/Build check failed[\s\S]*does not provide defineTool/);
 
     expect(propose).not.toHaveBeenCalled(); // no branch, no PR
@@ -240,8 +337,14 @@ describe("publish gate (build check)", () => {
   });
 
   it("checks exactly the SELECTED drafts against the default branch", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "A" }, store);
-    await stageDraft({ projectId: PROJECT.id, path: "agent/b.md", content: "B" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/a.md", content: "A" },
+      store,
+    );
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/b.md", content: "B" },
+      store,
+    );
     const check = vi.fn().mockResolvedValue({ ok: true });
     await publishDrafts(
       { project: PROJECT, paths: ["agent/a.md"] },
@@ -261,22 +364,25 @@ describe("publish gate (build check)", () => {
   });
 
   it("normalizes stale OpenRouter package drafts before the build gate", async () => {
-    await stageDraft({
-      projectId: PROJECT.id,
-      path: "package.json",
-      content:
-        JSON.stringify(
-          {
-            dependencies: {
-              "@openrouter/ai-sdk-provider": "^2.10.0",
-              eve: "latest",
-              zod: "^3.23.0",
+    await stageDraft(
+      {
+        projectId: PROJECT.id,
+        path: "package.json",
+        content:
+          JSON.stringify(
+            {
+              dependencies: {
+                "@openrouter/ai-sdk-provider": "^2.10.0",
+                eve: "latest",
+                zod: "^3.23.0",
+              },
             },
-          },
-          null,
-          2,
-        ) + "\n",
-    }, store);
+            null,
+            2,
+          ) + "\n",
+      },
+      store,
+    );
     const check = vi.fn().mockResolvedValue({ ok: true });
     const propose = vi.fn().mockResolvedValue(proposed);
 
@@ -291,9 +397,11 @@ describe("publish gate (build check)", () => {
       (file: { path: string }) => file.path === "package.json",
     );
     expect(JSON.parse(checkedPackage.content).dependencies).toEqual({
-      "@ai-sdk/openai-compatible": "^3.0.5",
+      "@ai-sdk/anthropic": "^4.0.12",
+      "@ai-sdk/openai": "^4.0.11",
+      "@ai-sdk/openai-compatible": "^3.0.7",
       // "latest" gets pinned: the docker layer cache would keep serving whatever
-      // version the first image build installed (see ensureOpenRouterDependency).
+      // version the first image build installed (see ensureModelProviderDependencies).
       eve: "^0.22.0",
       zod: "^4.4.3",
     });
@@ -326,7 +434,8 @@ describe("publish gate (build check)", () => {
       {
         projectId: PROJECT.id,
         path: "agent/agent.ts",
-        content: "export default defineAgent({ model: openrouter.chatModel('m/x') });",
+        content:
+          "export default defineAgent({ model: openrouter.chatModel('m/x') });",
       },
       store,
     );
@@ -358,8 +467,11 @@ describe("publish gate (build check)", () => {
 
   it("heals a stale Eden-authored Dockerfile when the lock deletion would break its COPY", async () => {
     const repoPackage =
-      JSON.stringify({ dependencies: { "@openrouter/ai-sdk-provider": "^2.10.0" } }, null, 2) +
-      "\n";
+      JSON.stringify(
+        { dependencies: { "@openrouter/ai-sdk-provider": "^2.10.0" } },
+        null,
+        2,
+      ) + "\n";
     // Older Eden scaffolds committed a copy of the reference image that COPYs the lock
     // explicitly and runs a bare `npm ci` — deleting the lock breaks it at COPY.
     const staleDockerfile = `# Eden reference image for an eve agent (mirrors LocalDockerTarget.build()).
@@ -378,7 +490,8 @@ RUN npm ci
       {
         projectId: PROJECT.id,
         path: "agent/agent.ts",
-        content: "export default defineAgent({ model: openrouter.chatModel('m/x') });",
+        content:
+          "export default defineAgent({ model: openrouter.chatModel('m/x') });",
       },
       store,
     );
@@ -402,8 +515,11 @@ RUN npm ci
 
   it("never touches a user-authored Dockerfile (no Eden header)", async () => {
     const repoPackage =
-      JSON.stringify({ dependencies: { "@openrouter/ai-sdk-provider": "^2.10.0" } }, null, 2) +
-      "\n";
+      JSON.stringify(
+        { dependencies: { "@openrouter/ai-sdk-provider": "^2.10.0" } },
+        null,
+        2,
+      ) + "\n";
     readAgentFileMock.mockImplementation(async (_inst, _repo, path) => {
       if (path === "package.json") return repoPackage;
       if (path === "package-lock.json") return '{"lockfileVersion": 3}';
@@ -415,7 +531,8 @@ RUN npm ci
       {
         projectId: PROJECT.id,
         path: "agent/agent.ts",
-        content: "export default defineAgent({ model: openrouter.chatModel('m/x') });",
+        content:
+          "export default defineAgent({ model: openrouter.chatModel('m/x') });",
       },
       store,
     );
@@ -439,7 +556,9 @@ RUN npm ci
       JSON.stringify(
         {
           dependencies: {
-            "@ai-sdk/openai-compatible": "^3.0.5",
+            "@ai-sdk/anthropic": "^4.0.12",
+            "@ai-sdk/openai": "^4.0.11",
+            "@ai-sdk/openai-compatible": "^3.0.7",
             eve: "^0.22.0",
             zod: "^4.4.3",
           },
@@ -456,7 +575,8 @@ RUN npm ci
       {
         projectId: PROJECT.id,
         path: "agent/agent.ts",
-        content: "export default defineAgent({ model: openrouter.chatModel('m/x') });",
+        content:
+          "export default defineAgent({ model: openrouter.chatModel('m/x') });",
       },
       store,
     );
@@ -476,7 +596,9 @@ RUN npm ci
     expect(overlay.some((f) => f.path === "package-lock.json")).toBe(false);
     // The package overlay rides along (pre-existing behavior) but is byte-identical to the
     // repo's — which is exactly why the lock stays.
-    expect(overlay.find((f) => f.path === "package.json")?.content).toBe(repoPackage);
+    expect(overlay.find((f) => f.path === "package.json")?.content).toBe(
+      repoPackage,
+    );
   });
 
   it("stages shared root files unattributed, and a mixed selection checks the repo root", async () => {
@@ -513,7 +635,11 @@ RUN npm ci
       root: "agents/pm/agent",
     });
     const draft = await stageDraft(
-      { projectId: PROJECT.id, path: "agents/pm/agent/tools/plan.ts", content: "//" },
+      {
+        projectId: PROJECT.id,
+        path: "agents/pm/agent/tools/plan.ts",
+        content: "//",
+      },
       store,
     );
     expect(draft.agentId).toBe("agent_pm");
@@ -592,14 +718,25 @@ RUN npm ci
       root: "agents/reviewer/agent",
     });
     await stageDraft(
-      { projectId: PROJECT.id, path: "agents/pm/agent/channels/github.ts", content: "//" },
+      {
+        projectId: PROJECT.id,
+        path: "agents/pm/agent/channels/github.ts",
+        content: "//",
+      },
       store,
     );
     await stageDraft(
-      { projectId: PROJECT.id, path: "agents/reviewer/agent/channels/github.ts", content: "//" },
+      {
+        projectId: PROJECT.id,
+        path: "agents/reviewer/agent/channels/github.ts",
+        content: "//",
+      },
       store,
     );
-    await stageDraft({ projectId: PROJECT.id, path: "eden-lock.json", content: "{}" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "eden-lock.json", content: "{}" },
+      store,
+    );
 
     const check = vi.fn().mockResolvedValue({ ok: true });
     await publishDrafts(
@@ -638,20 +775,30 @@ RUN npm ci
       root: "agents/reviewer/agent",
     });
     await stageDraft(
-      { projectId: PROJECT.id, path: "agents/pm/agent/channels/github.ts", content: "//" },
+      {
+        projectId: PROJECT.id,
+        path: "agents/pm/agent/channels/github.ts",
+        content: "//",
+      },
       store,
     );
     await stageDraft(
-      { projectId: PROJECT.id, path: "agents/reviewer/agent/channels/github.ts", content: "bad" },
+      {
+        projectId: PROJECT.id,
+        path: "agents/reviewer/agent/channels/github.ts",
+        content: "bad",
+      },
       store,
     );
 
     const propose = vi.fn().mockResolvedValue(proposed);
-    const check = vi.fn().mockImplementation(({ agentRoot }) =>
-      agentRoot === "agents/reviewer/agent"
-        ? { ok: false, output: "TS2304: Cannot find name 'bad'." }
-        : { ok: true },
-    );
+    const check = vi
+      .fn()
+      .mockImplementation(({ agentRoot }) =>
+        agentRoot === "agents/reviewer/agent"
+          ? { ok: false, output: "TS2304: Cannot find name 'bad'." }
+          : { ok: true },
+      );
 
     await expect(
       publishDrafts(
@@ -671,7 +818,10 @@ RUN npm ci
   });
 
   it("a skipped check (no toolchain) still publishes", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: "agent/a.md", content: "A" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/a.md", content: "A" },
+      store,
+    );
     const propose = vi.fn().mockResolvedValue(proposed);
     const change = await publishDrafts(
       { project: PROJECT, paths: ["agent/a.md"] },
@@ -693,7 +843,11 @@ describe("orphaned drafts (issue #67)", () => {
       root: "agents/engineer/agent",
     });
     await stageDraft(
-      { projectId: PROJECT.id, path: "agents/cloudflare-dev/package.json", content: "{}" },
+      {
+        projectId: PROJECT.id,
+        path: "agents/cloudflare-dev/package.json",
+        content: "{}",
+      },
       store,
     );
     const propose = vi.fn().mockResolvedValue(proposed);
@@ -718,14 +872,25 @@ describe("orphaned drafts (issue #67)", () => {
 
   it("does not flag a genuine new-member install (agent-dir draft backs the root)", async () => {
     await stageDraft(
-      { projectId: PROJECT.id, path: "agents/deployer/agent/instructions.md", content: "# deployer" },
+      {
+        projectId: PROJECT.id,
+        path: "agents/deployer/agent/instructions.md",
+        content: "# deployer",
+      },
       store,
     );
     await stageDraft(
-      { projectId: PROJECT.id, path: "agents/deployer/package.json", content: "{}" },
+      {
+        projectId: PROJECT.id,
+        path: "agents/deployer/package.json",
+        content: "{}",
+      },
       store,
     );
-    await stageDraft({ projectId: PROJECT.id, path: "eden-lock.json", content: "{}" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: "eden-lock.json", content: "{}" },
+      store,
+    );
     const propose = vi.fn().mockResolvedValue(proposed);
     const check = vi.fn().mockResolvedValue({ ok: true });
     const listRepoPaths = vi.fn().mockResolvedValue([]);
@@ -751,7 +916,11 @@ describe("orphaned drafts (issue #67)", () => {
 
   it("does not flag a member absent from a stale roster but present in the repo tree", async () => {
     await stageDraft(
-      { projectId: PROJECT.id, path: "agents/analyst/package.json", content: "{}" },
+      {
+        projectId: PROJECT.id,
+        path: "agents/analyst/package.json",
+        content: "{}",
+      },
       store,
     );
     const propose = vi.fn().mockResolvedValue(proposed);
@@ -759,7 +928,10 @@ describe("orphaned drafts (issue #67)", () => {
     // The repo already has analyst's agent code — the roster is merely stale.
     const listRepoPaths = vi
       .fn()
-      .mockResolvedValue(["agents/analyst/agent/agent.ts", "agents/analyst/package.json"]);
+      .mockResolvedValue([
+        "agents/analyst/agent/agent.ts",
+        "agents/analyst/package.json",
+      ]);
 
     await publishDrafts(
       { project: PROJECT, paths: ["agents/analyst/package.json"] },
@@ -800,7 +972,9 @@ describe("findOrphanedDrafts (pure)", () => {
 
   it("is empty when the repo tree backs the member", () => {
     const d = draft("agents/analyst/package.json", "{}");
-    expect(findOrphanedDrafts([], ["agents/analyst/agent/agent.ts"], [d])).toEqual([]);
+    expect(
+      findOrphanedDrafts([], ["agents/analyst/agent/agent.ts"], [d]),
+    ).toEqual([]);
   });
 
   it("is empty when a sibling agent-dir draft (re)creates the member", () => {
@@ -838,16 +1012,28 @@ describe("resolveFileView", () => {
       ) as FileViewDeps["readFile"],
       findOpenChange: vi.fn(async () =>
         pending
-          ? { number: 7, title: "Update agent files", branch: "eden/publish-x", url: "u" }
+          ? {
+              number: 7,
+              title: "Update agent files",
+              branch: "eden/publish-x",
+              url: "u",
+            }
           : null,
       ) as FileViewDeps["findOpenChange"],
     };
   }
 
   it("a staged draft wins over everything (it's the newest edit)", async () => {
-    await stageDraft({ projectId: PROJECT.id, path: PATH, content: "draft" }, store);
+    await stageDraft(
+      { projectId: PROJECT.id, path: PATH, content: "draft" },
+      store,
+    );
     const view = await resolveFileView(PROJECT, PATH, store, deps());
-    expect(view).toMatchObject({ content: "draft", source: "draft", existsInRepo: true });
+    expect(view).toMatchObject({
+      content: "draft",
+      source: "draft",
+      existsInRepo: true,
+    });
   });
 
   it("a staged DELETION shows the repo content flagged as stagedDeletion", async () => {
@@ -871,8 +1057,17 @@ describe("resolveFileView", () => {
   });
 
   it("falls back to repo content when nothing is staged or pending", async () => {
-    const view = await resolveFileView(PROJECT, PATH, store, deps({ pending: false }));
-    expect(view).toMatchObject({ content: "repo", source: "repo", change: null });
+    const view = await resolveFileView(
+      PROJECT,
+      PATH,
+      store,
+      deps({ pending: false }),
+    );
+    expect(view).toMatchObject({
+      content: "repo",
+      source: "repo",
+      change: null,
+    });
   });
 
   it("a change request that ADDS the file still resolves (repo has nothing)", async () => {
@@ -888,5 +1083,4 @@ describe("resolveFileView", () => {
       existsInRepo: false,
     });
   });
-
 });

@@ -18,6 +18,7 @@ import { makeFakeStore, type FakeStore } from "../fakes/store";
 
 const PROJECT = {
   id: "proj_1",
+  orgId: "org_1",
   repoInstallationId: "inst_1",
   repoOwner: "acme",
   repoName: "agent",
@@ -48,7 +49,27 @@ function fakeDeps(files: Record<string, string>): StageModelDeps {
   return {
     readFile: async (_installationId, _repo, path) => files[path] ?? null,
     findOpenChange: async () => null,
-    lookupModel: async () => null,
+    lookupModel: async (_orgId, model) =>
+      model.startsWith("openrouter/") || model.startsWith("openai/")
+        ? {
+            id: model,
+            name: model,
+            description: null,
+            contextWindow: null,
+            maxOutputTokens: null,
+            tags: [],
+            inputPerMTok: null,
+            outputPerMTok: null,
+            providers: [],
+            upstreamModelId: model.split("/").slice(2).join("/"),
+            provider: model.startsWith("openai/") ? "openai" : "openrouter",
+            providerName: model.startsWith("openai/")
+              ? "OpenAI Platform"
+              : "OpenRouter",
+            connectionId: "abcdefghijkl",
+            connectionLabel: "Test",
+          }
+        : null,
   };
 }
 
@@ -63,7 +84,12 @@ beforeEach(() => {
 describe("stageModelChange", () => {
   it("stages agent.ts with the dynamic wrapper and the package.json dependency bumps", async () => {
     const result = await stageModelChange(
-      { project: PROJECT, root: "agent", model: "openai/gpt-5.1", createdBy: "user_1" },
+      {
+        project: PROJECT,
+        root: "agent",
+        model: "openai/abcdefghijkl/gpt-5.1",
+        createdBy: "user_1",
+      },
       store,
       fakeDeps({ "agent/agent.ts": STATIC_AGENT_TS, "package.json": PKG }),
     );
@@ -71,17 +97,24 @@ describe("stageModelChange", () => {
     expect(result).toEqual({ ok: true });
     const agentDraft = await getDraft(PROJECT.id, "agent/agent.ts", store);
     expect(hasDynamicModel(agentDraft?.content)).toBe(true);
-    expect(readModel(agentDraft!.content!)).toBe("openai/gpt-5.1");
+    expect(readModel(agentDraft!.content!)).toBe("openai/abcdefghijkl/gpt-5.1");
     const pkg = JSON.parse(
       (await getDraft(PROJECT.id, "package.json", store))!.content!,
     ) as { dependencies: Record<string, string> };
-    expect(pkg.dependencies["@ai-sdk/openai-compatible"]).toBe("^3.0.5");
+    expect(pkg.dependencies["@ai-sdk/anthropic"]).toBe("^4.0.12");
+    expect(pkg.dependencies["@ai-sdk/openai"]).toBe("^4.0.11");
+    expect(pkg.dependencies["@ai-sdk/openai-compatible"]).toBe("^3.0.7");
     expect(pkg.dependencies.eve).toBe("^0.22.0"); // < 0.22 can't provide defineDynamic
   });
 
   it("reports invalid package.json instead of staging half a change", async () => {
     const result = await stageModelChange(
-      { project: PROJECT, root: "agent", model: "openai/gpt-5.1", createdBy: null },
+      {
+        project: PROJECT,
+        root: "agent",
+        model: "openai/abcdefghijkl/gpt-5.1",
+        createdBy: null,
+      },
       store,
       fakeDeps({ "agent/agent.ts": STATIC_AGENT_TS, "package.json": "{ nope" }),
     );
@@ -89,6 +122,30 @@ describe("stageModelChange", () => {
     expect(result).toEqual({
       ok: false,
       error: expect.stringContaining("not valid JSON"),
+    });
+    expect(await getDraft(PROJECT.id, "agent/agent.ts", store)).toBeNull();
+  });
+
+  it("rejects a model that is not owned by an active workspace connection", async () => {
+    const deps = fakeDeps({
+      "agent/agent.ts": STATIC_AGENT_TS,
+      "package.json": PKG,
+    });
+    deps.lookupModel = async () => null;
+    const result = await stageModelChange(
+      {
+        project: PROJECT,
+        root: "agent",
+        model: "openai/zzzzzzzzzzzz/gpt-5.1",
+        createdBy: "user_1",
+      },
+      store,
+      deps,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: expect.stringContaining("active provider connection"),
     });
     expect(await getDraft(PROJECT.id, "agent/agent.ts", store)).toBeNull();
   });
@@ -111,7 +168,10 @@ describe("stageModelSwitchingUpgrade", () => {
   });
 
   it("is idempotent — a second run re-stages identical content", async () => {
-    const deps = fakeDeps({ "agent/agent.ts": STATIC_AGENT_TS, "package.json": PKG });
+    const deps = fakeDeps({
+      "agent/agent.ts": STATIC_AGENT_TS,
+      "package.json": PKG,
+    });
     const input = { project: PROJECT, root: "agent", createdBy: null };
 
     await stageModelSwitchingUpgrade(input, store, deps);

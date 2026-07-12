@@ -78,7 +78,7 @@ const browserSkillTpl: CatalogTemplate = {
     files: ["skills/agent-browser.md"],
     sandbox: {
       bootstrap: [
-        "if ! command -v chromium >/dev/null; then echo \"deb [arch=$(dpkg --print-architecture) trusted=yes] http://deb.debian.org/debian trixie main\" > /etc/apt/sources.list.d/debian-trixie.list && printf \"Package: *\\nPin: release n=trixie\\nPin-Priority: 100\\n\" > /etc/apt/preferences.d/debian-trixie && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends chromium && rm -rf /var/lib/apt/lists/*; fi",
+        'if ! command -v chromium >/dev/null; then echo "deb [arch=$(dpkg --print-architecture) trusted=yes] http://deb.debian.org/debian trixie main" > /etc/apt/sources.list.d/debian-trixie.list && printf "Package: *\\nPin: release n=trixie\\nPin-Priority: 100\\n" > /etc/apt/preferences.d/debian-trixie && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends chromium && rm -rf /var/lib/apt/lists/*; fi',
         "npm install -g agent-browser@0.31.1",
         "AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium agent-browser --version",
       ],
@@ -203,6 +203,68 @@ describe("planInstall — path mapping", () => {
       "agents/deployer/agent/instructions.md",
       "agents/deployer/agent/tools/cloudflare-deploy.ts",
     ]);
+  });
+
+  it("writes the supplied qualified model into new and existing agent templates only", () => {
+    const model = "anthropic/abcdefghijkl/claude-sonnet-4-5";
+    const newMember = planInstall({
+      template: agentTpl,
+      registry: REGISTRY,
+      repoPaths: [],
+      drafts: [],
+      packageJson: null,
+      lock: emptyLock(),
+      model,
+      target: { kind: "new-member", name: "deployer" },
+    });
+    expect(
+      newMember.writes.find(
+        (write) => write.path === "agents/deployer/agent/agent.ts",
+      )?.content,
+    ).toContain(`edenModel('${model}')`);
+    expect(
+      JSON.parse(
+        newMember.writes.find(
+          (write) => write.path === "agents/deployer/package.json",
+        )!.content,
+      ).dependencies,
+    ).toMatchObject({
+      "@ai-sdk/anthropic": "^4.0.12",
+      "@ai-sdk/openai": "^4.0.11",
+      "@ai-sdk/openai-compatible": "^3.0.7",
+      zod: "^4.4.3",
+    });
+
+    const existingMember = planInstall(
+      memberCtx({
+        template: agentTpl,
+        model,
+      }),
+    );
+    expect(
+      existingMember.writes.find(
+        (write) => write.path === "agents/pm/agent/agent.ts",
+      )?.content,
+    ).toContain(`edenModel('${model}')`);
+    expect(
+      JSON.parse(
+        existingMember.writes.find(
+          (write) => write.path === "agents/pm/package.json",
+        )!.content,
+      ).dependencies,
+    ).toMatchObject({
+      "@ai-sdk/anthropic": "^4.0.12",
+      "@ai-sdk/openai": "^4.0.11",
+      "@ai-sdk/openai-compatible": "^3.0.7",
+      zod: "^4.4.3",
+    });
+
+    const tool = planInstall(memberCtx({ model }));
+    expect(
+      tool.writes.find((write) =>
+        write.path.endsWith("tools/cloudflare-deploy.ts"),
+      )?.content,
+    ).toBe("export default {};\n");
   });
 });
 
@@ -453,7 +515,9 @@ describe("planInstall — sandbox setup", () => {
       (w) => w.path === "agents/pm/agent/sandbox/addons/agent-browser.ts",
     )!.content;
     expect(addon).toContain("npm install -g agent-browser@0.31.1");
-    expect(addon).toContain("apt-get install -y --no-install-recommends chromium");
+    expect(addon).toContain(
+      "apt-get install -y --no-install-recommends chromium",
+    );
     expect(addon).toContain("AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium");
 
     const sandbox = plan.writes.find(
@@ -868,10 +932,7 @@ describe("planInstall — resolved (composed) templates", () => {
       hash: "h",
       registry: REGISTRY,
       member: "x",
-      files: [
-        "agents/x/agent/agent.ts",
-        "agents/x/agent/channels/discord.ts",
-      ],
+      files: ["agents/x/agent/agent.ts", "agents/x/agent/channels/discord.ts"],
     };
     const discordChannel: CatalogTemplate = {
       manifest: {
@@ -969,7 +1030,9 @@ describe("planInstall — composite absorbs a standalone include install (issue 
     expect(plan.conflicts).toEqual([]);
     expect(plan.isUpdate).toBe(false);
     // Files the standalone owned that the composite doesn't re-ship are staged deletions.
-    expect(plan.deletions).toEqual(["agents/x/agent/sandbox/addons/discord.ts"]);
+    expect(plan.deletions).toEqual([
+      "agents/x/agent/sandbox/addons/discord.ts",
+    ]);
     // The reviewer is told an existing install was absorbed.
     expect(plan.warnings.some((w) => w.includes("Absorbs"))).toBe(true);
 

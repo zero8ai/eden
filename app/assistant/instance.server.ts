@@ -10,15 +10,25 @@ import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  assembleBundle,
+  defaultAuthoringDeps,
+  type AuthoringProject,
+} from "~/assistant/authoring.server";
 import type { Agent, DataStore, Environment, Release } from "~/data/ports";
 import { buildAssistantImage } from "~/deploy/eve-image.server";
 import { isVersionLabelCollision } from "~/deploy/versioning";
 import { enqueue } from "~/jobs/queue.server";
+import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
-  getWorkspaceAssistantModel,
-  getWorkspaceModelKey,
-} from "~/org/workspace.server";
-import { hasActiveCodexConnection } from "~/models/provider-connections.server";
+  getActiveModelConnection,
+  getProviderDeploymentEnv,
+  hasActiveCodexConnection,
+} from "~/models/provider-connections.server";
+import {
+  parseProviderModelReference,
+  providerConnectionEnvName,
+} from "~/models/provider-reference";
 import { gatewayBaseUrl } from "~/gateway/url.server";
 import { mintGatewayToken } from "~/gateway/token.server";
 import { getRuntime } from "~/seams/index.server";
@@ -28,13 +38,13 @@ import { mintAssistantToken } from "./token.server";
 const ASSISTANT_ENV = "assistant";
 const ASSISTANT_NAME = "assistant";
 const ASSISTANT_ROOT = ".eden/assistant";
-/** Eden's built-in fallback when neither a project override nor a workspace default is set.
- * Platform-wide default: a cheap, capable model so a silent default never runs up a real bill. */
-export const DEFAULT_MODEL = "z-ai/glm-5.2";
 
 /** Where the bundled template lives (mirrors the CatalogSource fixture reading <cwd>/catalog). */
 export function assistantTemplateDir(): string {
-  return process.env.EDEN_ASSISTANT_TEMPLATE_DIR ?? path.join(process.cwd(), "assistant-template");
+  return (
+    process.env.EDEN_ASSISTANT_TEMPLATE_DIR ??
+    path.join(process.cwd(), "assistant-template")
+  );
 }
 
 /** The fixed, Eden-owned layer — rendered read-only on the config page so it's inspectable. */
@@ -48,9 +58,10 @@ let cachedFixedLayer: AssistantFixedLayer | null = null;
 export async function assistantFixedLayer(): Promise<AssistantFixedLayer> {
   if (cachedFixedLayer) return cachedFixedLayer;
   const dir = assistantTemplateDir();
-  const instructions = await readFile(path.join(dir, "agent", "instructions.md"), "utf8").catch(
-    () => "",
-  );
+  const instructions = await readFile(
+    path.join(dir, "agent", "instructions.md"),
+    "utf8",
+  ).catch(() => "");
   const tools = await readdir(path.join(dir, "agent", "tools"))
     .then((names) =>
       names
@@ -74,7 +85,12 @@ export async function assistantTemplateHash(): Promise<string> {
     const entries = await readdir(path.join(dir, rel), { withFileTypes: true });
     for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       // Skip build artifacts / installed deps that aren't part of the source identity.
-      if (["node_modules", ".eve", ".output", ".git", ".workflow-data"].includes(e.name)) continue;
+      if (
+        ["node_modules", ".eve", ".output", ".git", ".workflow-data"].includes(
+          e.name,
+        )
+      )
+        continue;
       const child = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) await walk(child);
       else files.push(child);
@@ -123,7 +139,11 @@ export async function ensureAssistantAgent(
     const name = roster.some((a) => a.name === ASSISTANT_NAME)
       ? "assistant-internal"
       : ASSISTANT_NAME;
-    agent = await store.agents.createAssistant({ projectId, name, root: ASSISTANT_ROOT });
+    agent = await store.agents.createAssistant({
+      projectId,
+      name,
+      root: ASSISTANT_ROOT,
+    });
   }
   await store.environments.ensureDefault(projectId, agent.id); // guarantees ≥1 env
   const envs = await store.environments.listByAgent(agent.id);
@@ -134,7 +154,10 @@ export async function ensureAssistantAgent(
 }
 
 /** The assistant environment is named "assistant"; rename the seeded "default" to it. */
-async function renameFirstEnv(env: Environment, store: DataStore): Promise<Environment> {
+async function renameFirstEnv(
+  env: Environment,
+  store: DataStore,
+): Promise<Environment> {
   if (env.name === ASSISTANT_ENV) return env;
   await store.environments.rename(env.id, ASSISTANT_ENV).catch(() => {});
   const refreshed = await store.environments.findById(env.id);
@@ -144,8 +167,11 @@ async function renameFirstEnv(env: Environment, store: DataStore): Promise<Envir
 // ── Deploy env assembly (no user secrets, ever) ────────────────────────────────
 
 function edenApiUrl(): string {
-  if (process.env.EDEN_ASSISTANT_API_URL) return process.env.EDEN_ASSISTANT_API_URL;
-  const port = process.env.PORT ?? (process.env.NODE_ENV === "production" ? "3000" : "5173");
+  if (process.env.EDEN_ASSISTANT_API_URL)
+    return process.env.EDEN_ASSISTANT_API_URL;
+  const port =
+    process.env.PORT ??
+    (process.env.NODE_ENV === "production" ? "3000" : "5173");
   return `http://host.docker.internal:${port}`;
 }
 
@@ -153,30 +179,50 @@ function edenApiUrl(): string {
 export async function assistantEnv(input: {
   orgId: string;
   deploymentId: string;
+  /** Published per-project override; null/undefined inherits the workspace default. */
+  modelOverride?: string | null;
 }): Promise<Record<string, string>> {
-  const openRouterKey =
-    (await getWorkspaceModelKey(input.orgId).catch(() => null)) ??
-    process.env.OPENROUTER_API_KEY ??
-    null;
-  const hasCodex = await hasActiveCodexConnection(input.orgId).catch(() => false);
-  const model =
-    (await getWorkspaceAssistantModel(input.orgId).catch(() => null)) ?? DEFAULT_MODEL;
-  // A Codex-backed assistant model (issue #28) runs through Eden's gateway and needs no OpenRouter
-  // key; otherwise a key is required (the default model is an OpenRouter id).
-  if (!openRouterKey && !(hasCodex && model.startsWith("codex/"))) {
+  const configuredModel =
+    input.modelOverride ??
+    (await getWorkspaceAssistantModel(input.orgId).catch(() => null));
+  if (!configuredModel) {
     throw new Error(
-      "No OpenRouter key configured for the assistant. Add one in Org settings → Model providers " +
-        "(or set OPENROUTER_API_KEY in the server env), or connect an OpenAI Codex subscription and " +
-        "set a codex/… assistant model.",
+      "No assistant model is configured. Connect a model provider and select a workspace " +
+        "default or assistant model in Settings.",
+    );
+  }
+  const model = configuredModel;
+  const selected = parseProviderModelReference(model);
+  const [providerEnv, hasCodex, selectedConnection] = await Promise.all([
+    getProviderDeploymentEnv(input.orgId),
+    hasActiveCodexConnection(input.orgId),
+    selected
+      ? getActiveModelConnection(input.orgId, selected.connectionId)
+      : Promise.resolve(null),
+  ]);
+  const selectedEnvName =
+    selected && selected.provider !== "codex"
+      ? providerConnectionEnvName(selected.provider, selected.connectionId)
+      : null;
+  const hasSelectedCredential = selected
+    ? selected.provider === "codex"
+      ? selectedConnection?.provider === "codex"
+      : selectedConnection?.provider === selected.provider &&
+        Boolean(selectedEnvName && providerEnv[selectedEnvName])
+    : Boolean(providerEnv.OPENROUTER_API_KEY); // pre-Phase-2 bare OpenRouter model
+  if (!hasSelectedCredential) {
+    throw new Error(
+      "The assistant's selected model provider connection is not active. Connect it in " +
+        "Org settings → Model providers, then select an available assistant model.",
     );
   }
   // Built fresh (no user secrets to shadow); only the Eden-owned keys are set.
   const env: Record<string, string> = {
+    ...providerEnv,
     EDEN_ASSISTANT_MODEL: model,
     EDEN_API_URL: edenApiUrl(),
     EDEN_ASSISTANT_TOKEN: mintAssistantToken(input.deploymentId),
   };
-  if (openRouterKey) env.OPENROUTER_API_KEY = openRouterKey;
   if (hasCodex) {
     env.EDEN_MODEL_GATEWAY_URL = gatewayBaseUrl();
     env.EDEN_MODEL_GATEWAY_TOKEN = mintGatewayToken(input.orgId);
@@ -245,14 +291,19 @@ export async function runAssistantDeploy(
   // Build the shared image if this release hasn't recorded one yet (docker layer cache makes a
   // repeat build across projects cheap).
   if (!release.imageRef) {
-    const built = await buildAssistantImage({ imageRef, templateDir: assistantTemplateDir() });
+    const built = await buildAssistantImage({
+      imageRef,
+      templateDir: assistantTemplateDir(),
+    });
     await store.releases.setImageRef(release.id, built.imageRef);
     release = { ...release, imageRef: built.imageRef };
   }
 
   // Take over a pending/building row, else create one (visible immediately).
   const existing = await store.deployments.listByEnvironment(environment.id);
-  const takeover = existing.find((d) => d.status === "pending" || d.status === "building");
+  const takeover = existing.find(
+    (d) => d.status === "pending" || d.status === "building",
+  );
   const dep = takeover
     ? await store.deployments.update(takeover.id, { status: "building" })
     : await store.deployments.insert({
@@ -263,7 +314,15 @@ export async function runAssistantDeploy(
       });
 
   try {
-    const env = await assistantEnv({ orgId: project.orgId, deploymentId: dep.id });
+    const bundle = await assembleBundle(
+      project as AuthoringProject,
+      defaultAuthoringDeps(),
+    );
+    const env = await assistantEnv({
+      orgId: project.orgId,
+      deploymentId: dep.id,
+      modelOverride: bundle.model,
+    });
     const health = await runtime.deployTarget.deploy({
       deploymentId: dep.id,
       imageRef: release.imageRef ?? imageRef,
@@ -273,7 +332,8 @@ export async function runAssistantDeploy(
     if (health.status !== "live") {
       await store.deployments.update(dep.id, {
         status: "failed",
-        errorDetail: health.detail ?? "assistant instance did not become healthy",
+        errorDetail:
+          health.detail ?? "assistant instance did not become healthy",
       });
       return { status: "failed", url: null, deploymentId: dep.id };
     }
@@ -281,10 +341,16 @@ export async function runAssistantDeploy(
     for (const other of existing) {
       if (other.id !== dep.id && other.status === "live") {
         await runtime.deployTarget.stop(other.id).catch(() => {});
-        await store.deployments.update(other.id, { status: "stopped", trafficWeight: 0 });
+        await store.deployments.update(other.id, {
+          status: "stopped",
+          trafficWeight: 0,
+        });
       }
     }
-    await store.deployments.update(dep.id, { status: "live", url: health.url ?? null });
+    await store.deployments.update(dep.id, {
+      status: "live",
+      url: health.url ?? null,
+    });
     return { status: "live", url: health.url ?? null, deploymentId: dep.id };
   } catch (error) {
     await store.deployments.update(dep.id, {
@@ -303,7 +369,10 @@ export async function runAssistantDeploy(
 function isInflightDeploymentCollision(err: unknown): boolean {
   for (let e: unknown = err; e instanceof Error; e = e.cause) {
     const pg = e as Error & { code?: string; constraint_name?: string };
-    if (pg.code === "23505" && pg.constraint_name === "deployments_env_inflight_uq") {
+    if (
+      pg.code === "23505" &&
+      pg.constraint_name === "deployments_env_inflight_uq"
+    ) {
       return true;
     }
   }
@@ -347,13 +416,19 @@ export async function ensureAssistantInstance(
   };
 
   // A live deployment on the CURRENT template → use it (wake first if the container is stopped).
-  const live = deployments.find((d) => d.status === "live" && d.gitSha === currentSha);
+  const live = deployments.find(
+    (d) => d.status === "live" && d.gitSha === currentSha,
+  );
   if (live) {
     let url = live.url;
     if (!url) {
       const woke = await runtime.deployTarget.start(live.id).catch(() => null);
       url = woke?.url ?? null;
-      if (woke?.url) await store.deployments.update(live.id, { url: woke.url, status: "live" });
+      if (woke?.url)
+        await store.deployments.update(live.id, {
+          url: woke.url,
+          status: "live",
+        });
     }
     if (url) {
       return {
@@ -369,15 +444,22 @@ export async function ensureAssistantInstance(
   }
 
   // A stopped deployment on the current template → wake it.
-  const stopped = deployments.find((d) => d.status === "stopped" && d.gitSha === currentSha);
+  const stopped = deployments.find(
+    (d) => d.status === "stopped" && d.gitSha === currentSha,
+  );
   if (stopped) {
-    const health = await runtime.deployTarget.start(stopped.id).catch((error) => ({
-      status: "failed" as const,
-      url: undefined,
-      detail: error instanceof Error ? error.message : String(error),
-    }));
+    const health = await runtime.deployTarget
+      .start(stopped.id)
+      .catch((error) => ({
+        status: "failed" as const,
+        url: undefined,
+        detail: error instanceof Error ? error.message : String(error),
+      }));
     if (health.status === "live" && health.url) {
-      await store.deployments.update(stopped.id, { status: "live", url: health.url });
+      await store.deployments.update(stopped.id, {
+        status: "live",
+        url: health.url,
+      });
       return {
         ...base,
         status: "live",
@@ -391,7 +473,9 @@ export async function ensureAssistantInstance(
   }
 
   // Already provisioning?
-  const pending = deployments.find((d) => d.status === "pending" || d.status === "building");
+  const pending = deployments.find(
+    (d) => d.status === "pending" || d.status === "building",
+  );
   if (pending) {
     return {
       ...base,
@@ -425,9 +509,9 @@ export async function ensureAssistantInstance(
     // always the one that queued a job). Adopt the winner's row instead of failing — no second
     // row, no second job.
     if (!isInflightDeploymentCollision(error)) throw error;
-    const raced = (await store.deployments.listByEnvironment(environment.id)).find(
-      (d) => d.status === "pending" || d.status === "building",
-    );
+    const raced = (
+      await store.deployments.listByEnvironment(environment.id)
+    ).find((d) => d.status === "pending" || d.status === "building");
     if (!raced) {
       // The winner's row left pending/building in the gap between our insert and this re-read.
       // Vanishingly rare (a deploy takes far longer than a DB round-trip); surface a clear
@@ -447,7 +531,12 @@ export async function ensureAssistantInstance(
       gitSha: raced.gitSha,
     };
   }
-  await enqueue("assistant_deploy", { projectId } satisfies AssistantDeployPayload, undefined, store);
+  await enqueue(
+    "assistant_deploy",
+    { projectId } satisfies AssistantDeployPayload,
+    undefined,
+    store,
+  );
   return {
     ...base,
     status: "provisioning",
@@ -492,15 +581,31 @@ export async function peekAssistantInstance(
 ): Promise<AssistantSnapshot> {
   const idle = { provisionStage: null, provisionStartedAt: null } as const;
   const agent = await store.agents.findAssistant(projectId);
-  if (!agent) return { status: "idle", agentId: null, environmentId: null, target: null, ...idle };
+  if (!agent)
+    return {
+      status: "idle",
+      agentId: null,
+      environmentId: null,
+      target: null,
+      ...idle,
+    };
   const envs = await store.environments.listByAgent(agent.id);
   const env = envs.find((e) => e.name === ASSISTANT_ENV) ?? envs[0];
-  if (!env) return { status: "idle", agentId: agent.id, environmentId: null, target: null, ...idle };
+  if (!env)
+    return {
+      status: "idle",
+      agentId: agent.id,
+      environmentId: null,
+      target: null,
+      ...idle,
+    };
   const base = { agentId: agent.id, environmentId: env.id, ...idle };
 
   const currentSha = templateGitSha(await assistantTemplateHash());
   const deployments = await store.deployments.listByEnvironment(env.id);
-  const live = deployments.find((d) => d.status === "live" && d.url && d.gitSha === currentSha);
+  const live = deployments.find(
+    (d) => d.status === "live" && d.url && d.gitSha === currentSha,
+  );
   if (live && live.url) {
     return {
       ...base,
@@ -516,7 +621,9 @@ export async function peekAssistantInstance(
       },
     };
   }
-  const active = deployments.find((d) => d.status === "pending" || d.status === "building");
+  const active = deployments.find(
+    (d) => d.status === "pending" || d.status === "building",
+  );
   if (active) {
     return {
       ...base,
@@ -529,7 +636,10 @@ export async function peekAssistantInstance(
       provisionStartedAt: active.createdAt.toISOString(),
     };
   }
-  if (deployments.length > 0 && deployments.every((d) => d.status === "failed")) {
+  if (
+    deployments.length > 0 &&
+    deployments.every((d) => d.status === "failed")
+  ) {
     return { ...base, status: "failed", target: null };
   }
   return { ...base, status: "idle", target: null };
@@ -551,14 +661,21 @@ export async function restartAssistantInstance(
   const env = envs.find((e) => e.name === ASSISTANT_ENV) ?? envs[0];
   if (!env) return false;
   const deployments = await store.deployments.listByEnvironment(env.id);
-  const target = deployments.find((d) => d.status === "live" || d.status === "stopped");
+  const target = deployments.find(
+    (d) => d.status === "live" || d.status === "stopped",
+  );
   if (!target) return false;
   await runtime.deployTarget.stop(target.id).catch(() => {});
   const health = await runtime.deployTarget.start(target.id).catch(() => null);
   if (health?.status === "live") {
-    await store.deployments.update(target.id, { status: "live", url: health.url ?? null });
+    await store.deployments.update(target.id, {
+      status: "live",
+      url: health.url ?? null,
+    });
     return true;
   }
-  await store.deployments.update(target.id, { status: "stopped", trafficWeight: 0 }).catch(() => {});
+  await store.deployments
+    .update(target.id, { status: "stopped", trafficWeight: 0 })
+    .catch(() => {});
   return false;
 }

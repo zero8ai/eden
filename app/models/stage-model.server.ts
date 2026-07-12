@@ -12,27 +12,27 @@ import {
   type FileViewDeps,
 } from "~/drafts/drafts.server";
 import {
-  ensureOpenRouterDependency,
+  ensureModelProviderDependencies,
   readModel,
   readModelContextWindow,
   scaffoldAgentModule,
   setModel,
 } from "~/eve/agentModule";
 import { packageJsonPathForRoot } from "~/marketplace/install.server";
-import type { findModel } from "~/models/catalog.server";
-import { findKnownModel } from "~/models/union.server";
+import { findWorkspaceModel } from "~/models/union.server";
 import { getRuntime } from "~/seams/index.server";
 
 export interface StageModelInput {
   project: {
     id: string;
+    orgId: string;
     repoInstallationId: string;
     repoOwner: string;
     repoName: string;
   };
   /** The member's agent root, e.g. "agent" or "agents/planner/agent". */
   root: string;
-  /** OpenRouter model id to write as the dynamic wrapper's fallback. */
+  /** Connected, provider/connection-qualified model ref to use as the fallback. */
   model: string;
   /** Context window to keep when the catalog lookup misses (else `setModel`'s default). */
   fallbackContextWindowTokens?: number | null;
@@ -43,11 +43,8 @@ export type StageModelResult = { ok: true } | { ok: false; error: string };
 
 /** GitHub reads + the model-catalog lookup, injected so unit tests run with zero I/O. */
 export interface StageModelDeps extends FileViewDeps {
-  lookupModel: typeof findModel;
+  lookupModel: typeof findWorkspaceModel;
 }
-
-/** Default model lookup: resolves codex ids from the curated spec, else OpenRouter. */
-const defaultLookupModel: typeof findModel = findKnownModel;
 
 /**
  * Stage the model change for one member: `agent.ts` (dynamic wrapper, `model` as the fallback)
@@ -59,7 +56,26 @@ export async function stageModelChange(
   store: DataStore = getRuntime().data,
   deps?: StageModelDeps,
 ): Promise<StageModelResult> {
-  const modelInfo = await (deps?.lookupModel ?? defaultLookupModel)(input.model);
+  return stageModelChangeInternal(input, store, deps, true);
+}
+
+async function stageModelChangeInternal(
+  input: StageModelInput,
+  store: DataStore,
+  deps: StageModelDeps | undefined,
+  validateSelection: boolean,
+): Promise<StageModelResult> {
+  const modelInfo = await (deps?.lookupModel ?? findWorkspaceModel)(
+    input.project.orgId,
+    input.model,
+  );
+  if (validateSelection && !modelInfo) {
+    return {
+      ok: false,
+      error:
+        "That model is not available from an active provider connection in this workspace.",
+    };
+  }
   const contextWindowTokens =
     modelInfo?.contextWindow ?? input.fallbackContextWindowTokens;
   const path = `${input.root}/agent.ts`;
@@ -72,7 +88,7 @@ export async function stageModelChange(
   const pkgView = await resolveFileView(input.project, pkgPath, store, deps);
   let packageJson: string;
   try {
-    packageJson = ensureOpenRouterDependency(pkgView.content);
+    packageJson = ensureModelProviderDependencies(pkgView.content);
   } catch {
     return {
       ok: false,
@@ -130,7 +146,7 @@ export async function stageModelSwitchingUpgrade(
         "Couldn't read this agent's current model from agent.ts — set a model in Settings instead.",
     };
   }
-  return stageModelChange(
+  return stageModelChangeInternal(
     {
       ...input,
       model: current,
@@ -140,5 +156,6 @@ export async function stageModelSwitchingUpgrade(
     },
     store,
     deps,
+    false,
   );
 }

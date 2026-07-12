@@ -1,80 +1,177 @@
-/**
- * The built-in assistant's deploy env (issue #28): a Codex-backed assistant model runs through
- * Eden's gateway (EDEN_MODEL_GATEWAY_URL/TOKEN) and needs no OpenRouter key; an OpenRouter model
- * still requires one. `getWorkspaceModelKey` / `getWorkspaceAssistantModel` / the Codex-connection
- * check are mocked so the assistant env is exercised with no DB.
- */
+/** Built-in assistant model-provider env: exact connection credentials for direct providers and
+ * Eden's gateway only for active Codex OAuth connections. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const getWorkspaceModelKey = vi.fn<() => Promise<string | null>>();
 const getWorkspaceAssistantModel = vi.fn<() => Promise<string | null>>();
+const getProviderDeploymentEnv = vi.fn<() => Promise<Record<string, string>>>();
 const hasActiveCodexConnection = vi.fn<() => Promise<boolean>>();
+const getActiveModelConnection =
+  vi.fn<() => Promise<{ provider: string } | null>>();
 
 vi.mock("~/org/workspace.server", () => ({
-  getWorkspaceModelKey: () => getWorkspaceModelKey(),
   getWorkspaceAssistantModel: () => getWorkspaceAssistantModel(),
 }));
 vi.mock("~/models/provider-connections.server", () => ({
+  getProviderDeploymentEnv: () => getProviderDeploymentEnv(),
   hasActiveCodexConnection: () => hasActiveCodexConnection(),
+  getActiveModelConnection: () => getActiveModelConnection(),
 }));
 
 import { assistantEnv } from "~/assistant/instance.server";
 import { verifyGatewayToken } from "~/gateway/token.server";
 
 const OLD_KEY = process.env.EDEN_SECRETS_KEY;
-const OLD_OR = process.env.OPENROUTER_API_KEY;
+const CONNECTION = "abcdefghijkl";
+const EXACT_OPENROUTER = "EDEN_PROVIDER_OPENROUTER_ABCDEFGHIJKL_API_KEY";
+const EXACT_ANTHROPIC = "EDEN_PROVIDER_ANTHROPIC_ABCDEFGHIJKL_API_KEY";
+const EXACT_OPENAI = "EDEN_PROVIDER_OPENAI_ABCDEFGHIJKL_API_KEY";
 
 beforeEach(() => {
   process.env.EDEN_SECRETS_KEY = "a".repeat(64);
-  delete process.env.OPENROUTER_API_KEY;
-  getWorkspaceModelKey.mockReset();
   getWorkspaceAssistantModel.mockReset();
+  getProviderDeploymentEnv.mockReset();
   hasActiveCodexConnection.mockReset();
+  getActiveModelConnection.mockReset();
+  getProviderDeploymentEnv.mockResolvedValue({});
+  hasActiveCodexConnection.mockResolvedValue(false);
+  getActiveModelConnection.mockResolvedValue(null);
 });
 afterEach(() => {
   if (OLD_KEY === undefined) delete process.env.EDEN_SECRETS_KEY;
   else process.env.EDEN_SECRETS_KEY = OLD_KEY;
-  if (OLD_OR === undefined) delete process.env.OPENROUTER_API_KEY;
-  else process.env.OPENROUTER_API_KEY = OLD_OR;
 });
 
 describe("assistantEnv", () => {
-  it("sets the OpenRouter key and no gateway env for an OpenRouter default model", async () => {
-    getWorkspaceModelKey.mockResolvedValue("sk-or-workspace");
-    getWorkspaceAssistantModel.mockResolvedValue(null);
-    hasActiveCodexConnection.mockResolvedValue(false);
+  it("injects the exact selected OpenRouter connection and its standard alias", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue(
+      `openrouter/${CONNECTION}/anthropic/claude-sonnet-4-5`,
+    );
+    getProviderDeploymentEnv.mockResolvedValue({
+      [EXACT_OPENROUTER]: "sk-or-workspace",
+      OPENROUTER_API_KEY: "sk-or-workspace",
+    });
+    getActiveModelConnection.mockResolvedValue({ provider: "openrouter" });
+
     const env = await assistantEnv({ orgId: "org_1", deploymentId: "dep_1" });
+    expect(env[EXACT_OPENROUTER]).toBe("sk-or-workspace");
     expect(env.OPENROUTER_API_KEY).toBe("sk-or-workspace");
     expect(env).not.toHaveProperty("EDEN_MODEL_GATEWAY_URL");
     expect(env).not.toHaveProperty("EDEN_MODEL_GATEWAY_TOKEN");
   });
 
-  it("runs a codex/* assistant model through the gateway with no OpenRouter key required", async () => {
-    getWorkspaceModelKey.mockResolvedValue(null);
-    getWorkspaceAssistantModel.mockResolvedValue("codex/conn_1/gpt-5.5");
+  it("injects an Anthropic connection for direct provider routing", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue(
+      `anthropic/${CONNECTION}/claude-sonnet-4-5`,
+    );
+    getProviderDeploymentEnv.mockResolvedValue({
+      [EXACT_ANTHROPIC]: "sk-ant-workspace",
+      ANTHROPIC_API_KEY: "sk-ant-workspace",
+    });
+    getActiveModelConnection.mockResolvedValue({ provider: "anthropic" });
+
+    const env = await assistantEnv({ orgId: "org_1", deploymentId: "dep_1" });
+    expect(env[EXACT_ANTHROPIC]).toBe("sk-ant-workspace");
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-workspace");
+    expect(env).not.toHaveProperty("EDEN_MODEL_GATEWAY_TOKEN");
+  });
+
+  it("uses a published project override when no workspace default exists", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue(null);
+    getProviderDeploymentEnv.mockResolvedValue({
+      [EXACT_OPENAI]: "sk-openai-workspace",
+      OPENAI_API_KEY: "sk-openai-workspace",
+    });
+    getActiveModelConnection.mockResolvedValue({ provider: "openai" });
+
+    const env = await assistantEnv({
+      orgId: "org_1",
+      deploymentId: "dep_1",
+      modelOverride: `openai/${CONNECTION}/gpt-5.4`,
+    });
+    expect(env.EDEN_ASSISTANT_MODEL).toBe(`openai/${CONNECTION}/gpt-5.4`);
+    expect(env[EXACT_OPENAI]).toBe("sk-openai-workspace");
+    expect(getWorkspaceAssistantModel).not.toHaveBeenCalled();
+  });
+
+  it("runs an exact active Codex connection through the gateway", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue(`codex/${CONNECTION}/gpt-5.5`);
+    getActiveModelConnection.mockResolvedValue({ provider: "codex" });
     hasActiveCodexConnection.mockResolvedValue(true);
+
     const env = await assistantEnv({ orgId: "org_1", deploymentId: "dep_1" });
     expect(env).not.toHaveProperty("OPENROUTER_API_KEY");
-    expect(env.EDEN_ASSISTANT_MODEL).toBe("codex/conn_1/gpt-5.5");
+    expect(env.EDEN_ASSISTANT_MODEL).toBe(`codex/${CONNECTION}/gpt-5.5`);
     expect(env.EDEN_MODEL_GATEWAY_URL).toContain("/api/gateway/v1");
     expect(verifyGatewayToken(env.EDEN_MODEL_GATEWAY_TOKEN)).toBe("org_1");
   });
 
-  it("also injects the gateway env alongside an OpenRouter key when a Codex connection exists", async () => {
-    getWorkspaceModelKey.mockResolvedValue("sk-or-workspace");
-    getWorkspaceAssistantModel.mockResolvedValue(null);
+  it("injects gateway env alongside a direct key when any Codex connection is active", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue(
+      `openrouter/${CONNECTION}/openai/gpt-5.1`,
+    );
+    getProviderDeploymentEnv.mockResolvedValue({
+      [EXACT_OPENROUTER]: "sk-or-workspace",
+      OPENROUTER_API_KEY: "sk-or-workspace",
+    });
+    getActiveModelConnection.mockResolvedValue({ provider: "openrouter" });
     hasActiveCodexConnection.mockResolvedValue(true);
+
     const env = await assistantEnv({ orgId: "org_1", deploymentId: "dep_1" });
-    expect(env.OPENROUTER_API_KEY).toBe("sk-or-workspace");
+    expect(env[EXACT_OPENROUTER]).toBe("sk-or-workspace");
     expect(env.EDEN_MODEL_GATEWAY_TOKEN).toBeTruthy();
   });
 
-  it("throws when there is neither an OpenRouter key nor a codex model on a Codex connection", async () => {
-    getWorkspaceModelKey.mockResolvedValue(null);
-    getWorkspaceAssistantModel.mockResolvedValue(null); // default is an OpenRouter id
-    hasActiveCodexConnection.mockResolvedValue(false);
+  it("keeps a configured legacy bare OpenRouter id runnable through the standard alias", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue("z-ai/glm-5.2");
+    getProviderDeploymentEnv.mockResolvedValue({
+      [EXACT_OPENROUTER]: "sk-or-workspace",
+      OPENROUTER_API_KEY: "sk-or-workspace",
+    });
+
+    const env = await assistantEnv({ orgId: "org_1", deploymentId: "dep_1" });
+    expect(env.EDEN_ASSISTANT_MODEL).toBe("z-ai/glm-5.2");
+    expect(env.OPENROUTER_API_KEY).toBe("sk-or-workspace");
+  });
+
+  it("throws when no workspace default model is configured", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue(null);
     await expect(
       assistantEnv({ orgId: "org_1", deploymentId: "dep_1" }),
-    ).rejects.toThrow(/OpenRouter key/);
+    ).rejects.toThrow(/No assistant model is configured/);
+  });
+
+  it("rejects a qualified model whose exact connection is inactive", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue(
+      `anthropic/${CONNECTION}/claude-sonnet-4-5`,
+    );
+    // A standard alias from some other connection cannot satisfy the selected exact reference.
+    getProviderDeploymentEnv.mockResolvedValue({
+      ANTHROPIC_API_KEY: "sk-ant-other",
+    });
+    getActiveModelConnection.mockResolvedValue(null);
+
+    await expect(
+      assistantEnv({ orgId: "org_1", deploymentId: "dep_1" }),
+    ).rejects.toThrow(/selected model provider connection is not active/);
+  });
+
+  it("does not hide an invalid project override behind a healthy workspace default", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue(
+      `openrouter/${CONNECTION}/openai/gpt-5.1`,
+    );
+    getProviderDeploymentEnv.mockResolvedValue({
+      [EXACT_OPENROUTER]: "sk-or-workspace",
+      OPENROUTER_API_KEY: "sk-or-workspace",
+    });
+    getActiveModelConnection.mockResolvedValue(null);
+
+    await expect(
+      assistantEnv({
+        orgId: "org_1",
+        deploymentId: "dep_1",
+        modelOverride: `anthropic/${CONNECTION}/claude-sonnet-4-5`,
+      }),
+    ).rejects.toThrow(/selected model provider connection is not active/);
+    expect(getWorkspaceAssistantModel).not.toHaveBeenCalled();
   });
 });

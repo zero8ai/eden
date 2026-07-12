@@ -74,7 +74,8 @@ describe.runIf(LIVE)(
       const { auth } = await import("~/lib/auth.server");
       const { db } = await import("~/db/client.server");
       const { organization, user } = await import("~/db/auth-schema");
-      const { workspaceSettings } = await import("~/db/schema");
+      const { modelProviderConnections, workspaceSettings } =
+        await import("~/db/schema");
       const { action } = await import("~/routes/org.settings");
 
       const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -228,7 +229,17 @@ describe.runIf(LIVE)(
           }),
         ).resolves.toMatchObject({ success: false });
 
-        const ownerModel = "openai/owner-approved-model";
+        const [connection] = await db
+          .insert(modelProviderConnections)
+          .values({
+            orgId: organizationId!,
+            provider: "codex",
+            label: "Permission test Codex",
+            status: "active",
+            createdBy: ownerUserId,
+          })
+          .returning({ id: modelProviderConnections.id });
+        const ownerModel = `codex/${connection.id}/gpt-5.5`;
         const ownerResult = await thrownResponse(
           action(settingsActionArgs(settingsRequest(ownerCookie, ownerModel))),
         );
@@ -269,7 +280,7 @@ describe.runIf(LIVE)(
           }),
         ).resolves.toMatchObject({ success: true });
 
-        const adminModel = "openai/admin-approved-model";
+        const adminModel = `codex/${connection.id}/gpt-5.4`;
         const adminResult = await thrownResponse(
           action(settingsActionArgs(settingsRequest(memberCookie, adminModel))),
         );

@@ -19,7 +19,12 @@
  */
 import semver from "semver";
 
-import { ZOD_PACKAGE, ZOD_VERSION } from "~/eve/agentModule";
+import {
+  ensureModelProviderDependencies,
+  setModel,
+  ZOD_PACKAGE,
+  ZOD_VERSION,
+} from "~/eve/agentModule";
 import type { CatalogTemplate } from "~/seams/types";
 import { isTemplateSlug, type TemplateManifest } from "./manifest";
 import { templateContentHash } from "./hash.server";
@@ -82,7 +87,9 @@ function authSnapshot(
     }));
   }
   const auth = template.manifest.auth;
-  return auth ? [{ provider: auth.provider, kind: auth.kind, scopes: auth.scopes }] : [];
+  return auth
+    ? [{ provider: auth.provider, kind: auth.kind, scopes: auth.scopes }]
+    : [];
 }
 
 function renderSandboxAddon(setup: SandboxSetup): string {
@@ -187,6 +194,8 @@ export interface PlanContext {
   target: InstallTarget;
   /** Existing roster member names — a new-member install must not collide with one. */
   rosterNames?: string[];
+  /** Qualified model to write into an agent template instead of its catalog placeholder. */
+  model?: string | null;
 }
 
 export interface InstallPlan {
@@ -348,7 +357,10 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     const dir = `agents/${target.name}/agent`;
     fileWrites = manifest.files.map((f) => ({
       path: `${dir}/${f}`,
-      content: template.files[f],
+      content:
+        manifest.type === "agent" && f === "agent.ts" && ctx.model
+          ? setModel(template.files[f], ctx.model)
+          : template.files[f],
     }));
     if (hasSandboxWork(manifest.sandbox)) {
       fileWrites.push({
@@ -357,16 +369,23 @@ export function planInstall(ctx: PlanContext): InstallPlan {
       });
     }
     const pkg = newMemberPackageJson(target.name, manifest.dependencies ?? {});
+    const packageContent =
+      manifest.type === "agent" && ctx.model
+        ? ensureModelProviderDependencies(pkg.content)
+        : pkg.content;
     writes.push(...fileWrites, {
       path: `agents/${target.name}/package.json`,
-      content: pkg.content,
+      content: packageContent,
     });
     warnings.push(...pkg.warnings);
   } else {
     member = target.memberName;
     fileWrites = manifest.files.map((f) => ({
       path: `${target.root}/${f}`,
-      content: template.files[f],
+      content:
+        manifest.type === "agent" && f === "agent.ts" && ctx.model
+          ? setModel(template.files[f], ctx.model)
+          : template.files[f],
     }));
     if (hasSandboxWork(manifest.sandbox)) {
       fileWrites.push({
@@ -376,9 +395,12 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     }
     writes.push(...fileWrites);
     // Dependency merge into the member's package.json (only when the template asks for any).
+    const needsModelProviderDependencies =
+      manifest.type === "agent" && Boolean(ctx.model);
     if (
-      manifest.dependencies &&
-      Object.keys(manifest.dependencies).length > 0
+      (manifest.dependencies &&
+        Object.keys(manifest.dependencies).length > 0) ||
+      needsModelProviderDependencies
     ) {
       const pkgPath = packageJsonPathForRoot(target.root);
       // A package.json we can't parse can't be merged — that's a blocking conflict for the
@@ -398,10 +420,16 @@ export function planInstall(ctx: PlanContext): InstallPlan {
         const currentDeps = (base.dependencies as Record<string, string>) ?? {};
         const { deps, warnings: depWarnings } = mergeDependencies(
           currentDeps,
-          manifest.dependencies,
+          manifest.dependencies ?? {},
         );
         warnings.push(...depWarnings);
-        const merged = serializePackageJson({ ...base, dependencies: deps });
+        const serialized = serializePackageJson({
+          ...base,
+          dependencies: deps,
+        });
+        const merged = needsModelProviderDependencies
+          ? ensureModelProviderDependencies(serialized)
+          : serialized;
         // Only stage package.json when it actually changed — no churn when every dep intersects.
         if (merged !== ctx.packageJson) {
           writes.push({ path: pkgPath, content: merged });
@@ -495,7 +523,9 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     // (issue #30) — a grant row's stored scopes are only a record of what was granted, never the
     // request template. Prefer the resolved template's `auths` (parent + every included connector,
     // deduped by provider); fall back to a plain template's single `manifest.auth` descriptor.
-    ...(authSnapshot(template).length > 0 ? { auth: authSnapshot(template) } : {}),
+    ...(authSnapshot(template).length > 0
+      ? { auth: authSnapshot(template) }
+      : {}),
   };
   let baseLock = ctx.lock;
   for (const e of absorbed) baseLock = removeInstall(baseLock, e.id, e.member);

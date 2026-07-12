@@ -418,6 +418,9 @@ export function makeFakeStore(): FakeStore {
               a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
           );
       },
+      async listAll() {
+        return [...environments.values()];
+      },
       async ensureDefault(projectId, agentId) {
         const has = [...environments.values()].some((e) => e.agentId === agentId);
         if (has) return;

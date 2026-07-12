@@ -270,6 +270,9 @@ export const drizzleDataStore: DataStore = {
         .where(eq(environments.agentId, agentId))
         .orderBy(asc(environments.createdAt), asc(environments.id));
     },
+    async listAll() {
+      return db.select().from(environments);
+    },
     async ensureDefault(projectId, agentId) {
       const [existing] = await db
         .select({ id: environments.id })

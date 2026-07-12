@@ -520,30 +520,39 @@ export function AgentNav({
 }) {
   return (
     <div className={cn("mb-8", className)}>
-      <div className="flex items-center justify-between gap-3">
+      {/* Stack on mobile so the tab nav gets the full viewport width; single row at sm+.
+          On mobile the action controls sit ABOVE the tabs (tabs read best directly over the
+          separator) and the controls group is allowed to wrap. */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         {/* Tabs scroll horizontally on narrow screens rather than wrapping/overflowing.
-            Negative margin + padding lets the row bleed to the container edge. */}
-        <nav className="-mx-4 flex items-center gap-1 overflow-x-auto px-4 text-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:mx-0 sm:px-0">
-          {TABS[level].map((item) => (
-            <NavLink
-              key={item.label}
-              to={`${base}${item.path}`}
-              end={item.path === ""}
-              prefetch="intent"
-              className={({ isActive, isPending }) =>
-                cn(
-                  "shrink-0 rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground",
-                  isActive && "bg-accent font-medium text-foreground",
-                  // Highlight the destination tab immediately on click (before its loader resolves).
-                  isPending && "bg-accent/60 font-medium text-foreground",
-                )
-              }
-            >
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="flex shrink-0 items-center gap-3">
+            Negative margin + padding lets the row bleed to the container edge. The relative
+            wrapper + mobile-only right-edge gradient hints that more tabs scroll into view. */}
+        <div className="relative order-2 min-w-0 sm:order-1">
+          <nav className="-mx-4 flex items-center gap-1 overflow-x-auto px-4 text-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:mx-0 sm:px-0">
+            {TABS[level].map((item) => (
+              <NavLink
+                key={item.label}
+                to={`${base}${item.path}`}
+                end={item.path === ""}
+                prefetch="intent"
+                className={({ isActive, isPending }) =>
+                  cn(
+                    "shrink-0 rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground",
+                    isActive && "bg-accent font-medium text-foreground",
+                    // Highlight the destination tab immediately on click (before its loader resolves).
+                    isPending && "bg-accent/60 font-medium text-foreground",
+                  )
+                }
+              >
+                {item.label}
+              </NavLink>
+            ))}
+          </nav>
+          {/* Discoverability hint only — full-width scroll already guarantees reachability.
+              pointer-events-none so it never blocks tapping the last (Settings) tab. */}
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent sm:hidden" />
+        </div>
+        <div className="order-1 flex shrink-0 flex-wrap items-center gap-3 sm:order-2">
           <QuickDeploy base={base} />
           <StagedChangesPill base={base} />
           {level === "member" && roster && activeAgent && (

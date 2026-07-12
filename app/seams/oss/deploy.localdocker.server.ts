@@ -53,6 +53,7 @@ import type {
   DeployRequest,
   DeployTarget,
   InstanceHealth,
+  WorldSessionSummary,
 } from "~/seams/types";
 
 const exec = promisify(execFile);
@@ -163,6 +164,68 @@ async function provisionWorldDb(worldKey: string): Promise<string> {
   url.port = cp.port || "5432";
   url.pathname = `/${dbName}`;
   return url.toString();
+}
+
+/**
+ * List the durable eve sessions in an environment's Workflow world (issue #119). The world is a
+ * Postgres database on the SAME control-plane server (host stays as-is — this runs on the control
+ * plane, not inside a container, so unlike `provisionWorldDb` it does NOT swap to
+ * DB_HOST_FROM_CONTAINER). Sessions are `workflow.workflow_runs` rows named
+ * `workflow//eve//workflowEntry`; eve tags them with framework-owned `$eve.*` attributes. The
+ * table's timestamps are `timestamp WITHOUT time zone` in UTC, so read them `at time zone 'utc'`
+ * for correct Dates. A world may not exist yet (never deployed) or predate the table — treat
+ * `invalid_catalog_name` (3D000) and `undefined_table` (42P01) as "no sessions", returning [].
+ */
+async function listWorldSessions(
+  worldKey: string,
+  opts?: { since?: Date },
+): Promise<WorldSessionSummary[]> {
+  const cp = controlPlaneUrl();
+  const url = new URL(cp.toString());
+  url.pathname = `/${worldDbName(worldKey)}`;
+  const sql = postgres(url.toString(), { max: 1 });
+  try {
+    const since = opts?.since ?? null;
+    // `timestamp WITHOUT time zone AT TIME ZONE 'utc'` yields a timestamptz for the stored UTC
+    // wall-clock instant, which postgres.js hands back as a correct JS Date — no manual parsing.
+    const rows = await sql<
+      {
+        id: string;
+        trigger: string | null;
+        title: string | null;
+        status: string;
+        created_at: Date;
+        updated_at: Date;
+      }[]
+    >`
+      select
+        id,
+        attributes->>'$eve.trigger' as trigger,
+        attributes->>'$eve.title' as title,
+        status,
+        (created_at at time zone 'utc') as created_at,
+        (updated_at at time zone 'utc') as updated_at
+      from workflow.workflow_runs
+      where name = 'workflow//eve//workflowEntry'
+        and coalesce(attributes->>'$eve.type', 'session') = 'session'
+        ${since ? sql`and created_at >= ${since.toISOString()}::timestamp` : sql``}
+      order by created_at asc
+    `;
+    return rows.map((r) => ({
+      sessionId: r.id,
+      trigger: r.trigger ?? undefined,
+      title: r.title ?? undefined,
+      status: r.status,
+      createdAt: r.created_at.toISOString(),
+      updatedAt: r.updated_at.toISOString(),
+    }));
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "3D000" || code === "42P01") return []; // world absent / no runs table yet
+    throw error;
+  } finally {
+    await sql.end();
+  }
 }
 
 async function dropWorldDb(worldKey: string): Promise<void> {
@@ -482,6 +545,8 @@ export const localDockerTarget: DeployTarget = {
       return null;
     }
   },
+
+  listWorldSessions,
 
   async destroy(deploymentId: string): Promise<void> {
     // Per-deployment teardown removes ONLY this deployment's container. The world DB is shared

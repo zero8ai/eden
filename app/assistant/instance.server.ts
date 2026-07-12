@@ -288,17 +288,6 @@ export async function runAssistantDeploy(
   // Reuse the release for this template hash, or synthesize one.
   let release = await ensureAssistantRelease(project.id, agent, hash, store);
 
-  // Build the shared image if this release hasn't recorded one yet (docker layer cache makes a
-  // repeat build across projects cheap).
-  if (!release.imageRef) {
-    const built = await buildAssistantImage({
-      imageRef,
-      templateDir: assistantTemplateDir(),
-    });
-    await store.releases.setImageRef(release.id, built.imageRef);
-    release = { ...release, imageRef: built.imageRef };
-  }
-
   // Take over a pending/building row, else create one (visible immediately).
   const existing = await store.deployments.listByEnvironment(environment.id);
   const takeover = existing.find(
@@ -314,6 +303,17 @@ export async function runAssistantDeploy(
       });
 
   try {
+    // Build the shared image if this release hasn't recorded one yet (docker layer cache makes a
+    // repeat build across projects cheap).
+    if (!release.imageRef) {
+      const built = await buildAssistantImage({
+        imageRef,
+        templateDir: assistantTemplateDir(),
+      });
+      await store.releases.setImageRef(release.id, built.imageRef);
+      release = { ...release, imageRef: built.imageRef };
+    }
+
     const bundle = await assembleBundle(
       project as AuthoringProject,
       defaultAuthoringDeps(),

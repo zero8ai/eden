@@ -19,10 +19,8 @@ const edenGateway = createOpenAICompatible({
   apiKey: process.env.EDEN_MODEL_GATEWAY_TOKEN ?? "",
 });
 
-const assistantModelId = process.env.EDEN_ASSISTANT_MODEL;
-if (!assistantModelId) {
-  throw new Error("EDEN_ASSISTANT_MODEL is required.");
-}
+// Keep the fixed template build-safe; assistantEnv/entrypoint injects the configured model at runtime.
+const assistantModelId = process.env.EDEN_ASSISTANT_MODEL ?? "z-ai/glm-5.2";
 
 function assistantModel(id: string) {
   const qualified = id.match(

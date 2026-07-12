@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  checkoutEnsureError,
   conversationBranch,
   conversationCheckoutPath,
   isBlockedPath,
@@ -144,6 +145,31 @@ describe("checkout-sync: naming", () => {
   it("derives branch and checkout path from the conversation id", () => {
     expect(conversationBranch("abc")).toBe("eden/conv-abc");
     expect(conversationCheckoutPath("abc")).toBe("/workspace/home/checkouts/abc");
+  });
+});
+
+describe("checkout-sync: pre-turn ensure gate", () => {
+  it("lets a successful ensure proceed", () => {
+    expect(checkoutEnsureError({ ok: true })).toBeNull();
+  });
+
+  it("lets targets without a checkout sidecar proceed (unsupported, not failed)", () => {
+    expect(
+      checkoutEnsureError({ ok: false, unsupported: true, reason: "no sidecar endpoint" }),
+    ).toBeNull();
+  });
+
+  it("fails the turn when a sidecar exists but ensure failed, surfacing the reason", () => {
+    const error = checkoutEnsureError({
+      ok: false,
+      reason: "read-token failed (fetch timeout)",
+    });
+    expect(error).toContain("read-token failed (fetch timeout)");
+    expect(error).toContain("repo checkout");
+  });
+
+  it("still fails with a generic reason when none was reported", () => {
+    expect(checkoutEnsureError({ ok: false })).toContain("unknown error");
   });
 });
 

@@ -17,6 +17,7 @@ import {
   getCheckoutRow,
 } from "~/assistant/checkout-sync.server";
 import {
+  checkoutEnsureError,
   conversationBranch,
   conversationCheckoutPath,
 } from "~/assistant/checkout-sync";
@@ -116,8 +117,13 @@ export async function action(args: ActionFunctionArgs) {
     }),
     getCheckoutRow(session.id).catch(() => null),
   ]);
+  // A sidecar that exists but couldn't prepare the checkout (instance can't reach Eden's API,
+  // clone failed…) must fail the turn: the model would otherwise run against a workspace it was
+  // promised and doesn't have, and report a confusing missing-checkout error as its answer.
+  const ensureError = checkoutEnsureError(ensured);
+  if (ensureError) throw data({ error: ensureError }, { status: 503 });
   const prefixParts: string[] = [];
-  if (firstTurn) {
+  if (firstTurn && !ensured.unsupported) {
     prefixParts.push(
       `[Eden] Your working checkout for this conversation is at ${conversationCheckoutPath(session.id)} on branch ${conversationBranch(session.id)}. Do all repo edits there with bash — Eden auto-syncs your changes to a pull request after each turn.`,
     );

@@ -153,3 +153,25 @@ export function conversationBranch(conversationId: string): string {
 export function conversationCheckoutPath(conversationId: string): string {
   return `/workspace/home/checkouts/${conversationId}`;
 }
+
+/**
+ * User-facing error when the pre-turn ensure could not prepare the conversation's checkout —
+ * null when the turn may proceed. A target with no checkout sidecar at all (`unsupported`) is
+ * not an error: those turns run without a checkout. But a sidecar that exists and fails means
+ * the model would run against a workspace it was promised and doesn't have, so the turn must
+ * not start.
+ */
+export function checkoutEnsureError(ensured: {
+  ok: boolean;
+  unsupported?: boolean;
+  reason?: string;
+}): string | null {
+  if (ensured.ok || ensured.unsupported) return null;
+  const reason = ensured.reason ?? "unknown error";
+  return (
+    `Couldn't prepare this conversation's repo checkout (${reason}). ` +
+    "Try again in a moment. If this keeps happening, check that the assistant instance can " +
+    "reach Eden's callback API (EDEN_API_URL) — for example, a host firewall blocking the " +
+    "docker bridge."
+  );
+}

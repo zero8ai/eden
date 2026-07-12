@@ -51,6 +51,21 @@ sudo ufw allow 443/tcp
 sudo ufw enable
 ```
 
+Containers call back to the host over the docker bridge (`host.docker.internal` →
+`172.17.0.1`): agent and assistant instances dial Eden's callback API on `3000` and Postgres
+on `5442`. ufw's default deny drops that traffic too — the failure is silent (connect
+timeouts inside containers; for the assistant, `eden_*` tools failing and conversation
+checkouts never appearing). Allow both ports on the bridge interface only; this exposes
+nothing to the internet:
+
+```bash
+sudo ufw allow in on docker0 to 172.17.0.1 port 3000 proto tcp
+sudo ufw allow in on docker0 to 172.17.0.1 port 5442 proto tcp
+```
+
+(If you customized the docker0 subnet, adjust `172.17.0.1` accordingly. To confirm this is
+your problem later: `sudo grep "DPT=3000" /var/log/ufw.log` — blocked lines with `IN=docker0`.)
+
 > **Docker bypasses ufw.** Docker programs iptables directly, so a container port published as
 > `-p 5442:5432` is reachable from the internet _no matter what ufw says_. The compose file in
 > this directory avoids that by publishing Postgres only on `127.0.0.1` and `172.17.0.1`

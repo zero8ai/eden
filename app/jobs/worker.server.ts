@@ -77,6 +77,20 @@ async function execute(job: Job): Promise<void> {
       console.log(`[jobs] drain_deployment ${p.deploymentId}: ${detail}`);
       return;
     }
+    case "merge_change": {
+      // issue #142: the merge build gate + GitHub merge, moved off the HTTP request. Progress and
+      // a build-gate failure surface through the workspace task, not a queue retry (maxAttempts:1).
+      const { runMergeChange } = await import("~/deploy/merge-change.server");
+      const p = job.payload as import("~/deploy/merge-change.server").MergeChangePayload;
+      await runMergeChange(p);
+      return;
+    }
+    case "publish_change": {
+      const { runPublishChange } = await import("~/drafts/publish-change.server");
+      const p = job.payload as import("~/drafts/publish-change.server").PublishChangePayload;
+      await runPublishChange(p);
+      return;
+    }
     default:
       throw new Error(`Unknown job kind: ${job.kind}`);
   }

@@ -93,7 +93,7 @@ import { listProjects } from "~/db/queries.server";
 import { resolveSyncedAgentContext } from "~/project/agent-context.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
-import { getWorkspaceAssistantModel } from "~/org/workspace.server";
+import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
 import { ownsWorkspaceModelReference } from "~/models/union.server";
 import type { Route } from "./+types/marketplace.$type.$id.install";
 
@@ -110,10 +110,14 @@ function isAgentTemplate(type: TemplateType): boolean {
 }
 
 async function activeWorkspaceDefaultModel(orgId: string) {
-  const model = await getWorkspaceAssistantModel(orgId).catch(() => null);
-  return model && (await ownsWorkspaceModelReference(orgId, model))
-    ? model
-    : null;
+  const selection = await getWorkspaceAssistantSelection(orgId).catch(() => ({
+    model: null,
+    effort: null,
+  }));
+  return selection.model &&
+    (await ownsWorkspaceModelReference(orgId, selection.model))
+    ? selection
+    : { model: null, effort: null };
 }
 
 /**
@@ -218,7 +222,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         listDrafts(project.id),
         isAgentTemplate(type)
           ? activeWorkspaceDefaultModel(project.orgId)
-          : Promise.resolve(null),
+          : Promise.resolve({ model: null, effort: null }),
       ]);
       const ctx = await resolveSyncedAgentContext(
         project.id,
@@ -228,7 +232,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       base.projectName = project.name;
       base.isTeam = ctx.isTeam;
       base.missingModelDefault =
-        isAgentTemplate(type) && workspaceModel === null;
+        isAgentTemplate(type) && workspaceModel.model === null;
       base.roster = ctx.roster.map((a) => ({ name: a.name }));
       if ((template.manifest.secrets?.length ?? 0) > 0) {
         try {
@@ -256,7 +260,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           base.singleAgentInvalid = true;
           return base;
         }
-        if (!workspaceModel) return base;
+        if (!workspaceModel.model) return base;
         if (!newMemberName) return base;
         const plan = planInstall({
           template,
@@ -266,7 +270,8 @@ export const loader = (args: LoaderFunctionArgs) =>
           packageJson: null,
           lock,
           rosterNames: ctx.roster.map((a) => a.name),
-          model: workspaceModel,
+          model: workspaceModel.model,
+          effort: workspaceModel.effort,
           target: { kind: "new-member", name: newMemberName },
         });
         base.preview = {
@@ -367,7 +372,7 @@ export async function action(args: ActionFunctionArgs) {
       listDrafts(project.id),
       isAgentTemplate(type)
         ? activeWorkspaceDefaultModel(project.orgId)
-        : Promise.resolve(null),
+        : Promise.resolve({ model: null, effort: null }),
     ]);
     const ctx = await resolveSyncedAgentContext(project.id, null, source.paths);
     const registry = catalogLocator();
@@ -392,7 +397,7 @@ export async function action(args: ActionFunctionArgs) {
       }
       const name = String(form.get("newMember") ?? "").trim();
       if (!name) return { error: "Name the new agent." };
-      if (!workspaceModel) {
+      if (!workspaceModel.model) {
         return {
           error:
             "Choose a connected workspace default model in Org settings before installing an agent template.",
@@ -432,7 +437,8 @@ export async function action(args: ActionFunctionArgs) {
       packageJson,
       lock,
       rosterNames: ctx.roster.map((a) => a.name),
-      model: workspaceModel,
+      model: workspaceModel.model,
+      effort: workspaceModel.effort,
       target,
     });
     if (plan.conflicts.length > 0) {

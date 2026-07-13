@@ -14,6 +14,7 @@ import {
   type TurnStep,
 } from "~/agent/talk.server";
 import type { Target } from "~/chat/playground.server";
+import { normalizeTurnError } from "~/chat/stream-error";
 import type { ChatStep } from "~/chat/types";
 import {
   externalRunId,
@@ -261,8 +262,15 @@ export function streamTurnResponse(input: {
               case "input":
                 send({ type: "input", requests: event.requests });
                 break;
-              case "done":
+              case "done": {
                 result = event.result;
+                const normalizedError = normalizeTurnError(event.result.error);
+                if (normalizedError?.retryable) {
+                  console.warn(
+                    `${tag} transient provider stream error (shown to user as retryable):`,
+                    event.result.error,
+                  );
+                }
                 send({
                   type: "done",
                   ok: event.result.ok,
@@ -270,11 +278,14 @@ export function streamTurnResponse(input: {
                   reply: event.result.reply,
                   structured: event.result.replyIsStructured,
                   inputRequests: event.result.inputRequests,
-                  error: event.result.error,
+                  error: normalizedError?.message ?? null,
+                  errorDetail: normalizedError?.detail ?? null,
+                  errorRetryable: normalizedError?.retryable ?? false,
                   modelId: event.result.modelId,
                   version: target.version,
                 });
                 break;
+              }
             }
           }
         } catch (error) {
@@ -292,13 +303,22 @@ export function streamTurnResponse(input: {
             messages: [],
             error: `The turn stream failed: ${(error as Error).message}`,
           };
+          const normalizedError = normalizeTurnError(result.error);
+          if (normalizedError?.retryable) {
+            console.warn(
+              `${tag} transient provider stream error (shown to user as retryable):`,
+              result.error,
+            );
+          }
           send({
             type: "done",
             ok: false,
             reply: null,
             structured: false,
             inputRequests: [],
-            error: result.error,
+            error: normalizedError?.message ?? null,
+            errorDetail: normalizedError?.detail ?? null,
+            errorRetryable: normalizedError?.retryable ?? false,
             modelId: null,
             version: target.version,
           });

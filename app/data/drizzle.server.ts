@@ -4,7 +4,20 @@
  * unique constraint, transactional weight updates) is realized here and trusted at the schema
  * level; the logic that orchestrates these calls is what gets unit-tested against the fake.
  */
-import { and, asc, desc, eq, gt, inArray, lte, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import {
@@ -19,6 +32,7 @@ import {
   projects,
   releases,
   runs,
+  workspaceTasks,
 } from "~/db/schema";
 import { recordAudit } from "~/managed/audit.server";
 import type { DataStore } from "./ports";
@@ -411,6 +425,70 @@ export const drizzleDataStore: DataStore = {
         .from(jobs)
         .groupBy(jobs.status);
       return Object.fromEntries(rows.map((r) => [r.status, r.count]));
+    },
+  },
+
+  workspaceTasks: {
+    async insert(input) {
+      const [row] = await db
+        .insert(workspaceTasks)
+        .values({
+          projectId: input.projectId,
+          kind: input.kind,
+          subjectKey: input.subjectKey,
+          label: input.label,
+          originUrl: input.originUrl,
+          stage: input.stage ?? null,
+          jobId: input.jobId ?? null,
+          createdBy: input.createdBy ?? null,
+        })
+        .returning();
+      return row;
+    },
+    async update(id, patch) {
+      await db
+        .update(workspaceTasks)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(eq(workspaceTasks.id, id));
+    },
+    async findById(id) {
+      const [row] = await db
+        .select()
+        .from(workspaceTasks)
+        .where(eq(workspaceTasks.id, id))
+        .limit(1);
+      return row ?? null;
+    },
+    async listActive(projectId, terminalSince) {
+      return db
+        .select()
+        .from(workspaceTasks)
+        .where(
+          and(
+            eq(workspaceTasks.projectId, projectId),
+            isNull(workspaceTasks.dismissedAt),
+            or(
+              eq(workspaceTasks.status, "running"),
+              gte(workspaceTasks.updatedAt, terminalSince),
+            ),
+          ),
+        )
+        .orderBy(asc(workspaceTasks.createdAt));
+    },
+    async findRunningBySubject(projectId, subjectKey) {
+      const [row] = await db
+        .select()
+        .from(workspaceTasks)
+        .where(
+          and(
+            eq(workspaceTasks.projectId, projectId),
+            eq(workspaceTasks.subjectKey, subjectKey),
+            eq(workspaceTasks.status, "running"),
+            isNull(workspaceTasks.dismissedAt),
+          ),
+        )
+        .limit(1);
+      return row ?? null;
     },
   },
 

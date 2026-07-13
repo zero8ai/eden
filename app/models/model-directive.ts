@@ -21,6 +21,7 @@
  */
 
 import { parseProviderModelReference } from "~/models/provider-reference";
+import type { ReasoningEffort } from "~/models/reasoning";
 
 /** Eve prefixes `runtime.modelId` with this when the agent's model is a `defineDynamic`. */
 export const DYNAMIC_MODEL_ID_PREFIX = "dynamic:";
@@ -30,17 +31,20 @@ export interface ModelDirective {
   id: string;
   /** Context window of that model when known from its provider catalog. */
   contextWindowTokens?: number;
+  /** Provider-independent reasoning effort, when explicitly selected. */
+  effort?: ReasoningEffort;
 }
 
 /** Must stay in sync with EDEN_MODEL_HELPER in `~/eve/agentModule` (the agent-side parser). */
 const DIRECTIVE_RE =
-  /^<!--\s*eden:model\s+(\S+?)(?:\s+ctx=(\d+))?\s*-->(?:\n<!--\s*eden:sig\s+([a-f0-9]{64})\s*-->)?/;
+  /^<!--\s*eden:model\s+(\S+?)(?:\s+ctx=(\d+))?(?:\s+effort=(none|minimal|low|medium|high|xhigh))?\s*-->(?:\n<!--\s*eden:sig\s+([a-f0-9]{64})\s*-->)?/;
 const DIRECTIVE_LINE_RE =
   /^<!--\s*eden:model[^>]*-->(?:\n<!--\s*eden:sig\s+[a-f0-9]{64}\s*-->)?[ \t]*\n*/;
 
 function normalizedDirective(directive: ModelDirective): {
   id: string;
   contextWindowTokens?: number;
+  effort?: ReasoningEffort;
 } {
   // The id lands inside an HTML comment and a regex — keep it to safe id characters.
   const id = directive.id.replace(/[^\w./:@-]/g, "");
@@ -49,7 +53,7 @@ function normalizedDirective(directive: ModelDirective): {
     typeof ctx === "number" && Number.isFinite(ctx) && ctx > 0
       ? Math.round(ctx)
       : undefined;
-  return { id, contextWindowTokens };
+  return { id, contextWindowTokens, effort: directive.effort };
 }
 
 /** Canonical bytes signed by Eden and independently reconstructed in generated agent code. */
@@ -58,7 +62,13 @@ export function modelDirectiveSignaturePayload(
   body: string,
 ): string {
   const normalized = normalizedDirective(directive);
-  return `${normalized.id}\n${normalized.contextWindowTokens ?? ""}\n${body}`;
+  const legacy = `${normalized.id}\n${normalized.contextWindowTokens ?? ""}\n`;
+  // Preserve the original payload exactly when effort is absent. This lets new control planes
+  // verify directives signed before effort was added, and old deployed agents verify new
+  // directives that do not select an effort.
+  return normalized.effort
+    ? `${legacy}${normalized.effort}\n${body}`
+    : `${legacy}${body}`;
 }
 
 /** The one-line directive to prepend to the sent message. */
@@ -70,8 +80,9 @@ export function buildModelDirective(
   const window = normalized.contextWindowTokens
     ? ` ctx=${normalized.contextWindowTokens}`
     : "";
+  const effort = normalized.effort ? ` effort=${normalized.effort}` : "";
   const signed = signature ? `\n<!-- eden:sig ${signature} -->` : "";
-  return `<!-- eden:model ${normalized.id}${window} -->${signed}`;
+  return `<!-- eden:model ${normalized.id}${window}${effort} -->${signed}`;
 }
 
 /** Parse the directive off the front of a sent message, or null when absent/malformed. */
@@ -81,6 +92,7 @@ export function parseModelDirective(text: string): ModelDirective | null {
   return {
     id: match[1],
     contextWindowTokens: match[2] ? Number(match[2]) : undefined,
+    effort: match[3] as ReasoningEffort | undefined,
   };
 }
 

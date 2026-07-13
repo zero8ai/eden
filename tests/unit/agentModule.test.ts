@@ -13,6 +13,7 @@ import {
   hasDynamicModel,
   readModel,
   readModelContextWindow,
+  readReasoningEffort,
   scaffoldAgentModule,
   setModel,
 } from "~/eve/agentModule";
@@ -352,6 +353,54 @@ export default defineAgent({
     expect(next.match(/function edenModel/g)).toHaveLength(1);
     expectDynamicShape(next, model);
   });
+
+  it("writes, reads, changes, and clears explicit reasoning effort idempotently", () => {
+    const high = setModel(WRAPPED, "openai/abcdefghijkl/gpt-5.2", {
+      effort: "high",
+    });
+    expect(readReasoningEffort(high)).toBe("high");
+    expect(high).toContain("edenModel('openai/abcdefghijkl/gpt-5.2', 'high')");
+    expect(high).toContain("reasoning: effort");
+
+    const low = setModel(high, "openai/abcdefghijkl/gpt-5.2", {
+      effort: "low",
+    });
+    expect(readReasoningEffort(low)).toBe("low");
+    expect(low.match(/function edenReasoningModel/g)).toHaveLength(1);
+    expect(
+      setModel(low, "openai/abcdefghijkl/gpt-5.2", { effort: "low" }),
+    ).toBe(low);
+
+    const providerDefault = setModel(low, "openai/abcdefghijkl/gpt-5.2", {
+      effort: null,
+    });
+    expect(readReasoningEffort(providerDefault)).toBeNull();
+    expect(providerDefault).toContain(
+      "fallback: edenModel('openai/abcdefghijkl/gpt-5.2')",
+    );
+  });
+
+  it("removes a stale static reasoning property when provider default is selected", () => {
+    const source = `import { defineAgent } from 'eve';
+
+export default defineAgent({
+  model: 'openai/abcdefghijkl/gpt-5.2',
+  reasoning: 'high',
+});
+`;
+
+    const providerDefault = setModel(source, "openai/abcdefghijkl/gpt-5.2", {
+      effort: null,
+    });
+    expect(readReasoningEffort(providerDefault)).toBeNull();
+    expect(providerDefault).not.toContain("reasoning: 'high'");
+
+    const low = setModel(source, "openai/abcdefghijkl/gpt-5.2", {
+      effort: "low",
+    });
+    expect(readReasoningEffort(low)).toBe("low");
+    expect(low).not.toContain("reasoning: 'high'");
+  });
 });
 
 describe("ensureModelProviderDependencies", () => {
@@ -367,6 +416,7 @@ describe("ensureModelProviderDependencies", () => {
       "@ai-sdk/anthropic": "^4.0.12",
       "@ai-sdk/openai": "^4.0.11",
       "@ai-sdk/openai-compatible": "^3.0.7",
+      ai: "^7.0.0",
       eve: "^0.22.0",
       zod: "^4.4.3",
     });
@@ -380,6 +430,7 @@ describe("ensureModelProviderDependencies", () => {
             "@ai-sdk/anthropic": "^4.0.12",
             "@ai-sdk/openai": "^4.0.11",
             "@ai-sdk/openai-compatible": "^3.0.7",
+            ai: "^7.0.0",
             zod: "^4.4.3",
           },
         },
@@ -407,6 +458,7 @@ describe("ensureModelProviderDependencies", () => {
       "@ai-sdk/anthropic": "^4.0.12",
       "@ai-sdk/openai": "^4.0.11",
       "@ai-sdk/openai-compatible": "^3.0.7",
+      ai: "^7.0.0",
       eve: "^0.23.1",
       zod: "^4.4.3",
     });
@@ -449,6 +501,7 @@ describe("ensureModelProviderDependencies", () => {
               "@ai-sdk/anthropic": "^4.0.12",
               "@ai-sdk/openai": "^4.0.11",
               "@ai-sdk/openai-compatible": "^3.0.7",
+              ai: "^7.0.0",
               ...(eve === undefined ? {} : { eve }),
               zod: "^4.4.3",
             },

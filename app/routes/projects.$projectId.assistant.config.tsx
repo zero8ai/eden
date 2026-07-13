@@ -20,7 +20,7 @@ import {
   ensureAssistantAgent,
 } from "~/assistant/instance.server";
 import { MarkdownText } from "~/components/chat";
-import { ModelSelect } from "~/components/model-select";
+import { ModelSelection } from "~/components/model-select";
 import { AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Badge } from "~/components/ui/badge";
@@ -42,8 +42,9 @@ import { buildScheduleFile, parseScheduleFile } from "~/eve/scheduleFile";
 import { slugifyResourceName } from "~/eve/templates";
 import { getAgentSource } from "~/github/cached.server";
 import { requireProject, requireRepo } from "~/project/guard.server";
-import { getWorkspaceAssistantModel } from "~/org/workspace.server";
+import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
 import { findWorkspaceModel } from "~/models/union.server";
+import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import type { Route } from "./+types/projects.$projectId.assistant.config";
 
 const INSTRUCTIONS = `${ASSISTANT_CONFIG_ROOT}/instructions.md`;
@@ -72,7 +73,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       const editSkill = url.searchParams.get("skill");
       const editSchedule = url.searchParams.get("schedule");
 
-      const [source, instructionsView, modelView, fixed, workspaceModel] =
+      const [source, instructionsView, modelView, fixed, workspaceSelection] =
         await Promise.all([
           getAgentSource(project.repoInstallationId, {
             owner: project.repoOwner,
@@ -81,11 +82,15 @@ export const loader = (args: LoaderFunctionArgs) =>
           resolveFileView(project, INSTRUCTIONS),
           resolveFileView(project, MODEL_FILE),
           assistantFixedLayer(),
-          getWorkspaceAssistantModel(project.orgId).catch(() => null),
+          getWorkspaceAssistantSelection(project.orgId).catch(() => ({
+            model: null,
+            effort: null,
+          })),
         ]);
       // An unset project override inherits only the connected workspace default. There is no
       // implicit provider/model when the workspace has no connection.
-      const inheritedModel = workspaceModel;
+      const inheritedModel = workspaceSelection.model;
+      const inheritedEffort = workspaceSelection.effort;
 
       const prefix = `${ASSISTANT_CONFIG_ROOT}/`;
       const skills = source.paths
@@ -98,12 +103,22 @@ export const loader = (args: LoaderFunctionArgs) =>
         .sort();
 
       let model: string | null = null;
+      let effort: ReasoningEffort | null = null;
       if (modelView.content) {
         try {
+          const parsed = JSON.parse(modelView.content) as {
+            model?: unknown;
+            effort?: unknown;
+          };
           model =
-            (JSON.parse(modelView.content) as { model?: string }).model ?? null;
+            typeof parsed.model === "string" && parsed.model.trim()
+              ? parsed.model.trim()
+              : null;
+          effort =
+            model && isReasoningEffort(parsed.effort) ? parsed.effort : null;
         } catch {
           model = null;
+          effort = null;
         }
       }
 
@@ -128,7 +143,9 @@ export const loader = (args: LoaderFunctionArgs) =>
         project,
         instructions: instructionsView.content ?? "",
         model,
+        effort,
         inheritedModel,
+        inheritedEffort,
         skills,
         schedules,
         fixed,
@@ -163,15 +180,31 @@ export async function action(args: ActionFunctionArgs) {
     }
     case "save-model": {
       const model = String(form.get("model") ?? "").trim();
-      if (model && !(await findWorkspaceModel(project.orgId, model))) {
+      const rawEffort = String(form.get("effort") ?? "").trim();
+      const effort = isReasoningEffort(rawEffort) ? rawEffort : null;
+      const modelInfo = model
+        ? await findWorkspaceModel(project.orgId, model)
+        : null;
+      if (model && !modelInfo) {
         return {
           error:
             "That model is not available from an active provider connection in this workspace.",
         };
       }
+      if (rawEffort && !effort) {
+        return { error: "That reasoning effort is not recognized." };
+      }
+      if (effort && !modelInfo?.supportedEfforts?.includes(effort)) {
+        return {
+          error:
+            "That reasoning effort is not supported by the selected model.",
+        };
+      }
       await stage(
         MODEL_FILE,
-        model ? `${JSON.stringify({ model }, null, 2)}\n` : null,
+        model
+          ? `${JSON.stringify({ model, ...(effort ? { effort } : {}) }, null, 2)}\n`
+          : null,
       );
       return { ok: true, saved: "model" as const };
     }
@@ -218,7 +251,9 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
     project,
     instructions,
     model,
+    effort,
     inheritedModel,
+    inheritedEffort,
     skills,
     schedules,
     fixed,
@@ -344,7 +379,9 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
             <ModelField
               projectId={project.id}
               model={model}
+              effort={effort}
               inheritedModel={inheritedModel}
+              inheritedEffort={inheritedEffort}
             />
           </CardContent>
         </Card>
@@ -513,11 +550,15 @@ export default function AssistantConfig({ loaderData }: Route.ComponentProps) {
 function ModelField({
   projectId,
   model,
+  effort,
   inheritedModel,
+  inheritedEffort,
 }: {
   projectId: string;
   model: string | null;
+  effort: ReasoningEffort | null;
   inheritedModel: string | null;
+  inheritedEffort: ReasoningEffort | null;
 }) {
   const fetcher = useFetcher<{
     ok?: boolean;
@@ -525,19 +566,27 @@ function ModelField({
     saved?: string;
   }>();
   const busy = fetcher.state !== "idle";
-  const commit = (value: string) =>
-    fetcher.submit({ intent: "save-model", model: value }, { method: "post" });
+  const commit = (value: string, nextEffort: ReasoningEffort | null) =>
+    fetcher.submit(
+      { intent: "save-model", model: value, effort: nextEffort ?? "" },
+      { method: "post" },
+    );
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-3">
-        <ModelSelect value={model} busy={busy} onCommit={commit} />
+        <ModelSelection
+          model={model}
+          effort={effort}
+          busy={busy}
+          onCommit={commit}
+        />
         {model && (
           <Button
             type="button"
             variant="ghost"
             size="sm"
             disabled={busy}
-            onClick={() => commit("")}
+            onClick={() => commit("", null)}
           >
             Reset to workspace default
           </Button>
@@ -550,7 +599,8 @@ function ModelField({
           <>
             Overriding the default of{" "}
             <span className="font-mono text-xs">{inheritedModel}</span>. Reset
-            to inherit it.
+            to inherit it
+            {inheritedEffort ? ` at ${inheritedEffort} effort` : ""}.
           </>
         ) : model ? (
           <>
@@ -561,7 +611,8 @@ function ModelField({
         ) : inheritedModel ? (
           <>
             No override — inheriting the workspace default{" "}
-            <span className="font-mono text-xs">{inheritedModel}</span>.
+            <span className="font-mono text-xs">{inheritedModel}</span>
+            {inheritedEffort ? ` at ${inheritedEffort} effort` : ""}.
           </>
         ) : (
           <>

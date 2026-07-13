@@ -18,8 +18,11 @@ describe("buildModelDirective", () => {
       buildModelDirective({
         id: "anthropic/claude-sonnet-5",
         contextWindowTokens: 200_000,
+        effort: "high",
       }),
-    ).toBe("<!-- eden:model anthropic/claude-sonnet-5 ctx=200000 -->");
+    ).toBe(
+      "<!-- eden:model anthropic/claude-sonnet-5 ctx=200000 effort=high -->",
+    );
   });
 
   it("omits the context window when unknown", () => {
@@ -37,10 +40,11 @@ describe("buildModelDirective", () => {
 
 describe("parseModelDirective", () => {
   it("round-trips what buildModelDirective produced (as a sent-message prefix)", () => {
-    const sent = `${buildModelDirective({ id: "z-ai/glm-5.2", contextWindowTokens: 131_072 })}\n\nwhat model are you?`;
+    const sent = `${buildModelDirective({ id: "z-ai/glm-5.2", contextWindowTokens: 131_072, effort: "low" })}\n\nwhat model are you?`;
     expect(parseModelDirective(sent)).toEqual({
       id: "z-ai/glm-5.2",
       contextWindowTokens: 131_072,
+      effort: "low",
     });
   });
 
@@ -50,6 +54,19 @@ describe("parseModelDirective", () => {
     ).toEqual({
       id: "openai/gpt-5.1",
       contextWindowTokens: undefined,
+      effort: undefined,
+    });
+  });
+
+  it("parses effort without requiring a context window", () => {
+    expect(
+      parseModelDirective(
+        "<!-- eden:model codex/abcdefghijkl/gpt-5.5 effort=xhigh -->\n\nhi",
+      ),
+    ).toEqual({
+      id: "codex/abcdefghijkl/gpt-5.5",
+      contextWindowTokens: undefined,
+      effort: "xhigh",
     });
   });
 

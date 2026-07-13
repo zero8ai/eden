@@ -15,9 +15,11 @@ import {
   ensureModelProviderDependencies,
   readModel,
   readModelContextWindow,
+  readReasoningEffort,
   scaffoldAgentModule,
   setModel,
 } from "~/eve/agentModule";
+import type { ReasoningEffort } from "~/models/reasoning";
 import { packageJsonPathForRoot } from "~/marketplace/install.server";
 import { findWorkspaceModel } from "~/models/union.server";
 import { getRuntime } from "~/seams/index.server";
@@ -34,6 +36,8 @@ export interface StageModelInput {
   root: string;
   /** Connected, provider/connection-qualified model ref to use as the fallback. */
   model: string;
+  /** Explicit normalized effort; null delegates to the selected provider's default. */
+  effort?: ReasoningEffort | null;
   /** Context window to keep when the catalog lookup misses (else `setModel`'s default). */
   fallbackContextWindowTokens?: number | null;
   createdBy: string | null;
@@ -76,13 +80,29 @@ async function stageModelChangeInternal(
         "That model is not available from an active provider connection in this workspace.",
     };
   }
+  if (
+    validateSelection &&
+    input.effort &&
+    !modelInfo?.supportedEfforts?.includes(input.effort)
+  ) {
+    return {
+      ok: false,
+      error: "That reasoning effort is not supported by the selected model.",
+    };
+  }
   const contextWindowTokens =
     modelInfo?.contextWindow ?? input.fallbackContextWindowTokens;
   const path = `${input.root}/agent.ts`;
   const view = await resolveFileView(input.project, path, store, deps);
   const next = view.content
-    ? setModel(view.content, input.model, { contextWindowTokens })
-    : scaffoldAgentModule(input.model, { contextWindowTokens });
+    ? setModel(view.content, input.model, {
+        contextWindowTokens,
+        effort: input.effort,
+      })
+    : scaffoldAgentModule(input.model, {
+        contextWindowTokens,
+        effort: input.effort,
+      });
 
   const pkgPath = packageJsonPathForRoot(input.root);
   const pkgView = await resolveFileView(input.project, pkgPath, store, deps);
@@ -153,6 +173,7 @@ export async function stageModelSwitchingUpgrade(
       // "No model change" includes the context window — keep the module's declared value
       // when the catalog can't confirm one.
       fallbackContextWindowTokens: readModelContextWindow(view.content),
+      effort: readReasoningEffort(view.content),
     },
     store,
     deps,

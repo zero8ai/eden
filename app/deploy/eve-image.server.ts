@@ -419,6 +419,19 @@ export async function checkEveBuild(
       await writeFile(target, file.content);
     }
 
+    // A member root that doesn't exist at this ref (the change deletes the member) has nothing
+    // to build — the post-merge roster sync handles removal; failing here would block the merge
+    // with an opaque eve error (issue #137). Runs AFTER the overlay loop so a publish overlay that
+    // creates a brand-new member's files still builds (fetchSource mkdir's only the parent package
+    // dir, never `…/agent`, so this existence check is authoritative).
+    if (
+      input.agentRoot &&
+      input.agentRoot !== "agent" &&
+      !existsSync(path.join(srcDir, input.agentRoot))
+    ) {
+      return { ok: true, skipped: true };
+    }
+
     const { dir } = projectDirOf(input.agentRoot);
     const buildDir = path.join(srcDir, dir);
     // Repository name must be lowercase (see imageTags / lowercaseLegacyId).

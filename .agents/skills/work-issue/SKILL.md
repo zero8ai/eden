@@ -39,10 +39,10 @@ is NOT actionable only when:
 - the issue is ambiguous enough that two reasonable implementations would differ materially
   (which is the same thing: a decision nobody has made yet)
 
-If not actionable, stop before writing any code and report `blocked` (below) with the exact
-questions whose answers would unblock it. Phrase each question so a yes/no or short answer
-suffices. Minor judgment calls that any implementation would share are NOT blockers — decide
-them and note the decision in the PR description.
+When it's not actionable, stop before writing any code, post the exact blocking questions as a
+comment on the issue (`gh issue comment <nr>`), and end the run. Phrase each question so a
+yes/no or short answer suffices. Minor judgment calls that any implementation would share are
+NOT blockers — decide them and note the decision in the PR description.
 
 **Missing credentials, env vars, or external services are NOT blockers — build the feature
 anyway:**
@@ -51,38 +51,33 @@ anyway:**
   reads), make it up and note it in the PR description
 - if a flow genuinely can't be exercised without real external setup (a GitHub App,
   third-party API credentials), build it, test everything that IS reachable, and list the
-  rest under `untested` in RESULT.json — "built but not verified end-to-end" is a completed
-  run, not a blocked one
+  rest in the PR description under **Not verified** — "built but not verified end-to-end" is
+  a finished run, not a blocked one
 
-**Result contract.** Always end the run — every terminal state — by writing `RESULT.json` at
-the worktree root (it's gitignored; never commit it):
+**Deliverable.** An actionable issue ends as a PR to `main`, linked to the issue, not merged.
+The PR description is the single place the outcome lives — write it for someone who hasn't seen
+the issue. It must include:
 
-```json
-{
-  "issue": 55,
-  "status": "completed | blocked | failed",
-  "pr_url": "https://github.com/... (completed only)",
-  "summary": "one-paragraph description of what was built (completed only)",
-  "testing_notes": "markdown: what to exercise in the UI and how, plus anything to provision first — credentials, GitHub Apps, env vars (completed only)",
-  "screenshots": ["absolute paths to verification screenshots (completed only)"],
-  "untested": ["flows built but not verified end-to-end, each with the credential/setup the user must supply to test it (completed only, when applicable)"],
-  "questions": ["unmade decisions that must be answered to unblock (blocked only)"],
-  "failure": "what went wrong and what was tried (failed only)"
-}
-```
+- **Summary** — what was built, plus any decisions or made-up values you settled during the run.
+- **Testing** (a `## Testing` heading) — the exact flow to click through to exercise the change,
+  and anything to provision first (credentials, GitHub Apps, env vars).
+- **Not verified** (a `## Not verified` heading) — flows built but not exercised end-to-end, each
+  with the setup a human must supply to test it. Omit the heading only when everything was verified.
 
-`testing_notes` is what a human reads before touching the PR — write it for someone who
-hasn't seen the issue: the flow to click through, and any setup they must do first.
+Open the PR as soon as the work is committed — it's the durable record of the run, so it should
+exist before the final CI shepherding, not after. Attach verification screenshots to the PR.
 
 **Unattended adjustments to the workflow:**
 
 - Browser verification: sign up a disposable user through the app's own email/password
   sign-up (e.g. `issue-<nr>-verify@example.dev`); sign-up logs straight in — no email
   verification gate. The worktree has its own database, so this pollutes nothing.
-- CI: if CI is still red after 3 fix cycles, stop and report `failed` with the diagnosis
-  rather than looping forever.
-- If anything else makes completion impossible (a broken base branch, a missing service),
-  report `failed` — don't wait, don't work around it destructively.
+- CI: keep pushing fixes until CI is green; every push re-triggers it. If it stays red after
+  several fix cycles, leave the current diagnosis in a PR comment so the state is visible, and
+  end the run.
+- If a broken base branch or a missing service makes progress impossible, commit whatever is
+  done, capture the diagnosis in the PR description (or an issue comment if there's no PR yet),
+  and end the run — don't wait, don't work around it destructively.
 
 ## Model split
 

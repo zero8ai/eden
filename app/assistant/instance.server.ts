@@ -19,7 +19,8 @@ import type { Agent, DataStore, Environment, Release } from "~/data/ports";
 import { buildAssistantImage } from "~/deploy/eve-image.server";
 import { isVersionLabelCollision } from "~/deploy/versioning";
 import { enqueue } from "~/jobs/queue.server";
-import { getWorkspaceAssistantModel } from "~/org/workspace.server";
+import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
+import type { ReasoningEffort } from "~/models/reasoning";
 import {
   getActiveModelConnection,
   getProviderDeploymentEnv,
@@ -181,10 +182,17 @@ export async function assistantEnv(input: {
   deploymentId: string;
   /** Published per-project override; null/undefined inherits the workspace default. */
   modelOverride?: string | null;
+  /** Explicit effort paired with modelOverride; null delegates to the provider default. */
+  effortOverride?: ReasoningEffort | null;
 }): Promise<Record<string, string>> {
-  const configuredModel =
-    input.modelOverride ??
-    (await getWorkspaceAssistantModel(input.orgId).catch(() => null));
+  const overrideModel = input.modelOverride?.trim() || null;
+  const selection = overrideModel
+    ? { model: overrideModel, effort: input.effortOverride ?? null }
+    : await getWorkspaceAssistantSelection(input.orgId).catch(() => ({
+        model: null,
+        effort: null,
+      }));
+  const configuredModel = selection.model;
   if (!configuredModel) {
     throw new Error(
       "No assistant model is configured. Connect a model provider and select a workspace " +
@@ -223,6 +231,7 @@ export async function assistantEnv(input: {
     EDEN_API_URL: edenApiUrl(),
     EDEN_ASSISTANT_TOKEN: mintAssistantToken(input.deploymentId),
   };
+  if (selection.effort) env.EDEN_ASSISTANT_EFFORT = selection.effort;
   if (hasCodex) {
     env.EDEN_MODEL_GATEWAY_URL = gatewayBaseUrl();
     env.EDEN_MODEL_GATEWAY_TOKEN = mintGatewayToken(input.orgId);
@@ -322,6 +331,7 @@ export async function runAssistantDeploy(
       orgId: project.orgId,
       deploymentId: dep.id,
       modelOverride: bundle.model,
+      effortOverride: bundle.effort,
     });
     const health = await runtime.deployTarget.deploy({
       deploymentId: dep.id,

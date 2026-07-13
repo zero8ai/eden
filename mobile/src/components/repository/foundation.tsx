@@ -108,9 +108,9 @@ export function ActionButton({ label, onPress, secondary, disabled }: { label: s
   return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.button, secondary && styles.secondary, (pressed || disabled) && { opacity: .55 }]}><Text style={[styles.buttonText, secondary && styles.secondaryText]}>{label}</Text></Pressable>;
 }
 
-export async function submitForm(path: string, fields: Record<string, string>) {
-  const form = new FormData();
-  Object.entries(fields).forEach(([key, value]) => form.set(key, value));
+export async function submitForm(path: string, fields: Record<string, string> | FormData) {
+  const form = fields instanceof FormData ? fields : new FormData();
+  if (!(fields instanceof FormData)) Object.entries(fields).forEach(([key, value]) => form.set(key, value));
   return apiJson<JsonRecord>(path, { method: "POST", body: form });
 }
 

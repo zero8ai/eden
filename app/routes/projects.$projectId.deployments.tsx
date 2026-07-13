@@ -774,11 +774,12 @@ export async function action(args: ActionFunctionArgs) {
       const pullNumber = Number(form.get("pullNumber"));
       const branch = String(form.get("branch") ?? "") || undefined;
       const title = String(form.get("title") ?? "");
-      const agentRoot = String(form.get("agentRoot") ?? "") || undefined;
       if (!pullNumber) return { error: "Missing change to merge." };
       // The pre-merge build gate + GitHub merge + roster sync now run on the queue (issue #142) so
       // the request returns at once; the workspace indicator streams progress and surfaces a
-      // build-gate failure (nothing merges) rather than blocking the HTTP request on docker.
+      // build-gate failure (nothing merges) rather than blocking the HTTP request on docker. The
+      // gate builds EVERY affected member root, recomputed SERVER-side in the runner from the PR's
+      // changed files (issue #137) — no client-posted root.
       ensureWorkerStarted();
       const subjectKey = `merge:${pullNumber}`;
       const existing = await findRunningTask(project.id, subjectKey);
@@ -799,7 +800,6 @@ export async function action(args: ActionFunctionArgs) {
           pullNumber,
           branch,
           title,
-          agentRoot,
           createdBy: auth.user.id,
           backUrl: back,
         },
@@ -1476,22 +1476,6 @@ function ChangeRequests({
   );
 }
 
-/**
- * The eve build directory for a conversation PR's changed files: a single team member's agent dir
- * when every non-config path is under one `agents/<member>/`, otherwise undefined (the repo root —
- * a single-agent repo). `.eden/**` config files don't belong to any build and are ignored.
- */
-function inferAgentRoot(paths: string[]): string | undefined {
-  const members = new Set<string>();
-  for (const p of paths) {
-    if (p.startsWith(".eden/")) continue;
-    const m = p.match(/^agents\/([^/]+)\//);
-    if (!m) return undefined; // a repo-root / `agent/` file → build the repo root
-    members.add(m[1]);
-  }
-  return members.size === 1 ? `agents/${[...members][0]}/agent` : undefined;
-}
-
 function ChangeCard({
   change,
   busy,
@@ -1506,9 +1490,6 @@ function ChangeCard({
   const submit = useSubmit();
   const conflicted = change.mergeable === false;
   const checking = change.mergeable === null;
-  // Build directory for the pre-merge gate on a conversation branch: a single team member's dir
-  // when every changed file lives under one `agents/<m>/`, else the repo root (single-agent repo).
-  const agentRoot = inferAgentRoot(change.files.map((f) => f.path));
 
   return (
     <Card>
@@ -1560,9 +1541,6 @@ function ChangeCard({
               <input type="hidden" name="pullNumber" value={change.number} />
               <input type="hidden" name="branch" value={change.branch} />
               <input type="hidden" name="title" value={change.title} />
-              {agentRoot && (
-                <input type="hidden" name="agentRoot" value={agentRoot} />
-              )}
               <Button
                 type="submit"
                 size="sm"

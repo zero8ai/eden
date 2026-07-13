@@ -6,19 +6,22 @@
  * indicator shows.
  *
  * Faithful to the original ordering: pre-merge build gate (conversation branches only) → merge →
- * roster sync (warn-only) → releases → discard the conversation checkout. A failing gate is a task
- * OUTCOME, not a queue error: it fails the task and returns without merging (the job is `done`). A
- * thrown error from the merge/release path fails the task AND rethrows so the queue records it
- * (jobs enqueued with maxAttempts:1 — merges are not safe to auto-retry after partial side effects).
+ * roster sync (warn-only) → releases → discard the conversation checkout. The gate builds EVERY
+ * affected member root, recomputed server-side from the PR's changed files (issue #137, via
+ * runConversationMergeGate — the publish gate's sibling). A failing gate is a task OUTCOME, not a
+ * queue error: it fails the task and returns without merging (the job is `done`). A thrown error
+ * from the merge/release path fails the task AND rethrows so the queue records it (jobs enqueued
+ * with maxAttempts:1 — merges are not safe to auto-retry after partial side effects).
  *
  * GitHub/runtime dependencies are injectable so unit tests need no network or docker.
  */
+import { runConversationMergeGate } from "~/assistant/merge-gate.server";
 import type { DataStore } from "~/data/ports";
 import { ensureReleasesForCommit } from "~/deploy/controller.server";
 import { detectAgentRoots, hasTeamLayout } from "~/eve/parse";
 import { syncProjectAgents } from "~/db/queries.server";
 import { fetchAgentSource } from "~/github/repo.server";
-import { mergePullRequest } from "~/github/write.server";
+import { listPullRequestFilePaths, mergePullRequest } from "~/github/write.server";
 import { invalidateRepoSource, warmAgentSource } from "~/github/cached.server";
 import {
   discardConversationCheckoutByBranch,
@@ -34,7 +37,6 @@ export interface MergeChangePayload {
   pullNumber: number;
   branch?: string;
   title: string;
-  agentRoot?: string;
   createdBy?: string | null;
   /** Where the indicator's "View result" link points, e.g. `/repos/:id/agents/x/deployment`. */
   backUrl: string;
@@ -44,6 +46,7 @@ export interface MergeChangePayload {
 /** Injected GitHub/runtime seams (production defaults below); keeps unit tests off the network. */
 export interface MergeChangeDeps {
   checkBuild?: (req: BuildCheckRequest) => Promise<BuildCheckResult>;
+  listPullRequestFilePaths: typeof listPullRequestFilePaths;
   mergePullRequest: typeof mergePullRequest;
   fetchAgentSource: typeof fetchAgentSource;
   detectAgentRoots: typeof detectAgentRoots;
@@ -57,6 +60,7 @@ export interface MergeChangeDeps {
 function defaultDeps(): MergeChangeDeps {
   return {
     checkBuild: getRuntime().deployTarget.checkBuild,
+    listPullRequestFilePaths,
     mergePullRequest,
     fetchAgentSource,
     detectAgentRoots,
@@ -73,7 +77,7 @@ export async function runMergeChange(
   deps: MergeChangeDeps = defaultDeps(),
   store: DataStore = getRuntime().data,
 ): Promise<void> {
-  const { taskId, pullNumber, branch, title, agentRoot, createdBy, backUrl } = payload;
+  const { taskId, pullNumber, branch, title, createdBy, backUrl } = payload;
   const project = await store.projects.findById(payload.projectId);
   if (!project || !project.repoInstallationId || !project.repoOwner || !project.repoName) {
     throw new Error(`merge_change: project ${payload.projectId} has no connected repo`);
@@ -82,24 +86,28 @@ export async function runMergeChange(
   const conversation = isConversationBranch(branch);
 
   // 1. Authoritative pre-merge gate for assistant conversation branches: build the branch's tree
-  //    exactly as it will exist after merge (NO draft overlay). A failure is the task's outcome —
-  //    nothing merges, and the job completes normally.
+  //    exactly as it will exist after merge (NO draft overlay), one build per affected member
+  //    root recomputed from the PR's changed files (issue #137). A failure is the task's
+  //    outcome — nothing merges, and the job completes normally.
   await updateTaskStage(taskId, "Checking the build…", store);
   if (conversation && deps.checkBuild) {
-    const check = await deps.checkBuild({
+    const paths = await deps.listPullRequestFilePaths(
+      project.repoInstallationId,
+      repo,
+      pullNumber,
+    );
+    const gate = await runConversationMergeGate({
       projectId: project.id,
       repo,
       ref: branch!,
       installationId: project.repoInstallationId,
-      overlay: [],
-      agentRoot,
+      teamLayout: project.layout === "team",
+      paths,
+      checkBuild: deps.checkBuild,
+      onStage: (stage) => updateTaskStage(taskId, stage, store),
     });
-    if (!check.ok) {
-      await failTask(
-        taskId,
-        `This change doesn't build yet, so it can't be merged:\n${check.output}`,
-        store,
-      );
+    if (!gate.ok) {
+      await failTask(taskId, gate.error, store);
       return;
     }
   }

@@ -3,8 +3,10 @@
  * deployments route onto the durable job queue. All GitHub/runtime seams are injected as vi.fn()s so
  * no test touches the network or docker; progress and outcome are read back off the fake store's
  * workspace task. The contract under test:
- *   - conversation branches gate on a pre-merge build; a failing gate is the task's OUTCOME (fail the
- *     task, DO NOT merge, resolve without throwing so the job is `done`);
+ *   - conversation branches gate on a pre-merge build of EVERY affected member root (recomputed
+ *     server-side from the PR's changed files — issue #137, via the real runConversationMergeGate);
+ *     a failing gate is the task's OUTCOME (fail the task, DO NOT merge, resolve without throwing
+ *     so the job is `done`);
  *   - a passing merge cuts releases, discards the conversation checkout, and completes with a
  *     result URL carrying the new version;
  *   - non-conversation branches skip the gate and the checkout discard;
@@ -25,6 +27,7 @@ const PROJECT = "proj_1";
 function makeDeps(over: Partial<MergeChangeDeps> = {}): MergeChangeDeps {
   return {
     checkBuild: vi.fn().mockResolvedValue({ ok: true }),
+    listPullRequestFilePaths: vi.fn().mockResolvedValue(["agent/agent.ts"]),
     mergePullRequest: vi.fn().mockResolvedValue({ mergeSha: "sha123" }),
     fetchAgentSource: vi.fn().mockResolvedValue({ paths: ["agent/agent.ts"] }),
     detectAgentRoots: vi.fn().mockReturnValue([]),
@@ -118,6 +121,61 @@ describe("runMergeChange", () => {
     expect(row?.resultUrl).toBe("/repos/proj_1/agents/x/deployment?released=v3");
   });
 
+  it("builds every affected member root on a team layout and streams a per-root stage", async () => {
+    store.seedProject({
+      id: "team_1",
+      orgId: "org_1",
+      repoOwner: "acme",
+      repoName: "team",
+      repoInstallationId: "inst_1",
+      defaultBranch: "main",
+      layout: "team",
+    });
+    const task = await createTask(
+      {
+        projectId: "team_1",
+        kind: "merge_change",
+        subjectKey: "merge:5",
+        label: "Merging change #5",
+        originUrl: "/repos/team_1/deployment",
+      },
+      store,
+    );
+    const stages: string[] = [];
+    const checkBuild = vi.fn().mockImplementation(async () => {
+      stages.push((await store.workspaceTasks.findById(task.id))!.stage!);
+      return { ok: true };
+    });
+    const deps = makeDeps({
+      checkBuild,
+      listPullRequestFilePaths: vi
+        .fn()
+        .mockResolvedValue([
+          "agents/pm/agent/channels/github.ts",
+          "agents/reviewer/agent/index.ts",
+          ".eden/config.json",
+        ]),
+    });
+
+    await runMergeChange(
+      payload({ projectId: "team_1", taskId: task.id, branch: "eden/conv-abc" }),
+      deps,
+      store,
+    );
+
+    // One build per member root the PR spans (`.eden/**` maps to none), each streamed as (i/n).
+    expect(checkBuild).toHaveBeenCalledTimes(2);
+    expect(checkBuild.mock.calls.map((c) => c[0].agentRoot)).toEqual([
+      "agents/pm/agent",
+      "agents/reviewer/agent",
+    ]);
+    expect(stages).toEqual([
+      "Checking the build for agents/pm/agent (1/2)…",
+      "Checking the build for agents/reviewer/agent (2/2)…",
+    ]);
+    expect((await store.workspaceTasks.findById(task.id))?.status).toBe("succeeded");
+  });
+
   it("skips the gate and the checkout discard for a non-conversation branch", async () => {
     const task = await seedTask();
     const deps = makeDeps();
@@ -125,6 +183,7 @@ describe("runMergeChange", () => {
     await runMergeChange(payload({ taskId: task.id, branch: "feature/x" }), deps, store);
 
     expect(deps.checkBuild).not.toHaveBeenCalled();
+    expect(deps.listPullRequestFilePaths).not.toHaveBeenCalled();
     expect(deps.mergePullRequest).toHaveBeenCalledOnce();
     expect(deps.discardConversationCheckoutByBranch).not.toHaveBeenCalled();
     expect((await store.workspaceTasks.findById(task.id))?.status).toBe("succeeded");

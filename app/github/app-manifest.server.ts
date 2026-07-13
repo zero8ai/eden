@@ -62,7 +62,8 @@ export interface AppManifestInput {
  * can assert it without credentials. Any drift here (a wider permission, an extra event) is
  * the security-relevant thing to catch:
  *
- * - `issues`/`pull_requests` write — the conversational loop (read mentions, post replies).
+ * - `issues`/`pull_requests` write — the conversational loop (read mentions, post replies)
+ *   and opened/label event coverage.
  * - `contents` write — the App doubles as the agent's DO-WORK credential (clone, branch,
  *   push) on the repos it's installed on; it is the agent's only GitHub credential.
  * - `metadata` read is implied by any grant but stated for clarity.
@@ -85,7 +86,12 @@ export function buildAppManifest(input: AppManifestInput) {
       issues: "write",
       pull_requests: "write",
     },
-    default_events: ["issue_comment", "pull_request_review_comment"],
+    default_events: [
+      "issue_comment",
+      "issues",
+      "pull_request",
+      "pull_request_review_comment",
+    ],
   };
 }
 

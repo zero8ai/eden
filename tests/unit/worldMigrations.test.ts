@@ -27,11 +27,24 @@ describe("runWorldMigrations", () => {
   });
 
   it("runs the Workflow setup script when it is present", async () => {
-    const runDocker = vi.fn(async () => "");
+    const runDocker = vi.fn(async (_args: string[]) => "");
 
     await runWorldMigrations("eden/proj-x:abc", "postgres://world", runDocker);
 
-    expect(runDocker).toHaveBeenLastCalledWith([
+    expect(runDocker).toHaveBeenCalledTimes(4);
+    expect(runDocker.mock.calls[2]?.[0]).toEqual([
+      "run",
+      "--rm",
+      "--add-host",
+      "host.docker.internal:host-gateway",
+      "-e",
+      "WORKFLOW_POSTGRES_URL=postgres://world",
+      "eden/proj-x:abc-build",
+      "node",
+      "-e",
+      expect.stringContaining("createConnection"),
+    ]);
+    expect(runDocker.mock.calls[3]?.[0]).toEqual([
       "run",
       "--rm",
       "--add-host",
@@ -41,6 +54,23 @@ describe("runWorldMigrations", () => {
       "eden/proj-x:abc-build",
       "node",
       WORLD_POSTGRES_SETUP_SCRIPT,
+    ]);
+  });
+
+  it("fails before setup when Postgres is unreachable from the container", async () => {
+    const unreachable = new Error("Postgres is unreachable");
+    const runDocker = vi.fn(async (args: string[]) => {
+      if (args.includes("-e")) throw unreachable;
+      return "";
+    });
+
+    await expect(
+      runWorldMigrations("eden/proj-x:abc", "postgres://world", runDocker),
+    ).rejects.toBe(unreachable);
+
+    expect(runDocker).toHaveBeenCalledTimes(3);
+    expect(runDocker.mock.calls).not.toContainEqual([
+      expect.arrayContaining(["node", WORLD_POSTGRES_SETUP_SCRIPT]),
     ]);
   });
 });

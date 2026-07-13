@@ -130,7 +130,12 @@ import {
   type AppInstallation,
 } from "~/github/app-manifest.server";
 import { fetchAgentSource } from "~/github/repo.server";
-import { closePullRequest, mergePullRequest } from "~/github/write.server";
+import {
+  closePullRequest,
+  listPullRequestFilePaths,
+  mergePullRequest,
+} from "~/github/write.server";
+import { runConversationMergeGate } from "~/assistant/merge-gate.server";
 import { getDiscordAppConfig } from "~/discord/config.server";
 import { listConnectionsForAgent } from "~/discord/connections.server";
 import { getGoogleOAuthConfig } from "~/connections/config.server";
@@ -736,24 +741,28 @@ export async function action(args: ActionFunctionArgs) {
       if (!pullNumber) return { error: "Missing change to merge." };
       // Authoritative pre-merge gate for assistant conversation branches: build the branch's tree
       // exactly as it will exist after merge (tarball at the branch ref, NO draft overlay). The
-      // model's own in-sandbox checks are advisory; this is the one that blocks a bad merge.
+      // model's own in-sandbox checks are advisory; this is the one that blocks a bad merge. The
+      // gate builds EVERY affected member root, recomputed SERVER-side from the PR's changed files
+      // (issue #137) — a client-posted single root under-specifies a multi-member / root-touching
+      // change and would collapse to a repo-root build that always fails on a team layout.
       if (isConversationBranch(branch)) {
         const checkBuild = getRuntime().deployTarget.checkBuild;
         if (checkBuild) {
-          const agentRoot = String(form.get("agentRoot") ?? "") || undefined;
-          const check = await checkBuild({
+          const paths = await listPullRequestFilePaths(
+            project.repoInstallationId,
+            repo,
+            pullNumber,
+          );
+          const gate = await runConversationMergeGate({
             projectId: project.id,
             repo,
             ref: branch!,
             installationId: project.repoInstallationId,
-            overlay: [],
-            agentRoot,
+            teamLayout: project.layout === "team",
+            paths,
+            checkBuild,
           });
-          if (!check.ok) {
-            return {
-              error: `This change doesn't build yet, so it can't be merged:\n${check.output}`,
-            };
-          }
+          if (!gate.ok) return { error: gate.error };
         }
       }
       // Merge → one commit on the default branch (the version identity) → a Release per
@@ -1438,22 +1447,6 @@ function ChangeRequests({
   );
 }
 
-/**
- * The eve build directory for a conversation PR's changed files: a single team member's agent dir
- * when every non-config path is under one `agents/<member>/`, otherwise undefined (the repo root —
- * a single-agent repo). `.eden/**` config files don't belong to any build and are ignored.
- */
-function inferAgentRoot(paths: string[]): string | undefined {
-  const members = new Set<string>();
-  for (const p of paths) {
-    if (p.startsWith(".eden/")) continue;
-    const m = p.match(/^agents\/([^/]+)\//);
-    if (!m) return undefined; // a repo-root / `agent/` file → build the repo root
-    members.add(m[1]);
-  }
-  return members.size === 1 ? `agents/${[...members][0]}/agent` : undefined;
-}
-
 function ChangeCard({
   change,
   busy,
@@ -1468,9 +1461,6 @@ function ChangeCard({
   const submit = useSubmit();
   const conflicted = change.mergeable === false;
   const checking = change.mergeable === null;
-  // Build directory for the pre-merge gate on a conversation branch: a single team member's dir
-  // when every changed file lives under one `agents/<m>/`, else the repo root (single-agent repo).
-  const agentRoot = inferAgentRoot(change.files.map((f) => f.path));
 
   return (
     <Card>
@@ -1522,9 +1512,6 @@ function ChangeCard({
               <input type="hidden" name="pullNumber" value={change.number} />
               <input type="hidden" name="branch" value={change.branch} />
               <input type="hidden" name="title" value={change.title} />
-              {agentRoot && (
-                <input type="hidden" name="agentRoot" value={agentRoot} />
-              )}
               <Button type="submit" size="sm" disabled={busy || conflicted}>
                 {merging ? "Merging…" : "Merge"}
               </Button>

@@ -54,7 +54,12 @@ describe("buildAppManifest", () => {
         issues: "write",
         pull_requests: "write",
       },
-      default_events: ["issue_comment", "pull_request_review_comment"],
+      default_events: [
+        "issue_comment",
+        "issues",
+        "pull_request",
+        "pull_request_review_comment",
+      ],
     });
   });
 });

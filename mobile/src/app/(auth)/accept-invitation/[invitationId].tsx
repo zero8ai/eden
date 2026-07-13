@@ -1,0 +1,8 @@
+import { router, useLocalSearchParams } from "expo-router";
+import { useState } from "react";
+import { Text } from "react-native";
+import { Button, Card, Heading, Screen, colors } from "@/components/native";
+import { authClient } from "@/lib/auth-client";
+import { useSession } from "@/providers/session-provider";
+
+export default function AcceptInvitationScreen(){const{invitationId}=useLocalSearchParams<{invitationId:string}>();const session=useSession();const[busy,setBusy]=useState(false);const[error,setError]=useState<string|null>(null);const accept=async()=>{setBusy(true);setError(null);try{const result=await authClient.organization.acceptInvitation({invitationId});if(result.error)return setError(result.error.message??"Could not accept this invitation.");router.replace("/(app)/(tabs)")}catch(cause){setError(cause instanceof Error?cause.message:"Could not accept this invitation.")}finally{setBusy(false)}};return <Screen><Heading title="Join this workspace" subtitle="Accept the invitation to collaborate with your team in Eden."/><Card>{session.data?<><Text>Signed in as {session.data.user.email}</Text>{error?<Text accessibilityRole="alert" style={{color:colors.red}}>{error}</Text>:null}<Button title={busy?"Joining…":"Accept invitation"} disabled={busy} onPress={accept}/></>:<><Text>Sign in or create an account with the invited email to continue.</Text><Button title="Sign in" onPress={()=>router.push({pathname:"/(auth)/login",params:{invitationId}})}/><Button title="Create account" kind="secondary" onPress={()=>router.push({pathname:"/(auth)/signup",params:{invitationId}})}/></>}</Card></Screen>}

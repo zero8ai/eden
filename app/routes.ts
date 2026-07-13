@@ -9,6 +9,9 @@ import { type RouteConfig, index, route } from "@react-router/dev/routes";
 const memberRoute = (tail: string, file: string, id: string) =>
   route(`repos/:projectId/agents/:agentName${tail}`, file, { id });
 
+const mobileMemberRoute = (tail: string, file: string, id: string) =>
+  route(`api/mobile/repos/:projectId/agents/:agentName${tail}`, file, { id });
+
 export default [
   index("routes/home.tsx"),
   route("sitemap.xml", "routes/sitemap[.]xml.tsx"),
@@ -30,6 +33,117 @@ export default [
   route("workspaces", "routes/workspaces.tsx"),
   route("api/workspaces", "routes/api.workspaces.tsx"),
   route("connect", "routes/connect.tsx"),
+  // Native clients use resource routes backed by the same loaders/actions as the web UI. Keeping
+  // these modules component-free makes GET/POST responses JSON rather than rendered documents.
+  route("api/mobile/dashboard", "routes/api.mobile.dashboard.ts"),
+  route("api/mobile/marketplace", "routes/api.mobile.marketplace.ts"),
+  route(
+    "api/mobile/marketplace/:type/:id",
+    "routes/api.mobile.marketplace.$type.$id.ts",
+  ),
+  route(
+    "api/mobile/marketplace/:type/:id/install",
+    "routes/api.mobile.marketplace.$type.$id.install.ts",
+  ),
+  route("api/mobile/workspaces", "routes/api.mobile.workspaces.ts"),
+  route("api/mobile/org/settings", "routes/api.mobile.org.settings.ts"),
+  route("api/mobile/org/members", "routes/api.mobile.org.members.ts"),
+  route("api/mobile/connect", "routes/api.mobile.connect.ts"),
+  route("api/mobile/repos/:projectId", "routes/api.mobile.repository.ts"),
+  mobileMemberRoute(
+    "",
+    "routes/api.mobile.repository.ts",
+    "mobile-member-overview",
+  ),
+  route(
+    "api/mobile/repos/:projectId/deployment",
+    "routes/api.mobile.repository.deployment.ts",
+  ),
+  mobileMemberRoute(
+    "/deployment",
+    "routes/api.mobile.repository.deployment.ts",
+    "mobile-member-deployment",
+  ),
+  route(
+    "api/mobile/repos/:projectId/settings",
+    "routes/api.mobile.repository.settings.ts",
+  ),
+  mobileMemberRoute(
+    "/settings",
+    "routes/api.mobile.repository.settings.ts",
+    "mobile-member-settings",
+  ),
+  route(
+    "api/mobile/repos/:projectId/playground",
+    "routes/api.mobile.repository.playground.ts",
+  ),
+  mobileMemberRoute(
+    "/playground",
+    "routes/api.mobile.repository.playground.ts",
+    "mobile-member-playground",
+  ),
+  route(
+    "api/mobile/repos/:projectId/runs",
+    "routes/api.mobile.repository.runs.ts",
+  ),
+  mobileMemberRoute(
+    "/runs",
+    "routes/api.mobile.repository.runs.ts",
+    "mobile-member-runs",
+  ),
+  route(
+    "api/mobile/repos/:projectId/runs/:runId",
+    "routes/api.mobile.repository.run.ts",
+  ),
+  mobileMemberRoute(
+    "/runs/:runId",
+    "routes/api.mobile.repository.run.ts",
+    "mobile-member-run",
+  ),
+  route(
+    "api/mobile/repos/:projectId/assistant",
+    "routes/api.mobile.repository.assistant.ts",
+  ),
+  route(
+    "api/mobile/repos/:projectId/assistant/config",
+    "routes/api.mobile.repository.assistant-config.ts",
+  ),
+  route(
+    "api/mobile/repos/:projectId/resources/:category",
+    "routes/api.mobile.repository.resources.ts",
+  ),
+  mobileMemberRoute(
+    "/resources/:category",
+    "routes/api.mobile.repository.resources.ts",
+    "mobile-member-resources",
+  ),
+  route(
+    "api/mobile/repos/:projectId/edit",
+    "routes/api.mobile.repository.edit.ts",
+  ),
+  mobileMemberRoute(
+    "/edit",
+    "routes/api.mobile.repository.edit.ts",
+    "mobile-member-edit",
+  ),
+  route(
+    "api/mobile/repos/:projectId/edit/instructions",
+    "routes/api.mobile.repository.instructions.ts",
+  ),
+  mobileMemberRoute(
+    "/edit/instructions",
+    "routes/api.mobile.repository.instructions.ts",
+    "mobile-member-instructions",
+  ),
+  route(
+    "api/mobile/repos/:projectId/edit/schedule",
+    "routes/api.mobile.repository.schedule.ts",
+  ),
+  mobileMemberRoute(
+    "/edit/schedule",
+    "routes/api.mobile.repository.schedule.ts",
+    "mobile-member-schedule",
+  ),
   // The product noun is REPOSITORY (one connected GitHub repo = a single agent or a team).
   // Param stays :projectId — internal identifiers didn't churn with the URL rename.
   route("repos/:projectId", "routes/projects.$projectId.tsx"),

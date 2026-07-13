@@ -13,7 +13,9 @@
     // The bundled assistant eve project (docs/ASSISTANT.md) is a separate project compiled by
     // `eve build` inside its own image — it imports `eve` (not an Eden dependency), so the
     // control-plane tsc must not typecheck it.
-    "assistant-template/**/*"
+    "assistant-template/**/*",
+    "mobile/**/*",
+    "packages/*/dist/**/*"
   ],
   "compilerOptions": {
     "lib": ["DOM", "DOM.Iterable", "ES2022"],

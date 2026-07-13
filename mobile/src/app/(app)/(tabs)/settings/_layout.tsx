@@ -1,0 +1,2 @@
+import { Stack } from "expo-router";
+export default function SettingsLayout(){return <Stack screenOptions={{headerBackTitle:"Settings",headerShadowVisible:false}}><Stack.Screen name="index" options={{title:"Settings"}}/><Stack.Screen name="workspaces" options={{title:"Workspaces"}}/><Stack.Screen name="organization" options={{title:"Organization"}}/><Stack.Screen name="members" options={{title:"Members & invitations"}}/></Stack>}

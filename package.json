@@ -2,6 +2,10 @@
   "name": "eden",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "mobile",
+    "packages/*"
+  ],
   "scripts": {
     "build": "react-router build",
     "dev": "react-router dev",
@@ -18,7 +22,9 @@
     "catalog:validate": "node catalog/scripts/validate.mjs",
     "catalog:index": "node catalog/scripts/build-index.mjs",
     "doctor": "npx react-doctor@latest",
-    "email:dev": "email dev --dir app/email/templates --port 8092"
+    "email:dev": "email dev --dir app/email/templates --port 8092",
+    "mobile:start": "npm --workspace mobile run start",
+    "mobile:typecheck": "npm --workspace mobile run typecheck"
   },
   "dependencies": {
     "@codemirror/lang-javascript": "^6.2.5",
@@ -28,6 +34,7 @@
     "@codemirror/lint": "^6.9.7",
     "@codemirror/state": "^6.7.0",
     "@codemirror/view": "^6.43.4",
+    "@better-auth/expo": "1.6.23",
     "@fontsource-variable/geist": "^5.2.9",
     "@react-email/components": "^1.0.12",
     "@react-router/express": "^8.0.0",
@@ -48,8 +55,8 @@
     "postmark": "^5.0.0",
     "prettier": "^3.9.4",
     "radix-ui": "^1.6.1",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
     "react-router": "8.0.0",
     "semver": "^7.8.5",
     "shadcn": "^4.12.0",

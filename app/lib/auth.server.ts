@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { expo } from "@better-auth/expo";
 import { APIError } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { organization } from "better-auth/plugins";
@@ -9,11 +10,13 @@ import { sendOrganizationInvitation } from "~/email/send-organization-invitation
 import { sendEmailVerification } from "~/email/send-email-verification.server";
 import { sendPasswordResetEmail } from "~/email/send-password-reset.server";
 import { assertProductionAuthEnvironment } from "~/lib/auth-env.server";
+import { mobileTrustedOrigins } from "~/lib/mobile-auth";
 
 assertProductionAuthEnvironment();
 
 export const auth = betterAuth({
   appName: "Eden",
+  trustedOrigins: mobileTrustedOrigins(),
   // Production request paths can carry one-time tokens. Better Auth's default error logger may
   // serialize endpoint params (its `args` can include token-bearing bodies), so production logs
   // the message line only — enough to observe provider failures (e.g. a swallowed invitation
@@ -87,6 +90,7 @@ export const auth = betterAuth({
     },
   },
   plugins: [
+    expo(),
     organization({
       // Better Auth ships POST /api/auth/organization/delete enabled by default; Eden's tables
       // cascade from organization.id, so one owner-session call would erase an entire tenant

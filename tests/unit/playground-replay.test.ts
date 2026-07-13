@@ -401,4 +401,83 @@ describe("loadPlaygroundEntriesFromEve", () => {
       error: expect.stringContaining("stopped before Eden recorded"),
     });
   });
+
+  it("normalizes a transient provider turn.failed into a friendly, retryable message", async () => {
+    const at = new Date().toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        streamResponse([
+          { type: "turn.started", data: { turnId: "turn_0" }, meta: { at } },
+          {
+            type: "message.received",
+            data: { turnId: "turn_0", message: "summarize the repo" },
+            meta: { at },
+          },
+          {
+            type: "turn.failed",
+            data: {
+              turnId: "turn_0",
+              message: "The server had an error processing your request.",
+              code: "MODEL_CALL_FAILED",
+              details: {
+                detail:
+                  "Error: The server had an error processing your request\n      at normalizeModelStreamError (file:///app/.output/server/_libs/eve.mjs:56852:10)",
+              },
+            },
+            meta: { at },
+          },
+        ]),
+      ),
+    );
+
+    const entries = await loadPlaygroundEntriesFromEve({
+      session: session({ status: "failed", streamIndex: 3 }),
+      target,
+    });
+
+    expect(entries).toHaveLength(2);
+    expect(entries[1]).toMatchObject({
+      role: "assistant",
+      error: "The model provider had a temporary error. Retry your message.",
+      errorRetryable: true,
+    });
+    expect(entries[1].errorDetail).toContain("eve.mjs");
+  });
+
+  it("keeps a non-transient turn.failed specific and non-retryable", async () => {
+    const at = new Date().toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        streamResponse([
+          { type: "turn.started", data: { turnId: "turn_0" }, meta: { at } },
+          {
+            type: "message.received",
+            data: { turnId: "turn_0", message: "use a bad model" },
+            meta: { at },
+          },
+          {
+            type: "turn.failed",
+            data: {
+              turnId: "turn_0",
+              message: "Model 'gpt-9' not found",
+              code: "MODEL_NOT_FOUND",
+            },
+            meta: { at },
+          },
+        ]),
+      ),
+    );
+
+    const entries = await loadPlaygroundEntriesFromEve({
+      session: session({ status: "failed", streamIndex: 3 }),
+      target,
+    });
+
+    expect(entries).toHaveLength(2);
+    expect(entries[1].role).toBe("assistant");
+    expect(entries[1].error).toContain("not found");
+    expect(entries[1].errorRetryable).toBe(false);
+  });
 });

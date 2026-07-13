@@ -34,6 +34,7 @@ import {
   StepsCard,
   UserBubble,
 } from "~/components/chat";
+import { TurnError } from "~/components/turn-error";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { LocalizedDate } from "~/components/localized-values";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
@@ -344,6 +345,8 @@ interface LiveTurn {
   modelId: string | null;
   inputRequests: ChatInputRequest[];
   error: string | null;
+  errorDetail: string | null;
+  errorRetryable: boolean;
   done: boolean;
 }
 
@@ -515,6 +518,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         modelId: null,
         inputRequests: [],
         error: null,
+        errorDetail: null,
+        errorRetryable: false,
         done: false,
       });
       const apply = (evt: StreamEvent) =>
@@ -616,6 +621,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             ? {
                 ...prev,
                 error: `Lost the live stream: ${(error as Error).message}`,
+                errorDetail: null,
+                errorRetryable: false,
                 activity: null,
                 done: true,
               }
@@ -898,6 +905,16 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
               onAnswer={
                 i === shownEntries.length - 1 && !visibleLive ? send : undefined
               }
+              onRetry={
+                i === shownEntries.length - 1 && !visibleLive && e.errorRetryable
+                  ? () => {
+                      const userText = [...shownEntries.slice(0, i)]
+                        .reverse()
+                        .find((x) => x.role === "user")?.text;
+                      if (userText) send(userText);
+                    }
+                  : undefined
+              }
               busy={busy}
               running={replayingRunningSession && i === shownEntries.length - 1}
             />
@@ -928,7 +945,11 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         {visibleLive && (
           <>
             <UserBubble text={visibleLive.userText} />
-            <LiveBubble live={visibleLive} />
+            <LiveBubble
+              live={visibleLive}
+              onRetry={() => send(visibleLive.userText)}
+              busy={busy}
+            />
           </>
         )}
       </ChatTranscript>
@@ -1011,6 +1032,8 @@ type StreamEvent =
       structured: boolean;
       inputRequests?: ChatInputRequest[];
       error: string | null;
+      errorDetail?: string | null;
+      errorRetryable?: boolean;
       modelId: string | null;
       version: string;
     };
@@ -1054,6 +1077,8 @@ function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
             ? evt.inputRequests
             : prev.inputRequests,
         error: evt.error,
+        errorDetail: evt.errorDetail ?? null,
+        errorRetryable: evt.errorRetryable ?? false,
         modelId: evt.modelId ?? prev.modelId,
         activity: null,
         done: true,
@@ -1081,7 +1106,15 @@ function formatSessionLabel(title: string, updatedAt: string) {
  * The live, in-flight assistant turn: the reply streams first, followed by the collapsed
  * steps card (spinner + what it's doing right now) so activity stays near the scroll bottom.
  */
-function LiveBubble({ live }: { live: LiveTurn }) {
+function LiveBubble({
+  live,
+  onRetry,
+  busy,
+}: {
+  live: LiveTurn;
+  onRetry?: () => void;
+  busy?: boolean;
+}) {
   return (
     <div className="space-y-2">
       {(live.text || live.error || live.inputRequests.length > 0) && (
@@ -1100,7 +1133,13 @@ function LiveBubble({ live }: { live: LiveTurn }) {
             </span>
           )}
           {live.error ? (
-            <p className="whitespace-pre-wrap text-destructive">{live.error}</p>
+            <TurnError
+              message={live.error}
+              detail={live.errorDetail}
+              retryable={live.errorRetryable}
+              onRetry={onRetry}
+              busy={busy}
+            />
           ) : live.text ? (
             <MarkdownText text={live.text} />
           ) : null}
@@ -1121,12 +1160,15 @@ function LiveBubble({ live }: { live: LiveTurn }) {
 function AgentEntry({
   entry,
   onAnswer,
+  onRetry,
   busy,
   running,
 }: {
   entry: ChatEntry;
   /** Set on the newest entry only — answers a pending input request via the send path. */
   onAnswer?: (text: string) => void;
+  /** Set on the newest errored entry only — resends the message to retry the turn. */
+  onRetry?: () => void;
   busy?: boolean;
   running?: boolean;
 }) {
@@ -1146,7 +1188,13 @@ function AgentEntry({
           </span>
         )}
         {entry.error ? (
-          <p className="whitespace-pre-wrap text-destructive">{entry.error}</p>
+          <TurnError
+            message={entry.error}
+            detail={entry.errorDetail}
+            retryable={entry.errorRetryable}
+            onRetry={onRetry}
+            busy={busy}
+          />
         ) : entry.structured ? (
           <pre className="overflow-x-auto rounded-lg bg-muted/50 p-3 font-mono text-xs">
             {entry.text}

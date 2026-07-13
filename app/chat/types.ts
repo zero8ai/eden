@@ -58,4 +58,8 @@ export interface ChatEntry {
   secrets?: string[];
   checks?: { ran: boolean; ok: boolean };
   error?: string | null;
+  /** Raw error text for operators (rendered behind a details toggle). Additive. */
+  errorDetail?: string | null;
+  /** The error is a transient provider hiccup — offer a retry affordance. Additive. */
+  errorRetryable?: boolean;
 }

@@ -1,6 +1,7 @@
 import { and, desc, eq, max, min, ne } from "drizzle-orm";
 
 import { inputRequestsOf, type RawEveEvent } from "~/agent/talk.server";
+import { normalizeTurnError } from "~/chat/stream-error";
 import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import { db } from "~/db/client.server";
 import { playgroundEvents, playgroundSessions } from "~/db/schema";
@@ -934,6 +935,7 @@ function projectEventsToEntries(
         (session.status === "failed" && !normalized.reply
           ? "The turn stopped before Eden recorded a final reply. Reloading may recover it if Eve finished after the last saved cursor."
           : null);
+      const normalizedError = normalizeTurnError(replayError);
       entries.push({
         id: `${turn.turnId}:assistant`,
         role: "assistant",
@@ -944,7 +946,9 @@ function projectEventsToEntries(
         steps: turn.steps,
         inputRequests:
           turn.inputRequests.length > 0 ? turn.inputRequests : undefined,
-        error: replayError,
+        error: normalizedError?.message ?? null,
+        errorDetail: normalizedError?.detail ?? null,
+        errorRetryable: normalizedError?.retryable ?? false,
       });
     }
   }

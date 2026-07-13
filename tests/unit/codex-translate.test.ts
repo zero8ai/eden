@@ -49,7 +49,10 @@ describe("buildResponsesPayload", () => {
             function: {
               name: "get_weather",
               description: "weather",
-              parameters: { type: "object", properties: { city: { type: "string" } } },
+              parameters: {
+                type: "object",
+                properties: { city: { type: "string" } },
+              },
             },
           },
         ],
@@ -63,12 +66,27 @@ describe("buildResponsesPayload", () => {
         type: "function",
         name: "get_weather",
         description: "weather",
-        parameters: { type: "object", properties: { city: { type: "string" } } },
+        parameters: {
+          type: "object",
+          properties: { city: { type: "string" } },
+        },
         strict: false,
       },
     ]);
     expect(payload.tool_choice).toBe("auto");
     expect(payload.parallel_tool_calls).toBe(false);
+  });
+
+  it("maps chat reasoning_effort to the Responses API reasoning object", () => {
+    const payload = buildResponsesPayload(
+      {
+        messages: [{ role: "user", content: "think carefully" }],
+        reasoning_effort: "high",
+      },
+      "gpt-5.5",
+    );
+
+    expect(payload.reasoning).toEqual({ effort: "high" });
   });
 
   it("maps assistant tool_calls to function_call items and tool results to function_call_output", () => {
@@ -189,7 +207,14 @@ describe("createChunkTranslator", () => {
     for (const record of events([
       {
         event: "response.output_item.added",
-        data: { item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "get_weather" } },
+        data: {
+          item: {
+            type: "function_call",
+            id: "fc_1",
+            call_id: "call_1",
+            name: "get_weather",
+          },
+        },
       },
       {
         event: "response.function_call_arguments.delta",
@@ -201,7 +226,11 @@ describe("createChunkTranslator", () => {
       },
       {
         event: "response.completed",
-        data: { response: { usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } },
+        data: {
+          response: {
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+          },
+        },
       },
     ])) {
       for (const c of t.translate(record)) chunks.push(c);
@@ -209,11 +238,19 @@ describe("createChunkTranslator", () => {
 
     // First tool chunk carries the role prefix + the tool_call header.
     const toolHeader = chunks.find((c) => {
-      const calls = c.choices[0].delta.tool_calls as Array<{ id?: string }> | undefined;
+      const calls = c.choices[0].delta.tool_calls as
+        Array<{ id?: string }> | undefined;
       return calls?.[0]?.id === "call_1";
     });
     expect(toolHeader?.choices[0].delta).toMatchObject({
-      tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "get_weather", arguments: "" } }],
+      tool_calls: [
+        {
+          index: 0,
+          id: "call_1",
+          type: "function",
+          function: { name: "get_weather", arguments: "" },
+        },
+      ],
     });
     const final = chunks[chunks.length - 1];
     expect(final.choices[0].finish_reason).toBe("tool_calls");
@@ -226,8 +263,14 @@ describe("createChunkTranslator", () => {
 
   it("finishes with stop when no function call was seen", () => {
     const t = createChunkTranslator("codex/c/gpt-5.5");
-    t.translate({ event: "response.output_text.delta", data: JSON.stringify({ delta: "ok" }) });
-    const [final] = t.translate({ event: "response.completed", data: JSON.stringify({ response: {} }) });
+    t.translate({
+      event: "response.output_text.delta",
+      data: JSON.stringify({ delta: "ok" }),
+    });
+    const [final] = t.translate({
+      event: "response.completed",
+      data: JSON.stringify({ response: {} }),
+    });
     expect(final.choices[0].finish_reason).toBe("stop");
   });
 
@@ -244,7 +287,9 @@ describe("createChunkTranslator", () => {
   it("ignores [DONE] and unknown events", () => {
     const t = createChunkTranslator("codex/c/gpt-5.5");
     expect(t.translate({ event: null, data: "[DONE]" })).toEqual([]);
-    expect(t.translate({ event: "response.created", data: JSON.stringify({}) })).toEqual([]);
+    expect(
+      t.translate({ event: "response.created", data: JSON.stringify({}) }),
+    ).toEqual([]);
   });
 });
 
@@ -255,7 +300,14 @@ describe("aggregateChunks", () => {
     for (const record of events([
       { event: "response.output_text.delta", data: { delta: "Hel" } },
       { event: "response.output_text.delta", data: { delta: "lo" } },
-      { event: "response.completed", data: { response: { usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } } },
+      {
+        event: "response.completed",
+        data: {
+          response: {
+            usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+          },
+        },
+      },
     ])) {
       for (const c of t.translate(record)) chunks.push(c);
     }
@@ -270,9 +322,25 @@ describe("aggregateChunks", () => {
     const t = createChunkTranslator("codex/c/gpt-5.5");
     const chunks: ChatCompletionChunk[] = [];
     for (const record of events([
-      { event: "response.output_item.added", data: { item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "f" } } },
-      { event: "response.function_call_arguments.delta", data: { item_id: "fc_1", delta: '{"a":' } },
-      { event: "response.function_call_arguments.delta", data: { item_id: "fc_1", delta: "1}" } },
+      {
+        event: "response.output_item.added",
+        data: {
+          item: {
+            type: "function_call",
+            id: "fc_1",
+            call_id: "call_1",
+            name: "f",
+          },
+        },
+      },
+      {
+        event: "response.function_call_arguments.delta",
+        data: { item_id: "fc_1", delta: '{"a":' },
+      },
+      {
+        event: "response.function_call_arguments.delta",
+        data: { item_id: "fc_1", delta: "1}" },
+      },
       { event: "response.completed", data: { response: {} } },
     ])) {
       for (const c of t.translate(record)) chunks.push(c);
@@ -280,7 +348,11 @@ describe("aggregateChunks", () => {
     const completion = aggregateChunks(chunks, "codex/c/gpt-5.5");
     expect(completion.choices[0].message.content).toBeNull();
     expect(completion.choices[0].message.tool_calls).toEqual([
-      { id: "call_1", type: "function", function: { name: "f", arguments: '{"a":1}' } },
+      {
+        id: "call_1",
+        type: "function",
+        function: { name: "f", arguments: '{"a":1}' },
+      },
     ]);
     expect(completion.choices[0].finish_reason).toBe("tool_calls");
   });

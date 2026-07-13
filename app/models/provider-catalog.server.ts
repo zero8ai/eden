@@ -12,6 +12,7 @@ import {
   type ApiKeyProviderId,
   type ModelProviderId,
 } from "~/models/provider-reference";
+import { classifyReasoningCapability } from "~/models/reasoning";
 
 const DEFAULT_ANTHROPIC_API_BASE_URL = "https://api.anthropic.com";
 const DEFAULT_OPENAI_API_BASE_URL = "https://api.openai.com";
@@ -39,6 +40,11 @@ function emptyEntry(input: {
   provider: ModelProviderId;
   tags?: string[];
 }): ModelCatalogEntry {
+  const reasoning = classifyReasoningCapability({
+    provider: input.provider,
+    modelId: input.id,
+    supportedParameters: input.tags,
+  });
   return {
     id: input.id,
     name: input.name || input.id,
@@ -46,6 +52,7 @@ function emptyEntry(input: {
     contextWindow: null,
     maxOutputTokens: null,
     tags: input.tags ?? [],
+    ...(reasoning ?? {}),
     inputPerMTok: null,
     outputPerMTok: null,
     providers: [input.provider],
@@ -242,6 +249,8 @@ export function listCodexModels(): ModelCatalogEntry[] {
     description: "OpenAI Codex subscription",
     contextWindow: model.contextWindow,
     tags: ["codex", "subscription"],
+    supportedEfforts: [...model.supportedEfforts],
+    providerDefaultEffort: model.providerDefaultEffort,
   }));
 }
 

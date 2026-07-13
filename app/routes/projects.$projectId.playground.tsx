@@ -47,13 +47,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
-import { ModelSelect } from "~/components/model-select";
-import { hasDynamicModel } from "~/eve/agentModule";
+import { ModelSelection } from "~/components/model-select";
+import { hasDynamicModel, readReasoningEffort } from "~/eve/agentModule";
 import { buildAgentConfig } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
 import { contextPath } from "~/lib/paths";
 import { stageModelSwitchingUpgrade } from "~/models/stage-model.server";
 import { findWorkspaceModel } from "~/models/union.server";
+import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import {
   cacheCoversCompletedLiveTurn,
   liveTurnIsForDifferentSession,
@@ -108,7 +109,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       // Teams have no repo-level Playground — the tab exists only at the member level.
       if (isTeam && !agentName) throw redirect(`/repos/${project.id}`);
 
-      const [targets, sessions, defaultModelId] = await Promise.all([
+      const [targets, sessions, defaultSelection] = await Promise.all([
         liveTargets(active.id),
         listPlaygroundSessions({
           projectId: project.id,
@@ -121,8 +122,14 @@ export const loader = (args: LoaderFunctionArgs) =>
           owner: project.repoOwner,
           repo: project.repoName,
         })
-          .then((source) => buildAgentConfig(source, active.root).model)
-          .catch(() => null),
+          .then((source) => {
+            const module = source.files[`${active.root}/agent.ts`] ?? "";
+            return {
+              model: buildAgentConfig(source, active.root).model,
+              effort: readReasoningEffort(module),
+            };
+          })
+          .catch(() => ({ model: null, effort: null })),
       ]);
       // Whether each target's DEPLOYED build honors the per-conversation model directive —
       // read agent.ts at the release's commit, not repo HEAD (HEAD may already carry the
@@ -257,7 +264,10 @@ export const loader = (args: LoaderFunctionArgs) =>
         currentSessionOwnerLive,
         currentSessionWillReseed,
         currentSessionModelId: currentSession?.modelId ?? null,
-        defaultModelId,
+        currentSessionEffort:
+          (currentSession?.effort as ReasoningEffort | null) ?? null,
+        defaultModelId: defaultSelection.model,
+        defaultEffort: defaultSelection.effort,
         entries,
         historyError,
         lastDeploymentId: currentSession?.lastDeploymentId ?? null,
@@ -294,11 +304,23 @@ export async function action(args: ActionFunctionArgs) {
   if (String(form.get("intent")) === "set-session-model") {
     const sessionId = String(form.get("playgroundSessionId") ?? "");
     const modelId = String(form.get("modelId") ?? "").trim();
+    const effortValue = String(form.get("effort") ?? "").trim();
+    const effort =
+      effortValue && isReasoningEffort(effortValue) ? effortValue : null;
+    if (effortValue && !effort)
+      return { error: "That reasoning effort is not valid." };
     if (sessionId && modelId) {
-      if (!(await findWorkspaceModel(project.orgId, modelId))) {
+      const model = await findWorkspaceModel(project.orgId, modelId);
+      if (!model) {
         return {
           error:
             "That model is not available from an active provider connection in this workspace.",
+        };
+      }
+      if (effort && !model.supportedEfforts?.includes(effort)) {
+        return {
+          error:
+            "That reasoning effort is not supported by the selected model.",
         };
       }
       await setPlaygroundSessionModel({
@@ -307,6 +329,7 @@ export async function action(args: ActionFunctionArgs) {
         agentId: active.id,
         userId: auth.user.id,
         modelId,
+        effort,
       });
     }
     return { ok: true as const };
@@ -343,6 +366,7 @@ interface LiveTurn {
   steps: ChatStep[];
   activity: string | null;
   modelId: string | null;
+  effort: ReasoningEffort | null;
   inputRequests: ChatInputRequest[];
   error: string | null;
   errorDetail: string | null;
@@ -361,7 +385,9 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     currentSessionOwnerLive,
     currentSessionWillReseed,
     currentSessionModelId,
+    currentSessionEffort,
     defaultModelId,
+    defaultEffort,
     entries,
     historyError,
     lastDeploymentId,
@@ -398,11 +424,19 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     });
   const visibleLive = liveSessionMismatch || liveCoveredByCache ? null : live;
   // The user's not-yet-persisted selector choice; the stored session override wins otherwise.
-  const [modelOverride, setModelOverride] = useState<string | null>(null);
+  const [selectionOverride, setSelectionOverride] = useState<{
+    model: string;
+    effort: ReasoningEffort | null;
+  } | null>(null);
   useEffect(() => {
-    setModelOverride(null);
+    setSelectionOverride(null);
   }, [currentSessionId]);
-  const selectedModelId = modelOverride ?? currentSessionModelId;
+  const selectedModelId = selectionOverride?.model ?? currentSessionModelId;
+  const selectedEffort = selectionOverride
+    ? selectionOverride.effort
+    : currentSessionModelId
+      ? currentSessionEffort
+      : defaultEffort;
   const [sendError, setSendError] = useState<string | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const stopRequestedRef = useRef(false);
@@ -516,6 +550,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         steps: [],
         activity: "Thinking…",
         modelId: null,
+        effort: selectedEffort,
         inputRequests: [],
         error: null,
         errorDetail: null,
@@ -533,6 +568,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       // The current model selection applies to this and subsequent turns (and is persisted on
       // the session server-side, so a first-send selection survives the session's creation).
       if (selectedModelId) form.set("modelId", selectedModelId);
+      if (selectedEffort) form.set("effort", selectedEffort);
 
       try {
         const controller = new AbortController();
@@ -646,12 +682,13 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       project.id,
       revalidator,
       selectedModelId,
+      selectedEffort,
     ],
   );
 
   const changeModel = useCallback(
-    (modelId: string) => {
-      setModelOverride(modelId);
+    (modelId: string, effort: ReasoningEffort | null) => {
+      setSelectionOverride({ model: modelId, effort });
       // Persist immediately when the conversation already exists; a brand-new conversation has
       // no row yet — the first send carries the selection and creates it with the override.
       if (currentSessionId) {
@@ -660,6 +697,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             intent: "set-session-model",
             playgroundSessionId: currentSessionId,
             modelId,
+            effort: effort ?? "",
           },
           { method: "post" },
         );
@@ -731,8 +769,9 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const targetPicker = useMemo(
     () => (
       <>
-        <ModelSelect
-          value={selectedModelId ?? defaultModelId}
+        <ModelSelection
+          model={selectedModelId ?? defaultModelId}
+          effort={selectedEffort}
           busy={false}
           disabled={busy || modelSwitchingLocked}
           placeholder="Deployed model"
@@ -784,6 +823,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       modelSwitchingLocked,
       searchParams,
       selectedModelId,
+      selectedEffort,
       setSearchParams,
       stopTurn,
       targets,
@@ -1102,6 +1142,13 @@ function formatSessionLabel(title: string, updatedAt: string) {
   );
 }
 
+function formatModelAttribution(
+  modelId: string,
+  effort: ReasoningEffort | null,
+): string {
+  return effort ? `${modelId} · ${effort} effort` : modelId;
+}
+
 /**
  * The live, in-flight assistant turn: the reply streams first, followed by the collapsed
  * steps card (spinner + what it's doing right now) so activity stays near the scroll bottom.
@@ -1128,7 +1175,7 @@ function LiveBubble({
                 />
               )}
               <span className="font-mono text-xs text-muted-foreground">
-                {live.modelId}
+                {formatModelAttribution(live.modelId, live.effort)}
               </span>
             </span>
           )}
@@ -1182,7 +1229,7 @@ function AgentEntry({
             </Badge>
             {entry.modelId && (
               <span className="font-mono text-xs text-muted-foreground">
-                {entry.modelId}
+                {formatModelAttribution(entry.modelId, entry.effort ?? null)}
               </span>
             )}
           </span>

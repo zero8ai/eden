@@ -6,11 +6,18 @@
  */
 import { Check, Plug, TriangleAlert } from "lucide-react";
 import * as React from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useFetcher } from "react-router";
 
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import {
   Popover,
   PopoverContent,
@@ -18,6 +25,7 @@ import {
 } from "~/components/ui/popover";
 import { filterModels, limitModelsPerConnection } from "~/models/filter";
 import type { ModelCatalogEntry } from "~/models/catalog.server";
+import type { ReasoningEffort } from "~/models/reasoning";
 import { cn } from "~/lib/utils";
 
 const MAX_ROWS_PER_CONNECTION = 50;
@@ -27,6 +35,87 @@ export interface UnavailableModelConnection {
   provider: string;
   connectionLabel: string;
   message: string;
+}
+
+/** A model and its optional explicit effort, kept together across every settings surface. */
+export interface ModelSelectionValue {
+  model: string | null;
+  effort: ReasoningEffort | null;
+}
+
+export function ModelSelection({
+  model,
+  effort,
+  busy,
+  disabled,
+  placeholder,
+  triggerClassName,
+  onCommit,
+}: ModelSelectionValue & {
+  busy: boolean;
+  disabled?: boolean;
+  placeholder?: string;
+  triggerClassName?: string;
+  onCommit: (model: string, effort: ReasoningEffort | null) => void;
+}) {
+  const fetcher = useFetcher<ModelsApiResponse>();
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && !fetcher.data) fetcher.load("/api/models");
+  }, [fetcher]);
+
+  const selected = fetcher.data?.models.find((entry) => entry.id === model);
+  const supported = selected?.supportedEfforts;
+  const effectiveEffort = effort && supported?.includes(effort) ? effort : null;
+
+  return (
+    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
+      <ModelSelect
+        value={model}
+        busy={busy}
+        disabled={disabled}
+        placeholder={placeholder}
+        triggerClassName={triggerClassName}
+        onCommit={(nextModel) => {
+          const next = fetcher.data?.models.find(
+            (entry) => entry.id === nextModel,
+          );
+          const nextEffort =
+            effort && next?.supportedEfforts?.includes(effort) ? effort : null;
+          onCommit(nextModel, nextEffort);
+        }}
+      />
+      {supported && supported.length > 0 && (
+        <label className="grid min-w-40 gap-1 text-xs text-muted-foreground">
+          <span>Reasoning effort</span>
+          <Select
+            value={effectiveEffort ?? "provider-default"}
+            disabled={busy || disabled}
+            onValueChange={(value) =>
+              onCommit(
+                model ?? "",
+                value === "provider-default"
+                  ? null
+                  : (value as ReasoningEffort),
+              )
+            }
+          >
+            <SelectTrigger className="w-full" aria-label="Reasoning effort">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="provider-default">Provider default</SelectItem>
+              {supported.map((level) => (
+                <SelectItem key={level} value={level}>
+                  {level}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+      )}
+    </div>
+  );
 }
 
 export interface ModelsApiResponse {

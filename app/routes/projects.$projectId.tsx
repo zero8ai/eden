@@ -73,7 +73,10 @@ import { contextPath } from "~/lib/paths";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { RelativeTime } from "~/components/localized-values";
 import { cn } from "~/lib/utils";
-import { getWorkspaceAssistantModel } from "~/org/workspace.server";
+import {
+  getWorkspaceAssistantModel,
+  getWorkspaceAssistantSelection,
+} from "~/org/workspace.server";
 import { ownsWorkspaceModelReference } from "~/models/union.server";
 import {
   agentFromParams,
@@ -440,9 +443,10 @@ export async function action(args: ActionFunctionArgs) {
       if (roster.some((a) => a.name === name)) {
         return { error: `An agent named "${name}" already exists.` };
       }
-      let model = await getWorkspaceAssistantModel(project.orgId).catch(
-        () => null,
-      );
+      const selection = await getWorkspaceAssistantSelection(
+        project.orgId,
+      ).catch(() => ({ model: null, effort: null }));
+      let model = selection.model;
       if (model && !(await ownsWorkspaceModelReference(project.orgId, model))) {
         model = null;
       }
@@ -455,7 +459,7 @@ export async function action(args: ActionFunctionArgs) {
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
         branch: `eden/add-member-${name}`,
-        files: memberScaffold(name, model),
+        files: memberScaffold(name, model, selection.effort),
         title: `Add agent: ${name}`,
         body:
           `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, a ` +

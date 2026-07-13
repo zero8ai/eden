@@ -11,6 +11,7 @@
  * conservative 272k for the gpt-5 family (null is acceptable when unknown); pricing is null (a
  * subscription isn't per-token billed here).
  */
+import type { ReasoningEffort } from "~/models/reasoning";
 
 export interface CodexModelSpec {
   /** The upstream model id sent to the Codex backend. */
@@ -19,6 +20,9 @@ export interface CodexModelSpec {
   name: string;
   /** Conservative context window in tokens, or null when unknown. */
   contextWindow: number | null;
+  /** Curated because the subscription backend has no public model metadata endpoint. */
+  supportedEfforts: readonly ReasoningEffort[];
+  providerDefaultEffort: ReasoningEffort;
 }
 
 /** gpt-5 family context window — conservative; refine when a dynamic catalog lands (Phase 2). */
@@ -26,16 +30,76 @@ const GPT5_CONTEXT = 272_000;
 
 /** Curated Codex-backend model specs. Ordered newest/most-capable first. */
 export const CODEX_MODEL_SPECS: readonly CodexModelSpec[] = [
-  { slug: "gpt-5.5", name: "GPT-5.5", contextWindow: GPT5_CONTEXT },
-  { slug: "gpt-5.4", name: "GPT-5.4", contextWindow: GPT5_CONTEXT },
-  { slug: "gpt-5.4-mini", name: "GPT-5.4 mini", contextWindow: GPT5_CONTEXT },
-  { slug: "gpt-5.3-codex", name: "GPT-5.3 Codex", contextWindow: GPT5_CONTEXT },
-  { slug: "gpt-5.2", name: "GPT-5.2", contextWindow: GPT5_CONTEXT },
-  { slug: "gpt-5.2-codex", name: "GPT-5.2 Codex", contextWindow: GPT5_CONTEXT },
-  { slug: "gpt-5.1-codex-max", name: "GPT-5.1 Codex Max", contextWindow: GPT5_CONTEXT },
-  { slug: "gpt-5.1-codex-mini", name: "GPT-5.1 Codex Mini", contextWindow: GPT5_CONTEXT },
-  { slug: "gpt-5-codex", name: "GPT-5 Codex", contextWindow: GPT5_CONTEXT },
-  { slug: "gpt-5", name: "GPT-5", contextWindow: GPT5_CONTEXT },
+  {
+    slug: "gpt-5.5",
+    name: "GPT-5.5",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["low", "medium", "high", "xhigh"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5.4",
+    name: "GPT-5.4",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["none", "low", "medium", "high", "xhigh"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5.4-mini",
+    name: "GPT-5.4 mini",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["low", "medium", "high"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5.3-codex",
+    name: "GPT-5.3 Codex",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["low", "medium", "high", "xhigh"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5.2",
+    name: "GPT-5.2",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["none", "low", "medium", "high", "xhigh"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5.2-codex",
+    name: "GPT-5.2 Codex",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["low", "medium", "high", "xhigh"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5.1-codex-max",
+    name: "GPT-5.1 Codex Max",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["none", "low", "medium", "high"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5.1-codex-mini",
+    name: "GPT-5.1 Codex Mini",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["none", "low", "medium", "high"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5-codex",
+    name: "GPT-5 Codex",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["minimal", "low", "medium", "high"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5",
+    name: "GPT-5",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["minimal", "low", "medium", "high"],
+    providerDefaultEffort: "medium",
+  },
 ] as const;
 
 /** Prefix marking a connection-qualified Codex model id. */

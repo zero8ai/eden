@@ -847,6 +847,8 @@ export const workspaceSettings = pgTable("workspace_settings", {
     .references(() => organization.id, { onDelete: "cascade" }),
   /** Connection-qualified workspace default model id. */
   assistantModel: text("assistant_model"),
+  /** Explicit provider-agnostic reasoning effort; null delegates to the provider default. */
+  assistantEffort: text("assistant_effort"),
   updatedAt: updatedAt(),
 });
 
@@ -962,6 +964,8 @@ export const playgroundSessions = pgTable(
      * playground model directive; null = the deployed default model.
      */
     modelId: text("model_id"),
+    /** Explicit reasoning effort paired with modelId; null delegates to the provider default. */
+    effort: text("effort"),
     lastEventAt: timestamp("last_event_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

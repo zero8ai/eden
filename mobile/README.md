@@ -1,14 +1,15 @@
 # Eden mobile
 
-Eden's native iOS and Android client is an Expo managed app. It uses native React Native screens
+Eden's native iOS and Android client is an Expo SDK 54 managed app. It uses native React Native screens
 and Expo Router; it does not embed the web control plane in a WebView.
 
 ## Scaffold
 
-The app was initialized from Expo's documented SDK 57 TypeScript + Expo Router template:
+The app follows Expo's documented SDK 54 TypeScript + Expo Router template so it remains compatible
+with the App Store build of Expo Go on physical iPhones during the SDK 57 transition:
 
 ```sh
-npx create-expo-app@latest mobile --template default@sdk-57 --no-install --no-agents-md
+npx create-expo-app@latest mobile --template default@sdk-54 --no-install --no-agents-md
 ```
 
 Keep the generated managed/CNG structure. Do not commit generated `ios/` or `android/`
@@ -28,10 +29,12 @@ the computer's LAN address or the worktree's development tunnel. An Android emul
 
 ## Develop
 
-Install dependencies once from the repository root so the workspace has one lockfile:
+Install the control plane and mobile dependencies separately. The mobile lockfile intentionally
+isolates Expo SDK 54's React 19.1 runtime from the web control plane's React 19.2 runtime:
 
 ```sh
 npm install
+npm --prefix mobile install
 npm run mobile:start
 npm run mobile:typecheck
 ```

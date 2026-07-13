@@ -7,8 +7,9 @@
     "icon": "./assets/images/icon.png",
     "scheme": "eden",
     "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
     "ios": {
-      "icon": "./assets/expo.icon",
+      "icon": "./assets/images/icon.png",
       "bundleIdentifier": "ai.zero8.eden"
     },
     "android": {
@@ -39,8 +40,7 @@
       "expo-web-browser"
     ],
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
+      "typedRoutes": true
     }
   }
 }

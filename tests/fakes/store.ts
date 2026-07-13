@@ -17,6 +17,7 @@ import type {
   Project,
   Release,
   Run,
+  WorkspaceTask,
 } from "~/data/ports";
 
 /** A collision error shaped like the Postgres one isVersionLabelCollision looks for. */
@@ -74,6 +75,7 @@ export function makeFakeStore(): FakeStore {
   const releases = new Map<string, Release>();
   const deployments = new Map<string, Deployment>();
   const jobs = new Map<string, Job>();
+  const workspaceTasks = new Map<string, WorkspaceTask>();
   const drafts = new Map<string, DraftChange>(); // key: projectId|path
   const agentLinks = new Map<string, AgentLink>(); // key: fromAgentId|toAgentId
   const delegations = new Map<string, Delegation>();
@@ -580,6 +582,60 @@ export function makeFakeStore(): FakeStore {
         const out: Record<string, number> = {};
         for (const j of jobs.values()) out[j.status] = (out[j.status] ?? 0) + 1;
         return out;
+      },
+    },
+
+    workspaceTasks: {
+      async insert(input) {
+        const tid = id("wtask");
+        const now = new Date(++seq);
+        const row: WorkspaceTask = {
+          id: tid,
+          projectId: input.projectId,
+          kind: input.kind,
+          subjectKey: input.subjectKey,
+          label: input.label,
+          stage: input.stage ?? null,
+          status: "running",
+          originUrl: input.originUrl,
+          resultUrl: null,
+          error: null,
+          jobId: input.jobId ?? null,
+          dismissedAt: null,
+          createdBy: input.createdBy ?? null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        workspaceTasks.set(tid, row);
+        return row;
+      },
+      async update(tid, patch) {
+        const cur = workspaceTasks.get(tid);
+        if (cur) workspaceTasks.set(tid, { ...cur, ...patch, updatedAt: new Date(++seq) });
+      },
+      async findById(tid) {
+        return workspaceTasks.get(tid) ?? null;
+      },
+      async listActive(projectId, terminalSince) {
+        return [...workspaceTasks.values()]
+          .filter(
+            (t) =>
+              t.projectId === projectId &&
+              t.dismissedAt === null &&
+              (t.status === "running" || t.updatedAt.getTime() >= terminalSince.getTime()),
+          )
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      },
+      async findRunningBySubject(projectId, subjectKey) {
+        return (
+          [...workspaceTasks.values()].find(
+            (t) =>
+              t.projectId === projectId &&
+              t.subjectKey === subjectKey &&
+              t.status === "running" &&
+              t.dismissedAt === null,
+          ) ?? null
+        );
       },
     },
 

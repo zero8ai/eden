@@ -275,6 +275,26 @@ async function inspectRunning(name: string): Promise<boolean | null> {
 export const WORLD_POSTGRES_SETUP_SCRIPT =
   "node_modules/@workflow/world-postgres/bin/setup.js";
 
+const WORLD_POSTGRES_REACHABILITY_SCRIPT = `
+const url = new URL(process.env.WORKFLOW_POSTGRES_URL);
+const target = url.hostname + ":" + (url.port || "5432");
+const socket = require("node:net").createConnection({
+  host: url.hostname,
+  port: Number(url.port || 5432),
+});
+socket.setTimeout(5000);
+socket.once("connect", () => socket.end());
+socket.once("timeout", () =>
+  socket.destroy(new Error("timed out connecting to " + target)),
+);
+socket.once("error", (error) => {
+  console.error(
+    "[deploy] cannot reach Postgres at " + target + ": " + error.message,
+  );
+  process.exitCode = 1;
+});
+`;
+
 export async function runWorldMigrations(
   imageRef: string,
   dbUrl: string,
@@ -302,6 +322,19 @@ export async function runWorldMigrations(
     );
     return;
   }
+
+  await runDocker([
+    "run",
+    "--rm",
+    "--add-host",
+    "host.docker.internal:host-gateway",
+    "-e",
+    `WORKFLOW_POSTGRES_URL=${dbUrl}`,
+    buildTag,
+    "node",
+    "-e",
+    WORLD_POSTGRES_REACHABILITY_SCRIPT,
+  ]);
 
   await runDocker([
     "run",

@@ -18,6 +18,7 @@ import type {
   projects,
   releases,
   runs,
+  workspaceTasks,
 } from "~/db/schema";
 
 export type Agent = typeof agents.$inferSelect;
@@ -30,6 +31,7 @@ export type Job = typeof jobs.$inferSelect;
 export type AgentLink = typeof agentLinks.$inferSelect;
 export type Delegation = typeof delegations.$inferSelect;
 export type Run = typeof runs.$inferSelect;
+export type WorkspaceTask = typeof workspaceTasks.$inferSelect;
 
 /** A deployment row joined to its release's version/commit (the list/split view). */
 export interface DeploymentWithRelease {
@@ -198,6 +200,40 @@ export interface JobRepo {
   statsByStatus(): Promise<Record<string, number>>;
 }
 
+/**
+ * The user-facing task projection the workspace indicator reads (issue #142). Separate from
+ * JobRepo: `jobs` is the ops queue (retry/claim), this is the small per-project record a running
+ * merge/publish streams its progress into and resolves to a terminal state.
+ */
+export interface WorkspaceTaskRepo {
+  insert(input: {
+    projectId: string;
+    kind: string;
+    subjectKey: string;
+    label: string;
+    originUrl: string;
+    stage?: string | null;
+    jobId?: string | null;
+    createdBy?: string | null;
+  }): Promise<WorkspaceTask>;
+  update(
+    id: string,
+    patch: Partial<
+      Pick<WorkspaceTask, "stage" | "status" | "resultUrl" | "error" | "jobId" | "dismissedAt">
+    >,
+  ): Promise<void>;
+  findById(id: string): Promise<WorkspaceTask | null>;
+  /**
+   * The indicator's read set for a project: every `running` task (never dismissed), plus terminal
+   * (succeeded|failed) tasks that are not dismissed and whose `updatedAt >= terminalSince` (recent
+   * outcomes linger until dismissed or they age out). Oldest-first by createdAt so the stack is
+   * stable as rows resolve.
+   */
+  listActive(projectId: string, terminalSince: Date): Promise<WorkspaceTask[]>;
+  /** The running task for a trigger surface, for dedupe (one merge:12 / publish at a time). */
+  findRunningBySubject(projectId: string, subjectKey: string): Promise<WorkspaceTask | null>;
+}
+
 export interface DraftRepo {
   /** Stage (upsert) a draft: latest content per (project, path) wins. */
   upsert(input: {
@@ -294,6 +330,7 @@ export interface DataStore {
   environments: EnvironmentRepo;
   projects: ProjectRepo;
   jobs: JobRepo;
+  workspaceTasks: WorkspaceTaskRepo;
   drafts: DraftRepo;
   audit: AuditRepo;
   agentLinks: AgentLinkRepo;

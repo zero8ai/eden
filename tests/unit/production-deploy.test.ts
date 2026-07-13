@@ -292,6 +292,18 @@ describe("remote deployment transaction", () => {
     expect(script).not.toMatch(/(?:^|\n)\s*(?:source|\.)\s+["']?\$?ENV_FILE/);
   });
 
+  it("allows Docker bridge access to Postgres through ufw on every deploy", () => {
+    const transaction = script.slice(script.lastIndexOf("\nvalidate_inputs\n"));
+
+    expect(script).toContain("require_command sudo");
+    expect(script).toContain(
+      "sudo -n ufw allow in on docker0 to 172.17.0.1 port 5442 proto tcp",
+    );
+    expect(transaction).toMatch(
+      /validate_inputs\nconfigure_postgres_firewall\ndiagnostics_enabled=true/,
+    );
+  });
+
   it("diagnoses failed rollouts and only prunes old dangling images", () => {
     expect(script).toContain(
       "paused|rollback_started|rollback_paused|rollback_completed",

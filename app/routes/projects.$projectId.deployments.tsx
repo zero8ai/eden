@@ -94,7 +94,6 @@ import {
 } from "~/components/ui/tooltip";
 import {
   clearFailedDeployments,
-  ensureReleasesForCommit,
   listDeployments,
   queueDeploy,
 } from "~/deploy/controller.server";
@@ -109,28 +108,20 @@ import {
   listAgentEnvironments,
   listEnvironments,
   listReleases,
-  syncProjectAgents,
 } from "~/db/queries.server";
 import {
   discardDrafts,
   findOrphanedDrafts,
   listDrafts,
-  publishDrafts,
 } from "~/drafts/drafts.server";
-import {
-  getAgentSource,
-  getOpenChanges,
-  invalidateRepoSource,
-  warmAgentSource,
-} from "~/github/cached.server";
+import { getAgentSource, getOpenChanges } from "~/github/cached.server";
 import {
   findStoredAppCredentialConflict,
   listAppCredentialRows,
   listAppInstallations,
   type AppInstallation,
 } from "~/github/app-manifest.server";
-import { fetchAgentSource } from "~/github/repo.server";
-import { closePullRequest, mergePullRequest } from "~/github/write.server";
+import { closePullRequest } from "~/github/write.server";
 import { getDiscordAppConfig } from "~/discord/config.server";
 import { listConnectionsForAgent } from "~/discord/connections.server";
 import { getGoogleOAuthConfig } from "~/connections/config.server";
@@ -145,6 +136,13 @@ import {
 } from "~/assistant/checkout-sync.server";
 import { getRuntime } from "~/seams/index.server";
 import { ensureWorkerStarted } from "~/jobs/worker.server";
+import { enqueue } from "~/jobs/queue.server";
+import {
+  createTask,
+  findRunningTask,
+  listWorkspaceTasks,
+  setTaskJob,
+} from "~/tasks/tasks.server";
 import { contextPath } from "~/lib/paths";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { cn } from "~/lib/utils";
@@ -167,7 +165,6 @@ import {
   requireActiveAgent,
   resolveSyncedAgentContext,
 } from "~/project/agent-context.server";
-import { detectAgentRoots, hasTeamLayout } from "~/eve/parse";
 import { requireProject, requireRepo } from "~/project/guard.server";
 import type {
   DeploymentWithRelease,
@@ -212,6 +209,12 @@ interface DeploymentData {
   view: "repo" | "member";
   /** True where deploys/CRUD are acted on: the team (repo) view and single-agent repos. */
   canAct: boolean;
+  /**
+   * subjectKeys of this project's currently-running workspace tasks (issue #142) — e.g.
+   * `["publish", "merge:12"]`. Drives the disabled "Publishing…/Merging…" button states without
+   * threading full task rows; the persistent indicator (AppShell) shows the detail + progress.
+   */
+  runningTaskSubjects: string[];
   drafts: (DraftChange & { shared: boolean; orphaned: boolean })[];
   changes: OpenChange[];
   releases: Release[];
@@ -296,6 +299,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         const legacy = agentParamRedirect(args.request, project.id);
         if (legacy) throw legacy;
       }
+      // issue #142: which merge/publish tasks are running now, so the buttons can show their
+      // accepted/running state. The persistent indicator (AppShell) renders the full progress.
+      const runningTaskSubjects = (await listWorkspaceTasks(project.id))
+        .filter((t) => t.status === "running")
+        .map((t) => t.subjectKey);
       const [allDrafts, changes, releaseRows, source] = await Promise.all([
         listDrafts(project.id),
         getOpenChanges(project.repoInstallationId, {
@@ -448,6 +456,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           level,
           view,
           canAct,
+          runningTaskSubjects,
           draftGroups: [...groups.entries()].map(([owner, drafts]) => ({
             owner,
             drafts: drafts.map((d) => ({
@@ -637,6 +646,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         level,
         view,
         canAct,
+        runningTaskSubjects,
         drafts,
         changes,
         releases: releaseRows.filter((r) => r.agentId === active.id),
@@ -702,8 +712,39 @@ export async function action(args: ActionFunctionArgs) {
     if (intent === "publish") {
       const paths = form.getAll("path").map(String);
       const title = String(form.get("title") ?? "");
-      await publishDrafts({ project, paths, title, createdBy: auth.user.id });
-      throw redirect(back);
+      // Cheap synchronous validation stays inline; the build gate + PR run on the queue (issue #142)
+      // so the request returns immediately and progress streams into the workspace indicator.
+      if (paths.length === 0) {
+        return { error: "No staged changes selected to publish." };
+      }
+      ensureWorkerStarted();
+      // Dedupe: one publish task at a time per project (a second click re-attaches to the first).
+      const existing = await findRunningTask(project.id, "publish");
+      if (existing) return { ok: true as const, taskId: existing.id };
+      const plural = paths.length === 1 ? "" : "s";
+      const task = await createTask({
+        projectId: project.id,
+        kind: "publish_change",
+        subjectKey: "publish",
+        label: title.trim()
+          ? `Publishing “${title.trim()}”`
+          : `Publishing ${paths.length} staged change${plural}`,
+        originUrl: back,
+        createdBy: auth.user.id,
+      });
+      const jobId = await enqueue(
+        "publish_change",
+        {
+          projectId: project.id,
+          taskId: task.id,
+          paths,
+          title,
+          createdBy: auth.user.id,
+        },
+        { maxAttempts: 1 },
+      );
+      await setTaskJob(task.id, jobId);
+      return { ok: true as const, taskId: task.id };
     }
     if (intent === "discard") {
       await discardDrafts(project.id, [String(form.get("path"))]);
@@ -734,66 +775,38 @@ export async function action(args: ActionFunctionArgs) {
       const branch = String(form.get("branch") ?? "") || undefined;
       const title = String(form.get("title") ?? "");
       if (!pullNumber) return { error: "Missing change to merge." };
-      // Authoritative pre-merge gate for assistant conversation branches: build the branch's tree
-      // exactly as it will exist after merge (tarball at the branch ref, NO draft overlay). The
-      // model's own in-sandbox checks are advisory; this is the one that blocks a bad merge.
-      if (isConversationBranch(branch)) {
-        const checkBuild = getRuntime().deployTarget.checkBuild;
-        if (checkBuild) {
-          const agentRoot = String(form.get("agentRoot") ?? "") || undefined;
-          const check = await checkBuild({
-            projectId: project.id,
-            repo,
-            ref: branch!,
-            installationId: project.repoInstallationId,
-            overlay: [],
-            agentRoot,
-          });
-          if (!check.ok) {
-            return {
-              error: `This change doesn't build yet, so it can't be merged:\n${check.output}`,
-            };
-          }
-        }
-      }
-      // Merge → one commit on the default branch (the version identity) → a Release per
-      // roster member (idempotent with the webhook path; team merges are atomic, §7.9).
-      const { mergeSha } = await mergePullRequest(
-        project.repoInstallationId,
-        repo,
-        pullNumber,
-        branch,
-      );
-      try {
-        const source = await fetchAgentSource(project.repoInstallationId, {
-          ...repo,
-          ref: mergeSha,
-        });
-        const detected = detectAgentRoots(source.paths);
-        await syncProjectAgents(project.id, detected, undefined, undefined, {
-          allowEmpty:
-            project.layout === "team" &&
-            hasTeamLayout(source.paths) &&
-            detected.length === 0,
-        });
-        invalidateRepoSource(project.repoInstallationId, repo);
-        warmAgentSource(project.repoInstallationId, repo, {
-          ...source,
-          ref: project.defaultBranch,
-        });
-      } catch (error) {
-        console.warn("[deployment] merged but couldn't sync roster:", error);
-      }
-      const results = await ensureReleasesForCommit({
+      // The pre-merge build gate + GitHub merge + roster sync now run on the queue (issue #142) so
+      // the request returns at once; the workspace indicator streams progress and surfaces a
+      // build-gate failure (nothing merges) rather than blocking the HTTP request on docker. The
+      // gate builds EVERY affected member root, recomputed SERVER-side in the runner from the PR's
+      // changed files (issue #137) — no client-posted root.
+      ensureWorkerStarted();
+      const subjectKey = `merge:${pullNumber}`;
+      const existing = await findRunningTask(project.id, subjectKey);
+      if (existing) return { ok: true as const, taskId: existing.id };
+      const task = await createTask({
         projectId: project.id,
-        gitSha: mergeSha,
-        changelog: `#${pullNumber} ${title}`.trim(),
+        kind: "merge_change",
+        subjectKey,
+        label: `Merging change #${pullNumber}`,
+        originUrl: back,
         createdBy: auth.user.id,
       });
-      if (isConversationBranch(branch))
-        await discardConversationCheckoutByBranch(branch!);
-      const version = results[0]?.release.version ?? "";
-      throw redirect(`${back}?released=${encodeURIComponent(version)}`);
+      const jobId = await enqueue(
+        "merge_change",
+        {
+          projectId: project.id,
+          taskId: task.id,
+          pullNumber,
+          branch,
+          title,
+          createdBy: auth.user.id,
+          backUrl: back,
+        },
+        { maxAttempts: 1 },
+      );
+      await setTaskJob(task.id, jobId);
+      return { ok: true as const, taskId: task.id };
     }
 
     // ── Environment CRUD (team-level: create/rename/delete a NAME across the whole roster) ──
@@ -926,7 +939,9 @@ function PublishStatus({ active }: { active: boolean }) {
       role="status"
       aria-live="polite"
     >
-      Checking the build and opening a change request. This can take a minute.
+      Publishing in the background — checking the build and opening a change
+      request. Progress shows in the task bar at the top of the page; you can
+      keep working.
       <div className="mt-2 h-1 overflow-hidden rounded-full bg-border">
         <div className="eden-loading-line bg-primary/60" />
       </div>
@@ -985,9 +1000,13 @@ export default function Deployment({
   // A draining sibling (a superseded version finishing in-flight turns after a redeploy — issue
   // #81) keeps the page revalidating too, so the "winding down" note clears once the drain stops.
   // Kept separate from IN_FLIGHT, whose other call sites mean specifically "queued/building".
-  const inFlight = loaderData.envs.some(({ deployments }) =>
-    deployments.some((d) => IN_FLIGHT.has(d.status) || d.status === "draining"),
-  );
+  const inFlight =
+    loaderData.envs.some(({ deployments }) =>
+      deployments.some((d) => IN_FLIGHT.has(d.status) || d.status === "draining"),
+    ) ||
+    // A running merge/publish task (issue #142) keeps the page polling so drafts/change requests
+    // and the button states walk to their resolved values as the queued job finishes.
+    loaderData.runningTaskSubjects.length > 0;
   useLiveRevalidate({ active: inFlight });
 
   return (
@@ -1115,6 +1134,7 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
     activeAgent,
     isTeam,
     canAct,
+    runningTaskSubjects,
   } = loaderData;
   // Where "open" on a running deployment points: the agent's playground, not the instance's
   // internal URL (a 127.0.0.1:<port> that's unreachable from a browser).
@@ -1122,8 +1142,16 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
 
   return (
     <>
-      <StagedChangesCard drafts={drafts} isTeam={isTeam} />
-      <ChangeRequests changes={changes} isTeam={isTeam} />
+      <StagedChangesCard
+        drafts={drafts}
+        isTeam={isTeam}
+        publishRunning={runningTaskSubjects.includes("publish")}
+      />
+      <ChangeRequests
+        changes={changes}
+        isTeam={isTeam}
+        runningTaskSubjects={runningTaskSubjects}
+      />
       <EnvironmentsCard
         envs={envs}
         canAct={canAct}
@@ -1267,9 +1295,12 @@ function ConnectionsCard({
 function StagedChangesCard({
   drafts,
   isTeam,
+  publishRunning,
 }: {
   drafts: DraftRow[];
   isTeam: boolean;
+  /** issue #142: a queued publish task is running — disable the button and show the note. */
+  publishRunning: boolean;
 }) {
   const navigation = useNavigation();
   const submit = useSubmit();
@@ -1277,6 +1308,7 @@ function StagedChangesCard({
   const activeIntent = busy
     ? String(navigation.formData!.get("intent") ?? "")
     : null;
+  const publishing = activeIntent === "publish" || publishRunning;
 
   return (
     <Card className="mb-6">
@@ -1375,13 +1407,13 @@ function StagedChangesCard({
                 placeholder="Change title (optional)"
                 className="h-9 w-full sm:w-72"
               />
-              <Button type="submit" disabled={busy}>
-                {activeIntent === "publish"
+              <Button type="submit" disabled={busy || publishRunning}>
+                {publishing
                   ? "Publishing…"
                   : "Publish selected as change request"}
               </Button>
             </div>
-            <PublishStatus active={activeIntent === "publish"} />
+            <PublishStatus active={publishing} />
           </Form>
         )}
       </CardContent>
@@ -1393,9 +1425,12 @@ function StagedChangesCard({
 function ChangeRequests({
   changes,
   isTeam,
+  runningTaskSubjects = [],
 }: {
   changes: ChangeRow[];
   isTeam: boolean;
+  /** subjectKeys of running workspace tasks — a `merge:<n>` here keeps that card's button busy. */
+  runningTaskSubjects?: string[];
 }) {
   const navigation = useNavigation();
   const busy = navigation.state !== "idle" && navigation.formData != null;
@@ -1429,29 +1464,16 @@ function ChangeRequests({
             key={c.number}
             change={c}
             busy={busy}
-            merging={mergingNumber === c.number}
+            merging={
+              mergingNumber === c.number ||
+              runningTaskSubjects.includes(`merge:${c.number}`)
+            }
             deleting={deletingNumber === c.number}
           />
         ))}
       </div>
     </div>
   );
-}
-
-/**
- * The eve build directory for a conversation PR's changed files: a single team member's agent dir
- * when every non-config path is under one `agents/<member>/`, otherwise undefined (the repo root —
- * a single-agent repo). `.eden/**` config files don't belong to any build and are ignored.
- */
-function inferAgentRoot(paths: string[]): string | undefined {
-  const members = new Set<string>();
-  for (const p of paths) {
-    if (p.startsWith(".eden/")) continue;
-    const m = p.match(/^agents\/([^/]+)\//);
-    if (!m) return undefined; // a repo-root / `agent/` file → build the repo root
-    members.add(m[1]);
-  }
-  return members.size === 1 ? `agents/${[...members][0]}/agent` : undefined;
 }
 
 function ChangeCard({
@@ -1468,9 +1490,6 @@ function ChangeCard({
   const submit = useSubmit();
   const conflicted = change.mergeable === false;
   const checking = change.mergeable === null;
-  // Build directory for the pre-merge gate on a conversation branch: a single team member's dir
-  // when every changed file lives under one `agents/<m>/`, else the repo root (single-agent repo).
-  const agentRoot = inferAgentRoot(change.files.map((f) => f.path));
 
   return (
     <Card>
@@ -1522,10 +1541,11 @@ function ChangeCard({
               <input type="hidden" name="pullNumber" value={change.number} />
               <input type="hidden" name="branch" value={change.branch} />
               <input type="hidden" name="title" value={change.title} />
-              {agentRoot && (
-                <input type="hidden" name="agentRoot" value={agentRoot} />
-              )}
-              <Button type="submit" size="sm" disabled={busy || conflicted}>
+              <Button
+                type="submit"
+                size="sm"
+                disabled={busy || conflicted || merging}
+              >
                 {merging ? "Merging…" : "Merge"}
               </Button>
             </Form>
@@ -1597,8 +1617,15 @@ function MergeabilityBadge({
 /* ────────────────────────────── team rollup ────────────────────────────── */
 
 function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
-  const { project, draftGroups, changes, members, teamEnvs, teamVersions } =
-    loaderData;
+  const {
+    project,
+    draftGroups,
+    changes,
+    members,
+    teamEnvs,
+    teamVersions,
+    runningTaskSubjects,
+  } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const anyOrphaned = draftGroups.some((g) => g.drafts.some((d) => d.orphaned));
@@ -1608,6 +1635,8 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
   const activeIntent = busy
     ? String(navigation.formData!.get("intent") ?? "")
     : null;
+  const publishRunning = runningTaskSubjects.includes("publish");
+  const publishing = activeIntent === "publish" || publishRunning;
 
   return (
     <>
@@ -1734,19 +1763,23 @@ function TeamRollup({ loaderData }: { loaderData: LoaderData }) {
                   placeholder="Change title (optional)"
                   className="h-9 w-full sm:w-72"
                 />
-                <Button type="submit" disabled={busy}>
-                  {activeIntent === "publish"
+                <Button type="submit" disabled={busy || publishRunning}>
+                  {publishing
                     ? "Publishing…"
                     : "Publish selected as change request"}
                 </Button>
               </div>
-              <PublishStatus active={activeIntent === "publish"} />
+              <PublishStatus active={publishing} />
             </Form>
           )}
         </CardContent>
       </Card>
 
-      <ChangeRequests changes={changes} isTeam />
+      <ChangeRequests
+        changes={changes}
+        isTeam
+        runningTaskSubjects={runningTaskSubjects}
+      />
 
       <TeamEnvironmentsCard teamEnvs={teamEnvs} project={project} />
       <TeamVersionHistory

@@ -840,6 +840,46 @@ export const jobs = pgTable(
   (t) => [index("jobs_status_run_at_idx").on(t.status, t.runAt)],
 );
 
+/**
+ * User-facing projection of long-running workspace work (issue #142). The `jobs` table above stays
+ * the ops primitive — durable queue, retries, worker claim; this table is the small, project-scoped
+ * record the persistent task-progress indicator reads and polls. One row per triggered action
+ * (a merge, a publish): the runner streams a human `stage` into it and resolves it to a terminal
+ * `status` (succeeded|failed) with a `resultUrl`/`error`. The indicator renders running + recent
+ * terminal rows for the current project until the user dismisses a terminal one. Kept separate from
+ * `jobs` so the queue can carry ops concerns (retry/backoff, arbitrary kinds) without leaking them
+ * into the UI, and so a job that internally treats a build-gate failure as a *successful* run (the
+ * user's change simply didn't build) can still surface that as a `failed` task.
+ */
+export const workspaceTasks = pgTable(
+  "workspace_tasks",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // merge_change | publish_change (extensible)
+    kind: text("kind").notNull(),
+    // Dedupe/running-state key for the trigger surface, e.g. "merge:12", "publish".
+    subjectKey: text("subject_key").notNull(),
+    // Human title, e.g. `Merging change #12`
+    label: text("label").notNull(),
+    // Current step streamed into the indicator ("Checking the build for agents/ivy/agent (2/3)…")
+    stage: text("stage"),
+    // running | succeeded | failed
+    status: text("status").notNull().default("running"),
+    originUrl: text("origin_url").notNull(),
+    resultUrl: text("result_url"),
+    error: text("error"),
+    jobId: varchar("job_id", { length: 12 }),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+    createdBy: text("created_by"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("workspace_tasks_project_status_idx").on(t.projectId, t.status)],
+);
+
 /** Workspace default model inherited by the authoring assistant and agents with no local model. */
 export const workspaceSettings = pgTable("workspace_settings", {
   orgId: text("org_id")

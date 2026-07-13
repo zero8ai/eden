@@ -62,6 +62,7 @@ require_command() {
 validate_inputs() {
   require_command docker
   require_command curl
+  require_command sudo
 
   [[ "$DEPLOY_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || {
     printf '[deploy] DEPLOY_TIMEOUT must be a positive integer\n' >&2
@@ -87,6 +88,11 @@ validate_inputs() {
       "$swarm_state" >&2
     return 1
   }
+}
+
+configure_postgres_firewall() {
+  log "allowing Docker bridge access to Postgres through ufw"
+  sudo -n ufw allow in on docker0 to 172.17.0.1 port 5442 proto tcp
 }
 
 deploy_stack() {
@@ -304,6 +310,7 @@ wait_for_eden() {
 }
 
 validate_inputs
+configure_postgres_firewall
 diagnostics_enabled=true
 
 log "pulling migration image"

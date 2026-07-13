@@ -21,6 +21,17 @@ const edenGateway = createOpenAICompatible({
 
 // Keep the fixed template build-safe; assistantEnv/entrypoint injects the configured model at runtime.
 const assistantModelId = process.env.EDEN_ASSISTANT_MODEL ?? "z-ai/glm-5.2";
+const assistantEffort = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+].includes(process.env.EDEN_ASSISTANT_EFFORT ?? "")
+  ? (process.env.EDEN_ASSISTANT_EFFORT as
+      "none" | "minimal" | "low" | "medium" | "high" | "xhigh")
+  : undefined;
 
 function assistantModel(id: string) {
   const qualified = id.match(
@@ -66,6 +77,7 @@ function assistantModel(id: string) {
 
 export default defineAgent({
   model: assistantModel(assistantModelId),
+  reasoning: assistantEffort,
   modelContextWindowTokens: 200000,
   // Deployable off-Vercel: declare + externalize the Postgres Workflow world.
   build: { externalDependencies: ["@workflow/world-postgres"] },

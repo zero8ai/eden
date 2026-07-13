@@ -27,7 +27,7 @@ import {
   LocalizedDateTime,
   LocalizedNumber,
 } from "~/components/localized-values";
-import { ModelSelect } from "~/components/model-select";
+import { ModelSelection } from "~/components/model-select";
 import { AppShell, PageHeader, accentText } from "~/components/shell";
 import { Button } from "~/components/ui/button";
 import {
@@ -48,8 +48,11 @@ import {
 import { listAudit, recordAudit } from "~/managed/audit.server";
 import {
   getWorkspaceAssistantModel,
+  getWorkspaceAssistantSelection,
+  setWorkspaceAssistantSelection,
   setWorkspaceAssistantModel,
 } from "~/org/workspace.server";
+import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import {
   createApiKeyConnection,
   deleteModelConnection,
@@ -93,6 +96,7 @@ interface OrgSettingsView {
   audit: (typeof auditLog.$inferSelect)[];
   /** Connected workspace default (null = no default). */
   assistantModel: string | null;
+  assistantEffort: ReasoningEffort | null;
   /** Connected model providers (issue #28) — display metadata only, never a token. */
   connections: ModelConnection[];
   /** Better Auth organization:update permission for the active workspace. */
@@ -129,16 +133,17 @@ export const loader = (args: LoaderFunctionArgs) =>
           used: 0,
           audit: [],
           assistantModel: null,
+          assistantEffort: null,
           connections: [],
           canManage: false,
         };
       }
-      const [limit, used, audit, assistantModel, connections, canManage] =
+      const [limit, used, audit, assistantSelection, connections, canManage] =
         await Promise.all([
           getSpendLimit(org.id),
           tokensUsedSince(org.id),
           listAudit(org.id, 50),
-          getWorkspaceAssistantModel(org.id),
+          getWorkspaceAssistantSelection(org.id),
           listModelConnections(org.id),
           canManageWorkspace(org.id, auth.requestHeaders),
         ]);
@@ -148,7 +153,8 @@ export const loader = (args: LoaderFunctionArgs) =>
         limit: limit ?? null,
         used,
         audit,
-        assistantModel,
+        assistantModel: assistantSelection.model,
+        assistantEffort: assistantSelection.effort,
         connections,
         canManage,
       };
@@ -241,18 +247,32 @@ export async function action(args: ActionFunctionArgs) {
 
   if (intent === "set-assistant-model") {
     const model = String(form.get("assistantModel") ?? "").trim();
-    if (model && !(await findWorkspaceModel(org.id, model))) {
+    const effortValue = String(form.get("assistantEffort") ?? "").trim();
+    const effort =
+      effortValue && isReasoningEffort(effortValue) ? effortValue : null;
+    if (effortValue && !effort)
+      return { error: "Choose a valid reasoning effort." };
+    const modelInfo = model ? await findWorkspaceModel(org.id, model) : null;
+    if (model && !modelInfo) {
       return {
         error:
           "That model is not available from an active provider connection in this workspace.",
       };
     }
-    await setWorkspaceAssistantModel(org.id, model || null);
+    if (effort && !modelInfo?.supportedEfforts?.includes(effort)) {
+      return {
+        error: "That reasoning effort is not supported by the selected model.",
+      };
+    }
+    await setWorkspaceAssistantSelection(org.id, {
+      model: model || null,
+      effort,
+    });
     await recordAudit({
       orgId: org.id,
       actorUserId: auth.user.id,
       action: "workspace_assistant_model_set",
-      meta: { model: model || "(none)" },
+      meta: { model: model || "(none)", effort: effort ?? "provider-default" },
     });
     throw redirect("/org/settings");
   }
@@ -285,6 +305,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
     used,
     audit,
     assistantModel,
+    assistantEffort,
     connections,
     canManage,
   } = loaderData;
@@ -378,14 +399,16 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
               <Label>Default model</Label>
               {canManage ? (
                 <div className="flex flex-wrap items-start gap-2">
-                  <ModelSelect
-                    value={assistantModel}
+                  <ModelSelection
+                    model={assistantModel}
+                    effort={assistantEffort}
                     busy={modelFetcher.state !== "idle"}
-                    onCommit={(model) =>
+                    onCommit={(model, effort) =>
                       modelFetcher.submit(
                         {
                           intent: "set-assistant-model",
                           assistantModel: model,
+                          assistantEffort: effort ?? "",
                         },
                         { method: "post" },
                       )
@@ -399,7 +422,11 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                       disabled={modelFetcher.state !== "idle"}
                       onClick={() =>
                         modelFetcher.submit(
-                          { intent: "set-assistant-model", assistantModel: "" },
+                          {
+                            intent: "set-assistant-model",
+                            assistantModel: "",
+                            assistantEffort: "",
+                          },
                           { method: "post" },
                         )
                       }
@@ -410,7 +437,9 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                 </div>
               ) : (
                 <p className="font-mono text-sm">
-                  {assistantModel ?? "No default configured"}
+                  {assistantModel
+                    ? `${assistantModel} · ${assistantEffort ?? "provider default"}`
+                    : "No default configured"}
                 </p>
               )}
               <p className="text-xs text-muted-foreground">

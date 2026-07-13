@@ -400,6 +400,7 @@ describe("publish gate (build check)", () => {
       "@ai-sdk/anthropic": "^4.0.12",
       "@ai-sdk/openai": "^4.0.11",
       "@ai-sdk/openai-compatible": "^3.0.7",
+      ai: "^7.0.0",
       // "latest" gets pinned: the docker layer cache would keep serving whatever
       // version the first image build installed (see ensureModelProviderDependencies).
       eve: "^0.22.0",
@@ -559,6 +560,7 @@ RUN npm ci
             "@ai-sdk/anthropic": "^4.0.12",
             "@ai-sdk/openai": "^4.0.11",
             "@ai-sdk/openai-compatible": "^3.0.7",
+            ai: "^7.0.0",
             eve: "^0.22.0",
             zod: "^4.4.3",
           },

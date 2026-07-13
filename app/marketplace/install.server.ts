@@ -25,6 +25,7 @@ import {
   ZOD_PACKAGE,
   ZOD_VERSION,
 } from "~/eve/agentModule";
+import type { ReasoningEffort } from "~/models/reasoning";
 import type { CatalogTemplate } from "~/seams/types";
 import { isTemplateSlug, type TemplateManifest } from "./manifest";
 import { templateContentHash } from "./hash.server";
@@ -196,6 +197,8 @@ export interface PlanContext {
   rosterNames?: string[];
   /** Qualified model to write into an agent template instead of its catalog placeholder. */
   model?: string | null;
+  /** Explicit workspace/member effort paired with the model. */
+  effort?: ReasoningEffort | null;
 }
 
 export interface InstallPlan {
@@ -359,7 +362,7 @@ export function planInstall(ctx: PlanContext): InstallPlan {
       path: `${dir}/${f}`,
       content:
         manifest.type === "agent" && f === "agent.ts" && ctx.model
-          ? setModel(template.files[f], ctx.model)
+          ? setModel(template.files[f], ctx.model, { effort: ctx.effort })
           : template.files[f],
     }));
     if (hasSandboxWork(manifest.sandbox)) {
@@ -384,7 +387,7 @@ export function planInstall(ctx: PlanContext): InstallPlan {
       path: `${target.root}/${f}`,
       content:
         manifest.type === "agent" && f === "agent.ts" && ctx.model
-          ? setModel(template.files[f], ctx.model)
+          ? setModel(template.files[f], ctx.model, { effort: ctx.effort })
           : template.files[f],
     }));
     if (hasSandboxWork(manifest.sandbox)) {

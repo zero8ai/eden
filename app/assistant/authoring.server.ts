@@ -21,6 +21,7 @@ import { listDrafts as listDraftsDefault } from "~/drafts/drafts.server";
 import { ASSISTANT_CONFIG_ROOT } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
 import { readAgentFile } from "~/github/repo.server";
+import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import type { ConnectedProject } from "~/project/guard.server";
 import { drizzleSecretKV } from "~/seams/oss/secret-store";
 import { getRuntime } from "~/seams/index.server";
@@ -34,9 +35,15 @@ export interface AuthoringDeps {
   getSource: typeof getAgentSource;
   listDrafts: typeof listDraftsDefault;
   /** Published (default-branch) content of a repo file, ignoring drafts (used by bundle). */
-  readPublished: (project: AuthoringProject, path: string) => Promise<string | null>;
+  readPublished: (
+    project: AuthoringProject,
+    path: string,
+  ) => Promise<string | null>;
   /** Member-scoped secret names (never values), for project-context. */
-  secretKeys: (input: { projectId: string; agentId: string }) => Promise<string[]>;
+  secretKeys: (input: {
+    projectId: string;
+    agentId: string;
+  }) => Promise<string[]>;
   catalog: CatalogSource;
 }
 
@@ -84,7 +91,12 @@ export async function resolveAssistantContext(
   const agent = await store.agents.findById(env.agentId);
   if (!agent || agent.kind !== "assistant") return null;
   const project = await store.projects.findById(agent.projectId);
-  if (!project || !project.repoInstallationId || !project.repoOwner || !project.repoName) {
+  if (
+    !project ||
+    !project.repoInstallationId ||
+    !project.repoOwner ||
+    !project.repoName
+  ) {
     return null;
   }
   return {
@@ -114,6 +126,7 @@ export async function projectContext(
       skills: string[];
       schedules: string[];
       model: string | null;
+      effort: ReasoningEffort | null;
     };
     stagedDrafts: { path: string; deletion: boolean }[];
   }>
@@ -126,7 +139,10 @@ export async function projectContext(
     agents.map(async (a) => ({
       name: a.name,
       root: a.root,
-      secretNames: await deps.secretKeys({ projectId: project.id, agentId: a.id }),
+      secretNames: await deps.secretKeys({
+        projectId: project.id,
+        agentId: a.id,
+      }),
     })),
   );
   const bundle = await assembleBundle(project, deps);
@@ -144,8 +160,12 @@ export async function projectContext(
         .filter((p) => p.startsWith("schedules/user/"))
         .map((p) => path.posix.basename(p)),
       model: bundle.model,
+      effort: bundle.effort,
     },
-    stagedDrafts: drafts.map((d) => ({ path: d.path, deletion: d.content === null })),
+    stagedDrafts: drafts.map((d) => ({
+      path: d.path,
+      deletion: d.content === null,
+    })),
   };
 }
 
@@ -157,7 +177,8 @@ export async function catalogOp(
     return { ok: true, index: await deps.catalog.index() };
   }
   if (input.op === "template") {
-    if (!input.type || !input.id) return fail("template lookup needs a type and id.");
+    if (!input.type || !input.id)
+      return fail("template lookup needs a type and id.");
     try {
       const template = await deps.catalog.template(
         input.type as "agent" | "skill" | "tool",
@@ -168,7 +189,9 @@ export async function catalogOp(
       return fail(error instanceof Error ? error.message : String(error));
     }
   }
-  return fail(`Unknown catalog op "${input.op}" (expected "index" or "template").`);
+  return fail(
+    `Unknown catalog op "${input.op}" (expected "index" or "template").`,
+  );
 }
 
 // ── Bundle (entrypoint materialization; published config only) ─────────────────
@@ -180,6 +203,8 @@ export interface AssistantBundle {
   files: Record<string, string>;
   /** Per-project model override from `.eden/assistant/assistant.json`, or null. */
   model: string | null;
+  /** Explicit normalized effort paired with the project model, or provider default when null. */
+  effort: ReasoningEffort | null;
 }
 
 export async function assembleBundle(
@@ -195,6 +220,7 @@ export async function assembleBundle(
 
   const files: Record<string, string> = {};
   let model: string | null = null;
+  let effort: ReasoningEffort | null = null;
   let instructions: string | null = null;
 
   await Promise.all(
@@ -210,9 +236,13 @@ export async function assembleBundle(
         files[`schedules/user/${path.posix.basename(rel)}`] = content;
       } else if (rel === "assistant.json") {
         try {
-          const parsed = JSON.parse(content) as { model?: unknown };
+          const parsed = JSON.parse(content) as {
+            model?: unknown;
+            effort?: unknown;
+          };
           if (typeof parsed.model === "string" && parsed.model.trim()) {
             model = parsed.model.trim();
+            effort = isReasoningEffort(parsed.effort) ? parsed.effort : null;
           }
         } catch {
           // ignore a malformed override — the instance falls back to the env default.
@@ -221,5 +251,5 @@ export async function assembleBundle(
     }),
   );
 
-  return { instructions, files, model };
+  return { instructions, files, model, effort };
 }

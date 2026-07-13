@@ -10,6 +10,7 @@ import { data, redirect, type ActionFunctionArgs } from "react-router";
 import { liveTargets } from "~/chat/playground.server";
 import { asString, streamTurnResponse } from "~/chat/turn-stream.server";
 import { signModelDirective } from "~/models/model-directive.server";
+import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import {
   findWorkspaceModel,
   ownsWorkspaceModelReference,
@@ -51,6 +52,18 @@ export async function action(args: ActionFunctionArgs) {
   if (!message) throw data({ error: "Type a message first." }, { status: 400 });
   // The composer's current model selection; absent = keep the session's stored override.
   const requestedModelId = asString(form.get("modelId")).trim() || null;
+  const requestedEffortRaw = asString(form.get("effort")).trim();
+  const requestedEffort: ReasoningEffort | null = requestedEffortRaw
+    ? isReasoningEffort(requestedEffortRaw)
+      ? requestedEffortRaw
+      : null
+    : null;
+  if (requestedEffortRaw && !requestedEffort) {
+    throw data(
+      { error: "That reasoning effort is not valid." },
+      { status: 400 },
+    );
+  }
   const requestedModel = requestedModelId
     ? await findWorkspaceModel(project.orgId, requestedModelId)
     : null;
@@ -59,6 +72,17 @@ export async function action(args: ActionFunctionArgs) {
       {
         error:
           "That model is not available from an active provider connection in this workspace.",
+      },
+      { status: 400 },
+    );
+  }
+  if (
+    requestedEffort &&
+    !requestedModel?.supportedEfforts?.includes(requestedEffort)
+  ) {
+    throw data(
+      {
+        error: "That reasoning effort is not supported by the selected model.",
       },
       { status: 400 },
     );
@@ -93,6 +117,9 @@ export async function action(args: ActionFunctionArgs) {
     );
   }
   const effectiveModel = requestedModelId ?? playgroundSession?.modelId ?? null;
+  const effectiveEffort = requestedModelId
+    ? requestedEffort
+    : ((playgroundSession?.effort as ReasoningEffort | null) ?? null);
   const effectiveModelOwned = effectiveModel
     ? requestedModelId === effectiveModel
       ? Boolean(requestedModel)
@@ -136,10 +163,12 @@ export async function action(args: ActionFunctionArgs) {
       version: target.version,
       title,
       modelId: requestedModelId,
+      effort: requestedEffort,
     });
   } else if (
     requestedModelId &&
-    requestedModelId !== playgroundSession.modelId
+    (requestedModelId !== playgroundSession.modelId ||
+      requestedEffort !== playgroundSession.effort)
   ) {
     // The selector changed since the last turn — remember it on the conversation.
     await setPlaygroundSessionModel({
@@ -148,8 +177,13 @@ export async function action(args: ActionFunctionArgs) {
       agentId: active.id,
       userId: auth.user.id,
       modelId: requestedModelId,
+      effort: requestedEffort,
     });
-    playgroundSession = { ...playgroundSession, modelId: requestedModelId };
+    playgroundSession = {
+      ...playgroundSession,
+      modelId: requestedModelId,
+      effort: requestedEffort,
+    };
   }
   await markPlaygroundSessionRunning({
     id: playgroundSession.id,
@@ -169,6 +203,7 @@ export async function action(args: ActionFunctionArgs) {
           // A newly requested selection was catalog-validated above. An already-stored selection
           // uses active ownership only, so a transient catalog outage does not block inference.
           contextWindowTokens: requestedModel?.contextWindow ?? undefined,
+          effort: effectiveEffort ?? undefined,
         },
         target.deploymentId,
         directiveBody,

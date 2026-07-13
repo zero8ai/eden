@@ -49,7 +49,7 @@ import {
   rememberInstallation,
 } from "~/github/installations.server";
 import { warmAgentSource } from "~/github/cached.server";
-import { getWorkspaceAssistantModel } from "~/org/workspace.server";
+import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
 import { ownsWorkspaceModelReference } from "~/models/union.server";
 import {
   fetchAgentSource,
@@ -173,10 +173,14 @@ export async function action(args: ActionFunctionArgs) {
     if (layout === "single" && !agentName)
       return { error: "Agent name is required." };
     try {
-      let model =
+      const selection =
         layout === "single"
-          ? await getWorkspaceAssistantModel(org.id).catch(() => null)
-          : null;
+          ? await getWorkspaceAssistantSelection(org.id).catch(() => ({
+              model: null,
+              effort: null,
+            }))
+          : { model: null, effort: null };
+      let model = selection.model;
       if (model && !(await ownsWorkspaceModelReference(org.id, model))) {
         model = null;
       }
@@ -192,6 +196,7 @@ export async function action(args: ActionFunctionArgs) {
         layout,
         ...(layout === "single" ? { agentName } : {}),
         ...(model ? { model } : {}),
+        ...(model ? { effort: selection.effort } : {}),
       });
       const project = await createProject({
         orgId: org.id,

@@ -15,6 +15,8 @@
  * clear error pointing the user at "connect an existing repo".
  */
 import {
+  AI_PACKAGE,
+  AI_VERSION,
   ANTHROPIC_PROVIDER_PACKAGE,
   ANTHROPIC_PROVIDER_VERSION,
   OPENAI_PROVIDER_PACKAGE,
@@ -25,6 +27,7 @@ import {
   ZOD_VERSION,
   scaffoldAgentModule,
 } from "~/eve/agentModule";
+import type { ReasoningEffort } from "~/models/reasoning";
 import { DEFAULT_SANDBOX_MODULE, sandboxPath } from "~/eve/templates";
 import { commitFiles, type FileChange } from "./write.server";
 import { getInstallationOctokit } from "./client.server";
@@ -39,6 +42,7 @@ export interface CreateRepoInput {
   description?: string;
   /** Connected, provider-qualified workspace model used by a new single agent. */
   model?: string;
+  effort?: ReasoningEffort | null;
   /** Repo layout: one agent at the root, or a team monorepo. Defaults to "single". */
   layout?: RepoLayout;
   /**
@@ -63,6 +67,7 @@ function modelProviderDependencies(): Record<string, string> {
     [ANTHROPIC_PROVIDER_PACKAGE]: ANTHROPIC_PROVIDER_VERSION,
     [OPENAI_PROVIDER_PACKAGE]: OPENAI_PROVIDER_VERSION,
     [OPENROUTER_PROVIDER_PACKAGE]: OPENROUTER_PROVIDER_VERSION,
+    [AI_PACKAGE]: AI_VERSION,
     [ZOD_PACKAGE]: ZOD_VERSION,
     eve: "latest",
   };
@@ -73,13 +78,17 @@ function agentDirFiles(
   root: string,
   displayName: string,
   model: string,
+  effort?: ReasoningEffort | null,
 ): FileChange[] {
   return [
     {
       path: `${root}/instructions.md`,
       content: `# ${displayName}\n\nYou are a helpful agent. Describe the agent's role, tone, and\nboundaries here — this Markdown is the always-on system prompt.\n`,
     },
-    { path: `${root}/agent.ts`, content: scaffoldAgentModule(model) },
+    {
+      path: `${root}/agent.ts`,
+      content: scaffoldAgentModule(model, { effort }),
+    },
     // The Eden default sandbox: identical to eve's framework default until a secret is
     // exposed (the EDEN_SANDBOX_ENV convention — see ~/eve/templates), but present from day
     // one so "make X available in my sandbox" is an edit, not a new concept.
@@ -96,9 +105,10 @@ function singleAgentFiles(
   name: string,
   model: string,
   agentName: string,
+  effort?: ReasoningEffort | null,
 ): FileChange[] {
   return [
-    ...agentDirFiles("agent", agentName, model),
+    ...agentDirFiles("agent", agentName, model, effort),
     {
       path: "package.json",
       content: packageJson({
@@ -121,10 +131,14 @@ function singleAgentFiles(
  * The files for ONE team member: a complete eve project under `agents/<member>/`. Used by
  * the team scaffold and by the add-member flow (which lands them as a change-set).
  */
-export function memberScaffold(member: string, model: string): FileChange[] {
+export function memberScaffold(
+  member: string,
+  model: string,
+  effort?: ReasoningEffort | null,
+): FileChange[] {
   const memberDir = `agents/${member}`;
   return [
-    ...agentDirFiles(`${memberDir}/agent`, member, model),
+    ...agentDirFiles(`${memberDir}/agent`, member, model, effort),
     {
       path: `${memberDir}/package.json`,
       content: packageJson({
@@ -280,6 +294,7 @@ export async function createEveRepo(
           input.name,
           input.model!,
           input.agentName || input.name,
+          input.effort,
         );
   await commitFiles(
     octokit,

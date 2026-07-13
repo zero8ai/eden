@@ -27,7 +27,12 @@ const project: AuthoringProject = {
 
 function harness(opts?: { repoFiles?: Record<string, string> }) {
   const store = makeFakeStore();
-  store.seedProject({ id: "p", orgId: "o", repoOwner: "acme", repoName: "repo" });
+  store.seedProject({
+    id: "p",
+    orgId: "o",
+    repoOwner: "acme",
+    repoName: "repo",
+  });
   store.seedAgent({ id: "m1", projectId: "p", name: "agent", root: "agent" });
   const repoFiles = opts?.repoFiles ?? {};
 
@@ -45,7 +50,8 @@ function harness(opts?: { repoFiles?: Record<string, string> }) {
     catalog: {
       name: "fake",
       index: async () => ({ templates: [{ id: "x" }] }) as never,
-      template: async () => ({ manifest: { id: "x" }, files: { "a.ts": "1" } }) as never,
+      template: async () =>
+        ({ manifest: { id: "x" }, files: { "a.ts": "1" } }) as never,
     },
   };
   return { store, deps, repoFiles };
@@ -58,29 +64,57 @@ describe("assistant authoring: bundle", () => {
         ".eden/assistant/instructions.md": "Be helpful.",
         ".eden/assistant/skills/deploys.md": "# deploys",
         ".eden/assistant/schedules/daily.md": "# daily",
-        ".eden/assistant/assistant.json": JSON.stringify({ model: "anthropic/claude-sonnet-5" }),
+        ".eden/assistant/assistant.json": JSON.stringify({
+          model: "anthropic/claude-sonnet-5",
+          effort: "high",
+        }),
       },
     });
     const bundle = await assembleBundle(project, deps);
     expect(bundle.instructions).toBe("Be helpful.");
     expect(bundle.model).toBe("anthropic/claude-sonnet-5");
+    expect(bundle.effort).toBe("high");
     expect(bundle.files).toEqual({
       "skills/user/deploys.md": "# deploys",
       "schedules/user/daily.md": "# daily",
+    });
+  });
+
+  it("ignores an unrecognized effort in manually edited published config", async () => {
+    const { deps } = harness({
+      repoFiles: {
+        ".eden/assistant/assistant.json": JSON.stringify({
+          model: "anthropic/claude-sonnet-5",
+          effort: "maximum-plus",
+        }),
+      },
+    });
+    await expect(assembleBundle(project, deps)).resolves.toMatchObject({
+      model: "anthropic/claude-sonnet-5",
+      effort: null,
     });
   });
 });
 
 describe("assistant authoring: project-context", () => {
   it("lists members, config, and staged human drafts", async () => {
-    const { store, deps } = harness({ repoFiles: { ".eden/assistant/instructions.md": "hi" } });
-    await store.drafts.upsert({ projectId: "p", agentId: "m1", path: "agent/tools/foo.ts", content: "x" });
+    const { store, deps } = harness({
+      repoFiles: { ".eden/assistant/instructions.md": "hi" },
+    });
+    await store.drafts.upsert({
+      projectId: "p",
+      agentId: "m1",
+      path: "agent/tools/foo.ts",
+      content: "x",
+    });
     const ctx = await projectContext(project, deps);
     expect(ctx).toMatchObject({ ok: true, isTeam: false });
     if (ctx.ok) {
       expect(ctx.members.map((m) => m.name)).toEqual(["agent"]);
       expect(ctx.assistantConfig.instructions).toBe(true);
-      expect(ctx.stagedDrafts).toEqual([{ path: "agent/tools/foo.ts", deletion: false }]);
+      expect(ctx.stagedDrafts).toEqual([
+        { path: "agent/tools/foo.ts", deletion: false },
+      ]);
     }
   });
 });
@@ -89,8 +123,12 @@ describe("assistant authoring: catalog", () => {
   it("returns the index and a template", async () => {
     const { deps } = harness();
     expect(await catalogOp({ op: "index" }, deps)).toMatchObject({ ok: true });
-    expect(await catalogOp({ op: "template", type: "tool", id: "x" }, deps)).toMatchObject({ ok: true });
-    expect(await catalogOp({ op: "template" }, deps)).toMatchObject({ ok: false });
+    expect(
+      await catalogOp({ op: "template", type: "tool", id: "x" }, deps),
+    ).toMatchObject({ ok: true });
+    expect(await catalogOp({ op: "template" }, deps)).toMatchObject({
+      ok: false,
+    });
     expect(await catalogOp({ op: "bogus" }, deps)).toMatchObject({ ok: false });
   });
 });
@@ -98,9 +136,20 @@ describe("assistant authoring: catalog", () => {
 describe("assistant authoring: caller resolution", () => {
   it("rejects a deployment whose agent is not the assistant", async () => {
     const store = makeFakeStore();
-    store.seedProject({ id: "p", orgId: "o", repoOwner: "a", repoName: "r", repoInstallationId: "i" });
+    store.seedProject({
+      id: "p",
+      orgId: "o",
+      repoOwner: "a",
+      repoName: "r",
+      repoInstallationId: "i",
+    });
     store.seedAgent({ id: "m1", projectId: "p", name: "agent", root: "agent" }); // kind member
-    const env = store.seedEnvironment({ id: "e1", projectId: "p", agentId: "m1", name: "default" });
+    const env = store.seedEnvironment({
+      id: "e1",
+      projectId: "p",
+      agentId: "m1",
+      name: "default",
+    });
     const dep = await store.deployments.insert({
       environmentId: env.id,
       releaseId: "rel",
@@ -112,9 +161,24 @@ describe("assistant authoring: caller resolution", () => {
 
   it("resolves an assistant deployment to its project", async () => {
     const store = makeFakeStore();
-    store.seedProject({ id: "p", orgId: "o", repoOwner: "a", repoName: "r", repoInstallationId: "i" });
-    const assistant = await store.agents.createAssistant({ projectId: "p", name: "assistant", root: ".eden/assistant" });
-    const env = store.seedEnvironment({ id: "e1", projectId: "p", agentId: assistant.id, name: "assistant" });
+    store.seedProject({
+      id: "p",
+      orgId: "o",
+      repoOwner: "a",
+      repoName: "r",
+      repoInstallationId: "i",
+    });
+    const assistant = await store.agents.createAssistant({
+      projectId: "p",
+      name: "assistant",
+      root: ".eden/assistant",
+    });
+    const env = store.seedEnvironment({
+      id: "e1",
+      projectId: "p",
+      agentId: assistant.id,
+      name: "assistant",
+    });
     const dep = await store.deployments.insert({
       environmentId: env.id,
       releaseId: "rel",

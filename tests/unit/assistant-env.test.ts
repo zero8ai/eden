@@ -3,13 +3,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getWorkspaceAssistantModel = vi.fn<() => Promise<string | null>>();
+const getWorkspaceAssistantEffort =
+  vi.fn<() => Promise<"low" | "medium" | "high" | null>>();
 const getProviderDeploymentEnv = vi.fn<() => Promise<Record<string, string>>>();
 const hasActiveCodexConnection = vi.fn<() => Promise<boolean>>();
 const getActiveModelConnection =
   vi.fn<() => Promise<{ provider: string } | null>>();
 
 vi.mock("~/org/workspace.server", () => ({
-  getWorkspaceAssistantModel: () => getWorkspaceAssistantModel(),
+  getWorkspaceAssistantSelection: async () => ({
+    model: await getWorkspaceAssistantModel(),
+    effort: await getWorkspaceAssistantEffort(),
+  }),
 }));
 vi.mock("~/models/provider-connections.server", () => ({
   getProviderDeploymentEnv: () => getProviderDeploymentEnv(),
@@ -29,6 +34,8 @@ const EXACT_OPENAI = "EDEN_PROVIDER_OPENAI_ABCDEFGHIJKL_API_KEY";
 beforeEach(() => {
   process.env.EDEN_SECRETS_KEY = "a".repeat(64);
   getWorkspaceAssistantModel.mockReset();
+  getWorkspaceAssistantEffort.mockReset();
+  getWorkspaceAssistantEffort.mockResolvedValue(null);
   getProviderDeploymentEnv.mockReset();
   hasActiveCodexConnection.mockReset();
   getActiveModelConnection.mockReset();
@@ -87,9 +94,50 @@ describe("assistantEnv", () => {
       orgId: "org_1",
       deploymentId: "dep_1",
       modelOverride: `openai/${CONNECTION}/gpt-5.4`,
+      effortOverride: "high",
     });
     expect(env.EDEN_ASSISTANT_MODEL).toBe(`openai/${CONNECTION}/gpt-5.4`);
+    expect(env.EDEN_ASSISTANT_EFFORT).toBe("high");
     expect(env[EXACT_OPENAI]).toBe("sk-openai-workspace");
+    expect(getWorkspaceAssistantModel).not.toHaveBeenCalled();
+  });
+
+  it("inherits the workspace model and effort as one selection", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue(
+      `openai/${CONNECTION}/gpt-5.4`,
+    );
+    getWorkspaceAssistantEffort.mockResolvedValue("medium");
+    getProviderDeploymentEnv.mockResolvedValue({
+      [EXACT_OPENAI]: "sk-openai-workspace",
+      OPENAI_API_KEY: "sk-openai-workspace",
+    });
+    getActiveModelConnection.mockResolvedValue({ provider: "openai" });
+
+    const env = await assistantEnv({ orgId: "org_1", deploymentId: "dep_1" });
+    expect(env).toMatchObject({
+      EDEN_ASSISTANT_MODEL: `openai/${CONNECTION}/gpt-5.4`,
+      EDEN_ASSISTANT_EFFORT: "medium",
+    });
+  });
+
+  it("does not inherit workspace effort when a project overrides the model", async () => {
+    getWorkspaceAssistantModel.mockResolvedValue(
+      `openai/${CONNECTION}/gpt-5.4`,
+    );
+    getWorkspaceAssistantEffort.mockResolvedValue("high");
+    getProviderDeploymentEnv.mockResolvedValue({
+      [EXACT_OPENAI]: "sk-openai-workspace",
+      OPENAI_API_KEY: "sk-openai-workspace",
+    });
+    getActiveModelConnection.mockResolvedValue({ provider: "openai" });
+
+    const env = await assistantEnv({
+      orgId: "org_1",
+      deploymentId: "dep_1",
+      modelOverride: `openai/${CONNECTION}/gpt-5.4`,
+      effortOverride: null,
+    });
+    expect(env).not.toHaveProperty("EDEN_ASSISTANT_EFFORT");
     expect(getWorkspaceAssistantModel).not.toHaveBeenCalled();
   });
 

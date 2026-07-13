@@ -41,6 +41,7 @@ describe("repo scaffold", () => {
       "@ai-sdk/anthropic": "^4.0.12",
       "@ai-sdk/openai": "^4.0.11",
       "@ai-sdk/openai-compatible": "^3.0.7",
+      ai: "^7.0.0",
       zod: "^4.4.3",
       eve: "latest",
     });

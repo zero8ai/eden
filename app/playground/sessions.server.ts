@@ -11,6 +11,7 @@ import {
 } from "~/models/model-directive";
 import { stripSeedContext } from "~/playground/seed";
 import type { Target } from "~/chat/playground.server";
+import type { ReasoningEffort } from "~/models/reasoning";
 
 export type PlaygroundSession = typeof playgroundSessions.$inferSelect;
 
@@ -21,6 +22,7 @@ export interface PlaygroundSessionSummary {
   environmentId: string | null;
   /** Per-conversation model override; null = the deployed default model. */
   modelId: string | null;
+  effort: ReasoningEffort | null;
   updatedAt: string;
 }
 
@@ -33,6 +35,7 @@ export function summarizePlaygroundSession(
     status: session.status,
     environmentId: session.environmentId,
     modelId: session.modelId,
+    effort: session.effort as ReasoningEffort | null,
     updatedAt: session.updatedAt.toISOString(),
   };
 }
@@ -89,6 +92,7 @@ export async function createPlaygroundSession(input: {
   version?: string | null;
   title?: string | null;
   modelId?: string | null;
+  effort?: ReasoningEffort | null;
 }): Promise<PlaygroundSession> {
   const [row] = await db
     .insert(playgroundSessions)
@@ -103,6 +107,7 @@ export async function createPlaygroundSession(input: {
       lastVersion: input.version ?? null,
       title: input.title ?? null,
       modelId: input.modelId ?? null,
+      effort: input.effort ?? null,
     })
     .returning();
   return row;
@@ -115,10 +120,15 @@ export async function setPlaygroundSessionModel(input: {
   agentId: string;
   userId: string;
   modelId: string | null;
+  effort?: ReasoningEffort | null;
 }): Promise<boolean> {
   const updated = await db
     .update(playgroundSessions)
-    .set({ modelId: input.modelId, updatedAt: new Date() })
+    .set({
+      modelId: input.modelId,
+      effort: input.effort,
+      updatedAt: new Date(),
+    })
     .where(
       and(
         eq(playgroundSessions.id, input.id),
@@ -715,6 +725,7 @@ interface TurnProjection {
   partial: string | null;
   inputRequests: ChatInputRequest[];
   modelId: string | null;
+  effort: ReasoningEffort | null;
   steps: ChatStep[];
   error: string | null;
   stepStarts: Map<number, number>;
@@ -753,6 +764,7 @@ function projectEventsToEntries(
         partial: null,
         inputRequests: [],
         modelId,
+        effort: null,
         steps: [],
         error: null,
         stepStarts: new Map(),
@@ -795,7 +807,10 @@ function projectEventsToEntries(
         // show it: the transcript displays the message as the user typed it.
         if (dynamicModel) {
           const directive = parseModelDirective(raw);
-          if (directive) turn.modelId = directive.id;
+          if (directive) {
+            turn.modelId = directive.id;
+            turn.effort = directive.effort ?? null;
+          }
         }
         // Strip both wrappers: the model directive and, for a cross-redeploy reseed turn (#71),
         // the leading eden:context block seeded from the cached transcript.
@@ -941,6 +956,7 @@ function projectEventsToEntries(
         structured: normalized.replyIsStructured,
         version: session.lastVersion ?? undefined,
         modelId: turn.modelId,
+        effort: turn.effort,
         steps: turn.steps,
         inputRequests:
           turn.inputRequests.length > 0 ? turn.inputRequests : undefined,

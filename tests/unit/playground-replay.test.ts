@@ -196,7 +196,7 @@ describe("loadPlaygroundEntriesFromEve", () => {
     expect(entries[1].steps).toHaveLength(1);
   });
 
-  it("strips the model directive from user text and attributes turns to it (dynamic agent)", async () => {
+  it("strips the model directive and attributes its model and effort (dynamic agent)", async () => {
     const at = new Date().toISOString();
     vi.stubGlobal(
       "fetch",
@@ -224,7 +224,7 @@ describe("loadPlaygroundEntriesFromEve", () => {
             data: {
               turnId: "turn_1",
               message:
-                "<!-- eden:model openai/gpt-5.1 ctx=400000 -->\n\nand now?",
+                "<!-- eden:model openai/gpt-5.1 ctx=400000 effort=high -->\n\nand now?",
             },
             meta: { at },
           },
@@ -256,6 +256,7 @@ describe("loadPlaygroundEntriesFromEve", () => {
         role: "assistant",
         text: "A different one.",
         modelId: "openai/gpt-5.1",
+        effort: "high",
       },
     ]);
   });
@@ -349,7 +350,10 @@ describe("loadPlaygroundEntriesFromEve", () => {
       target,
     });
 
-    expect(entries[0]).toMatchObject({ role: "user", text: "Can you try again?" });
+    expect(entries[0]).toMatchObject({
+      role: "user",
+      text: "Can you try again?",
+    });
     // No leaked transcript or markers in the user bubble.
     expect(entries[0].text).not.toContain("Please deploy my thing.");
     expect(entries[0].text).not.toContain("eden:context");

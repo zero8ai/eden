@@ -256,6 +256,26 @@ export async function listOpenChanges(
   );
 }
 
+/**
+ * Every changed file path of one PR (paginated past 100 files). The conversation-branch
+ * merge gate recomputes build roots from these SERVER-side — a client-posted root could
+ * under-specify a multi-member change (issue #137).
+ */
+export async function listPullRequestFilePaths(
+  installationId: string | number,
+  { owner, repo }: RepoRef,
+  pullNumber: number,
+): Promise<string[]> {
+  const octokit = await getInstallationOctokit(installationId);
+  const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
+    owner,
+    repo,
+    pull_number: pullNumber,
+    per_page: 100,
+  });
+  return files.map((f) => f.filename);
+}
+
 /** The newest open Eden change request touching a given file. */
 export interface PendingFileChange {
   number: number;

@@ -38,7 +38,7 @@ import semver from "semver";
 import { ConfirmDialog } from "~/components/confirm-dialog";
 import { EmptyTeamState } from "~/components/empty-team-state";
 import { LocalizedDate } from "~/components/localized-values";
-import { ModelSelect } from "~/components/model-select";
+import { ModelSelection } from "~/components/model-select";
 import {
   AgentNav,
   AppShell,
@@ -77,7 +77,7 @@ import {
   listIngestTokens,
 } from "~/observability/store.server";
 import { listDrafts, stageDeletions, stageDraft } from "~/drafts/drafts.server";
-import { readModel } from "~/eve/agentModule";
+import { readModel, readReasoningEffort } from "~/eve/agentModule";
 import { buildAgentConfig, EMPTY_TEAM_MARKER } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
 import { fetchAgentSource, readAgentFile } from "~/github/repo.server";
@@ -98,7 +98,8 @@ import {
 import type { TemplateType } from "~/marketplace/manifest";
 import { stageModelChange } from "~/models/stage-model.server";
 import { ownsWorkspaceModelReference } from "~/models/union.server";
-import { getWorkspaceAssistantModel } from "~/org/workspace.server";
+import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
+import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -161,6 +162,7 @@ interface SettingsView {
   pendingName: string | null;
   /** Member: current model (staged draft wins) + staging state. */
   model: string | null;
+  effort: ReasoningEffort | null;
   modelInherited: boolean;
   hasAgentModule: boolean;
   modelStaged: boolean;
@@ -382,6 +384,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         canRenameMember: showMember && active !== null,
         pendingName: showMember ? (active?.pendingName ?? null) : null,
         model: null,
+        effort: null,
         modelInherited: false,
         hasAgentModule: false,
         modelStaged: false,
@@ -411,9 +414,12 @@ export const loader = (args: LoaderFunctionArgs) =>
       };
 
       if (showMember && active) {
-        const [envs, orgDefaultModel] = await Promise.all([
+        const [envs, orgDefaultSelection] = await Promise.all([
           listAgentEnvironments(active.id),
-          getWorkspaceAssistantModel(project.orgId).catch(() => null),
+          getWorkspaceAssistantSelection(project.orgId).catch(() => ({
+            model: null,
+            effort: null,
+          })),
         ]);
         const config = buildAgentConfig(source, active.root);
         // The model shown must reflect the newest intent: a staged agent.ts draft wins.
@@ -424,8 +430,13 @@ export const loader = (args: LoaderFunctionArgs) =>
         const agentModel = agentTsDraft?.content
           ? (readModel(agentTsDraft.content) ?? config.model)
           : config.model;
-        base.model = agentModel ?? orgDefaultModel;
-        base.modelInherited = !agentModel && !!orgDefaultModel;
+        base.model = agentModel ?? orgDefaultSelection.model;
+        base.effort = agentModel
+          ? agentTsDraft?.content
+            ? readReasoningEffort(agentTsDraft.content)
+            : readReasoningEffort(source.files[`${active.root}/agent.ts`] ?? "")
+          : orgDefaultSelection.effort;
+        base.modelInherited = !agentModel && !!orgDefaultSelection.model;
         base.hasAgentModule = config.hasAgentModule || !!agentTsDraft;
         base.modelStaged = !!agentTsDraft;
         base.envs = envs;
@@ -555,6 +566,11 @@ export async function action(args: ActionFunctionArgs) {
     if (intent === "set-model") {
       const model = String(form.get("model") ?? "").trim();
       if (!model) return { error: "Pick or enter a model." };
+      const effortValue = String(form.get("effort") ?? "").trim();
+      const effort =
+        effortValue && isReasoningEffort(effortValue) ? effortValue : null;
+      if (effortValue && !effort)
+        return { error: "Choose a valid reasoning effort." };
       const { active } = await resolveAgentContext(
         project.id,
         String(form.get("agent") ?? "") || null,
@@ -564,6 +580,7 @@ export async function action(args: ActionFunctionArgs) {
         project,
         root: active.root,
         model,
+        effort,
         createdBy: auth.user.id,
       });
       return result.ok ? { ok: true as const } : { error: result.error };
@@ -606,6 +623,7 @@ export async function action(args: ActionFunctionArgs) {
           ? pkgDraft.content
           : await readAgentFile(project.repoInstallationId, repo, pkgPath);
       let installModel: string | null = null;
+      let installEffort: ReasoningEffort | null = null;
       if (template.manifest.type === "agent") {
         const agentPath = `${active.root}/agent.ts`;
         const agentDraft = drafts.find((draft) => draft.path === agentPath);
@@ -619,15 +637,20 @@ export async function action(args: ActionFunctionArgs) {
           (await ownsWorkspaceModelReference(project.orgId, currentModel))
         ) {
           installModel = currentModel;
+          installEffort = agentSource ? readReasoningEffort(agentSource) : null;
         } else {
-          const workspaceModel = await getWorkspaceAssistantModel(
+          const workspaceSelection = await getWorkspaceAssistantSelection(
             project.orgId,
-          ).catch(() => null);
+          ).catch(() => ({ model: null, effort: null }));
           installModel =
-            workspaceModel &&
-            (await ownsWorkspaceModelReference(project.orgId, workspaceModel))
-              ? workspaceModel
+            workspaceSelection.model &&
+            (await ownsWorkspaceModelReference(
+              project.orgId,
+              workspaceSelection.model,
+            ))
+              ? workspaceSelection.model
               : null;
+          installEffort = installModel ? workspaceSelection.effort : null;
         }
         if (!installModel) {
           return {
@@ -645,6 +668,7 @@ export async function action(args: ActionFunctionArgs) {
         lock,
         rosterNames: roster.map((a) => a.name),
         model: installModel,
+        effort: installEffort,
         target: { kind: "member", memberName: member, root: active.root },
       });
       if (plan.conflicts.length > 0) {
@@ -1173,8 +1197,14 @@ function ModelSection({
 }: {
   loaderData: Route.ComponentProps["loaderData"];
 }) {
-  const { model, modelInherited, hasAgentModule, modelStaged, activeAgent } =
-    loaderData;
+  const {
+    model,
+    effort,
+    modelInherited,
+    hasAgentModule,
+    modelStaged,
+    activeAgent,
+  } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const modelBadges = useMemo(
     () => (
@@ -1206,12 +1236,18 @@ function ModelSection({
         title="Model"
         badges={modelBadges}
       />
-      <ModelSelect
-        value={model}
+      <ModelSelection
+        model={model}
+        effort={effort}
         busy={fetcher.state !== "idle"}
-        onCommit={(m) =>
+        onCommit={(m, nextEffort) =>
           fetcher.submit(
-            { intent: "set-model", model: m, agent: activeAgent },
+            {
+              intent: "set-model",
+              model: m,
+              effort: nextEffort ?? "",
+              agent: activeAgent,
+            },
             { method: "post" },
           )
         }

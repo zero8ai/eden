@@ -35,6 +35,7 @@ describe("normalizeCatalog", () => {
     expect(m.outputPerMTok).toBeNull();
     expect(m.description).toBeNull();
     expect(m.tags).toEqual([]);
+    expect(m.supportedEfforts).toBeUndefined();
     expect(m.providers).toEqual([]);
   });
 
@@ -73,6 +74,25 @@ describe("normalizeCatalog", () => {
     expect(m.contextWindow).toBe(1_000_000);
     expect(m.maxOutputTokens).toBe(128_000);
     expect(m.tags).toEqual(["tools", "reasoning"]);
+    expect(m.supportedEfforts).toEqual(["low", "medium", "high"]);
+    expect(m.providerDefaultEffort).toBeUndefined();
+  });
+
+  it("prefers OpenRouter's published effort levels and default", () => {
+    const [m] = normalizeCatalog(
+      models([
+        {
+          id: "openai/future-reasoner",
+          supported_parameters: ["reasoning"],
+          reasoning: {
+            supported_efforts: ["none", "low", "high", "xhigh", "turbo"],
+            default_effort: "high",
+          },
+        },
+      ]),
+    );
+    expect(m.supportedEfforts).toEqual(["none", "low", "high", "xhigh"]);
+    expect(m.providerDefaultEffort).toBe("high");
   });
 
   it("tolerates unknown extra fields on every payload", () => {

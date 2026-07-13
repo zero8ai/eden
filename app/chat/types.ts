@@ -5,6 +5,8 @@
  * JSON-serializable and additive. Client+server safe.
  */
 
+import type { ReasoningEffort } from "~/models/reasoning";
+
 export interface ChatStep {
   type: string;
   name?: string | null;
@@ -50,6 +52,8 @@ export interface ChatEntry {
   /** Playground: version + model that produced the reply, and the agent's steps. */
   version?: string;
   modelId?: string | null;
+  /** Explicit reasoning effort that served this turn, when selected. */
+  effort?: ReasoningEffort | null;
   steps?: ChatStep[];
   /** Playground: pending input requests — questions or tool approvals — for this turn. */
   inputRequests?: ChatInputRequest[];
@@ -58,4 +62,8 @@ export interface ChatEntry {
   secrets?: string[];
   checks?: { ran: boolean; ok: boolean };
   error?: string | null;
+  /** Raw error text for operators (rendered behind a details toggle). Additive. */
+  errorDetail?: string | null;
+  /** The error is a transient provider hiccup — offer a retry affordance. Additive. */
+  errorRetryable?: boolean;
 }

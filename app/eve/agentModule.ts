@@ -17,6 +17,8 @@ export const LEGACY_OPENROUTER_PROVIDER_PACKAGE = "@openrouter/ai-sdk-provider";
 export const ZOD_PACKAGE = "zod";
 export const ZOD_VERSION = "^4.4.3";
 export const EVE_PACKAGE = "eve";
+export const AI_PACKAGE = "ai";
+export const AI_VERSION = "^7.0.0";
 /** `defineDynamic` (root export) first shipped in eve@0.22.0 — the generated model wrapper needs it. */
 export const EVE_MIN_VERSION = "^0.22.0";
 export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 200_000;
@@ -47,7 +49,13 @@ const MODEL_CALL_FULL =
 const MODEL_DYNAMIC = /\bmodel\s*:\s*defineDynamic\s*\(/;
 const FALLBACK_CALL =
   /(\bfallback\s*:\s*)([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\(\s*(['"`])([^'"`]*)\3/;
+const FALLBACK_EDEN_FULL =
+  /(\bfallback\s*:\s*)edenModel\(\s*(['"`])[^'"`]*\2(?:\s*,\s*(['"`])(?:none|minimal|low|medium|high|xhigh)\3)?\s*\)/;
 const FALLBACK_LITERAL = /\bfallback\s*:\s*(['"`])([^'"`]*)\1/;
+const FALLBACK_EFFORT =
+  /\bfallback\s*:\s*edenModel\(\s*(['"`])[^'"`]*\1\s*,\s*(['"`])(none|minimal|low|medium|high|xhigh)\2\s*\)/;
+const STATIC_REASONING_PROP =
+  /^[ \t]*reasoning\s*:\s*(['"`])(?:none|minimal|low|medium|high|xhigh)\1\s*,?[ \t]*(?:\r?\n|$)/m;
 const DEFINE_AGENT_OPEN = /defineAgent\s*\(\s*\{/;
 const MODEL_CONTEXT = /(\bmodelContextWindowTokens\s*:\s*)[\d_]+/;
 const MODEL_PROP =
@@ -55,6 +63,7 @@ const MODEL_PROP =
 const ANTHROPIC_IMPORT = `import { createAnthropic } from '${ANTHROPIC_PROVIDER_PACKAGE}';\n`;
 const OPENAI_IMPORT = `import { createOpenAI } from '${OPENAI_PROVIDER_PACKAGE}';\n`;
 const OPENROUTER_IMPORT = `import { createOpenAICompatible } from '${OPENROUTER_PROVIDER_PACKAGE}';\n`;
+const AI_IMPORT = `import { wrapLanguageModel, type LanguageModel } from '${AI_PACKAGE}';\n`;
 const CRYPTO_IMPORT =
   "import { createHmac, timingSafeEqual } from 'node:crypto';\n";
 const CREATE_HMAC_IMPORT = "import { createHmac } from 'node:crypto';\n";
@@ -74,12 +83,12 @@ const LEGACY_OPENROUTER_FACTORY =
 
 // Write-sites use the `edenModel(...)` router (defined in EDEN_MODEL_HELPER) rather than a bare
 // provider call so every qualified reference uses its exact connection credential.
-function edenModelCall(model: string): string {
-  return `edenModel('${model}')`;
+function edenModelCall(model: string, effort?: string | null): string {
+  return `edenModel('${model}'${effort ? `, '${effort}'` : ""})`;
 }
 
-function edenModelCallStart(model: string): string {
-  return `edenModel('${model}'`;
+function edenModelCallStart(model: string, effort?: string | null): string {
+  return `edenModel('${model}'${effort ? `, '${effort}'` : ""}`;
 }
 
 /**
@@ -89,13 +98,13 @@ function edenModelCallStart(model: string): string {
  */
 const EDEN_MODEL_HELPER = `// Eden playground model override: the playground pins a model per conversation by
 // prefixing the sent message with one machine-readable line, e.g.
-//   <!-- eden:model anthropic/<connection>/claude-sonnet-5 ctx=200000 -->
+//   <!-- eden:model anthropic/<connection>/claude-sonnet-5 ctx=200000 effort=high -->
 //   <!-- eden:sig <hmac> -->
 // Eden strips that line from every transcript surface; here it picks the model per step.
-const EDEN_MODEL_DIRECTIVE = /^<!--\\s*eden:model\\s+(\\S+?)(?:\\s+ctx=(\\d+))?\\s*-->\\n<!--\\s*eden:sig\\s+([a-f0-9]{64})\\s*-->\\n\\n([\\s\\S]*)$/;
+const EDEN_MODEL_DIRECTIVE = /^<!--\\s*eden:model\\s+(\\S+?)(?:\\s+ctx=(\\d+))?(?:\\s+effort=(none|minimal|low|medium|high|xhigh))?\\s*-->\\n<!--\\s*eden:sig\\s+([a-f0-9]{64})\\s*-->\\n\\n([\\s\\S]*)$/;
 function edenSelectedModel(
   messages: ReadonlyArray<{ role: string; content: unknown }>,
-): { id: string; contextWindowTokens: number | undefined } | null {
+): { id: string; contextWindowTokens: number | undefined; effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined } | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const entry = messages[i];
     if (!entry || entry.role !== 'user') continue;
@@ -113,13 +122,14 @@ function edenSelectedModel(
           : '';
     const match = text.match(EDEN_MODEL_DIRECTIVE);
     const secret = process.env.EDEN_MODEL_DIRECTIVE_SECRET;
-    if (match?.[1] && match[3] && secret) {
+    if (match?.[1] && match[4] && secret) {
+      const effortBytes = match[3] ? match[3] + '\\n' : '';
       const expected = createHmac('sha256', secret)
-        .update(match[1] + '\\n' + (match[2] ?? '') + '\\n' + match[4])
+        .update(match[1] + '\\n' + (match[2] ?? '') + '\\n' + effortBytes + match[5])
         .digest();
-      const received = Buffer.from(match[3], 'hex');
+      const received = Buffer.from(match[4], 'hex');
       if (received.length !== expected.length || !timingSafeEqual(received, expected)) continue;
-      return { id: match[1], contextWindowTokens: match[2] ? Number(match[2]) : undefined };
+      return { id: match[1], contextWindowTokens: match[2] ? Number(match[2]) : undefined, effort: match[3] as 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined };
     }
   }
   return null;
@@ -128,13 +138,13 @@ function edenSelectedModel(
 // connection credential. Codex OAuth alone uses Eden's translating gateway. A bare id is an old
 // OpenRouter reference and remains runnable so repos created before the connection model can be
 // upgraded on their next model save.
-function edenModel(id: string) {
+function edenModel(id: string, effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh') {
   const qualified = id.match(/^(anthropic|codex|openai|openrouter)\\/([a-z]{12})\\/(.+)$/);
-  if (!qualified) return openrouter.chatModel(id);
+  if (!qualified) return edenReasoningModel(openrouter.chatModel(id), effort);
   const provider = qualified[1];
   const connectionId = qualified[2];
   const upstreamModelId = qualified[3];
-  if (provider === 'codex') return edenGateway.chatModel(id);
+  if (provider === 'codex') return edenReasoningModel(edenGateway.chatModel(id), effort);
   const envName =
     'EDEN_PROVIDER_' + provider.toUpperCase() + '_' + connectionId.toUpperCase() + '_API_KEY';
   const apiKey = process.env[envName];
@@ -142,37 +152,47 @@ function edenModel(id: string) {
     throw new Error('No credential was deployed for the selected ' + provider + ' connection.');
   }
   if (provider === 'anthropic') {
-    return createAnthropic({ name: 'anthropic/' + connectionId, apiKey }).chat(upstreamModelId);
+    return edenReasoningModel(createAnthropic({ name: 'anthropic/' + connectionId, apiKey }).chat(upstreamModelId), effort);
   }
   if (provider === 'openai') {
-    return createOpenAI({ name: 'openai/' + connectionId, apiKey }).responses(upstreamModelId);
+    return edenReasoningModel(createOpenAI({ name: 'openai/' + connectionId, apiKey }).responses(upstreamModelId), effort);
   }
-  return createOpenAICompatible({
+  return edenReasoningModel(createOpenAICompatible({
     name: 'openrouter/' + connectionId,
     baseURL: 'https://openrouter.ai/api/v1',
     apiKey,
-  }).chatModel(upstreamModelId);
+  }).chatModel(upstreamModelId), effort);
+}
+function edenReasoningModel(model: LanguageModel, effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh') {
+  if (!effort) return model;
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      specificationVersion: 'v4',
+      transformParams: async ({ params }) => ({ ...params, reasoning: effort }),
+    },
+  });
 }
 `;
 
 // Eden owns the marked helper region. Match the generated selector plus its optional router, but
 // stop before any neighboring user code between that wiring and the agent export.
 const EDEN_MODEL_HELPER_BLOCK =
-  /\/\/ Eden playground model override:[\s\S]*?\n}\n(?:(?:(?:[ \t]*|\/\/[^\n]*)\n)*function edenModel\s*\([\s\S]*?\n}\n)?/;
+  /\/\/ Eden playground model override:[\s\S]*?\n}\n(?:(?:(?:[ \t]*|\/\/[^\n]*)\n)*function edenModel\s*\([\s\S]*?\n}\n)?(?:function edenReasoningModel\s*\([\s\S]*?\n}\n)?/;
 const LEGACY_EDEN_MODEL_RESOLVER =
   "return { model: openrouter.chatModel(selected.id), modelContextWindowTokens: selected.contextWindowTokens };";
 const CURRENT_EDEN_MODEL_RESOLVER =
   "return { model: edenModel(selected.id), modelContextWindowTokens: selected.contextWindowTokens };";
 
 /** The `model:` value Eden writes — deploy default as the fallback, directive override per step. */
-function dynamicModelValue(model: string): string {
+function dynamicModelValue(model: string, effort?: string | null): string {
   return `defineDynamic({
-    fallback: ${edenModelCall(model)},
+    fallback: ${edenModelCall(model, effort)},
     events: {
       'step.started': (_event, ctx) => {
         const selected = edenSelectedModel(ctx.messages);
         if (!selected) return null; // no directive -> the fallback model above
-        return { model: edenModel(selected.id), modelContextWindowTokens: selected.contextWindowTokens };
+        return { model: edenModel(selected.id, selected.effort), modelContextWindowTokens: selected.contextWindowTokens };
       },
     },
   })`;
@@ -204,6 +224,18 @@ export function readModel(source: string): string | null {
   if (call) return call[4];
   const m = source.match(MODEL_LITERAL);
   return m ? m[3] : null;
+}
+
+/** Read Eden's explicit fallback reasoning effort, or null for provider default. */
+export function readReasoningEffort(
+  source: string,
+): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | null {
+  const fallback = source.match(FALLBACK_EFFORT);
+  if (fallback) return fallback[3] as ReturnType<typeof readReasoningEffort>;
+  const topLevel = source.match(
+    /\breasoning\s*:\s*(['"`])(none|minimal|low|medium|high|xhigh)\1/,
+  );
+  return (topLevel?.[2] as ReturnType<typeof readReasoningEffort>) ?? null;
 }
 
 /** Read the declared `modelContextWindowTokens` from an agent module, or null if absent. */
@@ -267,6 +299,12 @@ function withModelProviderWiring(source: string): string {
     "node:crypto",
     "createHmac",
     CREATE_HMAC_IMPORT,
+  );
+  next = withNamedProviderImport(
+    next,
+    AI_PACKAGE,
+    "wrapLanguageModel",
+    AI_IMPORT,
   );
   next = withNamedProviderImport(
     next,
@@ -377,8 +415,11 @@ function withEdenDynamicWiring(source: string): string {
 export function setModel(
   source: string,
   model: string,
-  options?: { contextWindowTokens?: number | null },
+  options?: { contextWindowTokens?: number | null; effort?: string | null },
 ): string {
+  // The fallback effort lives on Eden's model wrapper so a playground directive can replace it
+  // per turn. Remove a static property first; otherwise clearing effort would leave it active.
+  source = source.replace(STATIC_REASONING_PROP, "");
   const safe = model.replace(/['"`\\]/g, "");
   const tokens = contextWindow(options);
   // Replace INSIDE the existing wrapper/call first — injecting a second `model:` prop would
@@ -387,12 +428,19 @@ export function setModel(
     MODEL_DYNAMIC.test(source) &&
     (FALLBACK_CALL.test(source) || FALLBACK_LITERAL.test(source))
   ) {
-    let next = FALLBACK_CALL.test(source)
-      ? source.replace(FALLBACK_CALL, (_match, prefix) => {
-          return `${prefix}${edenModelCallStart(safe)}`;
+    let next = FALLBACK_EDEN_FULL.test(source)
+      ? source.replace(FALLBACK_EDEN_FULL, (_match, prefix) => {
+          return `${prefix}${edenModelCall(safe, options?.effort)}`;
         })
-      : // A user-authored dynamic wrapper with a gateway-string fallback: rewire it to edenModel.
-        source.replace(FALLBACK_LITERAL, `fallback: ${edenModelCall(safe)}`);
+      : FALLBACK_CALL.test(source)
+        ? source.replace(FALLBACK_CALL, (_match, prefix) => {
+            return `${prefix}${edenModelCallStart(safe, options?.effort)}`;
+          })
+        : // A user-authored dynamic wrapper with a gateway-string fallback: rewire it to edenModel.
+          source.replace(
+            FALLBACK_LITERAL,
+            `fallback: ${edenModelCall(safe, options?.effort)}`,
+          );
     // MODEL_PROP would match only a prefix of the dynamic wrapper, so never append after it —
     // when the tokens prop is missing here, drop it right inside defineAgent({ instead.
     next = MODEL_CONTEXT.test(next)
@@ -412,11 +460,13 @@ export function setModel(
     next = MODEL_CALL_FULL.test(next)
       ? next.replace(
           MODEL_CALL_FULL,
-          (_match, prefix) => `${prefix}${dynamicModelValue(safe)}`,
+          (_match, prefix) =>
+            `${prefix}${dynamicModelValue(safe, options?.effort)}`,
         )
       : next.replace(
           MODEL_LITERAL,
-          (_match, prefix) => `${prefix}${dynamicModelValue(safe)}`,
+          (_match, prefix) =>
+            `${prefix}${dynamicModelValue(safe, options?.effort)}`,
         );
     return withEdenDynamicWiring(
       withEdenGatewayWiring(withModelProviderWiring(next)),
@@ -426,23 +476,26 @@ export function setModel(
     const next = source.replace(
       DEFINE_AGENT_OPEN,
       (match) =>
-        `${match}\n  model: ${dynamicModelValue(safe)},\n  modelContextWindowTokens: ${tokens},`,
+        `${match}\n  model: ${dynamicModelValue(safe, options?.effort)},\n  modelContextWindowTokens: ${tokens},`,
     );
     return withEdenDynamicWiring(
       withEdenGatewayWiring(withModelProviderWiring(next)),
     );
   }
-  return scaffoldAgentModule(safe, { contextWindowTokens: tokens });
+  return scaffoldAgentModule(safe, {
+    contextWindowTokens: tokens,
+    effort: options?.effort,
+  });
 }
 
 /** A minimal valid `agent.ts` for a new agent. */
 export function scaffoldAgentModule(
   model: string,
-  options?: { contextWindowTokens?: number | null },
+  options?: { contextWindowTokens?: number | null; effort?: string | null },
 ): string {
   const safe = model.replace(/['"`\\]/g, "");
   const tokens = contextWindow(options);
-  return `${CRYPTO_IMPORT}${ANTHROPIC_IMPORT}${OPENAI_IMPORT}${OPENROUTER_IMPORT}import { defineAgent, defineDynamic } from 'eve';\n\n${OPENROUTER_FACTORY}${EDEN_GATEWAY_FACTORY}\n${EDEN_MODEL_HELPER}\nexport default defineAgent({\n  model: ${dynamicModelValue(safe)},\n  modelContextWindowTokens: ${tokens},\n});\n`;
+  return `${CRYPTO_IMPORT}${ANTHROPIC_IMPORT}${OPENAI_IMPORT}${OPENROUTER_IMPORT}${AI_IMPORT}import { defineAgent, defineDynamic } from 'eve';\n\n${OPENROUTER_FACTORY}${EDEN_GATEWAY_FACTORY}\n${EDEN_MODEL_HELPER}\nexport default defineAgent({\n  model: ${dynamicModelValue(safe, options?.effort)},\n  modelContextWindowTokens: ${tokens},\n});\n`;
 }
 
 /**
@@ -494,7 +547,10 @@ export function ensureModelProviderDependencies(
     /\b4\b|4\./.test(current[ZOD_PACKAGE]);
   // The generated agent.ts imports `defineDynamic` from eve — a pin below 0.22 can't provide it.
   const eveOk = eveSupportsDefineDynamic(current[EVE_PACKAGE]);
-  if (providersOk && !legacyProviderPresent && zodOk && eveOk) {
+  const aiOk =
+    typeof current[AI_PACKAGE] === "string" &&
+    /(?:^|\D)7(?:\D|$)/.test(current[AI_PACKAGE]);
+  if (providersOk && !legacyProviderPresent && zodOk && eveOk && aiOk) {
     return packageJson ?? JSON.stringify(base, null, 2) + "\n";
   }
   const withoutLegacy = Object.fromEntries(
@@ -508,6 +564,7 @@ export function ensureModelProviderDependencies(
       [ANTHROPIC_PROVIDER_PACKAGE]: ANTHROPIC_PROVIDER_VERSION,
       [OPENAI_PROVIDER_PACKAGE]: OPENAI_PROVIDER_VERSION,
       [OPENROUTER_PROVIDER_PACKAGE]: OPENROUTER_PROVIDER_VERSION,
+      ...(aiOk ? {} : { [AI_PACKAGE]: AI_VERSION }),
       ...(zodOk ? {} : { [ZOD_PACKAGE]: ZOD_VERSION }),
       ...(eveOk ? {} : { [EVE_PACKAGE]: EVE_MIN_VERSION }),
     }).sort(([a], [b]) => a.localeCompare(b)),

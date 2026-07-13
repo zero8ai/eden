@@ -57,4 +57,17 @@ describe("assistant template authoring guidance", () => {
     expect(guidance).not.toContain("eden_run_checks");
     expect(guidance).not.toMatch(/staged drafts?/i);
   });
+
+  it("passes the normalized assistant effort into the eve agent runtime", async () => {
+    const [agent, bootstrap, entrypoint] = await Promise.all([
+      readTemplate("agent/agent.ts"),
+      readTemplate("bootstrap.mjs"),
+      readTemplate("entrypoint.sh"),
+    ]);
+
+    expect(agent).toMatch(/reasoning:\s*assistantEffort/);
+    expect(agent).toContain("EDEN_ASSISTANT_EFFORT");
+    expect(bootstrap).toContain('shellAssignment("EDEN_ASSISTANT_EFFORT"');
+    expect(entrypoint).toContain("export EDEN_ASSISTANT_EFFORT");
+  });
 });

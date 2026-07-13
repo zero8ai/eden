@@ -70,6 +70,12 @@ describe.runIf(LIVE)(
         projectId: project.id,
         agentId: agent.id,
         userId: USER,
+        modelId: "openai/abcdefghijkl/gpt-5.4",
+        effort: "high",
+      });
+      expect(session).toMatchObject({
+        modelId: "openai/abcdefghijkl/gpt-5.4",
+        effort: "high",
       });
 
       const at = new Date().toISOString();

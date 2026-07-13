@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  listCodexModels,
   listAnthropicModels,
   listOpenAiModels,
   listProviderModels,
@@ -66,6 +67,17 @@ describe("OpenRouter provider catalog", () => {
       method: "GET",
       headers: { authorization: "Bearer sk-exact" },
     });
+  });
+});
+
+describe("Codex provider catalog", () => {
+  it("includes curated per-model reasoning levels", () => {
+    const models = listCodexModels();
+    expect(models.find((model) => model.id === "gpt-5.4")).toMatchObject({
+      supportedEfforts: ["none", "low", "medium", "high", "xhigh"],
+      providerDefaultEffort: "medium",
+    });
+    expect(models.every((model) => model.supportedEfforts?.length)).toBe(true);
   });
 });
 

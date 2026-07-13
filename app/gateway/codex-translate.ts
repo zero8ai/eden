@@ -18,6 +18,7 @@
  * exhaustively unit-testable with no network.
  */
 import { CODEX_BASE_INSTRUCTIONS } from "./codex-base-instructions";
+import type { ReasoningEffort } from "~/models/reasoning";
 
 // ── Loose chat-completions input types (we accept anything OpenAI-ish) ─────────
 
@@ -41,6 +42,8 @@ export interface ChatCompletionsBody {
   }>;
   tool_choice?: unknown;
   parallel_tool_calls?: unknown;
+  /** OpenAI-compatible request spelling; translated to the Responses API reasoning object. */
+  reasoning_effort?: ReasoningEffort;
   stream?: boolean;
 }
 
@@ -80,7 +83,9 @@ function toText(content: unknown): string {
   if (Array.isArray(content)) {
     return content
       .map((part) =>
-        part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+        part &&
+        typeof part === "object" &&
+        typeof (part as { text?: unknown }).text === "string"
           ? (part as { text: string }).text
           : "",
       )
@@ -173,6 +178,9 @@ export function buildResponsesPayload(
   if (body.parallel_tool_calls !== undefined) {
     payload.parallel_tool_calls = body.parallel_tool_calls;
   }
+  if (body.reasoning_effort !== undefined) {
+    payload.reasoning = { effort: body.reasoning_effort };
+  }
   return payload;
 }
 
@@ -262,7 +270,9 @@ export class CodexUpstreamError extends Error {
   }
 }
 
-function mapUsage(usage: unknown):
+function mapUsage(
+  usage: unknown,
+):
   | { prompt_tokens: number; completion_tokens: number; total_tokens: number }
   | undefined {
   if (!usage || typeof usage !== "object") return undefined;
@@ -352,7 +362,8 @@ export function createChunkTranslator(model: string) {
           const delta = typeof event.delta === "string" ? event.delta : "";
           if (!delta) return [];
           const itemId = String(event.item_id ?? "");
-          const index = toolCallIndex.get(itemId) ?? Math.max(0, nextToolIndex - 1);
+          const index =
+            toolCallIndex.get(itemId) ?? Math.max(0, nextToolIndex - 1);
           return withRole([
             base({
               tool_calls: [{ index, function: { arguments: delta } }],
@@ -360,7 +371,8 @@ export function createChunkTranslator(model: string) {
           ]);
         }
         case "response.completed": {
-          const response = event.response as Record<string, unknown> | undefined;
+          const response = event.response as
+            Record<string, unknown> | undefined;
           const usage = mapUsage(response?.usage);
           const chunk = base({}, sawFunctionCall ? "tool_calls" : "stop");
           if (usage) chunk.usage = usage;
@@ -368,7 +380,8 @@ export function createChunkTranslator(model: string) {
         }
         case "response.failed":
         case "error": {
-          const response = event.response as Record<string, unknown> | undefined;
+          const response = event.response as
+            Record<string, unknown> | undefined;
           const err =
             (response?.error as { message?: string } | undefined)?.message ??
             (event.error as { message?: string } | undefined)?.message ??
@@ -422,7 +435,11 @@ export function aggregateChunks(
   const created = chunks[0]?.created ?? Math.floor(Date.now() / 1000);
   const toolCalls = new Map<
     number,
-    { id: string; type: "function"; function: { name: string; arguments: string } }
+    {
+      id: string;
+      type: "function";
+      function: { name: string; arguments: string };
+    }
   >();
 
   for (const chunk of chunks) {

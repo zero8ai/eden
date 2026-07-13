@@ -16,9 +16,17 @@ const USER_MARKER = join(APP, ".eden-user-layer");
 const ENV_FILE = join(APP, ".eden-assistant-env");
 const MARKER = "\n\n## Project instructions (user-configured)\n\n";
 
+/** Quote an arbitrary value as one POSIX-shell assignment without allowing expansion. */
+function shellAssignment(name, value) {
+  const quoted = "'" + value.replaceAll("'", "'\"'\"'") + "'";
+  return `${name}=${quoted}\n`;
+}
+
 async function fetchBundle() {
   if (!API_URL || !TOKEN) {
-    console.warn("[assistant] EDEN_API_URL / EDEN_ASSISTANT_TOKEN unset — fixed layer only.");
+    console.warn(
+      "[assistant] EDEN_API_URL / EDEN_ASSISTANT_TOKEN unset — fixed layer only.",
+    );
     return null;
   }
   const url = API_URL.replace(/\/+$/, "") + "/api/assistant/bundle";
@@ -29,13 +37,19 @@ async function fetchBundle() {
         signal: AbortSignal.timeout(20_000),
       });
       if (res.ok) return await res.json();
-      console.warn(`[assistant] bundle fetch ${res.status} (attempt ${attempt}/5)`);
+      console.warn(
+        `[assistant] bundle fetch ${res.status} (attempt ${attempt}/5)`,
+      );
     } catch (error) {
-      console.warn(`[assistant] bundle fetch failed (attempt ${attempt}/5): ${error?.message ?? error}`);
+      console.warn(
+        `[assistant] bundle fetch failed (attempt ${attempt}/5): ${error?.message ?? error}`,
+      );
     }
     await new Promise((r) => setTimeout(r, Math.min(attempt * 1500, 6000)));
   }
-  console.warn("[assistant] bundle fetch gave up — starting with the fixed layer only.");
+  console.warn(
+    "[assistant] bundle fetch gave up — starting with the fixed layer only.",
+  );
   return null;
 }
 
@@ -50,8 +64,14 @@ async function reset() {
   } catch {
     /* instructions.md always exists in the image; ignore */
   }
-  await rm(join(APP, "agent", "skills", "user"), { recursive: true, force: true });
-  await rm(join(APP, "agent", "schedules", "user"), { recursive: true, force: true });
+  await rm(join(APP, "agent", "skills", "user"), {
+    recursive: true,
+    force: true,
+  });
+  await rm(join(APP, "agent", "schedules", "user"), {
+    recursive: true,
+    force: true,
+  });
   await rm(USER_MARKER, { force: true });
   await rm(ENV_FILE, { force: true });
 }
@@ -64,7 +84,8 @@ async function main() {
   let wroteUserLayer = false;
 
   // User skills / schedules → agent/skills/user/… and agent/schedules/user/…
-  const files = bundle.files && typeof bundle.files === "object" ? bundle.files : {};
+  const files =
+    bundle.files && typeof bundle.files === "object" ? bundle.files : {};
   for (const [rel, content] of Object.entries(files)) {
     if (typeof content !== "string") continue;
     const dest = join(APP, "agent", rel);
@@ -76,14 +97,29 @@ async function main() {
   // User instructions appended to the fixed instructions.md under a clear marker.
   if (typeof bundle.instructions === "string" && bundle.instructions.trim()) {
     const fixed = await readFile(INSTRUCTIONS, "utf8");
-    await writeFile(INSTRUCTIONS, fixed + MARKER + bundle.instructions.trim() + "\n");
+    await writeFile(
+      INSTRUCTIONS,
+      fixed + MARKER + bundle.instructions.trim() + "\n",
+    );
     wroteUserLayer = true;
   }
 
   // Per-project model override (published .eden/assistant/assistant.json) wins over the deploy
   // env default. Written to an env file the entrypoint sources; does NOT require a rebuild.
   if (typeof bundle.model === "string" && bundle.model.trim()) {
-    await writeFile(ENV_FILE, `EDEN_ASSISTANT_MODEL=${bundle.model.trim()}\n`);
+    let environment = shellAssignment(
+      "EDEN_ASSISTANT_MODEL",
+      bundle.model.trim(),
+    );
+    if (
+      typeof bundle.effort === "string" &&
+      ["none", "minimal", "low", "medium", "high", "xhigh"].includes(
+        bundle.effort,
+      )
+    ) {
+      environment += shellAssignment("EDEN_ASSISTANT_EFFORT", bundle.effort);
+    }
+    await writeFile(ENV_FILE, environment);
   }
 
   if (wroteUserLayer) await writeFile(USER_MARKER, "1");

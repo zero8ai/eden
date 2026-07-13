@@ -12,6 +12,7 @@ node bootstrap.mjs || true
 if [ -f .eden-assistant-env ]; then
   . ./.eden-assistant-env
   export EDEN_ASSISTANT_MODEL
+  export EDEN_ASSISTANT_EFFORT
 fi
 
 if [ -f .eden-user-layer ]; then

@@ -10,6 +10,11 @@ import { z } from "zod";
 
 import { SwrCache } from "~/github/cache.server";
 import type { ModelProviderId } from "~/models/provider-reference";
+import {
+  classifyReasoningCapability,
+  isReasoningEffort,
+  type ReasoningEffort,
+} from "~/models/reasoning";
 
 const DEFAULT_OPENROUTER_API_BASE_URL = "https://openrouter.ai";
 const TTL_MS = 60 * 60 * 1000; // 1 hour — model metadata changes on the order of days.
@@ -23,6 +28,10 @@ export interface ModelCatalogEntry {
   contextWindow: number | null;
   maxOutputTokens: number | null;
   tags: string[];
+  /** Normalized reasoning choices; absent when no reasoning control is known. */
+  supportedEfforts?: ReasoningEffort[];
+  /** Upstream default when the provider publishes one. */
+  providerDefaultEffort?: ReasoningEffort;
   /** USD per 1M input tokens. */
   inputPerMTok: number | null;
   /** USD per 1M output tokens. */
@@ -64,6 +73,13 @@ const modelSchema = z
       .passthrough()
       .nullish(),
     supported_parameters: z.array(z.string()).optional(),
+    reasoning: z
+      .object({
+        supported_efforts: z.array(z.string()).optional(),
+        default_effort: z.string().optional(),
+      })
+      .passthrough()
+      .nullish(),
   })
   .passthrough();
 
@@ -90,6 +106,21 @@ export function normalizeCatalog(payload: unknown): ModelCatalogEntry[] {
     })
     .map((m): ModelCatalogEntry => {
       const description = m.description ?? null;
+      const discovered =
+        m.reasoning?.supported_efforts?.filter(isReasoningEffort);
+      const fallback = classifyReasoningCapability({
+        provider: "openrouter",
+        modelId: m.id,
+        supportedParameters: m.supported_parameters,
+      });
+      const supportedEfforts = discovered?.length
+        ? discovered
+        : fallback?.supportedEfforts;
+      const providerDefaultEffort = isReasoningEffort(
+        m.reasoning?.default_effort,
+      )
+        ? m.reasoning.default_effort
+        : undefined;
       return {
         id: m.id,
         name: m.name ?? m.id,
@@ -101,6 +132,8 @@ export function normalizeCatalog(payload: unknown): ModelCatalogEntry[] {
           m.context_length ?? m.top_provider?.context_length ?? null,
         maxOutputTokens: m.top_provider?.max_completion_tokens ?? null,
         tags: m.supported_parameters ?? [],
+        ...(supportedEfforts ? { supportedEfforts } : {}),
+        ...(providerDefaultEffort ? { providerDefaultEffort } : {}),
         inputPerMTok: perMTok(m.pricing?.prompt),
         outputPerMTok: perMTok(m.pricing?.completion),
         providers: [],

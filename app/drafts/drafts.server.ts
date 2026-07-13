@@ -390,6 +390,12 @@ export async function publishDrafts(
     paths: string[];
     title?: string;
     createdBy?: string | null;
+    /**
+     * Progress callback (issue #142): invoked before each member root's build check with a human
+     * stage label, so a queued publish can stream "Checking the build for … (i/n)…" into the
+     * workspace task indicator. Absent for the synchronous callers that don't render progress.
+     */
+    onStage?: (stage: string) => void | Promise<void>;
   },
   store: DataStore = getRuntime().data,
   propose: ProposeFn = proposeChange,
@@ -450,7 +456,12 @@ export async function publishDrafts(
     // than silently skipping the gate. Sequential on purpose: checkEveBuild reuses one
     // docker tag per project, so concurrent checks would race on it.
     const buildRoots = !roots || roots.length === 0 ? [undefined] : roots;
-    for (const agentRoot of buildRoots) {
+    for (const [i, agentRoot] of buildRoots.entries()) {
+      await input.onStage?.(
+        `Checking the build for ${agentRoot ?? "the repository"}${
+          buildRoots.length > 1 ? ` (${i + 1}/${buildRoots.length})` : ""
+        }…`,
+      );
       const check = await checkBuild({
         projectId: input.project.id,
         repo: { owner: input.project.repoOwner, repo: input.project.repoName },

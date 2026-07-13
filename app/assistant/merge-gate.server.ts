@@ -56,9 +56,20 @@ export async function runConversationMergeGate(input: {
   /** Changed file paths of the branch's PR (server-fetched). */
   paths: string[];
   checkBuild: (req: BuildCheckRequest) => Promise<BuildCheckResult>;
+  /**
+   * Progress callback (issue #142): invoked before each root's build check with a human stage
+   * label, so a queued merge can stream "Checking the build for … (i/n)…" into the workspace
+   * task indicator. Absent for callers that don't render progress.
+   */
+  onStage?: (stage: string) => void | Promise<void>;
 }): Promise<MergeGateResult> {
   const roots = inferMergeBuildRoots(input.paths, input.teamLayout);
-  for (const agentRoot of roots) {
+  for (const [i, agentRoot] of roots.entries()) {
+    await input.onStage?.(
+      `Checking the build for ${agentRoot ?? "the repository"}${
+        roots.length > 1 ? ` (${i + 1}/${roots.length})` : ""
+      }…`,
+    );
     const check = await input.checkBuild({
       projectId: input.projectId,
       repo: input.repo,

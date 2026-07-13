@@ -127,6 +127,9 @@ export default [
   }),
   // Staged-draft count for the nav pill (AgentNav); `?agent=` scopes to one member.
   route("repos/:projectId/staged-count", "routes/api.staged-count.tsx"),
+  // Workspace task-progress indicator (issue #142): running + recent terminal merge/publish tasks
+  // for this project. GET polls the list; POST intent=dismiss clears a terminal row.
+  route("repos/:projectId/tasks", "routes/api.tasks.tsx"),
   // Quick deploy (AgentNav): GET returns the button's envs + staged count for the scope,
   // POST runs the whole Ship pipeline. `?agent=`/`agent` field scopes to one member.
   route("repos/:projectId/quick-deploy", "routes/api.quick-deploy.tsx"),

@@ -19,7 +19,10 @@ export type JobKind =
   | "assistant_deploy"
   | "assistant_restart"
   | "cleanup_deployment_container"
-  | "drain_deployment";
+  | "drain_deployment"
+  // issue #142: the merge/publish build gates, moved off the HTTP request onto the queue.
+  | "merge_change"
+  | "publish_change";
 
 export interface DeployReleasePayload {
   environmentId: string;

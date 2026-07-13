@@ -43,6 +43,13 @@
       "when": 1783830523566,
       "tag": "0005_breezy_boomer",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783912604679,
+      "tag": "0006_gray_wither",
+      "breakpoints": true
     }
   ]
 }

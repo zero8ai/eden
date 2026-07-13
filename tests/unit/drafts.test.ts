@@ -761,6 +761,73 @@ RUN npm ci
     }
   });
 
+  it("streams an onStage label per member root with an (i/n) suffix, but none for a single root", async () => {
+    // Single-root publish (the sole roster member): one label, NO (i/n) suffix.
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agent/a.md", content: "A" },
+      store,
+    );
+    const singleStages: string[] = [];
+    await publishDrafts(
+      {
+        project: PROJECT,
+        paths: ["agent/a.md"],
+        onStage: (s) => {
+          singleStages.push(s);
+        },
+      },
+      store,
+      vi.fn().mockResolvedValue(proposed),
+      vi.fn().mockResolvedValue({ ok: true }),
+    );
+    expect(singleStages).toEqual(["Checking the build for agent…"]);
+
+    // Multi-root publish: one label per member root, each carrying (i/n).
+    store.seedAgent({
+      id: "agent_pm",
+      projectId: PROJECT.id,
+      name: "pm",
+      root: "agents/pm/agent",
+    });
+    store.seedAgent({
+      id: "agent_reviewer",
+      projectId: PROJECT.id,
+      name: "reviewer",
+      root: "agents/reviewer/agent",
+    });
+    await stageDraft(
+      { projectId: PROJECT.id, path: "agents/pm/agent/channels/github.ts", content: "//" },
+      store,
+    );
+    await stageDraft(
+      {
+        projectId: PROJECT.id,
+        path: "agents/reviewer/agent/channels/github.ts",
+        content: "//",
+      },
+      store,
+    );
+    const multiStages: string[] = [];
+    await publishDrafts(
+      {
+        project: PROJECT,
+        paths: [
+          "agents/pm/agent/channels/github.ts",
+          "agents/reviewer/agent/channels/github.ts",
+        ],
+        onStage: (s) => {
+          multiStages.push(s);
+        },
+      },
+      store,
+      vi.fn().mockResolvedValue(proposed),
+      vi.fn().mockResolvedValue({ ok: true }),
+    );
+    expect(multiStages.some((s) => s.includes("(1/2)"))).toBe(true);
+    expect(multiStages.some((s) => s.includes("(2/2)"))).toBe(true);
+    expect(multiStages).toHaveLength(2);
+  });
+
   it("names the failing member when a multi-member publish is blocked", async () => {
     store.seedAgent({
       id: "agent_pm",

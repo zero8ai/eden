@@ -29,6 +29,7 @@ import {
 } from "react-router";
 
 import { QuickDeploy } from "~/components/quick-deploy";
+import { WorkspaceTasksIndicator } from "~/components/workspace-tasks";
 import { EdenWordmark } from "~/components/marketing/logo";
 import { ThemeToggle } from "~/components/theme-toggle";
 import { Button } from "~/components/ui/button";
@@ -128,6 +129,10 @@ export function AppShell({
             <MobileNav />
           </div>
         </div>
+        {/* Persistent workspace task-progress strip (issue #142): a slim row below the header,
+            project-scoped, that survives navigation within a workspace. Renders nothing off a
+            /repos/:id page or with no tasks. */}
+        <WorkspaceTasksIndicator />
       </header>
       <main
         className={

@@ -14,6 +14,11 @@ const identity: McpIdentity = {
   scopes: ["read", "deploy"],
 };
 
+const authorIdentity: McpIdentity = {
+  ...identity,
+  scopes: ["read", "author"],
+};
+
 describe("MCP deployment tools", () => {
   let store: FakeStore;
   let deps: Partial<McpToolDeps>;
@@ -364,5 +369,328 @@ describe("MCP deployment tools", () => {
     ).rejects.toMatchObject({
       code: "forbidden",
     });
+  });
+});
+
+describe("MCP PR-enforced authoring tools", () => {
+  let store: FakeStore;
+  let deps: Partial<McpToolDeps>;
+
+  beforeEach(() => {
+    store = makeFakeStore();
+    store.seedProject({
+      id: "project_1",
+      orgId: "org_1",
+      name: "Team",
+      repoOwner: "acme",
+      repoName: "agents",
+      repoInstallationId: "42",
+      defaultBranch: "trunk",
+    });
+    store.seedAgent({ id: "agent_1", projectId: "project_1", name: "alpha" });
+    deps = { store };
+  });
+
+  function openChange(overrides: Record<string, unknown> = {}) {
+    return {
+      number: 12,
+      title: "Update instructions",
+      body: "",
+      url: "https://github.example/acme/agents/pull/12",
+      branch: "eden/publish-123",
+      base: "trunk",
+      createdAt: "2026-07-14T00:00:00Z",
+      mergeable: true,
+      mergeableState: "clean",
+      draft: false,
+      files: [],
+      ...overrides,
+    };
+  }
+
+  it("stages normalized edits sequentially with the caller identity and audits no content", async () => {
+    const recordAudit = vi.spyOn(store.audit, "record");
+    const tools = createMcpToolService(authorIdentity, deps);
+
+    const result = await tools.stageChanges({
+      projectId: "project_1",
+      edits: [
+        {
+          path: " /agent/instructions.md ",
+          content: "Keep this out of audit output",
+          baseSha: "blob_1",
+        },
+        { path: "agent/old.md", content: null },
+      ],
+    });
+
+    expect(result).toEqual({
+      projectId: "project_1",
+      drafts: [
+        {
+          path: "agent/instructions.md",
+          operation: "write",
+          baseSha: "blob_1",
+        },
+        { path: "agent/old.md", operation: "delete", baseSha: null },
+      ],
+    });
+    await expect(
+      store.drafts.get("project_1", "agent/instructions.md"),
+    ).resolves.toMatchObject({
+      content: "Keep this out of audit output",
+      baseSha: "blob_1",
+      createdBy: "user_1",
+    });
+    expect(store.auditEntries.map((entry) => entry.action)).toEqual([
+      "mcp.stage_changes",
+    ]);
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorUserId: "user_1",
+        meta: expect.objectContaining({
+          paths: ["agent/instructions.md", "agent/old.md"],
+          operations: ["write", "delete"],
+        }),
+      }),
+    );
+    expect(JSON.stringify(recordAudit.mock.calls)).not.toContain(
+      "Keep this out of audit output",
+    );
+    expect(JSON.stringify(result)).not.toContain(
+      "Keep this out of audit output",
+    );
+  });
+
+  it.each([
+    {
+      label: "an invalid path",
+      edits: [
+        { path: "agent/valid.md", content: "valid" },
+        { path: "../secrets", content: "invalid" },
+      ],
+    },
+    {
+      label: "duplicate normalized paths",
+      edits: [
+        { path: "agent/duplicate.md", content: "first" },
+        { path: "/agent/duplicate.md", content: "second" },
+      ],
+    },
+  ])("rejects $label before staging any edit", async ({ edits }) => {
+    const stageDraft = vi.fn();
+    const tools = createMcpToolService(authorIdentity, { ...deps, stageDraft });
+
+    await expect(
+      tools.stageChanges({ projectId: "project_1", edits }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(stageDraft).not.toHaveBeenCalled();
+    await expect(store.drafts.listByProject("project_1")).resolves.toEqual([]);
+  });
+
+  it("does not stage drafts into a project owned by another organization", async () => {
+    store.seedProject({ id: "project_other", orgId: "org_2" });
+    const stageDraft = vi.fn();
+    const tools = createMcpToolService(authorIdentity, { ...deps, stageDraft });
+
+    await expect(
+      tools.stageChanges({
+        projectId: "project_other",
+        edits: [{ path: "agent/instructions.md", content: "private" }],
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(stageDraft).not.toHaveBeenCalled();
+  });
+
+  it("publishes selected drafts through the connected project and default branch", async () => {
+    const publishDrafts = vi.fn(async () => ({
+      branch: "eden/publish-123",
+      base: "trunk",
+      pullRequestUrl: "https://github.example/acme/agents/pull/12",
+      pullRequestNumber: 12,
+      reusedPullRequest: false,
+    }));
+    const tools = createMcpToolService(authorIdentity, {
+      ...deps,
+      publishDrafts,
+    });
+
+    await expect(
+      tools.publishChanges({
+        projectId: "project_1",
+        paths: ["/agent/instructions.md"],
+        title: "Update instructions",
+      }),
+    ).resolves.toMatchObject({
+      projectId: "project_1",
+      change: {
+        branch: "eden/publish-123",
+        base: "trunk",
+        pullRequestNumber: 12,
+      },
+    });
+    expect(publishDrafts).toHaveBeenCalledWith({
+      project: {
+        id: "project_1",
+        repoInstallationId: "42",
+        repoOwner: "acme",
+        repoName: "agents",
+        defaultBranch: "trunk",
+      },
+      paths: ["agent/instructions.md"],
+      title: "Update instructions",
+      createdBy: "user_1",
+    });
+    expect(store.auditEntries.map((entry) => entry.action)).toEqual([
+      "mcp.publish_changes",
+    ]);
+  });
+
+  it("forwards bounded open-change listing to the connected repository", async () => {
+    const listOpenChanges = vi.fn(async () => [openChange()]);
+    const tools = createMcpToolService(authorIdentity, {
+      ...deps,
+      listOpenChanges,
+    });
+
+    await expect(
+      tools.listOpenChanges({ projectId: "project_1", limit: 7 }),
+    ).resolves.toEqual({ changes: [openChange()] });
+    expect(listOpenChanges).toHaveBeenCalledWith(
+      "42",
+      { owner: "acme", repo: "agents" },
+      7,
+    );
+    expect(store.auditEntries.map((entry) => entry.action)).toEqual([
+      "mcp.list_open_changes",
+    ]);
+  });
+
+  it("merges only the server-resolved Eden branch targeting the default branch", async () => {
+    const listOpenChanges = vi.fn(async () => [openChange()]);
+    const mergePullRequest = vi.fn(async () => ({
+      mergeSha: "merge_sha",
+      method: "squash" as const,
+    }));
+    const tools = createMcpToolService(authorIdentity, {
+      ...deps,
+      listOpenChanges,
+      mergePullRequest,
+    });
+
+    await expect(
+      tools.mergeChange({ projectId: "project_1", pullRequestNumber: 12 }),
+    ).resolves.toMatchObject({
+      change: {
+        number: 12,
+        branch: "eden/publish-123",
+        base: "trunk",
+      },
+      merge: { mergeSha: "merge_sha", method: "squash" },
+    });
+    expect(listOpenChanges).toHaveBeenCalledWith(
+      "42",
+      { owner: "acme", repo: "agents" },
+      50,
+    );
+    expect(mergePullRequest).toHaveBeenCalledWith(
+      "42",
+      { owner: "acme", repo: "agents" },
+      12,
+      "eden/publish-123",
+    );
+    expect(store.auditEntries.map((entry) => entry.action)).toEqual([
+      "mcp.merge_change",
+    ]);
+  });
+
+  it.each([
+    { label: "is absent", changes: [], code: "not_found" },
+    {
+      label: "targets another base",
+      changes: [openChange({ base: "release" })],
+      code: "invalid_state",
+    },
+  ])(
+    "refuses to merge when the requested PR $label",
+    async ({ changes, code }) => {
+      const mergePullRequest = vi.fn();
+      const tools = createMcpToolService(authorIdentity, {
+        ...deps,
+        listOpenChanges: vi.fn(async () => changes),
+        mergePullRequest,
+      });
+
+      await expect(
+        tools.mergeChange({ projectId: "project_1", pullRequestNumber: 12 }),
+      ).rejects.toMatchObject({ code });
+      expect(mergePullRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it("discards only normalized staged drafts and audits the operation", async () => {
+    await store.drafts.upsert({
+      projectId: "project_1",
+      agentId: "agent_1",
+      path: "agent/instructions.md",
+      content: "draft",
+      createdBy: "user_1",
+    });
+    const tools = createMcpToolService(authorIdentity, deps);
+
+    await expect(
+      tools.discardChanges({
+        projectId: "project_1",
+        paths: ["/agent/instructions.md"],
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      projectId: "project_1",
+      paths: ["agent/instructions.md"],
+    });
+    await expect(store.drafts.listByProject("project_1")).resolves.toEqual([]);
+    expect(store.auditEntries.map((entry) => entry.action)).toEqual([
+      "mcp.discard_changes",
+    ]);
+  });
+
+  it.each([
+    [
+      "stage_changes",
+      (tools: ReturnType<typeof createMcpToolService>) =>
+        tools.stageChanges({
+          projectId: "project_1",
+          edits: [{ path: "agent/a.md", content: "a" }],
+        }),
+    ],
+    [
+      "publish_changes",
+      (tools: ReturnType<typeof createMcpToolService>) =>
+        tools.publishChanges({ projectId: "project_1", paths: ["agent/a.md"] }),
+    ],
+    [
+      "list_open_changes",
+      (tools: ReturnType<typeof createMcpToolService>) =>
+        tools.listOpenChanges({ projectId: "project_1" }),
+    ],
+    [
+      "merge_change",
+      (tools: ReturnType<typeof createMcpToolService>) =>
+        tools.mergeChange({ projectId: "project_1", pullRequestNumber: 12 }),
+    ],
+    [
+      "discard_changes",
+      (tools: ReturnType<typeof createMcpToolService>) =>
+        tools.discardChanges({ projectId: "project_1", paths: ["agent/a.md"] }),
+    ],
+  ])("requires author scope for %s", async (_name, call) => {
+    const tools = createMcpToolService(identity, deps);
+    await expect(call(tools)).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("offers no direct-commit or direct-default-branch method", () => {
+    const tools = createMcpToolService(authorIdentity, deps);
+    expect(Object.keys(tools)).not.toContain("commitFiles");
+    expect(Object.keys(tools)).not.toContain("commitToDefaultBranch");
   });
 });

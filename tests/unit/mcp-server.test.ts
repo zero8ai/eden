@@ -17,6 +17,11 @@ function serviceMock(): McpToolService {
     deployHead: vi.fn(result),
     retryDeployment: vi.fn(result),
     clearFailed: vi.fn(result),
+    stageChanges: vi.fn(result),
+    publishChanges: vi.fn(result),
+    listOpenChanges: vi.fn(result),
+    mergeChange: vi.fn(result),
+    discardChanges: vi.fn(result),
   };
 }
 
@@ -41,7 +46,7 @@ describe("Eden MCP server", () => {
     return client;
   }
 
-  it("exposes exactly the slice-one read and deploy tools", async () => {
+  it("exposes the slice-one tools plus exactly five PR-enforced authoring tools", async () => {
     const client = await connected(serviceMock());
 
     const result = await client.listTools();
@@ -56,6 +61,11 @@ describe("Eden MCP server", () => {
       "deploy_head",
       "retry_deployment",
       "clear_failed",
+      "stage_changes",
+      "publish_changes",
+      "list_open_changes",
+      "merge_change",
+      "discard_changes",
     ]);
   });
 
@@ -97,6 +107,44 @@ describe("Eden MCP server", () => {
       ],
       ["retry_deployment", { deploymentId: "deployment_1" }, "retryDeployment"],
       ["clear_failed", { environmentId: "environment_1" }, "clearFailed"],
+      [
+        "stage_changes",
+        {
+          projectId: "project_1",
+          edits: [
+            {
+              path: "agent/instructions.md",
+              content: "Be helpful.",
+              baseSha: "blob_1",
+            },
+          ],
+        },
+        "stageChanges",
+      ],
+      [
+        "publish_changes",
+        {
+          projectId: "project_1",
+          paths: ["agent/instructions.md"],
+          title: "Update instructions",
+        },
+        "publishChanges",
+      ],
+      [
+        "list_open_changes",
+        { projectId: "project_1", limit: 10 },
+        "listOpenChanges",
+      ],
+      [
+        "merge_change",
+        { projectId: "project_1", pullRequestNumber: 12 },
+        "mergeChange",
+      ],
+      [
+        "discard_changes",
+        { projectId: "project_1", paths: ["agent/instructions.md"] },
+        "discardChanges",
+      ],
     ] as const;
 
     for (const [name, args, method] of calls) {
@@ -121,5 +169,21 @@ describe("Eden MCP server", () => {
 
     expect(result.isError).toBe(true);
     expect(service.listAgents).not.toHaveBeenCalled();
+
+    const invalidWrite = await client.callTool({
+      name: "stage_changes",
+      arguments: { projectId: "project_1", edits: [] },
+    });
+
+    expect(invalidWrite.isError).toBe(true);
+    expect(service.stageChanges).not.toHaveBeenCalled();
+
+    const invalidMerge = await client.callTool({
+      name: "merge_change",
+      arguments: { projectId: "project_1", pullRequestNumber: 0 },
+    });
+
+    expect(invalidMerge.isError).toBe(true);
+    expect(service.mergeChange).not.toHaveBeenCalled();
   });
 });

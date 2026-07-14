@@ -7,6 +7,15 @@ import type {
   Release,
 } from "~/data/ports";
 import {
+  discardDrafts as discardDraftsDirect,
+  publishDrafts as publishDraftsDirect,
+  stageDraft as stageDraftDirect,
+} from "~/drafts/drafts.server";
+import {
+  getProject as getProjectForOrg,
+  listProjects as listProjectsForOrg,
+} from "~/db/queries.server";
+import {
   clearFailedDeployments,
   queueDeploy,
 } from "~/deploy/controller.server";
@@ -16,6 +25,11 @@ import {
   type ShipResult,
 } from "~/deploy/ship.server";
 import { getBranchHead as getBranchHeadDirect } from "~/github/repo.server";
+import {
+  listOpenChanges as listOpenChangesDirect,
+  mergePullRequest as mergePullRequestDirect,
+} from "~/github/write.server";
+import { normalizeAgentPath } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
 
 export type McpScope = "read" | "deploy" | "author";
@@ -31,6 +45,11 @@ type DeployTeamVersionResult = Pick<ShipResult, "deployed" | "skipped">;
 
 export interface McpToolDeps {
   store: DataStore;
+  stageDraft: typeof stageDraftDirect;
+  publishDrafts: typeof publishDraftsDirect;
+  listOpenChanges: typeof listOpenChangesDirect;
+  mergePullRequest: typeof mergePullRequestDirect;
+  discardDrafts: typeof discardDraftsDirect;
   getBranchHead: typeof getBranchHeadDirect;
   deployTeamVersion(input: {
     projectId: string;
@@ -90,6 +109,31 @@ export interface McpToolService {
   clearFailed(input: {
     environmentId: string;
   }): Promise<Record<string, unknown>>;
+  stageChanges(input: {
+    projectId: string;
+    edits: Array<{
+      path: string;
+      content: string | null;
+      baseSha?: string | null;
+    }>;
+  }): Promise<Record<string, unknown>>;
+  publishChanges(input: {
+    projectId: string;
+    paths: string[];
+    title?: string;
+  }): Promise<Record<string, unknown>>;
+  listOpenChanges(input: {
+    projectId: string;
+    limit?: number;
+  }): Promise<Record<string, unknown>>;
+  mergeChange(input: {
+    projectId: string;
+    pullRequestNumber: number;
+  }): Promise<Record<string, unknown>>;
+  discardChanges(input: {
+    projectId: string;
+    paths: string[];
+  }): Promise<Record<string, unknown>>;
 }
 
 /** A stable, credential-safe error intended to be returned through MCP. */
@@ -97,7 +141,11 @@ export class McpToolError extends Error {
   constructor(
     message: string,
     readonly code:
-      "forbidden" | "not_found" | "invalid_state" | "already_deploying",
+      | "forbidden"
+      | "not_found"
+      | "invalid_input"
+      | "invalid_state"
+      | "already_deploying",
   ) {
     super(message);
     this.name = "McpToolError";
@@ -152,6 +200,36 @@ function requireDeploy(identity: McpIdentity): void {
   }
 }
 
+function requireAuthor(identity: McpIdentity): void {
+  if (!identity.scopes.includes("author")) {
+    throw new McpToolError(
+      "This API key does not have the author scope.",
+      "forbidden",
+    );
+  }
+}
+
+function normalizePathBatch(paths: string[]): string[] {
+  if (paths.length === 0) {
+    throw new McpToolError("At least one path is required.", "invalid_input");
+  }
+  const normalized = paths.map((path) => normalizeAgentPath(path));
+  if (normalized.some((path) => path === null)) {
+    throw new McpToolError(
+      "Every path must be within Eden's editable agent surface.",
+      "invalid_input",
+    );
+  }
+  const valid = normalized as string[];
+  if (new Set(valid).size !== valid.length) {
+    throw new McpToolError(
+      "Duplicate paths are not allowed in one operation.",
+      "invalid_input",
+    );
+  }
+  return valid;
+}
+
 function projectRepo(project: Project) {
   if (!project.repoInstallationId || !project.repoOwner || !project.repoName) {
     throw new McpToolError(
@@ -175,6 +253,15 @@ export function createMcpToolService(
   const store = overrides.store ?? getRuntime().data;
   const deps: McpToolDeps = {
     store,
+    stageDraft:
+      overrides.stageDraft ?? ((input) => stageDraftDirect(input, store)),
+    publishDrafts:
+      overrides.publishDrafts ?? ((input) => publishDraftsDirect(input, store)),
+    listOpenChanges: overrides.listOpenChanges ?? listOpenChangesDirect,
+    mergePullRequest: overrides.mergePullRequest ?? mergePullRequestDirect,
+    discardDrafts:
+      overrides.discardDrafts ??
+      ((projectId, paths) => discardDraftsDirect(projectId, paths, store)),
     getBranchHead: overrides.getBranchHead ?? getBranchHeadDirect,
     deployTeamVersion:
       overrides.deployTeamVersion ??
@@ -190,7 +277,7 @@ export function createMcpToolService(
   };
 
   async function authorizeProject(projectId: string): Promise<Project> {
-    const project = await store.projects.getByOrg(identity.orgId, projectId);
+    const project = await getProjectForOrg(identity.orgId, projectId, store);
     if (!project) {
       throw new McpToolError("Project not found.", "not_found");
     }
@@ -261,7 +348,7 @@ export function createMcpToolService(
 
   return {
     async listProjects() {
-      const projects = await store.projects.listByOrg(identity.orgId);
+      const projects = await listProjectsForOrg(identity.orgId, store);
       return {
         projects: projects.map((project) => ({
           id: project.id,
@@ -526,6 +613,176 @@ export function createMcpToolService(
         environmentId,
       });
       return { ok: true, environmentId };
+    },
+
+    async stageChanges({ projectId, edits }) {
+      requireAuthor(identity);
+      await authorizeProject(projectId);
+      const paths = normalizePathBatch(edits.map((edit) => edit.path));
+      const drafts = [];
+      for (const [index, edit] of edits.entries()) {
+        drafts.push(
+          await deps.stageDraft({
+            projectId,
+            path: paths[index],
+            content: edit.content,
+            baseSha: edit.baseSha,
+            createdBy: identity.userId,
+          }),
+        );
+      }
+      await audit("stage_changes", projectId, {
+        projectId,
+        paths,
+        operations: edits.map((edit) =>
+          edit.content === null ? "delete" : "write",
+        ),
+      });
+      return {
+        projectId,
+        drafts: drafts.map((draft) => ({
+          path: draft.path,
+          operation: draft.content === null ? "delete" : "write",
+          baseSha: draft.baseSha,
+        })),
+      };
+    },
+
+    async publishChanges({ projectId, paths: rawPaths, title }) {
+      requireAuthor(identity);
+      const project = await authorizeProject(projectId);
+      const repo = projectRepo(project);
+      const paths = normalizePathBatch(rawPaths);
+      let change;
+      try {
+        change = await deps.publishDrafts({
+          project: repo,
+          paths,
+          title,
+          createdBy: identity.userId,
+        });
+      } catch (error) {
+        if (error instanceof McpToolError) throw error;
+        throw new McpToolError(
+          "Unable to publish the staged changes. Review the staged paths and connected repository, then try again.",
+          "invalid_state",
+        );
+      }
+      await audit("publish_changes", projectId, {
+        projectId,
+        paths,
+        pullRequestNumber: change.pullRequestNumber,
+        branch: change.branch,
+        base: change.base,
+      });
+      return { projectId, change };
+    },
+
+    async listOpenChanges({ projectId, limit = 20 }) {
+      requireAuthor(identity);
+      const project = await authorizeProject(projectId);
+      const repo = projectRepo(project);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+        throw new McpToolError(
+          "The open-change limit must be an integer from 1 to 50.",
+          "invalid_input",
+        );
+      }
+      let changes;
+      try {
+        changes = await deps.listOpenChanges(
+          repo.repoInstallationId,
+          { owner: repo.repoOwner, repo: repo.repoName },
+          limit,
+        );
+      } catch (error) {
+        if (error instanceof McpToolError) throw error;
+        throw new McpToolError(
+          "Unable to list open changes for the connected repository.",
+          "invalid_state",
+        );
+      }
+      await audit("list_open_changes", projectId, { projectId, limit });
+      return { changes };
+    },
+
+    async mergeChange({ projectId, pullRequestNumber }) {
+      requireAuthor(identity);
+      const project = await authorizeProject(projectId);
+      const repo = projectRepo(project);
+      if (!Number.isInteger(pullRequestNumber) || pullRequestNumber < 1) {
+        throw new McpToolError(
+          "The pull request number must be a positive integer.",
+          "invalid_input",
+        );
+      }
+      let changes;
+      try {
+        changes = await deps.listOpenChanges(
+          repo.repoInstallationId,
+          { owner: repo.repoOwner, repo: repo.repoName },
+          50,
+        );
+      } catch {
+        throw new McpToolError(
+          "Unable to resolve the requested open change.",
+          "invalid_state",
+        );
+      }
+      const change = changes.find(
+        (candidate) => candidate.number === pullRequestNumber,
+      );
+      if (!change) {
+        throw new McpToolError("Open change not found.", "not_found");
+      }
+      if (change.base !== project.defaultBranch) {
+        throw new McpToolError(
+          "The open change does not target this project's default branch.",
+          "invalid_state",
+        );
+      }
+      let merge;
+      try {
+        merge = await deps.mergePullRequest(
+          repo.repoInstallationId,
+          { owner: repo.repoOwner, repo: repo.repoName },
+          pullRequestNumber,
+          change.branch,
+        );
+      } catch (error) {
+        if (error instanceof McpToolError) throw error;
+        throw new McpToolError(
+          "Unable to merge the requested open change.",
+          "invalid_state",
+        );
+      }
+      await audit("merge_change", projectId, {
+        projectId,
+        pullRequestNumber,
+        branch: change.branch,
+        base: change.base,
+        mergeSha: merge.mergeSha,
+        method: merge.method,
+      });
+      return {
+        change: {
+          number: change.number,
+          title: change.title,
+          url: change.url,
+          branch: change.branch,
+          base: change.base,
+        },
+        merge,
+      };
+    },
+
+    async discardChanges({ projectId, paths: rawPaths }) {
+      requireAuthor(identity);
+      await authorizeProject(projectId);
+      const paths = normalizePathBatch(rawPaths);
+      await deps.discardDrafts(projectId, paths);
+      await audit("discard_changes", projectId, { projectId, paths });
+      return { ok: true, projectId, paths };
     },
   };
 }

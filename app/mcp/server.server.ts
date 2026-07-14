@@ -168,5 +168,132 @@ export function createEdenMcpServer(service: McpToolService): McpServer {
     async (input) => toolResult(await service.clearFailed(input)),
   );
 
+  server.registerTool(
+    "stage_changes",
+    {
+      description:
+        "Stage one or more agent edits in Eden's draft area. This is the first step of the authoring flow: stage changes, publish them as one branch and one pull request, then optionally merge that reviewed Eden PR. This tool never writes to the default branch.",
+      inputSchema: {
+        ...projectInput,
+        edits: z
+          .array(
+            z.object({
+              path: z
+                .string()
+                .min(1)
+                .describe("Editable repo-relative agent path"),
+              content: z
+                .string()
+                .nullable()
+                .describe(
+                  "Complete UTF-8 file content, or null to stage deletion",
+                ),
+              baseSha: z
+                .string()
+                .min(1)
+                .nullable()
+                .optional()
+                .describe("Optional source blob SHA used as a conflict hint"),
+            }),
+          )
+          .min(1)
+          .describe("Edits validated as one batch before staging begins"),
+      },
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input) => toolResult(await service.stageChanges(input)),
+  );
+
+  server.registerTool(
+    "publish_changes",
+    {
+      description:
+        "Publish selected staged drafts through Eden's enforced review path: exactly one fresh eden/publish-* branch, one commit, and one pull request targeting the project's default branch. It never commits directly to the default branch; use merge_change later only if review is complete.",
+      inputSchema: {
+        ...projectInput,
+        paths: z
+          .array(z.string().min(1).describe("Staged repo-relative agent path"))
+          .min(1),
+        title: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Optional pull request title"),
+      },
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (input) => toolResult(await service.publishChanges(input)),
+  );
+
+  server.registerTool(
+    "list_open_changes",
+    {
+      description:
+        "List open Eden-authored pull requests for a project's connected repository. Use this after publish_changes to review the one-PR change set before optionally calling merge_change; no direct default-branch write tool exists.",
+      inputSchema: {
+        ...projectInput,
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe("Maximum open Eden pull requests to return (default 20)"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async (input) => toolResult(await service.listOpenChanges(input)),
+  );
+
+  server.registerTool(
+    "merge_change",
+    {
+      description:
+        "Merge an already-open Eden pull request only after Eden resolves its server-side branch and confirms it targets this project's default branch. This optional review step is the only authoring tool that can land changes on the default branch; there is no direct-commit surface.",
+      inputSchema: {
+        ...projectInput,
+        pullRequestNumber: z
+          .number()
+          .int()
+          .positive()
+          .describe("Open Eden pull request number to merge"),
+      },
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (input) => toolResult(await service.mergeChange(input)),
+  );
+
+  server.registerTool(
+    "discard_changes",
+    {
+      description:
+        "Discard selected staged drafts from Eden without publishing or touching GitHub. This removes only unpublished staging-area edits and never closes a pull request or writes to the default branch.",
+      inputSchema: {
+        ...projectInput,
+        paths: z
+          .array(z.string().min(1).describe("Staged repo-relative agent path"))
+          .min(1),
+      },
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input) => toolResult(await service.discardChanges(input)),
+  );
+
   return server;
 }

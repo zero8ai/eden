@@ -17,6 +17,11 @@ function serviceMock(): McpToolService {
     deployHead: vi.fn(result),
     retryDeployment: vi.fn(result),
     clearFailed: vi.fn(result),
+    stageChanges: vi.fn(result),
+    publishChanges: vi.fn(result),
+    listOpenChanges: vi.fn(result),
+    mergeChange: vi.fn(result),
+    discardChanges: vi.fn(result),
   };
 }
 
@@ -24,7 +29,7 @@ const principal = {
   keyId: "key_1",
   orgId: "org_1",
   userId: "user_1",
-  scopes: ["read" as const, "deploy" as const],
+  scopes: ["read" as const, "deploy" as const, "author" as const],
 };
 
 function rpcRequest(body: object, authorization = "Bearer edn_test") {

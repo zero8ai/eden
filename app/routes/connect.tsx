@@ -2,8 +2,8 @@
  * Connect pillar (M0): install the GitHub App, pick an eve repo, create a project.
  *
  * Flow:
- *  1. No installation yet -> show "Install on GitHub" (App install URL, org id in `state`).
- *  2. GitHub redirects back here with `?installation_id=...` -> list that installation's repos.
+ *  1. No installation yet -> show "Install on GitHub" with signed, one-use state.
+ *  2. Setup callback binds its untrusted installation id, then GitHub user OAuth proves ownership.
  *  3. User submits a repo -> validate it's an eve repo (`agent/` present) -> create project ->
  *     redirect to its read-only view.
  *
@@ -41,13 +41,22 @@ import {
   resolveActiveWorkspace,
   type WorkspaceInfo,
 } from "~/auth/workspace.server";
-import { getInstallUrl } from "~/github/client.server";
+import {
+  getGitHubConfig,
+  getInstallUrl,
+  githubUserAuthorizeUrl,
+} from "~/github/client.server";
 import { createEveRepo } from "~/github/create.server";
 import {
-  forgetInstallation,
   listKnownInstallations,
-  rememberInstallation,
+  resolveInstallationGrantForOrg,
 } from "~/github/installations.server";
+import {
+  bindGitHubInstallationCandidate,
+  createGitHubInstallState,
+  pkceChallenge,
+  verifyGitHubInstallState,
+} from "~/github/install-state.server";
 import { warmAgentSource } from "~/github/cached.server";
 import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
 import { ownsWorkspaceModelReference } from "~/models/union.server";
@@ -59,6 +68,7 @@ import {
 import { detectAgentRoots, hasTeamLayout, isEveRepo } from "~/eve/parse";
 import { slugifyResourceName } from "~/eve/templates";
 import { noindexMeta } from "~/lib/seo";
+import { publicOrigin } from "~/lib/ingress";
 import type { Route } from "./+types/connect";
 
 type GithubConnectState =
@@ -66,7 +76,7 @@ type GithubConnectState =
   | { state: "install"; installUrl: string }
   | {
       state: "pick";
-      installationId: string;
+      installationGrantId: string;
       repos: InstallationRepo[];
       /** Installation's org/user — prefills "create" even when zero repos are shared. */
       accountLogin: string | null;
@@ -93,45 +103,83 @@ export const loader = (args: LoaderFunctionArgs) =>
       const url = new URL(args.request.url);
 
       try {
-        const installUrl = getInstallUrl(org.id);
-        // Fresh install redirect: GitHub sends us back with the id — remember it so every
-        // later visit renders the picker without asking to "install" again.
         const fromRedirect = url.searchParams.get("installation_id");
-        if (fromRedirect) {
-          await rememberInstallation(org.id, fromRedirect);
+        const setupToken = url.searchParams.get("state");
+        if (fromRedirect || setupToken) {
+          if (!fromRedirect || !/^\d+$/.test(fromRedirect) || !setupToken) {
+            throw new Error(
+              "This GitHub setup callback is invalid. Start the installation again from Connect.",
+            );
+          }
+          const state = verifyGitHubInstallState(setupToken);
+          if (!state) {
+            throw new Error(
+              "This GitHub setup link is invalid or expired. Start the installation again from Connect.",
+            );
+          }
+          if (
+            state.userId !== auth.user.id ||
+            state.sessionId !== auth.session.id
+          ) {
+            throw new Error(
+              "This GitHub installation was started in a different Eden session. Start again from Connect.",
+            );
+          }
+          if (state.orgId !== org.id || auth.organizationId !== org.id) {
+            throw new Error(
+              "This GitHub installation was started in a different workspace. Switch back and start again from Connect.",
+            );
+          }
+          const verifier = await bindGitHubInstallationCandidate({
+            nonce: state.nonce,
+            userId: auth.user.id,
+            sessionId: auth.session.id,
+            orgId: org.id,
+            installationId: fromRedirect,
+          });
+          if (!verifier) {
+            throw new Error(
+              "This GitHub setup link is invalid, expired, or has already been used. Start again from Connect.",
+            );
+          }
+          const config = getGitHubConfig();
+          throw redirect(
+            githubUserAuthorizeUrl({
+              clientId: config.clientId,
+              state: setupToken,
+              redirectUri: `${publicOrigin(args.request)}/github/installations/callback`,
+              codeChallenge: pkceChallenge(verifier),
+            }),
+          );
         }
 
-        // Try the redirect's installation first, then the org's remembered ones. A stored
-        // installation that GitHub no longer honors (uninstalled) is forgotten and skipped.
+        const created = await createGitHubInstallState({
+          userId: auth.user.id,
+          sessionId: auth.session.id,
+          orgId: org.id,
+        });
+        const installUrl = getInstallUrl(created.state);
         const known = await listKnownInstallations(org.id);
-        const candidates = [
-          ...(fromRedirect ? [fromRedirect] : []),
-          ...known
-            .map((k) => k.installationId)
-            .filter((id) => id !== fromRedirect),
-        ];
-        for (const installationId of candidates) {
+        for (const installation of known) {
           try {
-            const repos = await listInstallationRepos(installationId);
-            const accountLogin =
-              known.find((k) => k.installationId === installationId)
-                ?.accountLogin ?? null;
+            const repos = await listInstallationRepos(installation.grantId);
             return {
               org,
               github: {
                 state: "pick" as const,
-                installationId,
+                installationGrantId: installation.grantId,
                 repos,
-                accountLogin,
+                accountLogin: installation.accountLogin,
                 installUrl,
               },
             };
           } catch {
-            await forgetInstallation(org.id, installationId);
+            // A transient GitHub error must never delete a verified authorization grant.
           }
         }
         return { org, github: { state: "install" as const, installUrl } };
       } catch (error) {
+        if (error instanceof Response) throw error;
         return {
           org,
           github: {
@@ -154,8 +202,14 @@ export async function action(args: ActionFunctionArgs) {
     return { error: "You must belong to an organization to connect a repo." };
 
   const form = await args.request.formData();
-  const installationId = String(form.get("installationId") ?? "");
-  if (!installationId) return { error: "Missing installation." };
+  const installationGrantId = String(form.get("installationGrantId") ?? "");
+  if (!installationGrantId)
+    return { error: "Missing installation authorization." };
+  try {
+    await resolveInstallationGrantForOrg(org.id, installationGrantId);
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
   const intent = String(form.get("intent") ?? "connect");
 
   // ── Create a new repo + scaffold (eve init) ──
@@ -190,7 +244,7 @@ export async function action(args: ActionFunctionArgs) {
             "Choose a connected workspace default model in Org settings before creating an agent repository.",
         };
       }
-      const repo = await createEveRepo(installationId, {
+      const repo = await createEveRepo(installationGrantId, {
         owner,
         name,
         layout,
@@ -203,7 +257,7 @@ export async function action(args: ActionFunctionArgs) {
         name,
         repoOwner: repo.owner,
         repoName: repo.repo,
-        repoInstallationId: installationId,
+        repoInstallationId: installationGrantId,
         defaultBranch: repo.defaultBranch,
         layout,
         // The scaffold's roster is known without re-reading the repo (§7.9).
@@ -222,10 +276,28 @@ export async function action(args: ActionFunctionArgs) {
   const defaultBranch = String(form.get("defaultBranch") ?? "main");
   if (!owner || !repo) return { error: "Missing repo selection." };
 
+  // Re-list server-side: hidden owner/repo fields are untrusted browser input.
+  let availableRepos: InstallationRepo[];
+  try {
+    availableRepos = await listInstallationRepos(installationGrantId);
+  } catch (error) {
+    return {
+      error: `Could not list repositories: ${(error as Error).message}`,
+    };
+  }
+  const selected = availableRepos.find(
+    (candidate) => candidate.owner === owner && candidate.repo === repo,
+  );
+  if (!selected) {
+    return {
+      error: `${owner}/${repo} is not available through this GitHub installation.`,
+    };
+  }
+
   // Validate it's an eve project before we persist anything.
   let source;
   try {
-    source = await fetchAgentSource(installationId, { owner, repo });
+    source = await fetchAgentSource(installationGrantId, { owner, repo });
   } catch (error) {
     return {
       error: `Could not read ${owner}/${repo}: ${(error as Error).message}`,
@@ -242,8 +314,8 @@ export async function action(args: ActionFunctionArgs) {
     name: repo,
     repoOwner: owner,
     repoName: repo,
-    repoInstallationId: installationId,
-    defaultBranch: source.ref || defaultBranch,
+    repoInstallationId: installationGrantId,
+    defaultBranch: source.ref || selected.defaultBranch || defaultBranch,
     layout: hasTeamLayout(source.paths) ? "team" : "single",
     // Detected roster: one member per agent root (single repos are a team of one).
     roster: detectAgentRoots(source.paths).map((r) => ({
@@ -253,7 +325,7 @@ export async function action(args: ActionFunctionArgs) {
   });
 
   // We just read the source to validate — warm the cache so the first project load is instant.
-  warmAgentSource(installationId, { owner, repo }, source);
+  warmAgentSource(installationGrantId, { owner, repo }, source);
 
   throw redirect(`/repos/${project.id}`);
 }
@@ -303,7 +375,7 @@ export default function Connect({
 
       {github.state === "unconfigured" && (
         <Alert className="mb-6">
-          <AlertTitle>GitHub App isn&rsquo;t configured yet</AlertTitle>
+          <AlertTitle>GitHub connection unavailable</AlertTitle>
           <AlertDescription>{github.message}</AlertDescription>
         </Alert>
       )}
@@ -383,8 +455,8 @@ export default function Connect({
                       <Form method="post">
                         <input
                           type="hidden"
-                          name="installationId"
-                          value={github.installationId}
+                          name="installationGrantId"
+                          value={github.installationGrantId}
                         />
                         <input type="hidden" name="owner" value={r.owner} />
                         <input type="hidden" name="repo" value={r.repo} />
@@ -433,8 +505,8 @@ export default function Connect({
                 <input type="hidden" name="intent" value="create" />
                 <input
                   type="hidden"
-                  name="installationId"
-                  value={github.installationId}
+                  name="installationGrantId"
+                  value={github.installationGrantId}
                 />
                 <div className="grid gap-3 sm:grid-cols-2">
                   <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-4 has-[:checked]:border-primary has-[:checked]:bg-muted/40">

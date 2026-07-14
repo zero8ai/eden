@@ -1,65 +1,118 @@
-/**
- * Persisted GitHub App installations per tenant (Connect pillar). The install redirect is the
- * only place GitHub tells us the installation id — remember it, so /connect renders the repo
- * picker on every later visit instead of asking to "install" an app that's already installed.
- */
-import { and, desc, eq } from "drizzle-orm";
+/** Verified, tenant-scoped GitHub installation grants. */
+import { and, desc, eq, isNotNull } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
 import { githubInstallations } from "~/db/schema";
-import { getInstallationAccountLogin } from "./client.server";
 
 export interface KnownInstallation {
+  grantId: string;
+  accountLogin: string | null;
+}
+
+export interface VerifiedInstallationGrant {
+  grantId: string;
+  orgId: string;
+  /** Raw GitHub id: server-only. */
   installationId: string;
   accountLogin: string | null;
 }
 
-/** Remember an installation for the org (idempotent), resolving its account for display. */
-export async function rememberInstallation(
-  orgId: string,
-  installationId: string,
-): Promise<void> {
-  let accountLogin: string | null = null;
-  try {
-    // App-level lookup, not "first shared repo's owner" — a zero-repo (minimal-permission)
-    // install has no repos to infer from but still has an account.
-    accountLogin = await getInstallationAccountLogin(installationId);
-  } catch {
-    // Display metadata only — never block the connect flow on it.
-  }
-  await db
+export async function upsertVerifiedInstallation(input: {
+  orgId: string;
+  installationId: string;
+  accountLogin: string | null;
+  verifiedByUserId: string;
+}): Promise<VerifiedInstallationGrant> {
+  const rows = await db
     .insert(githubInstallations)
-    .values({ orgId, installationId, accountLogin })
+    .values({
+      orgId: input.orgId,
+      installationId: input.installationId,
+      accountLogin: input.accountLogin,
+      verifiedAt: new Date(),
+      verifiedByUserId: input.verifiedByUserId,
+    })
     .onConflictDoUpdate({
       target: [githubInstallations.orgId, githubInstallations.installationId],
-      set: { accountLogin },
-    });
+      set: {
+        accountLogin: input.accountLogin,
+        verifiedAt: new Date(),
+        verifiedByUserId: input.verifiedByUserId,
+      },
+    })
+    .returning();
+  return toGrant(rows[0]);
 }
 
-/** The org's known installations, newest first. */
-export async function listKnownInstallations(orgId: string): Promise<KnownInstallation[]> {
-  const rows = await db
-    .select()
-    .from(githubInstallations)
-    .where(eq(githubInstallations.orgId, orgId))
-    .orderBy(desc(githubInstallations.createdAt));
-  return rows.map((r) => ({
-    installationId: r.installationId,
-    accountLogin: r.accountLogin,
-  }));
-}
-
-/** Drop an installation that GitHub reports gone (uninstalled/suspended). */
-export async function forgetInstallation(
+export async function listKnownInstallations(
   orgId: string,
-  installationId: string,
-): Promise<void> {
-  await db
-    .delete(githubInstallations)
+): Promise<KnownInstallation[]> {
+  const rows = await db
+    .select({
+      grantId: githubInstallations.id,
+      accountLogin: githubInstallations.accountLogin,
+    })
+    .from(githubInstallations)
     .where(
       and(
         eq(githubInstallations.orgId, orgId),
-        eq(githubInstallations.installationId, installationId),
+        isNotNull(githubInstallations.verifiedAt),
       ),
-    );
+    )
+    .orderBy(desc(githubInstallations.createdAt));
+  return rows;
+}
+
+export async function resolveInstallationGrantForOrg(
+  orgId: string,
+  grantId: string,
+): Promise<VerifiedInstallationGrant> {
+  const rows = await db
+    .select()
+    .from(githubInstallations)
+    .where(
+      and(
+        eq(githubInstallations.orgId, orgId),
+        eq(githubInstallations.id, grantId),
+        isNotNull(githubInstallations.verifiedAt),
+      ),
+    )
+    .limit(1);
+  if (!rows[0]) throw reauthorizationError();
+  return toGrant(rows[0]);
+}
+
+/** Internal project boundary. Grant ids are globally opaque but still must be verified. */
+export async function resolveInstallationGrant(
+  grantId: string,
+): Promise<VerifiedInstallationGrant> {
+  const rows = await db
+    .select()
+    .from(githubInstallations)
+    .where(
+      and(
+        eq(githubInstallations.id, grantId),
+        isNotNull(githubInstallations.verifiedAt),
+      ),
+    )
+    .limit(1);
+  if (!rows[0]) throw reauthorizationError();
+  return toGrant(rows[0]);
+}
+
+function reauthorizationError(): Error {
+  return new Error(
+    "This GitHub installation is not authorized for this workspace. Reauthorize it from Connect.",
+  );
+}
+
+function toGrant(
+  row: typeof githubInstallations.$inferSelect,
+): VerifiedInstallationGrant {
+  return {
+    grantId: row.id,
+    orgId: row.orgId,
+    installationId: row.installationId,
+    accountLogin: row.accountLogin,
+  };
 }

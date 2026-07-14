@@ -2,14 +2,16 @@
  * GitHub App client (Connect pillar, M0).
  *
  * Eden authenticates to GitHub as an App: a JWT signed with the App private key mints
- * short-lived per-installation tokens. A user installs the App on their org/repos; we store
- * the `installation_id` on the project and use it to read the eve repo (D3 source of truth).
+ * short-lived per-installation tokens. Public callers pass only opaque verified grant ids;
+ * this module resolves the raw GitHub installation id immediately before App authentication.
  *
  * Server-only (`.server.ts`) — the private key must never reach the client bundle. Env is
  * read lazily so the app boots without GitHub configured; the helpers throw a clear error
  * only when GitHub features are actually used.
  */
 import { App } from "octokit";
+
+import { resolveInstallationGrant } from "./installations.server";
 
 export interface GitHubAppConfig {
   appId: string;
@@ -60,7 +62,7 @@ function readConfig(): GitHubAppConfig {
 let cachedApp: App | undefined;
 let cachedConfig: GitHubAppConfig | undefined;
 
-function getGitHubConfig(): GitHubAppConfig {
+export function getGitHubConfig(): GitHubAppConfig {
   return (cachedConfig ??= readConfig());
 }
 
@@ -78,8 +80,9 @@ function getGitHubApp(): App {
 }
 
 /** An Octokit scoped to a single installation (per-installation token). */
-export function getInstallationOctokit(installationId: string | number) {
-  return getGitHubApp().getInstallationOctokit(Number(installationId));
+export async function getInstallationOctokit(grantId: string | number) {
+  const grant = await resolveInstallationGrant(String(grantId));
+  return getGitHubApp().getInstallationOctokit(Number(grant.installationId));
 }
 
 /**
@@ -95,13 +98,14 @@ export function getInstallationOctokit(installationId: string | number) {
  * client). Returns the raw token string and its expiry.
  */
 export async function mintNarrowedReadToken(input: {
-  installationId: string | number;
+  installationId: string;
   /** Repo name (not owner/name) — GitHub scopes `repositories` by name within the installation. */
   repo: string;
 }): Promise<{ token: string; expiresAt: string }> {
+  const grant = await resolveInstallationGrant(input.installationId);
   const octokit = getGitHubApp().octokit;
   const res = await octokit.rest.apps.createInstallationAccessToken(
-    narrowedReadTokenParams(input.installationId, input.repo),
+    narrowedReadTokenParams(grant.installationId, input.repo),
   );
   return { token: res.data.token, expiresAt: res.data.expires_at };
 }
@@ -111,7 +115,10 @@ export async function mintNarrowedReadToken(input: {
  * one place the narrowing shape is defined, extracted pure so a test can assert it without GitHub
  * credentials. Any drift here (a wider permission, more repos) is the security-relevant thing to catch.
  */
-export function narrowedReadTokenParams(installationId: string | number, repo: string) {
+export function narrowedReadTokenParams(
+  installationId: string | number,
+  repo: string,
+) {
   return {
     installation_id: Number(installationId),
     repositories: [repo],
@@ -119,24 +126,144 @@ export function narrowedReadTokenParams(installationId: string | number, repo: s
   };
 }
 
-/**
- * The account (org or user) an installation lives on — via the App-JWT `GET
- * /app/installations/{id}` endpoint, so it works even when the installation shares zero
- * repositories (a minimal-permission install used only to create new repos).
- */
-export async function getInstallationAccountLogin(
-  installationId: string | number,
-): Promise<string | null> {
-  const octokit = getGitHubApp().octokit;
-  const { data } = await octokit.rest.apps.getInstallation({
-    installation_id: Number(installationId),
-  });
-  const account = data.account;
-  return account && "login" in account ? account.login : null;
-}
-
 /** Public URL where a user installs the App on a new org/account. */
 export function getInstallUrl(state?: string): string {
   const base = `https://github.com/apps/${getGitHubConfig().slug}/installations/new`;
   return state ? `${base}?state=${encodeURIComponent(state)}` : base;
+}
+
+export function githubUserAuthorizeUrl(input: {
+  clientId: string;
+  state: string;
+  redirectUri: string;
+  codeChallenge: string;
+}): string {
+  const params = new URLSearchParams({
+    client_id: input.clientId,
+    state: input.state,
+    redirect_uri: input.redirectUri,
+    code_challenge: input.codeChallenge,
+    code_challenge_method: "S256",
+  });
+  return `https://github.com/login/oauth/authorize?${params.toString()}`;
+}
+
+export async function exchangeGitHubUserCode(
+  input: {
+    code: string;
+    codeVerifier: string;
+    redirectUri: string;
+    config: Pick<GitHubAppConfig, "clientId" | "clientSecret">;
+  },
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetchImpl("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: input.config.clientId,
+        client_secret: input.config.clientSecret,
+        code: input.code,
+        redirect_uri: input.redirectUri,
+        code_verifier: input.codeVerifier,
+      }).toString(),
+    });
+  } catch {
+    throw new Error("GitHub's authorization service could not be reached.");
+  }
+  if (!response.ok) {
+    throw new Error(
+      `GitHub rejected the authorization code (HTTP ${response.status}).`,
+    );
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error("GitHub returned a malformed authorization response.");
+  }
+  const token = (body as { access_token?: unknown }).access_token;
+  if (typeof token !== "string" || !token) {
+    throw new Error(
+      "GitHub's authorization response did not contain an access token.",
+    );
+  }
+  return token;
+}
+
+export interface GitHubUserInstallation {
+  id: string;
+  accountLogin: string | null;
+}
+
+/** List every installation associated with the authenticated GitHub user. */
+export async function listGitHubUserInstallations(
+  accessToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GitHubUserInstallation[]> {
+  const found: GitHubUserInstallation[] = [];
+  let url: string | null =
+    "https://api.github.com/user/installations?per_page=100";
+  while (url) {
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${accessToken}`,
+          "x-github-api-version": "2022-11-28",
+        },
+      });
+    } catch {
+      throw new Error(
+        "GitHub's installation verification service could not be reached.",
+      );
+    }
+    if (!response.ok) {
+      throw new Error(
+        `GitHub could not verify installation ownership (HTTP ${response.status}).`,
+      );
+    }
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new Error("GitHub returned a malformed installation list.");
+    }
+    const installations = (body as { installations?: unknown }).installations;
+    if (!Array.isArray(installations)) {
+      throw new Error("GitHub returned a malformed installation list.");
+    }
+    for (const item of installations) {
+      const candidate = item as {
+        id?: unknown;
+        account?: { login?: unknown } | null;
+      };
+      if (
+        typeof candidate.id !== "number" &&
+        typeof candidate.id !== "string"
+      ) {
+        throw new Error("GitHub returned a malformed installation list.");
+      }
+      found.push({
+        id: String(candidate.id),
+        accountLogin:
+          typeof candidate.account?.login === "string"
+            ? candidate.account.login
+            : null,
+      });
+    }
+    const link: string = response.headers.get("link") ?? "";
+    const next: RegExpMatchArray | undefined = link
+      .split(",")
+      .map((part: string) => part.match(/<([^>]+)>;\s*rel="next"/))
+      .find((match): match is RegExpMatchArray => match !== null);
+    url = next?.[1] ?? null;
+  }
+  return found;
 }

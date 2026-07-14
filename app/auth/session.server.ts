@@ -16,6 +16,11 @@ import {
   isGitHubManifestCallbackStagingRequest,
   stageGitHubManifestCallback,
 } from "~/github/manifest-callback.server";
+import {
+  clearGitHubInstallationCallbackCookie,
+  isGitHubInstallationCallbackStagingRequest,
+  stageGitHubInstallationCallback,
+} from "~/github/installation-callback.server";
 
 type BetterAuthSession = NonNullable<
   Awaited<ReturnType<typeof auth.api.getSession>>
@@ -195,6 +200,9 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
   if (isGitHubManifestCallbackStagingRequest(request)) {
     return hardenDynamicResponse(stageGitHubManifestCallback(request));
   }
+  if (isGitHubInstallationCallbackStagingRequest(request)) {
+    return hardenDynamicResponse(stageGitHubInstallationCallback(request));
+  }
   const ownsSession =
     !isBetterAuthEndpoint(pathname) && !isMachineEndpoint(pathname);
 
@@ -214,6 +222,12 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
     response.headers.append(
       "set-cookie",
       clearGitHubManifestCallbackCookie(request),
+    );
+  }
+  if (pathname === "/github/installations/callback") {
+    response.headers.append(
+      "set-cookie",
+      clearGitHubInstallationCallbackCookie(request),
     );
   }
   appendRefreshHeaders(response, refreshHeaders);

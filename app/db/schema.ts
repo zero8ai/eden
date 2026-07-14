@@ -20,6 +20,7 @@ import { newId } from "~/lib/id";
 import { organization, session as authSession, user } from "./auth-schema";
 import {
   boolean,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -40,10 +41,8 @@ const updatedAt = () =>
 export * from "./auth-schema";
 
 /**
- * GitHub App installations known to a tenant (Connect pillar). Persisted the first time the
- * install redirect lands so revisiting /connect never asks to "install" again — the picker
- * renders straight from the stored installation. An org can hold several (multiple GitHub
- * orgs); rows are dropped when GitHub reports the installation gone.
+ * Verified tenant grants for GitHub App installations. `installationId` is raw GitHub data and
+ * must never cross the server boundary; browsers and projects refer only to this row's opaque id.
  */
 export const githubInstallations = pgTable(
   "github_installations",
@@ -55,6 +54,10 @@ export const githubInstallations = pgTable(
     installationId: text("installation_id").notNull(),
     /** GitHub account (org/user login) the app is installed on, for display. */
     accountLogin: text("account_login"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    verifiedByUserId: text("verified_by_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
     createdAt: createdAt(),
   },
   (t) => [
@@ -62,7 +65,30 @@ export const githubInstallations = pgTable(
       t.orgId,
       t.installationId,
     ),
+    unique("github_installations_org_id_id_uq").on(t.orgId, t.id),
   ],
+);
+
+/** One-use, session-bound state for the GitHub App install + user OAuth proof flow. */
+export const githubInstallationStates = pgTable(
+  "github_installation_states",
+  {
+    nonceHash: text("nonce_hash").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => authSession.id, { onDelete: "cascade" }),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    codeVerifier: text("code_verifier").notNull(),
+    candidateInstallationId: text("candidate_installation_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("github_installation_states_expires_idx").on(t.expiresAt)],
 );
 
 /**
@@ -215,7 +241,7 @@ export const projects = pgTable(
     slug: text("slug").notNull(),
     /** Persisted repository shape; unlike the roster, this remains meaningful at zero members. */
     layout: text("layout").notNull().default("single"),
-    // GitHub coordinates (Connect pillar, M0). installationId ties to the GitHub App install.
+    // GitHub coordinates. repoInstallationId is an opaque verified github_installations.id grant.
     repoOwner: text("repo_owner"),
     repoName: text("repo_name"),
     repoInstallationId: text("repo_installation_id"),
@@ -223,7 +249,14 @@ export const projects = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex("projects_org_slug_uq").on(t.orgId, t.slug)],
+  (t) => [
+    uniqueIndex("projects_org_slug_uq").on(t.orgId, t.slug),
+    foreignKey({
+      name: "projects_org_repo_installation_fk",
+      columns: [t.orgId, t.repoInstallationId],
+      foreignColumns: [githubInstallations.orgId, githubInstallations.id],
+    }).onDelete("restrict"),
+  ],
 );
 
 /**
@@ -877,7 +910,9 @@ export const workspaceTasks = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("workspace_tasks_project_status_idx").on(t.projectId, t.status)],
+  (t) => [
+    index("workspace_tasks_project_status_idx").on(t.projectId, t.status),
+  ],
 );
 
 /** Workspace default model inherited by the authoring assistant and agents with no local model. */

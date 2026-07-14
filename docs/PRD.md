@@ -727,7 +727,7 @@ two-source-of-truth reconciliation problem.
   environments that had accumulated multiple live versions (newest kept at weight 100, rest
   stopped). The splitter/`trafficWeight` data model is retained without a product surface
   (§7.7 revision).
-- **Ship:** the one-click deploy from the agent Overview — staged drafts → publish → merge →
+- **Ship:** the one-click deploy (originally on the agent Overview; now the team-level Quick deploy in the tab row) — staged drafts → publish → merge →
   Release → cutover deploy — with an environment picker (production default; the member's
   first environment since M5.7), team fan-out to
   affected members, "ship latest from `main`" when nothing is staged, and a refresh-proof

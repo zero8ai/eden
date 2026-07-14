@@ -56,3 +56,8 @@ npx eas-cli build --profile production --platform all
 
 Deep links use the `eden://` scheme. Authentication cookies are persisted in SecureStore and API
 requests send them explicitly because native fetch does not use a browser cookie jar.
+
+GitHub Connect returns through Expo's auth-session browser API, not a WebView. The control plane's
+GitHub App must have `<public Eden origin>/github/mobile-install/callback` registered as a callback
+URL. Expo Go uses its generated `exp://.../--/connect` return URL in development; installed builds
+use `eden://connect`. Eden exchanges only a short-lived, single-use handoff with the app.

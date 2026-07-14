@@ -44,6 +44,8 @@ export const mobileApi = {
   organizationSettings: () => "/api/mobile/org/settings",
   organizationMembers: () => "/api/mobile/org/members",
   connect: () => "/api/mobile/connect",
+  githubInstallStart: () => "/api/mobile/github/install/start",
+  githubInstallRedeem: () => "/api/mobile/github/install/redeem",
   repository: (projectId: string) => `/api/mobile/repos/${encode(projectId)}`,
   repositoryPage: (projectId: string, page: string) =>
     `/api/mobile/repos/${encode(projectId)}/${page}`,

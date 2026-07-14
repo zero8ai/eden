@@ -33,6 +33,10 @@ export default [
   route("workspaces", "routes/workspaces.tsx"),
   route("api/workspaces", "routes/api.workspaces.tsx"),
   route("connect", "routes/connect.tsx"),
+  route(
+    "github/mobile-install/callback",
+    "routes/github.mobile-install.callback.tsx",
+  ),
   // Native clients use resource routes backed by the same loaders/actions as the web UI. Keeping
   // these modules component-free makes GET/POST responses JSON rather than rendered documents.
   route("api/mobile/dashboard", "routes/api.mobile.dashboard.ts"),
@@ -49,6 +53,14 @@ export default [
   route("api/mobile/org/settings", "routes/api.mobile.org.settings.ts"),
   route("api/mobile/org/members", "routes/api.mobile.org.members.ts"),
   route("api/mobile/connect", "routes/api.mobile.connect.ts"),
+  route(
+    "api/mobile/github/install/start",
+    "routes/api.mobile.github-install.start.ts",
+  ),
+  route(
+    "api/mobile/github/install/redeem",
+    "routes/api.mobile.github-install.redeem.ts",
+  ),
   route("api/mobile/repos/:projectId", "routes/api.mobile.repository.ts"),
   mobileMemberRoute(
     "",

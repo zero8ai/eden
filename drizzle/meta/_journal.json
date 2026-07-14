@@ -57,6 +57,13 @@
       "when": 1783921524677,
       "tag": "0007_gray_wither",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783987389441,
+      "tag": "0008_previous_bloodaxe",
+      "breakpoints": true
     }
   ]
 }

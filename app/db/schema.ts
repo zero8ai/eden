@@ -187,6 +187,31 @@ export const connectionOauthStates = pgTable(
 );
 
 /**
+ * Short-lived browser-to-native handoffs for GitHub App installation setup. Only a SHA-256 hash
+ * of the bearer code is stored. Redemption atomically deletes a live row while matching the
+ * initiating Better Auth user, session, and workspace, so a copied deep link cannot cross tenants.
+ */
+export const githubMobileInstallationHandoffs = pgTable(
+  "github_mobile_installation_handoffs",
+  {
+    codeHash: text("code_hash").primaryKey(),
+    installationId: text("installation_id").notNull(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => authSession.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("github_mobile_handoffs_expires_idx").on(t.expiresAt)],
+);
+
+/**
  * The workspace a user last worked in. Better Auth keeps `activeOrganizationId` on the SESSION,
  * so every fresh sign-in (new device, expired session, post-password-reset revocation) starts
  * org-less; this row lets `ensureWorkspace` return a multi-workspace user to their last

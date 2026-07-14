@@ -10,6 +10,7 @@ import {
   type AgentConfig,
   type AgentResource,
   type AgentSandbox,
+  type SubagentSummary,
 } from "./types";
 
 /** Root directory that marks an eve agent. */
@@ -177,6 +178,19 @@ function extractModel(agentModuleSource: string | undefined): string | null {
 }
 
 /**
+ * Best-effort one-line description from a `defineAgent({ description: '...' })` literal in an
+ * agent/subagent module. Mirrors extractModel's heuristic posture: string literals only, no
+ * module execution. Collapses internal whitespace so a multi-line template still reads as one line.
+ */
+export function extractDescription(agentModuleSource: string | undefined): string | null {
+  if (!agentModuleSource) return null;
+  const match = agentModuleSource.match(/\bdescription\s*:\s*(['"`])([\s\S]*?)\1/);
+  if (!match) return null;
+  const text = match[2].trim().replace(/\s+/g, " ");
+  return text.length > 0 ? text : null;
+}
+
+/**
  * Build the normalized config from a repo listing + known file contents. `root` selects
  * which agent directory to read — "agent" (default, single-agent repos) or a team member's
  * `agents/<name>/agent` (§7.9).
@@ -210,4 +224,52 @@ export function buildAgentConfig(source: AgentSource, root: string = AGENT_ROOT)
     subagentSandboxes,
     ...categories,
   };
+}
+
+/** First non-empty line of Markdown, stripped of a leading heading marker (best-effort blurb). */
+function firstMarkdownLine(markdown: string | undefined): string | null {
+  if (!markdown) return null;
+  for (const line of markdown.split("\n")) {
+    const text = line.replace(/^#+\s*/, "").trim();
+    if (text) return text;
+  }
+  return null;
+}
+
+/**
+ * The directory-backed subagent names under `<root>/subagents/`, deduped and sorted. Matches
+ * childrenOf's "directory child" rule so it agrees with buildAgentConfig's `subagents` list.
+ */
+export function subagentDirNames(paths: string[], root: string = AGENT_ROOT): string[] {
+  const prefix = `${root}/subagents/`;
+  const names = new Set<string>();
+  for (const path of paths) {
+    if (!path.startsWith(prefix)) continue;
+    const rest = path.slice(prefix.length);
+    const slash = rest.indexOf("/");
+    if (slash <= 0) continue; // only directory-backed subagents (like config.subagents)
+    names.add(rest.slice(0, slash));
+  }
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Read-only subagent summaries for a member (issue #146): one per subagent directory under
+ * `<root>/subagents/`, with a best-effort description from the subagent's own `agent.ts`
+ * (`description:` literal) or, failing that, the first line of its `instructions.md`. Descriptions
+ * only populate when those files are in `source.files` (they are — see repo.server's eager fetch);
+ * otherwise description is null. Purely derived from the parsed tree — no new DB rows.
+ */
+export function buildSubagentSummaries(
+  source: AgentSource,
+  root: string = AGENT_ROOT,
+): SubagentSummary[] {
+  const { paths, files } = source;
+  return subagentDirNames(paths, root).map((name) => {
+    const base = `${root}/subagents/${name}`;
+    const description =
+      extractDescription(files[`${base}/agent.ts`]) ??
+      firstMarkdownLine(files[`${base}/instructions.md`]);
+    return { name, path: base, description };
+  });
 }

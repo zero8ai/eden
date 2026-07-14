@@ -52,6 +52,21 @@ export interface AgentConfig {
   connections: AgentResource[];
 }
 
+/**
+ * A subagent surfaced as a read-only child of its parent member (issue #146). Subagents live
+ * under `<root>/subagents/<name>/`, deploy inside their parent, and are invoked by delegation —
+ * they are never roster members, so we present them beneath the parent with a best-effort
+ * one-line description parsed from the tree.
+ */
+export interface SubagentSummary {
+  /** Directory name of the subagent. */
+  name: string;
+  /** Repo-relative subagent directory, e.g. "agents/ivy/agent/subagents/quinn". */
+  path: string;
+  /** Best-effort one-liner from the subagent's `agent.ts` description or instructions.md; null if none. */
+  description: string | null;
+}
+
 /** The categories, in display order, with the subdirectory each maps to under `agent/`. */
 export const AGENT_CATEGORIES = [
   { key: "tools", dir: "tools", label: "Tools" },

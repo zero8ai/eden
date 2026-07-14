@@ -30,6 +30,10 @@ export default [
   route("workspaces", "routes/workspaces.tsx"),
   route("api/workspaces", "routes/api.workspaces.tsx"),
   route("connect", "routes/connect.tsx"),
+  route(
+    "github/installations/callback",
+    "routes/github.installations.callback.tsx",
+  ),
   // The product noun is REPOSITORY (one connected GitHub repo = a single agent or a team).
   // Param stays :projectId — internal identifiers didn't churn with the URL rename.
   route("repos/:projectId", "routes/projects.$projectId.tsx"),

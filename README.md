@@ -93,11 +93,16 @@ To use the Connect pillar (link an eve repo and view its config), register a **G
 
 - Permissions: **Contents** (read/write), **Pull requests** (read/write).
 - **Setup URL**: `http://localhost:5173/connect` (so installs redirect back into the app).
+- **Callback URL**: `http://localhost:5173/github/installations/callback` (GitHub App OAuth).
 - Generate a private key and note the App ID, slug, client id/secret.
 
 Put the `GITHUB_APP_*` values into `.env.local` (see `.env.example`). Then from `/connect` you can
 install the App, pick an eve repo, and view its parsed agent surface at `/projects/:id`. Until the App
 is configured, `/connect` shows an "unconfigured" notice.
+
+After upgrading an existing deployment, every GitHub installation must be reauthorized from
+**Connect**. Legacy projects are mapped to Eden's new opaque grant ids when possible, but all
+repository operations fail closed until the signed-in GitHub user completes the OAuth proof.
 
 ## Common scripts
 

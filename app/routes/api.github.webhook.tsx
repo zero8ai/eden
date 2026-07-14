@@ -13,9 +13,16 @@ import { data, type ActionFunctionArgs } from "react-router";
 
 import { listAgents, syncProjectAgents } from "~/db/queries.server";
 import { getRuntime } from "~/seams/index.server";
-import { ensureReleasesForCommit, findProjectByRepo } from "~/deploy/controller.server";
+import {
+  ensureReleasesForCommit,
+  findProjectByRepo,
+} from "~/deploy/controller.server";
 import { refreshTeammatesForRosterChange } from "~/deploy/teammate-refresh.server";
-import { ASSISTANT_CONFIG_ROOT, detectAgentRoots, hasTeamLayout } from "~/eve/parse";
+import {
+  ASSISTANT_CONFIG_ROOT,
+  detectAgentRoots,
+  hasTeamLayout,
+} from "~/eve/parse";
 import { enqueue } from "~/jobs/queue.server";
 import {
   invalidateRepoChanges,
@@ -42,20 +49,32 @@ export async function action({ request }: ActionFunctionArgs) {
       base?: { ref?: string };
       head?: { ref?: string };
     };
-    repository?: { name?: string; owner?: { login?: string }; default_branch?: string };
-    installation?: { id?: number };
+    repository?: {
+      name?: string;
+      owner?: { login?: string };
+      default_branch?: string;
+    };
   };
 
-  // Any pull_request event (opened/closed/synchronize/…) changes the open-changes list on
-  // github.com — drop the changes cache so the Deployment tab reflects it on next read. The
-  // delivery always carries its installation id; that's all the key needs (M5.9).
+  const projectForRepo =
+    event === "pull_request" &&
+    payload.repository?.owner?.login &&
+    payload.repository.name
+      ? await findProjectByRepo(
+          payload.repository.owner.login,
+          payload.repository.name,
+        )
+      : null;
+
+  // Cache keys use Eden's opaque grant id. The webhook's raw installation id is deliberately
+  // ignored at this browser/server boundary; resolve the repository to its project grant instead.
   if (
     event === "pull_request" &&
-    payload.installation?.id != null &&
+    projectForRepo?.repoInstallationId &&
     payload.repository?.owner?.login &&
     payload.repository.name
   ) {
-    invalidateRepoChanges(payload.installation.id, {
+    invalidateRepoChanges(projectForRepo.repoInstallationId, {
       owner: payload.repository.owner.login,
       repo: payload.repository.name,
     });
@@ -76,10 +95,7 @@ export async function action({ request }: ActionFunctionArgs) {
     payload.repository.name
   ) {
     const headRef = payload.pull_request.head.ref;
-    const project = await findProjectByRepo(
-      payload.repository.owner.login,
-      payload.repository.name,
-    );
+    const project = projectForRepo;
     if (project) {
       const agents = await listAgents(project.id);
       const match = agents.find(
@@ -105,10 +121,7 @@ export async function action({ request }: ActionFunctionArgs) {
     return data({ ok: true, skipped: true });
   }
 
-  const project = await findProjectByRepo(
-    payload.repository.owner.login,
-    payload.repository.name,
-  );
+  const project = projectForRepo;
   if (!project) return data({ ok: true, skipped: "no project" });
 
   // Reconcile the roster before cutting releases — the merge may have added or removed a
@@ -124,9 +137,18 @@ export async function action({ request }: ActionFunctionArgs) {
       });
       const before = await listAgents(project.id);
       const detected = detectAgentRoots(source.paths);
-      const after = await syncProjectAgents(project.id, detected, undefined, undefined, {
-        allowEmpty: project.layout === "team" && hasTeamLayout(source.paths) && detected.length === 0,
-      });
+      const after = await syncProjectAgents(
+        project.id,
+        detected,
+        undefined,
+        undefined,
+        {
+          allowEmpty:
+            project.layout === "team" &&
+            hasTeamLayout(source.paths) &&
+            detected.length === 0,
+        },
+      );
       // D7: a merge that added/removed a member must refresh the OTHER members' running
       // instances so their EDEN_TEAMMATES reflects the new roster (image reuse, no rebuild).
       await refreshTeammatesForRosterChange({
@@ -139,16 +161,23 @@ export async function action({ request }: ActionFunctionArgs) {
       // read was pinned to the merge SHA, so restore the branch NAME in the cached `ref` —
       // consumers of the default-branch key must never see a SHA there.
       invalidateRepoSource(project.repoInstallationId, { owner, repo });
-      warmAgentSource(project.repoInstallationId, { owner, repo }, {
-        ...source,
-        ref: payload.repository.default_branch ?? source.ref,
-      });
+      warmAgentSource(
+        project.repoInstallationId,
+        { owner, repo },
+        {
+          ...source,
+          ref: payload.repository.default_branch ?? source.ref,
+        },
+      );
 
       // A merge that touched the assistant's published config restarts its instance so the
       // entrypoint re-fetches the bundle + rebuilds. Trigger discipline:
       // ONLY from this merge path, never from loader self-heal. Queued so the webhook stays fast.
-      const changed = await listCommitFiles(project.repoInstallationId, { owner, repo },
-        payload.pull_request.merge_commit_sha);
+      const changed = await listCommitFiles(
+        project.repoInstallationId,
+        { owner, repo },
+        payload.pull_request.merge_commit_sha,
+      );
       if (changed.some((p) => p.startsWith(`${ASSISTANT_CONFIG_ROOT}/`))) {
         await enqueue("assistant_restart", { projectId: project.id });
       }

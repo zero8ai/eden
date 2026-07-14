@@ -1,4 +1,8 @@
-import { mobileApi, type MobileMutationResult } from "@eden/api-contract";
+import {
+  githubInstallAuthOutcome,
+  mobileApi,
+  type MobileMutationResult,
+} from "@eden/api-contract";
 import { router } from "expo-router";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
@@ -19,7 +23,6 @@ import {
   useNativeTheme,
 } from "@/components/native";
 import { postForm, useApiResource } from "@/hooks/use-api-resource";
-import { githubInstallAuthOutcome } from "@/lib/github-install-auth";
 
 type Repo = {
   fullName: string;

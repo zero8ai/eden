@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { githubInstallAuthOutcome } from "../../packages/api-contract/src";
+
 import {
   githubUserCanAccessInstallation,
   mobileGithubHandoffUrl,
@@ -12,7 +14,6 @@ import {
   verifyMobileGithubState,
   type MobileGithubSetupState,
 } from "~/github/mobile-install.server";
-import { githubInstallAuthOutcome } from "../../mobile/src/lib/github-install-auth";
 
 const setupState: MobileGithubSetupState = {
   provider: "github-mobile-install",

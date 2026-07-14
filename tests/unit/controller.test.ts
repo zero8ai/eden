@@ -523,18 +523,18 @@ describe("deployRelease", () => {
 });
 
 describe("queueDeploy", () => {
-  it("creates the queued row FIRST, and the job takes over that same row (no duplicate)", async () => {
+  it("creates the pending row FIRST, and the job takes over that same row (no duplicate)", async () => {
     const release = await createRelease(
       { projectId: PROJECT, agentId: AGENT, gitSha: "9".repeat(40) },
       store,
     );
 
-    // Click: row exists immediately in `queued` — this is the UI's instant feedback.
+    // Click: row exists immediately in `pending` — this is the UI's instant feedback.
     const queued = await queueDeploy(
       { environmentId: ENV, releaseId: release.id, createdBy: "user_1" },
       store,
     );
-    expect(queued.status).toBe("queued");
+    expect(queued.status).toBe("pending");
     expect((await listDeployments(ENV, store)).map((d) => d.id)).toEqual([
       queued.id,
     ]);
@@ -564,7 +564,7 @@ describe("queueDeploy", () => {
     expect(await listDeployments(ENV, store)).toHaveLength(1);
   });
 
-  it("preserves the rebuild flag in the queued deploy job", async () => {
+  it("preserves the rebuild flag in the pending deploy job", async () => {
     const release = await createRelease(
       { projectId: PROJECT, agentId: AGENT, gitSha: "a9".repeat(20) },
       store,
@@ -581,7 +581,7 @@ describe("queueDeploy", () => {
     );
     const job = await store.jobs.claimNext(new Date());
 
-    expect(queued.status).toBe("queued");
+    expect(queued.status).toBe("pending");
     expect(job?.kind).toBe("deploy_release");
     expect(job?.payload).toMatchObject({
       environmentId: ENV,

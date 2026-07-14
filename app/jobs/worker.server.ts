@@ -121,7 +121,7 @@ async function tick(): Promise<void> {
 
 function startWorker(): { stop: () => void } {
   // Boot recovery: a process restart (dev HMR, redeploy, crash) kills in-flight jobs, leaving
-  // them stranded as `running` — and their deployment rows stuck at queued/building forever.
+  // them stranded as `running` — and their deployment rows stuck at pending/building forever.
   // This worker is the only one per box (ARCH §2), so requeueing all `running` jobs is safe.
   getRuntime()
     .data.jobs.requeueRunning()

@@ -993,13 +993,13 @@ export default function Deployment({
   const redeployError = params.get("redeployError");
   const connectedLabel = connected === "google" ? "Google" : connected;
 
-  // Progress: re-fetch faster while any deployment is queued/building. A slower
+  // Progress: re-fetch faster while any deployment is pending/building. A slower
   // baseline poll runs regardless, so a deploy STARTED after this page loaded is
   // picked up on its own rather than staying stale until a manual refresh, and
   // the tail-end clear can't be missed either (issue #41).
   // A draining sibling (a superseded version finishing in-flight turns after a redeploy — issue
   // #81) keeps the page revalidating too, so the "winding down" note clears once the drain stops.
-  // Kept separate from IN_FLIGHT, whose other call sites mean specifically "queued/building".
+  // Kept separate from IN_FLIGHT, whose other call sites mean specifically "pending/building".
   const inFlight =
     loaderData.envs.some(({ deployments }) =>
       deployments.some((d) => IN_FLIGHT.has(d.status) || d.status === "draining"),
@@ -1038,16 +1038,28 @@ export default function Deployment({
         }
       />
 
-      {justReleased && (
-        <Alert className="mb-6">
-          <AlertTitle>{justReleased} is ready</AlertTitle>
-          <AlertDescription>
-            {view === "repo"
-              ? `The merge cut a new version for every agent. Deploy it from each agent's Deployment tab.`
-              : `Your change was merged and cut as version ${justReleased}. Deploy it to an environment from the version history below.`}
-          </AlertDescription>
-        </Alert>
-      )}
+      {justReleased &&
+        (view === "repo" ? (
+          <PostMergeDeployBanner
+            version={justReleased}
+            teamVersions={loaderData.teamVersions}
+            teamEnvNames={loaderData.teamEnvNames}
+            guard={{
+              missing: loaderData.missingSecrets,
+              activeAgent: loaderData.guardAgent,
+              settingsAction: loaderData.guardSettingsAction,
+            }}
+          />
+        ) : (
+          <Alert className="mb-6">
+            <AlertTitle>{justReleased} is ready</AlertTitle>
+            <AlertDescription>
+              {loaderData.canAct
+                ? `Your change was merged and cut as version ${justReleased}. Deploy it to an environment from the version history below.`
+                : `Your change was merged and cut as version ${justReleased}. Deploy it to the whole team from the repo's Deployment tab.`}
+            </AlertDescription>
+          </Alert>
+        ))}
 
       {justInstalled && (
         <Alert className="mb-6">
@@ -1090,7 +1102,8 @@ export default function Deployment({
           <Alert className="mb-6">
             <AlertTitle>{connectedLabel} connected</AlertTitle>
             <AlertDescription>
-              The connection is saved. Deploy this agent to start using it.
+              The connection is saved. Deploy the current version to start
+              using it.
             </AlertDescription>
           </Alert>
         ))}
@@ -2109,18 +2122,27 @@ function TeamVersionHistory({
  * team there. Confirm copy says "moves the whole team to <version> in <env>". Redeploy (fresh
  * build) when the version already runs in that env; deploy otherwise — both are the same move.
  */
-function TeamDeployControl({
+export function TeamDeployControl({
   version,
   teamEnvNames,
   busy,
   guard,
   onDeploy,
+  primary,
+  deployLabel,
+  redeployLabel,
 }: {
   version: TeamVersionRow;
   teamEnvNames: string[];
   busy: boolean;
   guard: DeployGuard;
   onDeploy: (envName: string, gitSha: string, rebuild: boolean) => void;
+  /** Render a filled, larger primary CTA (issue #147 post-merge banner) instead of the compact secondary control. */
+  primary?: boolean;
+  /** Override the "Deploy" label (e.g. "Deploy version v7"). */
+  deployLabel?: string;
+  /** Override the "Redeploy" label when the version already runs in the target env. */
+  redeployLabel?: string;
 }) {
   const [target, setTarget] = useState<string | null>(null);
   const [guardEnv, setGuardEnv] = useState<string | null>(null);
@@ -2150,18 +2172,28 @@ function TeamDeployControl({
     <>
       {single ? (
         <Button
-          size="sm"
-          variant={runningHere(single) ? "outline" : "secondary"}
+          size={primary ? "default" : "sm"}
+          variant={
+            primary ? "default" : runningHere(single) ? "outline" : "secondary"
+          }
           disabled={busy}
           onClick={() => pick(single)}
         >
-          {runningHere(single) ? "Redeploy" : "Deploy"}
+          {primary && <Rocket className="h-4 w-4" aria-hidden />}
+          {runningHere(single)
+            ? (redeployLabel ?? "Redeploy")
+            : (deployLabel ?? "Deploy")}
         </Button>
       ) : (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button size="sm" variant="secondary" disabled={busy}>
-              Deploy ▾
+            <Button
+              size={primary ? "default" : "sm"}
+              variant={primary ? "default" : "secondary"}
+              disabled={busy}
+            >
+              {primary && <Rocket className="h-4 w-4" aria-hidden />}
+              {`${primary ? (deployLabel ?? "Deploy") : "Deploy"} ▾`}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
@@ -2208,6 +2240,64 @@ function TeamDeployControl({
         />
       )}
     </>
+  );
+}
+
+/**
+ * Post-merge "ready" banner on the repo (team) view (issue #147): merging a change request cuts a
+ * version for the whole team, so the banner offers a one-click deploy of that version instead of
+ * making the user hunt through version history. It reuses {@link TeamDeployControl} verbatim for env
+ * selection, the deploy guard, and confirm dialogs — no new env logic here. When there's no
+ * environment to deploy to (`teamEnvNames` empty), it degrades to text only.
+ */
+export function PostMergeDeployBanner({
+  version,
+  teamVersions,
+  teamEnvNames,
+  guard,
+}: {
+  version: string;
+  teamVersions: TeamVersionRow[];
+  teamEnvNames: string[];
+  guard: DeployGuard;
+}) {
+  const fetcher = useFetcher<typeof action>();
+  const busy = fetcher.state !== "idle";
+  const target =
+    teamVersions.find((v) => v.version === version) ?? teamVersions[0] ?? null;
+
+  return (
+    <Alert className="mb-6">
+      <AlertTitle>{version} is ready</AlertTitle>
+      <AlertDescription>
+        The merge cut version {version} for every agent — deploy the whole team
+        in one click.
+      </AlertDescription>
+      {target && teamEnvNames.length > 0 && (
+        <div className="mt-2">
+          <TeamDeployControl
+            version={target}
+            teamEnvNames={teamEnvNames}
+            busy={busy}
+            guard={guard}
+            primary
+            deployLabel={`Deploy version ${target.version}`}
+            redeployLabel={`Redeploy version ${target.version}`}
+            onDeploy={(env, gitSha, rebuild) =>
+              fetcher.submit(
+                {
+                  intent: "deploy-team-version",
+                  env,
+                  gitSha,
+                  ...(rebuild ? { rebuild: "1" } : {}),
+                },
+                { method: "post" },
+              )
+            }
+          />
+        </div>
+      )}
+    </Alert>
   );
 }
 

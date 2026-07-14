@@ -7,11 +7,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildAgentConfig,
+  buildSubagentSummaries,
   detectAgentRoots,
   detectSandbox,
   EMPTY_TEAM_MARKER,
+  extractDescription,
   hasTeamLayout,
   isEveRepo,
+  subagentDirNames,
 } from "~/eve/parse";
 
 const SINGLE = [
@@ -217,6 +220,104 @@ describe("buildAgentConfig sandbox detection", () => {
       "agents/product-manager/agent",
     );
     expect(other.sandbox).toBeNull();
+  });
+});
+
+describe("subagents surfaced as read-only children (issue #146)", () => {
+  // Mirrors the real incident: quinn/remy live under ivy; a stray file and another
+  // member's subagent must not leak in.
+  const TEAM_SUB = {
+    paths: [
+      "agents/ivy/agent/agent.ts",
+      "agents/ivy/agent/subagents/quinn/agent.ts",
+      "agents/ivy/agent/subagents/quinn/instructions.md",
+      "agents/ivy/agent/subagents/remy/agent.ts",
+      "agents/ivy/agent/subagents/remy/instructions.md",
+      "agents/ivy/agent/subagents/tess/agent.ts",
+      "agents/ivy/agent/subagents/notes.md", // stray file, not a subagent
+      "agents/sam/agent/subagents/dana/agent.ts", // other member
+    ],
+    files: {
+      "agents/ivy/agent/subagents/quinn/agent.ts":
+        `export default defineAgent({ description: 'QA reviewer for the pipeline', model: 'anthropic/claude-sonnet-5' });`,
+      "agents/ivy/agent/subagents/remy/agent.ts":
+        `export default defineAgent({ model: 'anthropic/claude-sonnet-5' });`,
+      "agents/ivy/agent/subagents/remy/instructions.md":
+        "# Remy\nCode reviewer for pull requests.",
+      "agents/ivy/agent/subagents/tess/agent.ts":
+        `export default defineAgent({ model: 'anthropic/claude-sonnet-5' });`,
+    },
+  };
+
+  describe("subagentDirNames", () => {
+    it("returns only directory-backed subagents, sorted, scoped to the root", () => {
+      expect(subagentDirNames(TEAM_SUB.paths, "agents/ivy/agent")).toEqual([
+        "quinn",
+        "remy",
+        "tess",
+      ]);
+    });
+
+    it("ignores a stray file directly under subagents/ and other members' subagents", () => {
+      const names = subagentDirNames(TEAM_SUB.paths, "agents/ivy/agent");
+      expect(names).not.toContain("notes");
+      expect(names).not.toContain("dana");
+    });
+
+    it("scopes to the given member root", () => {
+      expect(subagentDirNames(TEAM_SUB.paths, "agents/sam/agent")).toEqual(["dana"]);
+    });
+  });
+
+  describe("extractDescription", () => {
+    it("pulls a single-quoted description literal from a defineAgent source", () => {
+      expect(
+        extractDescription(
+          `export default defineAgent({ description: 'QA reviewer', model: 'x' });`,
+        ),
+      ).toBe("QA reviewer");
+    });
+
+    it("pulls and collapses a template-literal description to one line", () => {
+      expect(
+        extractDescription(
+          "defineAgent({ description: `QA\n  reviewer   here` });",
+        ),
+      ).toBe("QA reviewer here");
+    });
+
+    it("returns null when there is no description and for empty input", () => {
+      expect(extractDescription(`defineAgent({ model: 'x' });`)).toBeNull();
+      expect(extractDescription(undefined)).toBeNull();
+    });
+  });
+
+  describe("buildSubagentSummaries", () => {
+    it("summarizes each subagent with a best-effort description, scoped and sorted", () => {
+      const summaries = buildSubagentSummaries(TEAM_SUB, "agents/ivy/agent");
+      expect(summaries).toEqual([
+        {
+          name: "quinn",
+          path: "agents/ivy/agent/subagents/quinn",
+          description: "QA reviewer for the pipeline",
+        },
+        {
+          name: "remy",
+          path: "agents/ivy/agent/subagents/remy",
+          description: "Remy",
+        },
+        {
+          name: "tess",
+          path: "agents/ivy/agent/subagents/tess",
+          description: null,
+        },
+      ]);
+    });
+
+    it("does not leak another member's subagents", () => {
+      const summaries = buildSubagentSummaries(TEAM_SUB, "agents/sam/agent");
+      expect(summaries.map((s) => s.name)).toEqual(["dana"]);
+    });
   });
 });
 

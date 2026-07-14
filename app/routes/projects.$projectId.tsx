@@ -7,7 +7,7 @@
  * change-sets (branch → PR) like every other edit; the roster row itself syncs on merge.
  */
 import { getSessionAuth, sessionLoader } from "~/auth/session.server";
-import { Bot, Boxes, FileText, Terminal, Users, X } from "lucide-react";
+import { Bot, Boxes, FileText, Terminal, Users, Workflow, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
   Link,
@@ -58,13 +58,13 @@ import {
 import { listDeployments, queueDeploy } from "~/deploy/controller.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { readModel } from "~/eve/agentModule";
-import { buildAgentConfig } from "~/eve/parse";
+import { buildAgentConfig, buildSubagentSummaries } from "~/eve/parse";
 import {
   RESOURCE_KINDS,
   sandboxPath,
   slugifyResourceName,
 } from "~/eve/templates";
-import { AGENT_CATEGORIES, type AgentConfig } from "~/eve/types";
+import { AGENT_CATEGORIES, type AgentConfig, type SubagentSummary } from "~/eve/types";
 import { memberScaffold } from "~/github/create.server";
 import { getAgentSource } from "~/github/cached.server";
 import { proposeChange } from "~/github/write.server";
@@ -99,6 +99,8 @@ interface MemberSummary {
   skills: number;
   schedules: number;
   channels: number;
+  /** Read-only subagent children (issue #146): they run inside this member, not as roster peers. */
+  subagents: SubagentSummary[];
   /** Template-required secrets still unset for this member (amber header badge, §7). */
   secretsMissing: number;
 }
@@ -229,6 +231,7 @@ export const loader = (args: LoaderFunctionArgs) =>
             ? await Promise.all(
                 roster.map(async (a) => {
                   const c = buildAgentConfig(source, a.root);
+                  const subagents = buildSubagentSummaries(source, a.root);
                   // A staged agent.ts draft wins over the repo value — same rule the
                   // member view follows, so the roster badge never lags a model change.
                   const draft = drafts.find(
@@ -253,6 +256,7 @@ export const loader = (args: LoaderFunctionArgs) =>
                     skills: c.skills.length,
                     schedules: c.schedules.length,
                     channels: c.channels.length,
+                    subagents,
                     secretsMissing: requiredState.missing.length,
                   };
                 }),
@@ -508,7 +512,7 @@ export default function ProjectDetail({
   const ctx = contextPath(project.id, level === "member" ? active?.name : null);
 
   // Keep the deploy banner fresh without a manual refresh. Poll faster while a
-  // ship is queued/building so the banner walks to live/failed; a slower baseline
+  // ship is pending/building so the banner walks to live/failed; a slower baseline
   // poll runs regardless so a deploy STARTED after this page loaded is still
   // picked up rather than sitting stale until a manual refresh (issue #41).
   const shipInFlight = !!ship?.rows.some((r) =>
@@ -822,6 +826,13 @@ function TeamSurface({
                       className="size-1.5 rounded-full bg-fuchsia-500"
                       aria-hidden
                     />
+                    {m.subagents.length} subagent{m.subagents.length === 1 ? "" : "s"}
+                  </li>
+                  <li className="flex items-center gap-1.5">
+                    <span
+                      className="size-1.5 rounded-full bg-fuchsia-500"
+                      aria-hidden
+                    />
                     {m.schedules} schedule{m.schedules === 1 ? "" : "s"}
                   </li>
                   <li className="flex items-center gap-1.5">
@@ -832,6 +843,37 @@ function TeamSurface({
                     {m.channels} channel{m.channels === 1 ? "" : "s"}
                   </li>
                 </ul>
+                {m.subagents.length > 0 && (
+                  <div className="mt-3 border-t pt-3">
+                    <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                      <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                        <Workflow
+                          className="size-3.5 text-fuchsia-500"
+                          aria-hidden
+                        />
+                        Subagents
+                      </span>
+                      <Badge variant="outline" className="text-[10px]">
+                        run inside {m.name}
+                      </Badge>
+                    </div>
+                    <ul className="space-y-1">
+                      {m.subagents.map((s) => (
+                        <li
+                          key={s.name}
+                          className="flex items-baseline gap-2 text-sm"
+                        >
+                          <span className="shrink-0 font-mono">{s.name}</span>
+                          {s.description && (
+                            <span className="truncate text-xs text-muted-foreground">
+                              {s.description}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </Link>
@@ -912,7 +954,7 @@ function AddMemberDialog() {
 
 /**
  * Deploy progress for a shipped commit. Driven purely from deployment rows (via ?shipped=),
- * so it survives refreshes and walks queued → building → live/failed with the poller.
+ * so it survives refreshes and walks pending → building → live/failed with the poller.
  */
 function ShipProgress({
   ship,

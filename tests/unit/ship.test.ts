@@ -74,7 +74,7 @@ describe("shipStagedChanges", () => {
     const queuedB = await store.deployments.listByEnvironment("env_b_prod");
     expect(queuedA).toHaveLength(1);
     expect(queuedB).toHaveLength(1);
-    expect(queuedA[0].status).toBe("queued");
+    expect(queuedA[0].status).toBe("pending");
     // A release was cut for EVERY roster member at the merge commit (atomic team merge).
     expect(await store.releases.findByCommit("agent_a", MERGE_SHA)).not.toBeNull();
     expect(await store.releases.findByCommit("agent_b", MERGE_SHA)).not.toBeNull();
@@ -153,7 +153,7 @@ describe("shipRepoHead", () => {
     const queuedB = await store.deployments.listByEnvironment("env_b_prod");
     expect(queuedA).toHaveLength(1);
     expect(queuedB).toHaveLength(1);
-    expect(queuedA[0].status).toBe("queued");
+    expect(queuedA[0].status).toBe("pending");
     // And the worker has a deploy job to pick up.
     expect((await store.jobs.claimNext(new Date()))?.kind).toBe("deploy_release");
   });
@@ -178,7 +178,7 @@ describe("shipRepoHead", () => {
     expect(alphaRelease?.id).toBe(existing.id);
     // Deploy still queued for the whole team.
     expect(result.deployed.map((d) => d.agentName).sort()).toEqual(["alpha", "beta"]);
-    expect((await store.deployments.listByEnvironment("env_a_prod"))[0]?.status).toBe("queued");
+    expect((await store.deployments.listByEnvironment("env_a_prod"))[0]?.status).toBe("pending");
   });
 
   it("throws when no member has the requested environment", async () => {
@@ -226,8 +226,8 @@ describe("deployTeamVersion", () => {
 
     expect(result.deployed.map((d) => d.agentName).sort()).toEqual(["alpha", "beta"]);
     expect(result.skipped).toEqual([]);
-    expect((await store.deployments.listByEnvironment("env_a_prod"))[0]?.status).toBe("queued");
-    expect((await store.deployments.listByEnvironment("env_b_prod"))[0]?.status).toBe("queued");
+    expect((await store.deployments.listByEnvironment("env_a_prod"))[0]?.status).toBe("pending");
+    expect((await store.deployments.listByEnvironment("env_b_prod"))[0]?.status).toBe("pending");
   });
 
   it("skips a member that has no release at that sha, deploys the rest", async () => {

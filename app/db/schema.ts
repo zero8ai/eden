@@ -639,6 +639,35 @@ export const ingestTokens = pgTable(
 );
 
 /**
+ * User-issued API credentials for hosted machine clients such as Eden's MCP server. The key is
+ * tenant- and user-scoped: verification requires the issuing user to still belong to the org.
+ * Plaintext is returned only at creation; this table stores the shared `edn_` token digest.
+ */
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    scopes: text("scopes").array().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("api_keys_org_created_idx").on(t.orgId, t.createdAt),
+    index("api_keys_user_idx").on(t.userId),
+  ],
+);
+
+/**
  * Encrypted secret VALUES for the OSS local SecretsProvider. Managed uses KMS/Vault instead
  * (same seam), so this table is only populated by the local provider. Values are AES-256-GCM
  * encrypted with `EDEN_SECRETS_KEY`; we store ciphertext + iv + auth tag, never plaintext.

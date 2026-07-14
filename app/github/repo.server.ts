@@ -17,6 +17,7 @@ import {
   ASSISTANT_CONFIG_ROOT,
   TEAM_ROOT,
   detectAgentRoots,
+  subagentDirNames,
   type AgentSource,
 } from "~/eve/parse";
 import { getInstallationOctokit } from "./client.server";
@@ -116,6 +117,10 @@ export async function fetchAgentSource(
     ...detectAgentRoots(paths).flatMap(({ root }) => [
       `${root}/instructions.md`,
       `${root}/agent.ts`,
+      ...subagentDirNames(paths, root).flatMap((name) => [
+        `${root}/subagents/${name}/agent.ts`,
+        `${root}/subagents/${name}/instructions.md`,
+      ]),
     ]),
     EDEN_LOCK,
   ];

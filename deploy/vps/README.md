@@ -123,12 +123,16 @@ Fill in every value (`deploy/vps/.env` is gitignored). Notes per section:
   - **Webhook URL**: `https://eden.example.com/api/github/webhook`, with a
     **webhook secret** you generate (`openssl rand -hex 20`) and copy into the env file.
   - **Setup URL**: `https://eden.example.com/connect` (check "Redirect on update").
+  - **Callback URL**: `https://eden.example.com/github/installations/callback` (GitHub App OAuth).
   - **Permissions**: Contents (R/W), Pull requests (R/W), Administration (R/W — repo creation),
     Metadata (R).
   - **Events**: Push, Pull request.
   - Generate a **private key** (PEM) and a **client secret**; copy the App ID, slug, client ID,
     client secret, and key into the env file. The PEM can be pasted as one line with `\n`
     escapes.
+  - After upgrading an existing Eden deployment, reauthorize every installation from **Connect**.
+    Legacy project references are preserved when they map cleanly, but GitHub-backed reads, writes,
+    builds, assistant checkouts, and deploys fail closed until the OAuth proof succeeds.
 - **Discord app (optional)** — for the one-click Discord channel (issue #32), register **one**
   Discord application for this installation at
   [discord.com/developers/applications](https://discord.com/developers/applications):

@@ -49,7 +49,7 @@ export async function refreshTeammatesForRosterChange(
       // current live row still points at the pre-merge release — queueing that release here
       // would land AFTER the ship's job (FIFO worker) and silently revert the member. The
       // in-flight deploy re-mints EDEN_TEAMMATES from the current roster anyway.
-      if (deployments.some((d) => d.status === "queued" || d.status === "building")) {
+      if (deployments.some((d) => d.status === "pending" || d.status === "building")) {
         continue;
       }
       // Redeploy the env's CURRENT live release (image reuse) so only running members refresh;

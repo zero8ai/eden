@@ -53,6 +53,7 @@ const SIGNED_OR_BEARER_ENDPOINTS = new Set([
   "/api/gateway/v1/chat/completions",
   "/api/github/webhook",
   "/api/ingest/runs",
+  "/api/mcp",
   "/api/team/ask",
 ]);
 

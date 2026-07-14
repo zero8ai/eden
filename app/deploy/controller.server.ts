@@ -614,7 +614,7 @@ export async function rollbackTo(
 }
 
 /**
- * Queue a deploy (or rollback) the way the UI needs it: create the deployment row in `queued`
+ * Queue a deploy (or rollback) the way the UI needs it: create the deployment row in `pending`
  * status FIRST — so the click has an immediately-visible result — then enqueue the job that
  * takes the row through building → live/failed. Without this, the row only appeared when the
  * worker picked the job up, which read as "the button did nothing".
@@ -632,7 +632,7 @@ export async function queueDeploy(
   const dep = await store.deployments.insert({
     environmentId: input.environmentId,
     releaseId: input.releaseId,
-    status: "queued",
+    status: "pending",
     trafficWeight: 100,
     createdBy: input.createdBy ?? null,
   });

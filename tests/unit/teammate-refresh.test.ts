@@ -75,7 +75,7 @@ describe("refreshTeammatesForRosterChange", () => {
 
     expect(queued).toBe(1);
     const rows = await store.deployments.listByEnvironment("env_pm");
-    const queuedRow = rows.find((d) => d.status === "queued");
+    const queuedRow = rows.find((d) => d.status === "pending");
     expect(queuedRow?.releaseId).toBe(liveRelease); // image reuse: the CURRENT live release
     expect((await store.jobs.claimNext(new Date()))?.kind).toBe("deploy_release");
   });
@@ -93,7 +93,7 @@ describe("refreshTeammatesForRosterChange", () => {
     await store.deployments.insert({
       environmentId: "env_pm",
       releaseId: newRel.id,
-      status: "queued",
+      status: "pending",
       trafficWeight: 100,
     });
     seedMember("deployer", "env_dep");
@@ -107,7 +107,7 @@ describe("refreshTeammatesForRosterChange", () => {
     // worker) and silently revert pm to pre-merge code.
     expect(queued).toBe(0);
     const rows = await store.deployments.listByEnvironment("env_pm");
-    expect(rows.filter((d) => d.status === "queued")).toHaveLength(1); // only the ship's
+    expect(rows.filter((d) => d.status === "pending")).toHaveLength(1); // only the ship's
   });
 
   it("also skips while a deploy is mid-build (building)", async () => {
@@ -146,7 +146,7 @@ describe("refreshTeammatesForRosterChange", () => {
 
     expect(queued).toBe(1);
     const rows = await store.deployments.listByEnvironment("env_other");
-    expect(rows.find((d) => d.status === "queued")?.releaseId).toBe(liveRelease);
+    expect(rows.find((d) => d.status === "pending")?.releaseId).toBe(liveRelease);
   });
 
   it("skips a member without a live deployment", async () => {

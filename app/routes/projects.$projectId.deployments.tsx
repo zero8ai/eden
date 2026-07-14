@@ -993,13 +993,13 @@ export default function Deployment({
   const redeployError = params.get("redeployError");
   const connectedLabel = connected === "google" ? "Google" : connected;
 
-  // Progress: re-fetch faster while any deployment is queued/building. A slower
+  // Progress: re-fetch faster while any deployment is pending/building. A slower
   // baseline poll runs regardless, so a deploy STARTED after this page loaded is
   // picked up on its own rather than staying stale until a manual refresh, and
   // the tail-end clear can't be missed either (issue #41).
   // A draining sibling (a superseded version finishing in-flight turns after a redeploy — issue
   // #81) keeps the page revalidating too, so the "winding down" note clears once the drain stops.
-  // Kept separate from IN_FLIGHT, whose other call sites mean specifically "queued/building".
+  // Kept separate from IN_FLIGHT, whose other call sites mean specifically "pending/building".
   const inFlight =
     loaderData.envs.some(({ deployments }) =>
       deployments.some((d) => IN_FLIGHT.has(d.status) || d.status === "draining"),

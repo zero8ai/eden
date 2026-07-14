@@ -864,8 +864,8 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           <Alert className="mb-4">
             <AlertTitle>No live deployment to talk to</AlertTitle>
             <AlertDescription>
-              Cached conversation history is still available. Deploy this agent
-              first (Deployment tab) to start a new conversation.
+              Cached conversation history is still available. Deploy from the
+              Deployment tab to start a new conversation.
             </AlertDescription>
           </Alert>
         )}

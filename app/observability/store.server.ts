@@ -6,9 +6,9 @@
  * use the same path. The system prompt is reconstructed from the Run's Release commit (link,
  * not snapshot); user input, tool I/O, tokens, and timing are runtime data and are stored.
  */
-import crypto from "node:crypto";
 import { and, desc, eq, gte, sql, type SQL } from "drizzle-orm";
 
+import { hashEdnToken, mintEdnToken } from "~/auth/edn-token.server";
 import { db } from "~/db/client.server";
 import {
   agents,
@@ -23,16 +23,12 @@ import { redactSecrets } from "~/observability/capture.server";
 
 type IngestDb = Pick<typeof db, "delete" | "insert" | "select">;
 
-function hashToken(token: string): string {
-  return crypto.createHash("sha256").update(token).digest("hex");
-}
-
 /** Mint a project ingest token. Returns the plaintext ONCE; only the hash is stored. */
 export async function createIngestToken(projectId: string, name: string) {
-  const token = `edn_${crypto.randomBytes(24).toString("base64url")}`;
+  const token = mintEdnToken();
   await db
     .insert(ingestTokens)
-    .values({ projectId, name, tokenHash: hashToken(token) });
+    .values({ projectId, name, tokenHash: hashEdnToken(token) });
   return token;
 }
 
@@ -54,7 +50,7 @@ export async function resolveIngestToken(token: string): Promise<string | null> 
   const [row] = await db
     .select()
     .from(ingestTokens)
-    .where(eq(ingestTokens.tokenHash, hashToken(token)))
+    .where(eq(ingestTokens.tokenHash, hashEdnToken(token)))
     .limit(1);
   if (!row) return null;
   await db

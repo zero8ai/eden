@@ -166,6 +166,8 @@ export default [
   route("google/connect", "routes/google.connect.tsx"),
   route("google/callback", "routes/google.callback.tsx"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
+  // Hosted MCP Streamable HTTP transport. Bearer API keys are verified per stateless request.
+  route("api/mcp", "routes/api.mcp.ts"),
   // Teammate delegation relay: a team member's ask-teammate tool POSTs here (Bearer token).
   route("api/team/ask", "routes/api.team.ask.ts"),
   // Built-in assistant callback API. The assistant instance's baked-in

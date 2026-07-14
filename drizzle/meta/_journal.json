@@ -57,6 +57,13 @@
       "when": 1783921524677,
       "tag": "0007_gray_wither",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784009635537,
+      "tag": "0008_lively_redwing",
+      "breakpoints": true
     }
   ]
 }

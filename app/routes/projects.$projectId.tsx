@@ -508,7 +508,7 @@ export default function ProjectDetail({
   const ctx = contextPath(project.id, level === "member" ? active?.name : null);
 
   // Keep the deploy banner fresh without a manual refresh. Poll faster while a
-  // ship is queued/building so the banner walks to live/failed; a slower baseline
+  // ship is pending/building so the banner walks to live/failed; a slower baseline
   // poll runs regardless so a deploy STARTED after this page loaded is still
   // picked up rather than sitting stale until a manual refresh (issue #41).
   const shipInFlight = !!ship?.rows.some((r) =>
@@ -912,7 +912,7 @@ function AddMemberDialog() {
 
 /**
  * Deploy progress for a shipped commit. Driven purely from deployment rows (via ?shipped=),
- * so it survives refreshes and walks queued → building → live/failed with the poller.
+ * so it survives refreshes and walks pending → building → live/failed with the poller.
  */
 function ShipProgress({
   ship,

@@ -4,7 +4,7 @@ import { useRevalidator } from "react-router";
 interface LiveRevalidateOptions {
   /**
    * Poll at the faster `activeIntervalMs` cadence while something is known to be
-   * in-flight (e.g. a deploy is queued/building in the loader data). The baseline
+   * in-flight (e.g. a deploy is pending/building in the loader data). The baseline
    * poll still runs when this is false, so the transition into an in-flight state
    * is picked up on its own.
    */

@@ -8,11 +8,11 @@
  */
 import { data, type ActionFunctionArgs } from "react-router";
 
+import { ednBearerToken } from "~/auth/edn-token.server";
 import { ingestRun, resolveIngestToken, type IngestPayload } from "~/observability/store.server";
 
 export async function action({ request }: ActionFunctionArgs) {
-  const auth = request.headers.get("authorization") ?? "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  const token = ednBearerToken(request);
   const projectId = token ? await resolveIngestToken(token) : null;
   if (!projectId) throw data("unauthorized", { status: 401 });
 

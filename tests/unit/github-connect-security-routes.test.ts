@@ -99,7 +99,10 @@ describe("secure GitHub connect routes", () => {
     vi.clearAllMocks();
     mocks.createState.mockResolvedValue({ state: "signed-state" });
     mocks.known.mockResolvedValue([]);
-    mocks.resolveGrant.mockResolvedValue({ grantId: "grant1234567" });
+    mocks.resolveGrant.mockResolvedValue({
+      grantId: "grant1234567",
+      installationId: "987654321",
+    });
     mocks.listRepos.mockResolvedValue([]);
     mocks.createProject.mockResolvedValue({ id: "project12345" });
   });
@@ -125,6 +128,22 @@ describe("secure GitHub connect routes", () => {
     );
     expect(result.github).toMatchObject({ state: "unconfigured" });
     expect(mocks.bind).not.toHaveBeenCalled();
+  });
+
+  it("rejects wrong-workspace setup state before binding or calling GitHub", async () => {
+    mocks.verifyState.mockReturnValue({
+      nonce: "nonce",
+      userId: "user-1",
+      sessionId: "session-1",
+      orgId: "org-2",
+    });
+    const result = await loader(
+      args("https://eden.test/connect?installation_id=123&state=signed"),
+    );
+    expect(result.github).toMatchObject({ state: "unconfigured" });
+    expect(mocks.bind).not.toHaveBeenCalled();
+    expect(mocks.known).not.toHaveBeenCalled();
+    expect(mocks.listRepos).not.toHaveBeenCalled();
   });
 
   it("atomically binds a valid setup callback and redirects to PKCE user OAuth", async () => {
@@ -233,6 +252,47 @@ describe("secure GitHub connect routes", () => {
     });
     expect(mocks.createProject).toHaveBeenCalledWith(
       expect.objectContaining({ repoInstallationId: "grant1234567" }),
+    );
+  });
+
+  it("creates a repository with only the resolved opaque grant id", async () => {
+    mocks.createRepo.mockResolvedValue({
+      owner: "octo-org",
+      repo: "new-agent",
+      defaultBranch: "main",
+    });
+    await expect(
+      action(
+        post({
+          intent: "create",
+          installationGrantId: "grant1234567",
+          owner: "octo-org",
+          name: "new-agent",
+          layout: "single",
+          agentName: "helper",
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 302 });
+    expect(mocks.createRepo).toHaveBeenCalledWith(
+      "grant1234567",
+      expect.objectContaining({
+        owner: "octo-org",
+        name: "new-agent",
+        agentName: "helper",
+      }),
+    );
+    expect(mocks.createProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoInstallationId: "grant1234567",
+        repoOwner: "octo-org",
+        repoName: "new-agent",
+      }),
+    );
+    expect(JSON.stringify(mocks.createRepo.mock.calls)).not.toContain(
+      "987654321",
+    );
+    expect(JSON.stringify(mocks.createProject.mock.calls)).not.toContain(
+      "987654321",
     );
   });
 });

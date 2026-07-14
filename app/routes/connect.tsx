@@ -13,6 +13,7 @@ import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import {
   Form,
   Link,
+  data,
   redirect,
   useNavigation,
   type ActionFunctionArgs,
@@ -44,6 +45,13 @@ import {
 import { getInstallUrl } from "~/github/client.server";
 import { createEveRepo } from "~/github/create.server";
 import {
+  githubUserAuthorizeUrl,
+  mobileGithubErrorUrl,
+  signMobileGithubState,
+  toMobileGithubVerifyState,
+  verifyMobileGithubState,
+} from "~/github/mobile-install.server";
+import {
   forgetInstallation,
   listKnownInstallations,
   rememberInstallation,
@@ -59,6 +67,7 @@ import {
 import { detectAgentRoots, hasTeamLayout, isEveRepo } from "~/eve/parse";
 import { slugifyResourceName } from "~/eve/templates";
 import { noindexMeta } from "~/lib/seo";
+import { publicOrigin } from "~/lib/ingress";
 import type { Route } from "./+types/connect";
 
 type GithubConnectState =
@@ -80,8 +89,34 @@ interface ConnectView {
   github: GithubConnectState;
 }
 
-export const loader = (args: LoaderFunctionArgs) =>
-  sessionLoader(
+export const loader = async (args: LoaderFunctionArgs) => {
+  // Native setup returns through the GitHub App's shared web Setup URL. Its signed state carries
+  // the initiating native session, so this transition must happen before web session enforcement:
+  // the system browser intentionally does not share the native Better Auth cookie.
+  const callbackUrl = new URL(args.request.url);
+  const callbackState = callbackUrl.searchParams.get("state");
+  if (callbackState) {
+    const setup = verifyMobileGithubState(callbackState);
+    if (setup) {
+      if (setup.phase !== "setup") {
+        throw data("Invalid native GitHub setup phase.", { status: 400 });
+      }
+      const verify = toMobileGithubVerifyState(
+        setup,
+        callbackUrl.searchParams.get("installation_id") ?? "",
+      );
+      if (!verify) {
+        throw redirect(
+          mobileGithubErrorUrl(setup.redirectUrl, "invalid_installation"),
+        );
+      }
+      const state = signMobileGithubState(verify);
+      const redirectUri = `${publicOrigin(args.request)}/github/mobile-install/callback`;
+      throw redirect(githubUserAuthorizeUrl({ redirectUri, state }));
+    }
+  }
+
+  return sessionLoader(
     args,
     async ({ auth }): Promise<ConnectView> => {
       // First org-less login: provision the user's workspace and replay (redirect).
@@ -143,6 +178,7 @@ export const loader = (args: LoaderFunctionArgs) =>
     },
     { ensureSignedIn: true },
   );
+};
 
 export async function action(args: ActionFunctionArgs) {
   const auth = await getSessionAuth(args);

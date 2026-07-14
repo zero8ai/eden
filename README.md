@@ -93,6 +93,9 @@ To use the Connect pillar (link an eve repo and view its config), register a **G
 
 - Permissions: **Contents** (read/write), **Pull requests** (read/write).
 - **Setup URL**: `http://localhost:5173/connect` (so installs redirect back into the app).
+- **Callback URL**: `http://localhost:5173/github/mobile-install/callback` (required for the
+  native app's user-authorized installation verification). Use the same public origin as Eden when
+  testing on a physical device.
 - Generate a private key and note the App ID, slug, client id/secret.
 
 Put the `GITHUB_APP_*` values into `.env.local` (see `.env.example`). Then from `/connect` you can

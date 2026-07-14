@@ -62,7 +62,7 @@ function isMachineEndpoint(pathname: string): boolean {
   );
 }
 
-function hasValidMutationOrigin(request: Request): boolean {
+export function hasValidMutationOrigin(request: Request): boolean {
   if (SAFE_METHODS.has(request.method.toUpperCase())) return true;
 
   const pathname = new URL(request.url).pathname;

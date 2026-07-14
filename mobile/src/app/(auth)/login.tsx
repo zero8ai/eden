@@ -1,0 +1,13 @@
+import { Link, router, useLocalSearchParams } from "expo-router";
+import { useState } from "react";
+import { KeyboardAvoidingView, Platform, StyleSheet, Text, View } from "react-native";
+import { Button, Card, FormField, Heading, Screen, colors, useNativeTheme } from "@/components/native";
+import { authClient } from "@/lib/auth-client";
+
+export default function LoginScreen() {
+  const { invitationId } = useLocalSearchParams<{ invitationId?: string }>();
+  const t = useNativeTheme(); const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
+  const submit = async () => { if (!email.includes("@") || !password) return setError("Enter your email and password."); setBusy(true); setError(null); try { const result = await authClient.signIn.email({ email: email.trim().toLowerCase(), password }); if (result.error) return setError(result.error.message ?? "Could not sign in."); router.replace(invitationId ? `/(auth)/accept-invitation/${invitationId}` : "/(app)"); } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not sign in."); } finally { setBusy(false); } };
+  return <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}><Screen><View style={styles.hero}><Text style={styles.mark}>e</Text><Heading title="Welcome to Eden" subtitle="Build and run your eve agents from anywhere." /></View><Card><FormField label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" autoComplete="email" keyboardType="email-address" returnKeyType="next" /><FormField label="Password" value={password} onChangeText={setPassword} secureTextEntry autoComplete="current-password" onSubmitEditing={submit} />{error ? <Text accessibilityRole="alert" style={{ color: colors.red }}>{error}</Text> : null}<Button title={busy ? "Signing in…" : "Sign in"} disabled={busy} onPress={submit} /><Link href="/(auth)/forgot-password" style={styles.link}>Forgot password?</Link></Card><Text style={[styles.center, { color: t.muted }]}>New to Eden? <Link href={{ pathname: "/(auth)/signup", params: invitationId ? { invitationId } : {} }} style={styles.link}>Create an account</Link></Text></Screen></KeyboardAvoidingView>;
+}
+const styles = StyleSheet.create({ hero: { marginTop: 50, alignItems: "center", gap: 15 }, mark: { color: "#fff", backgroundColor: colors.blue, width: 52, height: 52, borderRadius: 14, textAlign: "center", fontSize: 38, fontWeight: "800", overflow: "hidden" }, center: { textAlign: "center" }, link: { color: colors.blue, fontSize: 15, fontWeight: "600", textAlign: "center", paddingVertical: 6 } });

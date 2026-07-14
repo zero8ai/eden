@@ -10,6 +10,8 @@ import { githubInstallations } from "~/db/schema";
 import { getInstallationAccountLogin } from "./client.server";
 
 export interface KnownInstallation {
+  /** Opaque client-facing grant id; never expose GitHub's installation id to native clients. */
+  id: string;
   installationId: string;
   accountLogin: string | null;
 }
@@ -37,16 +39,43 @@ export async function rememberInstallation(
 }
 
 /** The org's known installations, newest first. */
-export async function listKnownInstallations(orgId: string): Promise<KnownInstallation[]> {
+export async function listKnownInstallations(
+  orgId: string,
+): Promise<KnownInstallation[]> {
   const rows = await db
     .select()
     .from(githubInstallations)
     .where(eq(githubInstallations.orgId, orgId))
     .orderBy(desc(githubInstallations.createdAt));
   return rows.map((r) => ({
+    id: r.id,
     installationId: r.installationId,
     accountLogin: r.accountLogin,
   }));
+}
+
+/** Resolve an opaque grant only inside the active tenant. */
+export async function resolveInstallationGrant(
+  orgId: string,
+  grantId: string,
+): Promise<KnownInstallation | null> {
+  const [row] = await db
+    .select()
+    .from(githubInstallations)
+    .where(
+      and(
+        eq(githubInstallations.id, grantId),
+        eq(githubInstallations.orgId, orgId),
+      ),
+    )
+    .limit(1);
+  return row
+    ? {
+        id: row.id,
+        installationId: row.installationId,
+        accountLogin: row.accountLogin,
+      }
+    : null;
 }
 
 /** Drop an installation that GitHub reports gone (uninstalled/suspended). */

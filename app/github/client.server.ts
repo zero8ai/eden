@@ -64,6 +64,15 @@ function getGitHubConfig(): GitHubAppConfig {
   return (cachedConfig ??= readConfig());
 }
 
+/** GitHub App user-OAuth credentials; the secret remains server-only. */
+export function getGitHubUserOAuthConfig(): Pick<
+  GitHubAppConfig,
+  "clientId" | "clientSecret"
+> {
+  const { clientId, clientSecret } = getGitHubConfig();
+  return { clientId, clientSecret };
+}
+
 /** The App-level Octokit client (app JWT auth). */
 function getGitHubApp(): App {
   if (cachedApp) return cachedApp;

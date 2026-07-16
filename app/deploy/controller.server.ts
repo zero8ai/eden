@@ -17,6 +17,7 @@
  */
 import type { DataStore, Deployment, Release } from "~/data/ports";
 import { overlayLock, requiredScopesByProvider } from "~/marketplace/lock";
+import { listProviders } from "~/connections/providers.server";
 import { enqueue } from "~/jobs/queue.server";
 import { getRuntime } from "~/seams/index.server";
 import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
@@ -49,14 +50,15 @@ export interface DeployDeps {
   /** Names of secrets marked "available in the agent's sandbox shell" for a deploy scope. */
   sandboxExposedNames?: (scope: SecretScope) => Promise<string[]>;
   /**
-   * Env for the agent's active auth-brokered connection grant (issue #30): the operator Google
-   * client creds + the sealed refresh token, so the shipped eve connection self-refreshes tokens.
-   * `{}` when there's no grant; THROWS (failing the deploy) when the grant is dead or (when
-   * `requiredScopes` is supplied) under-scoped for the installed connectors (issue #69).
+   * Env for the agent's active auth-brokered connection grants (issues #30, #163): per provider,
+   * the operator client creds + the sealed refresh token (`<PREFIX>_OAUTH_*`), so the shipped eve
+   * connections self-refresh tokens. `{}` when there are no grants; THROWS (failing the deploy)
+   * when a grant is dead or (when `requiredScopes` is supplied) under-scoped for the installed
+   * connectors (issue #69).
    */
   connectionGrantEnv?: (
     scope: SecretScope,
-    requiredScopes?: string | null,
+    requiredScopes?: ReadonlyMap<string, string[]> | null,
   ) => Promise<Record<string, string>>;
   /**
    * Committed `eden-lock.json` content at a release's commit, for deploy-time scope-coverage
@@ -418,18 +420,19 @@ export async function deployRelease(
       envVars.EDEN_TEAM_TOKEN ??= mintDelegationToken(dep.id);
     }
 
-    // Auth-brokered connections (issue #30): if this agent has an active Google grant, inject the
-    // operator client creds + sealed refresh token so the shipped eve OpenAPI connection can
-    // self-refresh access tokens at runtime. The provider validates the grant once (a dead grant
-    // THROWS here, failing the deploy with a reconnect message). Eden OWNS these keys only when it
-    // actually brokers the connection: like the Discord block above, anti-shadowing runs ONLY when
-    // there's injection env — so a self-hoster's manually-set GOOGLE_OAUTH_* (their own client +
-    // token, no broker) passes through untouched. No-op when there's no grant / no operator config.
+    // Auth-brokered connections (issues #30, #163): for every provider this agent holds an active
+    // grant for, inject the operator client creds + sealed refresh token (`<PREFIX>_OAUTH_*`) so
+    // the shipped eve connections can self-refresh access tokens at runtime. The provider validates
+    // each grant once (a dead grant THROWS here, failing the deploy with a reconnect message).
+    // Eden OWNS a provider's keys only when it actually brokers that connection: like the Discord
+    // block above, anti-shadowing runs ONLY per injected provider — so a self-hoster's manually-set
+    // GOOGLE_OAUTH_* (their own client + token, no broker) passes through untouched. No-op when
+    // there are no grants / no operator config.
     // Deploy-time scope coverage (issue #69): the committed lock at THIS release's commit names the
-    // scopes the installed connectors require. Best-effort — a lock-fetch hiccup must never block a
-    // deploy, and coverage is simply skipped (the grant liveness check still runs). Attribution
-    // matches the loader's: a team member is keyed by name, the single-agent root by null.
-    let requiredGoogleScopes: string | null = null;
+    // scopes the installed connectors require, per provider. Best-effort — a lock-fetch hiccup must
+    // never block a deploy, and coverage is simply skipped (the grant liveness check still runs).
+    // Attribution matches the loader's: a team member is keyed by name, the single-agent root by null.
+    let requiredConnectionScopes: Map<string, string[]> | null = null;
     try {
       if (
         deps.agentLock &&
@@ -445,23 +448,21 @@ export async function deployRelease(
         });
         const lock = overlayLock(lockJson, []);
         const member = isTeamMember && agent ? agent.name : null;
-        requiredGoogleScopes =
-          requiredScopesByProvider(lock, member).get("google")?.join(" ") ??
-          null;
+        requiredConnectionScopes = requiredScopesByProvider(lock, member);
       }
     } catch {
-      requiredGoogleScopes = null; // best-effort: never block a deploy on a lock-fetch hiccup
+      requiredConnectionScopes = null; // best-effort: never block a deploy on a lock-fetch hiccup
     }
     const grantEnv = deps.connectionGrantEnv
-      ? await deps.connectionGrantEnv(scope, requiredGoogleScopes)
+      ? await deps.connectionGrantEnv(scope, requiredConnectionScopes)
       : {};
     if (Object.keys(grantEnv).length > 0) {
-      for (const key of [
-        "GOOGLE_OAUTH_CLIENT_ID",
-        "GOOGLE_OAUTH_CLIENT_SECRET",
-        "GOOGLE_OAUTH_REFRESH_TOKEN",
-      ]) {
-        delete envVars[key];
+      for (const def of listProviders()) {
+        // Only the providers Eden actually brokered this deploy — a present refresh token marks one.
+        if (!(`${def.envPrefix}_OAUTH_REFRESH_TOKEN` in grantEnv)) continue;
+        for (const suffix of ["CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN"]) {
+          delete envVars[`${def.envPrefix}_OAUTH_${suffix}`];
+        }
       }
       for (const [key, value] of Object.entries(grantEnv)) {
         envVars[key] = value;

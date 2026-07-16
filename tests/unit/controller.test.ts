@@ -1515,6 +1515,43 @@ describe("Google connection env injection (issue #30)", () => {
     expect(env.GOOGLE_OAUTH_CLIENT_SECRET).toBe("broker_secret");
     expect(env.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("broker_token");
   });
+
+  it("injects a second provider's <PREFIX>_OAUTH_* trio alongside Google's, replacing user-set values (issue #163)", async () => {
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "d3".repeat(20) },
+      store,
+    );
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        // A user secret trying to shadow the second provider's brokered token.
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          MAYI_OAUTH_REFRESH_TOKEN: "user_token",
+        }),
+        connectionGrantEnv: async () => ({
+          GOOGLE_OAUTH_CLIENT_ID: "g_client",
+          GOOGLE_OAUTH_CLIENT_SECRET: "g_secret",
+          GOOGLE_OAUTH_REFRESH_TOKEN: "g_token",
+          MAYI_OAUTH_CLIENT_ID: "m_client",
+          MAYI_OAUTH_CLIENT_SECRET: "m_secret",
+          MAYI_OAUTH_REFRESH_TOKEN: "m_token",
+        }),
+      },
+    );
+    const env = deployedEnvs[0];
+    expect(env.GOOGLE_OAUTH_CLIENT_ID).toBe("g_client");
+    expect(env.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("g_token");
+    expect(env.MAYI_OAUTH_CLIENT_ID).toBe("m_client");
+    expect(env.MAYI_OAUTH_CLIENT_SECRET).toBe("m_secret");
+    expect(env.MAYI_OAUTH_REFRESH_TOKEN).toBe("m_token");
+  });
 });
 
 describe("deploy-time scope-coverage validation (issue #69)", () => {
@@ -1557,7 +1594,7 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
       { projectId: PROJECT, agentId: AGENT, gitSha: "aa".repeat(20) },
       store,
     );
-    const seen: (string | null | undefined)[] = [];
+    const seen: (ReadonlyMap<string, string[]> | null | undefined)[] = [];
     await deployRelease(
       { environmentId: ENV, releaseId: release.id },
       {
@@ -1571,7 +1608,10 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
         },
       },
     );
-    expect(seen).toEqual(["https://www.googleapis.com/auth/spreadsheets"]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.get("google")).toEqual([
+      "https://www.googleapis.com/auth/spreadsheets",
+    ]);
   });
 
   it("fails the deploy when connectionGrantEnv rejects an under-scoped grant", async () => {
@@ -1587,7 +1627,7 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
         secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
         agentLock: async () => LOCK,
         connectionGrantEnv: async (_scope, requiredScopes) => {
-          if (requiredScopes)
+          if (requiredScopes?.get("google")?.length)
             throw new Error("missing required permission(s): spreadsheets");
           return {};
         },

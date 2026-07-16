@@ -169,6 +169,10 @@ export default [
   // code and seals the grant. The grant is injected as env at deploy so eve self-refreshes tokens.
   route("google/connect", "routes/google.connect.tsx"),
   route("google/callback", "routes/google.callback.tsx"),
+  // Provider-generic connection broker (issue #163): one connect/callback pair for every
+  // registered provider; /google/* stay as aliases for redirect-URI back-compat.
+  route("connections/:provider/connect", "routes/connections.$provider.connect.tsx"),
+  route("connections/:provider/callback", "routes/connections.$provider.callback.tsx"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
   // Hosted MCP Streamable HTTP transport. Bearer API keys are verified per stateless request.
   route("api/mcp", "routes/api.mcp.ts"),

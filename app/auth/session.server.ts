@@ -12,6 +12,12 @@ import {
   stageGoogleCallback,
 } from "~/connections/google-callback.server";
 import {
+  clearConnectionCallbackCookie,
+  isConnectionCallbackPath,
+  isConnectionCallbackStagingRequest,
+  stageConnectionCallback,
+} from "~/connections/connection-callback.server";
+import {
   clearGitHubManifestCallbackCookie,
   isGitHubManifestCallbackStagingRequest,
   stageGitHubManifestCallback,
@@ -198,6 +204,9 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
   if (isGoogleCallbackStagingRequest(request)) {
     return hardenDynamicResponse(stageGoogleCallback(request));
   }
+  if (isConnectionCallbackStagingRequest(request)) {
+    return hardenDynamicResponse(stageConnectionCallback(request));
+  }
   if (isGitHubManifestCallbackStagingRequest(request)) {
     return hardenDynamicResponse(stageGitHubManifestCallback(request));
   }
@@ -218,6 +227,12 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
   hardenDynamicResponse(response);
   if (pathname === "/google/callback") {
     response.headers.append("set-cookie", clearGoogleCallbackCookie(request));
+  }
+  if (isConnectionCallbackPath(pathname)) {
+    response.headers.append(
+      "set-cookie",
+      clearConnectionCallbackCookie(request),
+    );
   }
   if (pathname === "/github/apps/callback") {
     response.headers.append(

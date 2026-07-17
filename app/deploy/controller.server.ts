@@ -15,8 +15,17 @@
  * controller still records the Release + deployment rows and marks the deployment `failed` with
  * the tooling error, so the control plane and UI work end-to-end without real infra.
  */
+import { randomBytes } from "node:crypto";
+
 import type { DataStore, Deployment, Release } from "~/data/ports";
-import { overlayLock, requiredScopesByProvider } from "~/marketplace/lock";
+import {
+  overlayLock,
+  requiredScopesByProvider,
+  type EdenLock,
+} from "~/marketplace/lock";
+import { lockSecretsForMember } from "~/project/secrets.server";
+import { listProviders } from "~/connections/providers.server";
+import { envIngressUrl } from "~/lib/ingress";
 import { enqueue } from "~/jobs/queue.server";
 import { getRuntime } from "~/seams/index.server";
 import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
@@ -49,18 +58,21 @@ export interface DeployDeps {
   /** Names of secrets marked "available in the agent's sandbox shell" for a deploy scope. */
   sandboxExposedNames?: (scope: SecretScope) => Promise<string[]>;
   /**
-   * Env for the agent's active auth-brokered connection grant (issue #30): the operator Google
-   * client creds + the sealed refresh token, so the shipped eve connection self-refreshes tokens.
-   * `{}` when there's no grant; THROWS (failing the deploy) when the grant is dead or (when
-   * `requiredScopes` is supplied) under-scoped for the installed connectors (issue #69).
+   * Env for the agent's active auth-brokered connection grants (issues #30, #163): per provider,
+   * the operator client creds + the sealed refresh token (`<PREFIX>_OAUTH_*`), so the shipped eve
+   * connections self-refresh tokens. `{}` when there are no grants; THROWS (failing the deploy)
+   * when a grant is dead or (when `requiredScopes` is supplied) under-scoped for the installed
+   * connectors (issue #69).
    */
   connectionGrantEnv?: (
     scope: SecretScope,
-    requiredScopes?: string | null,
+    requiredScopes?: ReadonlyMap<string, string[]> | null,
   ) => Promise<Record<string, string>>;
   /**
-   * Committed `eden-lock.json` content at a release's commit, for deploy-time scope-coverage
-   * validation (issue #69). null when absent/unfetchable — coverage is then skipped.
+   * Committed `eden-lock.json` content at a release's commit — the generated-secret mint
+   * (issue #163) and deploy-time scope-coverage validation (issue #69) both read it. null when
+   * the repo has no lock file; a fetch failure THROWS (failing the deploy) — without the lock
+   * Eden can't know which generated secrets the agent requires, and deploys are repeatable.
    */
   agentLock?: (input: {
     installationId: string;
@@ -93,11 +105,11 @@ function deployDeps(): DeployDeps {
       import("~/connections/deploy.server").then((m) =>
         m.connectionGrantEnv(scope, fetch, undefined, requiredScopes),
       ),
+    // A missing lock FILE resolves null; a failed FETCH rejects (deployRelease fails the deploy).
     agentLock: ({ installationId, owner, repo, ref }) =>
       import("~/github/repo.server")
         .then((m) => m.fetchAgentSource(installationId, { owner, repo, ref }))
-        .then((s) => s.files["eden-lock.json"] ?? null)
-        .catch(() => null),
+        .then((s) => s.files["eden-lock.json"] ?? null),
   };
 }
 
@@ -292,6 +304,70 @@ export async function deployRelease(
       environmentId: input.environmentId,
     };
     const envVars = await secrets.resolve(scope);
+
+    // Committed `eden-lock.json` at THIS release's commit — fetched ONCE and shared by the
+    // generated-secret mint below and the connection scope-coverage check further down (issue
+    // #69). A repo without a lock FILE is fine (nothing to mint or validate), but a failed
+    // FETCH fails the deploy: without the lock Eden can't know which generated secrets the
+    // agent requires, and silently launching without them ships a broken container. Deploys
+    // are repeatable — redeploying retries. (A corrupt lock still degrades to empty inside
+    // overlayLock; the next install rewrites it cleanly.) Attribution matches the route
+    // loaders': a team member is keyed by name, the single-agent root by null.
+    let lock: EdenLock | null = null;
+    if (
+      deps.agentLock &&
+      project?.repoOwner &&
+      project.repoName &&
+      project.repoInstallationId
+    ) {
+      let lockJson: string | null;
+      try {
+        lockJson = await deps.agentLock({
+          installationId: project.repoInstallationId,
+          owner: project.repoOwner,
+          repo: project.repoName,
+          ref: release.gitSha,
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Could not fetch eden-lock.json at ${release.gitSha.slice(0, 7)} (${detail}) — the deploy needs it to mint generated secrets and validate connection scopes. Redeploy to retry.`,
+        );
+      }
+      lock = overlayLock(lockJson, []);
+    }
+    const member = isTeamMember && agent ? agent.name : null;
+
+    // Generated secrets (issue #163): lock-declared `generated` secrets are minted ONCE per
+    // (agent, environment) — 32 random bytes base64url, sealed into secret_values via the normal
+    // secrets seam — and reused verbatim on every later deploy. The mint gate is the EXACT
+    // (agent, environment, name) row, never the resolved cascade: generated material is nobody's
+    // credential, so a user/shared/agent-scoped value of the same name can neither pre-seed nor
+    // shadow it (the injected value is always the stored row, regenerated only if that row is
+    // deleted). Two concurrent first deploys of the same env can race; last write wins, resolved
+    // by the next redeploy.
+    if (lock && agent) {
+      const generatedNames = lockSecretsForMember(lock, agent.name, isTeamMember)
+        .flatMap((e) => e.secrets.filter((s) => s.generated).map((s) => s.name));
+      for (const name of new Set(generatedNames)) {
+        if (isReservedModelEnvName(name)) continue;
+        const ref = {
+          projectId: release.projectId,
+          agentId: release.agentId,
+          environmentId: input.environmentId,
+          key: name,
+        };
+        const existing = await secrets.get(ref);
+        const value = existing ?? randomBytes(32).toString("base64url");
+        if (existing === null) {
+          await secrets.set(ref, value, {
+            updatedBy: input.createdBy ?? undefined,
+          });
+        }
+        envVars[name] = value;
+      }
+    }
+
     // Legacy/plain Eve model strings call Vercel AI Gateway. Eden-authored model choices use
     // OpenRouter wiring, but keep this fallback so older repos still run if configured.
     for (const key of ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const) {
@@ -418,54 +494,49 @@ export async function deployRelease(
       envVars.EDEN_TEAM_TOKEN ??= mintDelegationToken(dep.id);
     }
 
-    // Auth-brokered connections (issue #30): if this agent has an active Google grant, inject the
-    // operator client creds + sealed refresh token so the shipped eve OpenAPI connection can
-    // self-refresh access tokens at runtime. The provider validates the grant once (a dead grant
-    // THROWS here, failing the deploy with a reconnect message). Eden OWNS these keys only when it
-    // actually brokers the connection: like the Discord block above, anti-shadowing runs ONLY when
-    // there's injection env — so a self-hoster's manually-set GOOGLE_OAUTH_* (their own client +
-    // token, no broker) passes through untouched. No-op when there's no grant / no operator config.
-    // Deploy-time scope coverage (issue #69): the committed lock at THIS release's commit names the
-    // scopes the installed connectors require. Best-effort — a lock-fetch hiccup must never block a
-    // deploy, and coverage is simply skipped (the grant liveness check still runs). Attribution
-    // matches the loader's: a team member is keyed by name, the single-agent root by null.
-    let requiredGoogleScopes: string | null = null;
-    try {
-      if (
-        deps.agentLock &&
-        project?.repoOwner &&
-        project.repoName &&
-        project.repoInstallationId
-      ) {
-        const lockJson = await deps.agentLock({
-          installationId: project.repoInstallationId,
-          owner: project.repoOwner,
-          repo: project.repoName,
-          ref: release.gitSha,
-        });
-        const lock = overlayLock(lockJson, []);
-        const member = isTeamMember && agent ? agent.name : null;
-        requiredGoogleScopes =
-          requiredScopesByProvider(lock, member).get("google")?.join(" ") ??
-          null;
-      }
-    } catch {
-      requiredGoogleScopes = null; // best-effort: never block a deploy on a lock-fetch hiccup
-    }
+    // Auth-brokered connections (issues #30, #163): for every provider this agent holds an active
+    // grant for, inject the operator client creds + sealed refresh token (`<PREFIX>_OAUTH_*`) so
+    // the shipped eve connections can self-refresh access tokens at runtime. The provider validates
+    // each grant once (a dead grant THROWS here, failing the deploy with a reconnect message).
+    // Eden OWNS a provider's keys only when it actually brokers that connection: like the Discord
+    // block above, anti-shadowing runs ONLY per injected provider — so a self-hoster's manually-set
+    // GOOGLE_OAUTH_* (their own client + token, no broker) passes through untouched. No-op when
+    // there are no grants / no operator config.
+    // Deploy-time scope coverage (issue #69): the committed lock at THIS release's commit (fetched
+    // once above; a fetch failure already failed the deploy) names the scopes the installed
+    // connectors require, per provider. When the repo has no lock file, coverage is simply
+    // skipped (grant liveness still runs).
+    const requiredConnectionScopes: Map<string, string[]> | null = lock
+      ? requiredScopesByProvider(lock, member)
+      : null;
     const grantEnv = deps.connectionGrantEnv
-      ? await deps.connectionGrantEnv(scope, requiredGoogleScopes)
+      ? await deps.connectionGrantEnv(scope, requiredConnectionScopes)
       : {};
     if (Object.keys(grantEnv).length > 0) {
-      for (const key of [
-        "GOOGLE_OAUTH_CLIENT_ID",
-        "GOOGLE_OAUTH_CLIENT_SECRET",
-        "GOOGLE_OAUTH_REFRESH_TOKEN",
-      ]) {
-        delete envVars[key];
+      for (const def of listProviders()) {
+        // Only the providers Eden actually brokered this deploy — a present refresh token marks one.
+        if (!(`${def.envPrefix}_OAUTH_REFRESH_TOKEN` in grantEnv)) continue;
+        for (const suffix of ["CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN"]) {
+          delete envVars[`${def.envPrefix}_OAUTH_${suffix}`];
+        }
       }
       for (const [key, value] of Object.entries(grantEnv)) {
         envVars[key] = value;
       }
+    }
+
+    // Public origin (issue #163): instances that receive inbound webhooks need their
+    // per-environment public ingress URL to construct callback URLs. Operator-level env (deploys
+    // can be webhook-driven with no meaningful request origin). Anti-shadowing only when
+    // injecting — unset means a user-set EVE_PUBLIC_ORIGIN passes through (local dev /
+    // self-managed ingress).
+    const publicOriginConfig = process.env.EDEN_PUBLIC_ORIGIN?.trim();
+    if (publicOriginConfig) {
+      delete envVars.EVE_PUBLIC_ORIGIN;
+      envVars.EVE_PUBLIC_ORIGIN = envIngressUrl(
+        publicOriginConfig,
+        input.environmentId,
+      );
     }
 
     let imageRef = release.imageRef;

@@ -89,11 +89,13 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
   // Create GitHub App guided flow on the Deployment tab — never something the user provides. Keep
   // them out of the "Secrets you provide" list; if EVERY secret is provisioned, the card is dropped
   // entirely (the Setup card already tells the user to run Create GitHub App).
+  // Issue #163: generated secrets are minted by Eden at first deploy — like provisioned ones,
+  // never something the user provides.
   const secrets = manifest.secrets ?? [];
-  const userSecrets = secrets.filter((s) => !s.provisioned);
+  const userSecrets = secrets.filter((s) => !s.provisioned && !s.generated);
   const provisionedSecrets = secrets.filter((s) => s.provisioned);
-  const showSecretsCard =
-    userSecrets.length > 0 || provisionedSecrets.length === 0;
+  const generatedSecrets = secrets.filter((s) => s.generated);
+  const showSecretsCard = userSecrets.length > 0 || secrets.length === 0;
 
   return (
     <AppShell userEmail={user.email}>
@@ -235,6 +237,20 @@ export default function TemplateDetail({ loaderData }: Route.ComponentProps) {
                     {provisionedSecrets.length === 1 ? "this" : "these"} via
                     guided setup on the agent&rsquo;s Deployment tab. You never
                     provide {provisionedSecrets.length === 1 ? "it" : "them"}.
+                  </p>
+                )}
+                {generatedSecrets.length > 0 && (
+                  <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">
+                      Generated automatically:
+                    </span>{" "}
+                    <span className="font-mono">
+                      {generatedSecrets.map((s) => s.name).join(", ")}
+                    </span>{" "}
+                    — Eden mints{" "}
+                    {generatedSecrets.length === 1 ? "this" : "these"} at first
+                    deploy. You never provide{" "}
+                    {generatedSecrets.length === 1 ? "it" : "them"}.
                   </p>
                 )}
               </CardContent>

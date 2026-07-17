@@ -95,6 +95,10 @@ function validateManifest(where, m) {
         if (!UPPER_SNAKE.test(s?.name ?? "")) {
           fail(where, `secret name "${s?.name}" is not UPPER_SNAKE_CASE`);
         }
+        // A secret is either flow-set (provisioned) or Eden-minted (generated) — never both.
+        if (s?.provisioned && s?.generated) {
+          fail(where, `secret "${s.name}" can't be both provisioned and generated`);
+        }
       }
   }
 

@@ -180,10 +180,16 @@ async function resolve(
   Object.assign(deps, manifest.dependencies ?? {});
 
   // ── secrets: union by name (includes-first then parent); first occurrence keeps its
-  // description; sandbox/provisioned flags OR together ──
+  // description; sandbox/provisioned/generated flags OR together ──
   const secretByName = new Map<
     string,
-    { name: string; description?: string; sandbox?: boolean; provisioned?: boolean }
+    {
+      name: string;
+      description?: string;
+      sandbox?: boolean;
+      provisioned?: boolean;
+      generated?: boolean;
+    }
   >();
   const addSecrets = (list: TemplateManifest["secrets"]) => {
     for (const s of list ?? []) {
@@ -194,11 +200,13 @@ async function resolve(
           ...(s.description !== undefined ? { description: s.description } : {}),
           ...(s.sandbox ? { sandbox: true } : {}),
           ...(s.provisioned ? { provisioned: true } : {}),
+          ...(s.generated ? { generated: true } : {}),
         });
       } else {
-        // First occurrence wins the description; sandbox/provisioned OR across all occurrences.
+        // First occurrence wins the description; sandbox/provisioned/generated OR across all.
         if (s.sandbox) existing.sandbox = true;
         if (s.provisioned) existing.provisioned = true;
+        if (s.generated) existing.generated = true;
       }
     }
   };

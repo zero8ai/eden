@@ -218,6 +218,7 @@ export interface InstallPlan {
     description?: string;
     sandbox?: boolean;
     provisioned?: boolean;
+    generated?: boolean;
   }>;
 }
 
@@ -518,6 +519,7 @@ export function planInstall(ctx: PlanContext): InstallPlan {
             ...(s.description ? { description: s.description } : {}),
             ...(s.sandbox ? { sandbox: s.sandbox } : {}),
             ...(s.provisioned ? { provisioned: s.provisioned } : {}),
+            ...(s.generated ? { generated: s.generated } : {}),
           })),
         }
       : {}),
@@ -561,6 +563,7 @@ export function planInstall(ctx: PlanContext): InstallPlan {
       description: s.description,
       sandbox: s.sandbox,
       provisioned: s.provisioned,
+      generated: s.generated,
     })),
   };
 }

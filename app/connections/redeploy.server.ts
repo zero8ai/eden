@@ -1,11 +1,11 @@
 /**
  * Auto-redeploy after connect/reconnect (issue #69).
  *
- * The `GOOGLE_OAUTH_*` env an agent needs to talk to Google is injected ONLY at deploy time
- * (`connectionGrantEnv` inside `deployRelease`). So after a user reconnects Google from the
- * Deployment tab, the grant row flips to "active" but the RUNNING container still holds the old
- * (or no) credentials until the next deploy — the exact gap that made "Google Sheets connection
- * is not configured" show up at runtime despite an "active" grant.
+ * The per-provider `<PREFIX>_OAUTH_*` env an agent needs to talk to a connected provider is
+ * injected ONLY at deploy time (`connectionGrantEnv` inside `deployRelease`). So after a user
+ * reconnects a provider from the Deployment tab, the grant row flips to "active" but the RUNNING
+ * container still holds the old (or no) credentials until the next deploy — the exact gap that
+ * made "Google Sheets connection is not configured" show up at runtime despite an "active" grant.
  *
  * Aaron's direction (issue #69, 2026-07-10): no banner/nudge — the connect/reconnect action ITSELF
  * performs the redeployment. When the OAuth flow completes and the agent has a live deployment, we

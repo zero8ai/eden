@@ -153,6 +153,7 @@ interface PreviewData {
     description?: string;
     sandbox?: boolean;
     provisioned?: boolean;
+    generated?: boolean;
   }>;
   isUpdate: boolean;
   /** Templates bundled by reference (composition) — rendered as a "Bundled from the catalog" card. */
@@ -619,7 +620,10 @@ export default function InstallWizard({
   // Issue #47: provisioned secrets are set by a guided Eden flow (e.g. Create GitHub App on the
   // Deployment tab) — the wizard never collects them. Only the user-supplied ones get inputs; the
   // provisioned ones get a single muted note so the user isn't led to think they must provide them.
-  const userSecrets = (preview?.secrets ?? []).filter((s) => !s.provisioned);
+  // Issue #163: generated secrets are minted by Eden at first deploy — never collected either.
+  const userSecrets = (preview?.secrets ?? []).filter(
+    (s) => !s.provisioned && !s.generated,
+  );
   const provisionedSecrets = (preview?.secrets ?? []).filter(
     (s) => s.provisioned,
   );

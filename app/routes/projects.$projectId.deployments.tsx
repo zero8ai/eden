@@ -124,11 +124,12 @@ import {
 import { closePullRequest } from "~/github/write.server";
 import { getDiscordAppConfig } from "~/discord/config.server";
 import { listConnectionsForAgent } from "~/discord/connections.server";
-import { getGoogleOAuthConfig } from "~/connections/config.server";
+import { getProviderOAuthConfig } from "~/connections/config.server";
 import {
   connectionRowState,
   type ConnectionRowState,
-} from "~/connections/google.server";
+} from "~/connections/oauth.server";
+import { getProvider } from "~/connections/providers.server";
 import { listGrantsForAgent } from "~/connections/grants.server";
 import {
   discardConversationCheckoutByBranch,
@@ -259,8 +260,14 @@ interface DeploymentData {
     /** Grant id when connected, else a synthetic `provider:<name>` key for the lock-derived row. */
     id: string;
     provider: string;
+    /** Display name from the provider registry (capitalized id when unregistered). */
+    label: string;
+    /** Whether this Eden installation's registry knows the provider — false → inert row. */
+    registered: boolean;
+    /** Whether the operator configured this provider's OAuth client — gates the connect action. */
+    configured: boolean;
     accountEmail: string | null;
-    /** What Google GRANTED last time — a record only, never the Reconnect request template (§#30). */
+    /** What the provider GRANTED last time — a record only, never the Reconnect request template (§#30). */
     scopes: string;
     /** Grant status, or null when there's no grant yet (lock-derived row). */
     status: string | null;
@@ -273,8 +280,6 @@ interface DeploymentData {
     /** Loader-computed row state — the server-only scope comparison stays out of the render path. */
     state: ConnectionRowState;
   }>;
-  /** Whether the operator configured a Google OAuth client — gates the reconnect action. */
-  connectionsConfigured: boolean;
   /** Member/single view: GitHub App setup when the agent has the marketplace GitHub channel. */
   githubSetup: {
     enabled: boolean;
@@ -482,7 +487,6 @@ export const loader = (args: LoaderFunctionArgs) =>
             connections: null,
           },
           connections: [],
-          connectionsConfigured: getGoogleOAuthConfig() !== null,
           githubSetup: {
             enabled: false,
             appSlug: null,
@@ -591,9 +595,16 @@ export const loader = (args: LoaderFunctionArgs) =>
           // Null when the lock has no snapshot for this provider (old locks) → the card falls back to
           // the grant's stored scopes.
           const requiredScopeStr = req && req.length > 0 ? req.join(" ") : null;
+          // Registry + operator config are per provider (issue #163): an unregistered provider
+          // renders inert, an unconfigured one renders without a connect action.
+          const def = getProvider(provider);
           return {
             id: grant?.id ?? `provider:${provider}`,
             provider,
+            label:
+              def?.label ?? provider.charAt(0).toUpperCase() + provider.slice(1),
+            registered: def !== null,
+            configured: def ? getProviderOAuthConfig(def) !== null : false,
             accountEmail: grant?.accountEmail ?? null,
             scopes: grant?.scopes ?? "",
             status: grant?.status ?? null,
@@ -668,7 +679,6 @@ export const loader = (args: LoaderFunctionArgs) =>
           connections: discordConnections,
         },
         connections: connectionGrantRows,
-        connectionsConfigured: getGoogleOAuthConfig() !== null,
         githubSetup: {
           enabled: hasGithubSetup,
           appSlug: githubAppSlug,
@@ -991,7 +1001,12 @@ export default function Deployment({
   const connected = params.get("connected");
   const redeploy = params.get("redeploy");
   const redeployError = params.get("redeployError");
-  const connectedLabel = connected === "google" ? "Google" : connected;
+  // Registry label from the Connections rows (the callback just upserted a grant, so the row
+  // exists); raw id only if the row is somehow gone.
+  const connectedLabel = connected
+    ? (loaderData.connections.find((c) => c.provider === connected)?.label ??
+      connected)
+    : connected;
 
   // Progress: re-fetch faster while any deployment is pending/building. A slower
   // baseline poll runs regardless, so a deploy STARTED after this page loaded is
@@ -1194,7 +1209,6 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
       />
       <ConnectionsCard
         connections={loaderData.connections}
-        configured={loaderData.connectionsConfigured}
         projectId={loaderData.project.id}
         agentName={activeAgent}
       />
@@ -1203,27 +1217,24 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
 }
 
 /**
- * Auth-brokered connections (issue #30): the ONE place a connector's OAuth account is connected and
- * reconnected — installs no longer gate on it, so a row exists for every provider the lock REQUIRES,
- * even before any grant. Each row routes to /google/connect (returnTo = this Deployment tab) and, per
- * its loader-derived state, offers Connect (no grant), a subtle Reconnect (covered), or a primary
- * Reconnect (under-scoped / expired / revoked). Visual language mirrors the Discord card.
+ * Auth-brokered connections (issues #30, #163): the ONE place a connector's OAuth account is
+ * connected and reconnected — installs no longer gate on it, so a row exists for every provider the
+ * lock REQUIRES, even before any grant. Each row routes to /connections/<provider>/connect
+ * (returnTo = this Deployment tab) and, per its loader-derived state, offers Connect (no grant), a
+ * subtle Reconnect (covered), or a primary Reconnect (under-scoped / expired / revoked). A provider
+ * this installation's registry doesn't know renders inert. Visual language mirrors the Discord card.
  */
 function ConnectionsCard({
   connections,
-  configured,
   projectId,
   agentName,
 }: {
   connections: LoaderData["connections"];
-  configured: boolean;
   projectId: string;
   agentName: string;
 }) {
   if (connections.length === 0) return null;
   const returnTo = `${contextPath(projectId, agentName)}/deployment`;
-  const providerLabel = (p: string) =>
-    p === "google" ? "Google" : p.charAt(0).toUpperCase() + p.slice(1);
 
   return (
     <Card>
@@ -1236,12 +1247,12 @@ function ConnectionsCard({
       </CardHeader>
       <CardContent className="space-y-3">
         {connections.map((c) => {
-          const label = providerLabel(c.provider);
           // The server re-derives requested scopes from this agent's effective lock (falling back
           // to its stored grant only for old locks). Never put an authority-bearing scope list in
           // this browser-controlled URL.
           const connectUrl =
-            `/google/connect?project=${encodeURIComponent(projectId)}` +
+            `/connections/${encodeURIComponent(c.provider)}/connect` +
+            `?project=${encodeURIComponent(projectId)}` +
             `&agent=${encodeURIComponent(agentName)}` +
             `&returnTo=${encodeURIComponent(returnTo)}`;
           return (
@@ -1251,7 +1262,7 @@ function ConnectionsCard({
             >
               <div className="grid gap-0.5">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium">{label}</span>
+                  <span className="text-sm font-medium">{c.label}</span>
                   {c.state === "not-connected" ? (
                     <Badge variant="outline">not connected</Badge>
                   ) : c.state === "inactive" ? (
@@ -1266,13 +1277,19 @@ function ConnectionsCard({
                   {c.state === "not-connected"
                     ? "Not connected"
                     : c.state === "under-scoped"
-                      ? `Connected as ${c.accountEmail ?? "your Google account"} — missing permissions this connector needs.`
+                      ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — missing permissions this connector needs.`
                       : c.state === "connected"
-                        ? `Connected as ${c.accountEmail ?? "your Google account"}`
+                        ? c.accountEmail
+                          ? `Connected as ${c.accountEmail}`
+                          : "Connected"
                         : (c.accountEmail ?? "connected account")}
                 </span>
               </div>
-              {configured ? (
+              {!c.registered ? (
+                <span className="text-xs text-muted-foreground">
+                  not supported by this Eden installation
+                </span>
+              ) : c.configured ? (
                 // A covered grant is done — only a subtle Reconnect link. Every other state is a
                 // to-do (connect, re-scope, or re-auth) and gets the primary button (issue #30).
                 c.state === "connected" ? (
@@ -1286,7 +1303,7 @@ function ConnectionsCard({
                   <Button asChild variant="default" size="sm">
                     <Link to={connectUrl}>
                       {c.state === "not-connected"
-                        ? `Connect ${label}`
+                        ? `Connect ${c.label}`
                         : "Reconnect"}
                     </Link>
                   </Button>

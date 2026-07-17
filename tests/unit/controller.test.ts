@@ -22,7 +22,8 @@ import {
   DEPLOYMENT_DRAIN_POLL_MS,
   drainDeployment,
 } from "~/deploy/drain.server";
-import type { DeployTarget } from "~/seams/types";
+import { envIngressUrl } from "~/lib/ingress";
+import type { DeployTarget, SecretsProvider } from "~/seams/types";
 import { fakeDeployTarget, fakeSecrets } from "../fakes/infra";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
 
@@ -1515,6 +1516,43 @@ describe("Google connection env injection (issue #30)", () => {
     expect(env.GOOGLE_OAUTH_CLIENT_SECRET).toBe("broker_secret");
     expect(env.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("broker_token");
   });
+
+  it("injects a second provider's <PREFIX>_OAUTH_* trio alongside Google's, replacing user-set values (issue #163)", async () => {
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "d3".repeat(20) },
+      store,
+    );
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        // A user secret trying to shadow the second provider's brokered token.
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          MAYI_OAUTH_REFRESH_TOKEN: "user_token",
+        }),
+        connectionGrantEnv: async () => ({
+          GOOGLE_OAUTH_CLIENT_ID: "g_client",
+          GOOGLE_OAUTH_CLIENT_SECRET: "g_secret",
+          GOOGLE_OAUTH_REFRESH_TOKEN: "g_token",
+          MAYI_OAUTH_CLIENT_ID: "m_client",
+          MAYI_OAUTH_CLIENT_SECRET: "m_secret",
+          MAYI_OAUTH_REFRESH_TOKEN: "m_token",
+        }),
+      },
+    );
+    const env = deployedEnvs[0];
+    expect(env.GOOGLE_OAUTH_CLIENT_ID).toBe("g_client");
+    expect(env.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("g_token");
+    expect(env.MAYI_OAUTH_CLIENT_ID).toBe("m_client");
+    expect(env.MAYI_OAUTH_CLIENT_SECRET).toBe("m_secret");
+    expect(env.MAYI_OAUTH_REFRESH_TOKEN).toBe("m_token");
+  });
 });
 
 describe("deploy-time scope-coverage validation (issue #69)", () => {
@@ -1557,7 +1595,7 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
       { projectId: PROJECT, agentId: AGENT, gitSha: "aa".repeat(20) },
       store,
     );
-    const seen: (string | null | undefined)[] = [];
+    const seen: (ReadonlyMap<string, string[]> | null | undefined)[] = [];
     await deployRelease(
       { environmentId: ENV, releaseId: release.id },
       {
@@ -1571,7 +1609,10 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
         },
       },
     );
-    expect(seen).toEqual(["https://www.googleapis.com/auth/spreadsheets"]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.get("google")).toEqual([
+      "https://www.googleapis.com/auth/spreadsheets",
+    ]);
   });
 
   it("fails the deploy when connectionGrantEnv rejects an under-scoped grant", async () => {
@@ -1587,7 +1628,7 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
         secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
         agentLock: async () => LOCK,
         connectionGrantEnv: async (_scope, requiredScopes) => {
-          if (requiredScopes)
+          if (requiredScopes?.get("google")?.length)
             throw new Error("missing required permission(s): spreadsheets");
           return {};
         },
@@ -1595,5 +1636,253 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
     );
     expect(dep.status).toBe("failed");
     expect(dep.errorDetail).toContain("missing required permission");
+  });
+});
+
+describe("generated-secret mint-once (issue #163)", () => {
+  // A lock-declared `generated` secret: nobody types it — Eden mints it at first deploy.
+  const LOCK = JSON.stringify({
+    version: 1,
+    installs: [
+      {
+        id: "mayi-approvals",
+        type: "connection",
+        name: "May I? approvals",
+        version: "1.0.0",
+        hash: "h",
+        registry: "fixture",
+        member: null,
+        files: [],
+        secrets: [{ name: "MAYI_STATE_KEY", generated: true }],
+      },
+    ],
+  });
+
+  beforeEach(() => {
+    // agentLock only runs when the project has full repo coordinates.
+    store.seedProject({
+      id: PROJECT,
+      orgId: ORG,
+      repoOwner: "acme",
+      repoName: "agent",
+      repoInstallationId: "inst_1",
+    });
+  });
+
+  /**
+   * A stateful SecretsProvider: set() persists to the exact (agent, env, name) rows that get()
+   * reads back, and resolve() layers those rows over `base` (values from OTHER cascade scopes),
+   * like the DB. `exactRows` pre-seeds stored (agent, env, name) rows.
+   */
+  function mintingSecrets(
+    base: Record<string, string>,
+    exactRows: Record<string, string> = {},
+  ) {
+    const stored: Record<string, string> = { ...exactRows };
+    const setCalls: { key: string; value: string }[] = [];
+    const provider: SecretsProvider = {
+      name: "fake",
+      async set(ref, value) {
+        stored[ref.key] = value;
+        setCalls.push({ key: ref.key, value });
+      },
+      async get(ref) {
+        return stored[ref.key] ?? null;
+      },
+      async delete() {},
+      async listNames() {
+        return [];
+      },
+      async resolve() {
+        return { ...base, ...stored };
+      },
+    };
+    return { provider, setCalls };
+  }
+
+  it("mints once at first deploy and reuses the identical value on the next", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "cc".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    const { provider, setCalls } = mintingSecrets({ OPENROUTER_API_KEY: "k" });
+    const depsFor = () => ({
+      store,
+      deployTarget: fakeDeployTarget({
+        health: { status: "live" as const },
+        deployedEnvs,
+      }),
+      secrets: provider,
+      agentLock: async () => LOCK,
+    });
+
+    await deployRelease({ environmentId: ENV, releaseId: release.id }, depsFor());
+    await deployRelease({ environmentId: ENV, releaseId: release.id }, depsFor());
+
+    // Exactly one mint: 32 random bytes base64url (43 chars), persisted through the seam.
+    expect(setCalls).toHaveLength(1);
+    expect(setCalls[0].key).toBe("MAYI_STATE_KEY");
+    expect(setCalls[0].value).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    // Both containers received the SAME value — stable across redeploys.
+    expect(deployedEnvs).toHaveLength(2);
+    expect(deployedEnvs[0].MAYI_STATE_KEY).toBe(setCalls[0].value);
+    expect(deployedEnvs[1].MAYI_STATE_KEY).toBe(setCalls[0].value);
+  });
+
+  it("suppresses the mint only for an existing exact (agent, env, name) row", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "dd".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    const { provider, setCalls } = mintingSecrets(
+      { OPENROUTER_API_KEY: "k" },
+      { MAYI_STATE_KEY: "already-minted" },
+    );
+
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        secrets: provider,
+        agentLock: async () => LOCK,
+      },
+    );
+
+    expect(setCalls).toHaveLength(0);
+    expect(deployedEnvs[0].MAYI_STATE_KEY).toBe("already-minted");
+  });
+
+  it("mints despite a same-named value from another scope level — generated material is nobody's credential", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "ab".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    // A user/shared/agent-scoped MAYI_STATE_KEY resolves from the cascade, but no exact
+    // (agent, env, name) row exists — Eden must still mint, and the mint must win.
+    const { provider, setCalls } = mintingSecrets({
+      OPENROUTER_API_KEY: "k",
+      MAYI_STATE_KEY: "user-shadow-attempt",
+    });
+
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        secrets: provider,
+        agentLock: async () => LOCK,
+      },
+    );
+
+    expect(setCalls).toHaveLength(1);
+    expect(deployedEnvs[0].MAYI_STATE_KEY).toBe(setCalls[0].value);
+    expect(deployedEnvs[0].MAYI_STATE_KEY).not.toBe("user-shadow-attempt");
+  });
+
+  it("fails the deploy when the lock fetch fails — required generated secrets can't be determined", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "ba".repeat(20) },
+      store,
+    );
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" } }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+        agentLock: async () => {
+          throw new Error("GitHub 502");
+        },
+      },
+    );
+    expect(dep.status).toBe("failed");
+    expect(dep.errorDetail).toContain("eden-lock.json");
+    expect(dep.errorDetail).toContain("GitHub 502");
+  });
+
+  it("deploys with nothing to mint when the repo simply has no lock file", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "cd".repeat(20) },
+      store,
+    );
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" } }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+        agentLock: async () => null,
+      },
+    );
+    expect(dep.status).toBe("live");
+  });
+});
+
+describe("EVE_PUBLIC_ORIGIN injection (issue #163)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("injects the per-environment ingress URL, overriding a user-set value, when EDEN_PUBLIC_ORIGIN is set", async () => {
+    vi.stubEnv("EDEN_PUBLIC_ORIGIN", "https://eden.example.com");
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "ee".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        // A user secret must not shadow the derived origin when Eden injects it.
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          EVE_PUBLIC_ORIGIN: "https://user.example",
+        }),
+      },
+    );
+    expect(deployedEnvs[0].EVE_PUBLIC_ORIGIN).toBe(
+      envIngressUrl("https://eden.example.com", ENV),
+    );
+  });
+
+  it("passes a user-set EVE_PUBLIC_ORIGIN through when EDEN_PUBLIC_ORIGIN is unset", async () => {
+    vi.stubEnv("EDEN_PUBLIC_ORIGIN", "");
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "ff".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          EVE_PUBLIC_ORIGIN: "https://self-managed.example",
+        }),
+      },
+    );
+    expect(deployedEnvs[0].EVE_PUBLIC_ORIGIN).toBe(
+      "https://self-managed.example",
+    );
   });
 });

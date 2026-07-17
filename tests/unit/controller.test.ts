@@ -22,7 +22,8 @@ import {
   DEPLOYMENT_DRAIN_POLL_MS,
   drainDeployment,
 } from "~/deploy/drain.server";
-import type { DeployTarget } from "~/seams/types";
+import { envIngressUrl } from "~/lib/ingress";
+import type { DeployTarget, SecretsProvider } from "~/seams/types";
 import { fakeDeployTarget, fakeSecrets } from "../fakes/infra";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
 
@@ -1635,5 +1636,177 @@ describe("deploy-time scope-coverage validation (issue #69)", () => {
     );
     expect(dep.status).toBe("failed");
     expect(dep.errorDetail).toContain("missing required permission");
+  });
+});
+
+describe("generated-secret mint-once (issue #163)", () => {
+  // A lock-declared `generated` secret: nobody types it — Eden mints it at first deploy.
+  const LOCK = JSON.stringify({
+    version: 1,
+    installs: [
+      {
+        id: "mayi-approvals",
+        type: "connection",
+        name: "May I? approvals",
+        version: "1.0.0",
+        hash: "h",
+        registry: "fixture",
+        member: null,
+        files: [],
+        secrets: [{ name: "MAYI_STATE_KEY", generated: true }],
+      },
+    ],
+  });
+
+  beforeEach(() => {
+    // agentLock only runs when the project has full repo coordinates.
+    store.seedProject({
+      id: PROJECT,
+      orgId: ORG,
+      repoOwner: "acme",
+      repoName: "agent",
+      repoInstallationId: "inst_1",
+    });
+  });
+
+  /** A stateful SecretsProvider: set() persists, resolve() returns base + stored (like the DB). */
+  function mintingSecrets(base: Record<string, string>) {
+    const stored: Record<string, string> = {};
+    const setCalls: { key: string; value: string }[] = [];
+    const provider: SecretsProvider = {
+      name: "fake",
+      async set(ref, value) {
+        stored[ref.key] = value;
+        setCalls.push({ key: ref.key, value });
+      },
+      async get() {
+        return null;
+      },
+      async delete() {},
+      async listNames() {
+        return [];
+      },
+      async resolve() {
+        return { ...base, ...stored };
+      },
+    };
+    return { provider, setCalls };
+  }
+
+  it("mints once at first deploy and reuses the identical value on the next", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "cc".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    const { provider, setCalls } = mintingSecrets({ OPENROUTER_API_KEY: "k" });
+    const depsFor = () => ({
+      store,
+      deployTarget: fakeDeployTarget({
+        health: { status: "live" as const },
+        deployedEnvs,
+      }),
+      secrets: provider,
+      agentLock: async () => LOCK,
+    });
+
+    await deployRelease({ environmentId: ENV, releaseId: release.id }, depsFor());
+    await deployRelease({ environmentId: ENV, releaseId: release.id }, depsFor());
+
+    // Exactly one mint: 32 random bytes base64url (43 chars), persisted through the seam.
+    expect(setCalls).toHaveLength(1);
+    expect(setCalls[0].key).toBe("MAYI_STATE_KEY");
+    expect(setCalls[0].value).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    // Both containers received the SAME value — stable across redeploys.
+    expect(deployedEnvs).toHaveLength(2);
+    expect(deployedEnvs[0].MAYI_STATE_KEY).toBe(setCalls[0].value);
+    expect(deployedEnvs[1].MAYI_STATE_KEY).toBe(setCalls[0].value);
+  });
+
+  it("suppresses the mint when a value already resolves from any scope level", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "dd".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    const { provider, setCalls } = mintingSecrets({
+      OPENROUTER_API_KEY: "k",
+      MAYI_STATE_KEY: "operator-override",
+    });
+
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        secrets: provider,
+        agentLock: async () => LOCK,
+      },
+    );
+
+    expect(setCalls).toHaveLength(0);
+    expect(deployedEnvs[0].MAYI_STATE_KEY).toBe("operator-override");
+  });
+});
+
+describe("EVE_PUBLIC_ORIGIN injection (issue #163)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("injects the per-environment ingress URL, overriding a user-set value, when EDEN_PUBLIC_ORIGIN is set", async () => {
+    vi.stubEnv("EDEN_PUBLIC_ORIGIN", "https://eden.example.com");
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "ee".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        // A user secret must not shadow the derived origin when Eden injects it.
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          EVE_PUBLIC_ORIGIN: "https://user.example",
+        }),
+      },
+    );
+    expect(deployedEnvs[0].EVE_PUBLIC_ORIGIN).toBe(
+      envIngressUrl("https://eden.example.com", ENV),
+    );
+  });
+
+  it("passes a user-set EVE_PUBLIC_ORIGIN through when EDEN_PUBLIC_ORIGIN is unset", async () => {
+    vi.stubEnv("EDEN_PUBLIC_ORIGIN", "");
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "ff".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          EVE_PUBLIC_ORIGIN: "https://self-managed.example",
+        }),
+      },
+    );
+    expect(deployedEnvs[0].EVE_PUBLIC_ORIGIN).toBe(
+      "https://self-managed.example",
+    );
   });
 });

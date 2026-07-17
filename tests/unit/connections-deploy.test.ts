@@ -260,6 +260,31 @@ describe("connectionGrantEnv", () => {
     });
   });
 
+  it("names the provider's label in a scope-coverage failure (issue #163)", async () => {
+    const markGrantStatus = vi.fn(async () => {});
+    await expect(
+      connectionGrantEnv(
+        scope,
+        okFetch,
+        deps({
+          markGrantStatus,
+          listGrantsForAgent: async () => [
+            { provider: "hubspot", status: "active" as const },
+          ],
+          openRefreshToken: async () => ({
+            grant: { id: "grant_hub", status: "active", scopes: "crm.read" },
+            refreshToken: "rt_hub",
+          }),
+        }),
+        new Map([["hubspot", ["crm.read", "crm.write"]]]),
+      ),
+    ).rejects.toThrow(
+      /The HubSpot connection for this agent is missing required permission\(s\): crm\.write/,
+    );
+    // Under-scoped is not dead: the grant stays active.
+    expect(markGrantStatus).not.toHaveBeenCalled();
+  });
+
   it("still injects a granted provider the lock no longer requires (grants ∪ lock union)", async () => {
     const hubConfig = { clientId: "hub_client", clientSecret: "hub_secret" };
     const out = await connectionGrantEnv(

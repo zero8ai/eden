@@ -301,12 +301,16 @@ describe("selection edit → coverage state transitions (issue #165)", () => {
   // with the default selection.
   const grantScopes = `${READ} openid email`;
   const stateFor = (lock: EdenLock) => {
-    const required = requiredScopesByProvider(lock, "pm").get("google") ?? [];
+    // Mirrors the deployments loader: undefined = no snapshot (fall back to covered), empty =
+    // every group explicitly deselected (issue #173 — the row renders "disabled").
+    const required = requiredScopesByProvider(lock, "pm").get("google");
     return connectionRowState({
       hasGrant: true,
       grantStatus: "active",
-      requiredScopes: required.length > 0 ? required.join(" ") : null,
+      requiredScopes:
+        required && required.length > 0 ? required.join(" ") : null,
       grantScopes,
+      permissionsDisabled: required !== undefined && required.length === 0,
     });
   };
 
@@ -326,6 +330,28 @@ describe("selection edit → coverage state transitions (issue #165)", () => {
     const narrowed = setSelectedGroups(lock, "pm", "google", ["read"]);
     expect(narrowed.changed).toBe(true);
     expect(stateFor(narrowed.lock)).toBe("connected");
+  });
+
+  it("deselecting every group flips the row to disabled, not connected (issue #173)", () => {
+    const lock = lockOf(gmailEntry(["read"]));
+    expect(stateFor(lock)).toBe("connected");
+    // The old grant still covers the (now empty) requirement, but rendering "connected" would
+    // misstate what's live: deploys skip injection and reconnect refuses. The row says so.
+    const emptied = setSelectedGroups(lock, "pm", "google", []);
+    expect(emptied.changed).toBe(true);
+    expect(stateFor(emptied.lock)).toBe("disabled");
+  });
+
+  it("disabled wins over not-connected too — the Connect button would only refuse (issue #173)", () => {
+    expect(
+      connectionRowState({
+        hasGrant: false,
+        grantStatus: null,
+        requiredScopes: null,
+        grantScopes: "",
+        permissionsDisabled: true,
+      }),
+    ).toBe("disabled");
   });
 
   it("re-posting the stored selection changes nothing", () => {

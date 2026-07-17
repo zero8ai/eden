@@ -45,6 +45,7 @@ import { redeployAfterConnect } from "./redeploy.server";
 import { listAgentEnvironments, listAgents } from "~/db/queries.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { getAgentSource } from "~/github/cached.server";
+import { fetchAgentSource } from "~/github/repo.server";
 import { envIngressUrl, publicOrigin } from "~/lib/ingress";
 import { safeReturnTo } from "~/lib/signed-state.server";
 import { overlayLock, requiredScopesByProvider } from "~/marketplace/lock";
@@ -431,9 +432,16 @@ export function connectionCallbackLoader(
       // Re-derive the requirement from a FRESH lock read and refuse a stale flow. Undefined = no
       // auth snapshot for this provider (legacy lock / grant-fallback flows) — nothing to compare
       // against, so the check is skipped exactly where the fallback applies.
+      //
+      // The read is RAW, never the SWR cache (issue #173): the cache's invalidation is
+      // process-local, so with more than one control-plane replica a Permissions edit through
+      // replica A leaves replica B's cached lock stale — exactly the broad-over-narrow overwrite
+      // this guard exists to refuse. A guard that claims freshness must actually read fresh; a
+      // callback is rare and latency-tolerant, so correctness beats cache economy here. (Same
+      // rule as cached.server's module doc: reads composed into a write stay raw.)
       const selectionStale = async (): Promise<boolean> => {
         const [source, drafts] = await Promise.all([
-          getAgentSource(project.repoInstallationId, {
+          fetchAgentSource(project.repoInstallationId, {
             owner: project.repoOwner,
             repo: project.repoName,
           }),

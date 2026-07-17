@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   createOAuthStateNonce: vi.fn(),
   exchangeCode: vi.fn(),
   fetchAccountEmail: vi.fn(),
+  fetchAgentSource: vi.fn(),
   findGrant: vi.fn(),
   getAgentSource: vi.fn(),
   getConfig: vi.fn(),
@@ -90,6 +91,10 @@ vi.mock("~/db/queries.server", () => ({
 vi.mock("~/drafts/drafts.server", () => ({ listDrafts: mocks.listDrafts }));
 vi.mock("~/github/cached.server", () => ({
   getAgentSource: mocks.getAgentSource,
+}));
+// The callback's lock-currency guard reads RAW (issue #173) — the connect loader keeps the cache.
+vi.mock("~/github/repo.server", () => ({
+  fetchAgentSource: mocks.fetchAgentSource,
 }));
 vi.mock("~/lib/ingress", async (importOriginal) => {
   const actual = await importOriginal<typeof import("~/lib/ingress")>();
@@ -193,6 +198,10 @@ function resetSeams() {
   mocks.fetchAccountEmail.mockReset().mockResolvedValue(null);
   mocks.findGrant.mockReset().mockResolvedValue(null);
   mocks.getAgentSource.mockReset().mockResolvedValue({
+    files: { "eden-lock.json": xeroLock() },
+    paths: [],
+  });
+  mocks.fetchAgentSource.mockReset().mockResolvedValue({
     files: { "eden-lock.json": xeroLock() },
     paths: [],
   });

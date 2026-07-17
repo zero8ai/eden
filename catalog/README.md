@@ -201,6 +201,10 @@ forever, and every level doubles the catalog.
   provider, they define ONE level — the checkbox keeps the first occurrence's
   label/description, the scopes union, and `default` pre-ticks if either side says so. Reuse
   an id (`read`, `send`) only when the levels genuinely coincide; otherwise pick distinct ids.
+  Catalog CI enforces this: two templates declaring the same group id for the same provider
+  with **different** scope sets fail validation (one checkbox silently authorizing both sets
+  is exactly the least-privilege leak the ids-as-identities rule exists to prevent) — either
+  make the scopes identical or namespace the ids (`gmail-read` / `calendar-read`).
 
 At least one of the two must be present; declaring both means "always this baseline, plus
 whatever levels the installer picks". Write group `description`s as plain-words capability

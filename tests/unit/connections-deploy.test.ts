@@ -507,4 +507,57 @@ describe("connectionGrantEnv", () => {
       HUBSPOT_OAUTH_SCOPES: "s",
     });
   });
+
+  it("skips a provider whose required scope set is present but EMPTY — every group deselected (issue #173)", async () => {
+    // The grants-are-the-authority union means a stored grant normally keeps injecting even when
+    // the lock no longer names its provider. An explicitly EMPTY requirement is the exception:
+    // the user deselected every permission group, so the deploy must stop shipping the token.
+    const openRefreshToken = vi.fn(async () => ({
+      grant: { id: "grant_1", status: "active" as const, scopes: "s" },
+      refreshToken: "rt",
+    }));
+    const refreshAccessToken = vi.fn(async () => ({
+      accessToken: "at",
+      expiresIn: 3599,
+    }));
+    const out = await connectionGrantEnv(
+      scope,
+      okFetch,
+      deps({ openRefreshToken, refreshAccessToken }),
+      new Map([["google", []]]),
+    );
+    expect(out).toEqual({});
+    // Skipped entirely: no grant read, no liveness refresh — nothing ships that could use it.
+    expect(openRefreshToken).not.toHaveBeenCalled();
+    expect(refreshAccessToken).not.toHaveBeenCalled();
+  });
+
+  it("an empty requirement for one provider doesn't stop another's injection (issue #173)", async () => {
+    const hubConfig = { clientId: "hub_client", clientSecret: "hub_secret" };
+    const out = await connectionGrantEnv(
+      scope,
+      okFetch,
+      deps({
+        getConfig: (p) => (p.id === "hubspot" ? hubConfig : config),
+        listGrantsForAgent: async () => [
+          { provider: "google", status: "active" as const },
+          { provider: "hubspot", status: "active" as const },
+        ],
+        openRefreshToken: async ({ provider }) => ({
+          grant: { id: `grant_${provider}`, status: "active", scopes: "s" },
+          refreshToken: `rt_${provider}`,
+        }),
+      }),
+      new Map([
+        ["google", []],
+        ["hubspot", ["s"]],
+      ]),
+    );
+    expect(out).toEqual({
+      HUBSPOT_OAUTH_CLIENT_ID: "hub_client",
+      HUBSPOT_OAUTH_CLIENT_SECRET: "hub_secret",
+      HUBSPOT_OAUTH_REFRESH_TOKEN: "rt_hubspot",
+      HUBSPOT_OAUTH_SCOPES: "s",
+    });
+  });
 });

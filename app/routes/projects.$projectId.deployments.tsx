@@ -641,6 +641,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           // Null when the lock has no snapshot for this provider (old locks) → the card falls back to
           // the grant's stored scopes.
           const requiredScopeStr = req && req.length > 0 ? req.join(" ") : null;
+          // Present-but-empty snapshot (issue #173): every permission group deselected. Deploys
+          // skip this provider's injection and connect refuses, so the row renders "disabled".
+          const permissionsDisabled = req !== undefined && req.length === 0;
           // Registry + operator config are per provider (issue #163): an unregistered provider
           // renders inert, an unconfigured one renders without a connect action. Providers with
           // dynamic client registration (issue #167) need no operator client — Connect registers
@@ -700,6 +703,7 @@ export const loader = (args: LoaderFunctionArgs) =>
               requiredScopes: requiredScopeStr,
               grantScopes: grant?.scopes ?? "",
               staleClientCoverage,
+              permissionsDisabled,
             }),
             scopeGroups: providerScopeGroups.get(provider) ?? null,
             capabilityGroups: capabilityGroups?.length ? capabilityGroups : null,
@@ -1506,6 +1510,8 @@ function ConnectionsCard({
                       <Badge variant="warning">missing permissions</Badge>
                     ) : c.state === "needs-reconnect" ? (
                       <Badge variant="warning">reconnect needed</Badge>
+                    ) : c.state === "disabled" ? (
+                      <Badge variant="warning">permissions disabled</Badge>
                     ) : (
                       <Badge variant="success">connected</Badge>
                     )}
@@ -1517,11 +1523,15 @@ function ConnectionsCard({
                         ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — missing permissions this connector needs.`
                         : c.state === "needs-reconnect"
                           ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — an environment was added after this connection was made; reconnect so its callbacks are registered.`
-                          : c.state === "connected"
-                            ? c.accountEmail
-                              ? `Connected as ${c.accountEmail}`
-                              : "Connected"
-                            : (c.accountEmail ?? "connected account")}
+                          : c.state === "disabled"
+                            ? c.status
+                              ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — every permission is deselected, so new deploys won't include this connection. The stored grant is not revoked; reselect permissions below to re-enable it.`
+                              : "Every permission is deselected — select at least one below, then connect."
+                            : c.state === "connected"
+                              ? c.accountEmail
+                                ? `Connected as ${c.accountEmail}`
+                                : "Connected"
+                              : (c.accountEmail ?? "connected account")}
                   </span>
                   {/* Capability resource binding (issue #166): which provider-side resource
                       (e.g. Xero organisation) this connection's operations target. */}
@@ -1556,6 +1566,12 @@ function ConnectionsCard({
                       Choose {c.resourceLabel ?? "resource"}
                     </Link>
                   </Button>
+                ) : c.state === "disabled" ? (
+                  // Connect/Reconnect would refuse (nothing to authorize — issue #173), so no
+                  // button; re-enabling happens in the Permissions editor below.
+                  <span className="text-xs text-muted-foreground">
+                    reselect permissions to enable
+                  </span>
                 ) : c.configured ? (
                   // A covered grant is done — only a subtle Reconnect link. Every other state is a
                   // to-do (connect, re-scope, or re-auth) and gets the primary button (issue #30).

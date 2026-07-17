@@ -93,13 +93,35 @@ describe("connectionGrantEnv", () => {
     expect(out).toEqual({});
   });
 
-  it("returns the client-creds + refresh-token env trio for an active grant", async () => {
+  it("returns the client-creds + refresh-token env (plus granted scopes) for an active grant", async () => {
     const out = await connectionGrantEnv(scope, okFetch, deps({}));
     expect(out).toEqual({
       GOOGLE_OAUTH_CLIENT_ID: "client_1",
       GOOGLE_OAUTH_CLIENT_SECRET: "secret_1",
       GOOGLE_OAUTH_REFRESH_TOKEN: "rt",
+      GOOGLE_OAUTH_SCOPES: "https://www.googleapis.com/auth/spreadsheets",
     });
+  });
+
+  it("injects <PREFIX>_OAUTH_SCOPES exactly as stored on the grant row (issue #165)", async () => {
+    const out = await connectionGrantEnv(
+      scope,
+      okFetch,
+      deps({
+        openRefreshToken: async () => ({
+          grant: {
+            id: "grant_1",
+            status: "active",
+            scopes:
+              "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send openid email",
+          },
+          refreshToken: "rt",
+        }),
+      }),
+    );
+    expect(out.GOOGLE_OAUTH_SCOPES).toBe(
+      "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send openid email",
+    );
   });
 
   it("marks the grant expired and throws (naming the provider) on invalid_grant", async () => {
@@ -110,13 +132,29 @@ describe("connectionGrantEnv", () => {
         okFetch,
         deps({
           markGrantStatus,
+          // The expiry flip must be compare-and-set against the token that was TESTED — a
+          // reconnect racing the deploy rotates the token version, and the guarded update then
+          // no-ops instead of expiring the fresh valid token.
+          openRefreshToken: async () => ({
+            grant: {
+              id: "grant_1",
+              status: "active",
+              scopes: "https://www.googleapis.com/auth/spreadsheets",
+            },
+            refreshToken: "rt",
+            tokenVersion: "iv_of_tested_token",
+          }),
           refreshAccessToken: async () => {
             throw new InvalidGrantError("dead");
           },
         }),
       ),
     ).rejects.toThrow(/The Google connection for this agent has expired/);
-    expect(markGrantStatus).toHaveBeenCalledWith("grant_1", "expired");
+    expect(markGrantStatus).toHaveBeenCalledWith(
+      "grant_1",
+      "expired",
+      "iv_of_tested_token",
+    );
   });
 
   it("propagates a transient refresh failure without marking the grant", async () => {
@@ -157,6 +195,8 @@ describe("connectionGrantEnv", () => {
       GOOGLE_OAUTH_CLIENT_ID: "client_1",
       GOOGLE_OAUTH_CLIENT_SECRET: "secret_1",
       GOOGLE_OAUTH_REFRESH_TOKEN: "rt",
+      GOOGLE_OAUTH_SCOPES:
+        "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file",
     });
   });
 
@@ -208,6 +248,7 @@ describe("connectionGrantEnv", () => {
       GOOGLE_OAUTH_CLIENT_ID: "client_1",
       GOOGLE_OAUTH_CLIENT_SECRET: "secret_1",
       GOOGLE_OAUTH_REFRESH_TOKEN: "rt",
+      GOOGLE_OAUTH_SCOPES: "openid",
     });
   });
 
@@ -232,9 +273,11 @@ describe("connectionGrantEnv", () => {
       GOOGLE_OAUTH_CLIENT_ID: "client_1",
       GOOGLE_OAUTH_CLIENT_SECRET: "secret_1",
       GOOGLE_OAUTH_REFRESH_TOKEN: "rt_google",
+      GOOGLE_OAUTH_SCOPES: "s",
       HUBSPOT_OAUTH_CLIENT_ID: "hub_client",
       HUBSPOT_OAUTH_CLIENT_SECRET: "hub_secret",
       HUBSPOT_OAUTH_REFRESH_TOKEN: "rt_hubspot",
+      HUBSPOT_OAUTH_SCOPES: "s",
     });
   });
 
@@ -257,6 +300,7 @@ describe("connectionGrantEnv", () => {
       GOOGLE_OAUTH_CLIENT_ID: "client_1",
       GOOGLE_OAUTH_CLIENT_SECRET: "secret_1",
       GOOGLE_OAUTH_REFRESH_TOKEN: "rt_google",
+      GOOGLE_OAUTH_SCOPES: "s",
     });
   });
 
@@ -307,6 +351,7 @@ describe("connectionGrantEnv", () => {
       HUBSPOT_OAUTH_CLIENT_ID: "hub_client",
       HUBSPOT_OAUTH_CLIENT_SECRET: "hub_secret",
       HUBSPOT_OAUTH_REFRESH_TOKEN: "rt_hub",
+      HUBSPOT_OAUTH_SCOPES: "s",
     });
   });
 });

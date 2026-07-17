@@ -516,7 +516,12 @@ export async function deployRelease(
       for (const def of listProviders()) {
         // Only the providers Eden actually brokered this deploy — a present refresh token marks one.
         if (!(`${def.envPrefix}_OAUTH_REFRESH_TOKEN` in grantEnv)) continue;
-        for (const suffix of ["CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN"]) {
+        for (const suffix of [
+          "CLIENT_ID",
+          "CLIENT_SECRET",
+          "REFRESH_TOKEN",
+          "SCOPES",
+        ]) {
           delete envVars[`${def.envPrefix}_OAUTH_${suffix}`];
         }
       }

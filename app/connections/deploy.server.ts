@@ -2,9 +2,10 @@
  * Deploy-side connection injection (issues #30, #163). Turns an agent's active OAuth grants into
  * the env the shipped eve connections need to self-refresh access tokens at runtime — per
  * registered provider, the operator client creds plus the sealed refresh token (unsealed here) as
- * `<PREFIX>_OAUTH_CLIENT_ID` / `<PREFIX>_OAUTH_CLIENT_SECRET` / `<PREFIX>_OAUTH_REFRESH_TOKEN`.
- * There is NO per-turn control-plane dependency: once these vars are in the container, eve's
- * `getToken` exchanges the refresh token for access tokens on its own.
+ * `<PREFIX>_OAUTH_CLIENT_ID` / `<PREFIX>_OAUTH_CLIENT_SECRET` / `<PREFIX>_OAUTH_REFRESH_TOKEN`,
+ * plus `<PREFIX>_OAUTH_SCOPES` — the grant's GRANTED scopes (issue #165) so agent code can read
+ * its actual permission level. There is NO per-turn control-plane dependency: once these vars are
+ * in the container, eve's `getToken` exchanges the refresh token for access tokens on its own.
  *
  * Each grant is VALIDATED once at deploy by attempting a refresh: a dead grant (invalid_grant) is
  * marked "expired" and the deploy fails honestly with a reconnect message, rather than shipping a
@@ -50,8 +51,14 @@ export interface ConnectionDeployDeps {
   }) => Promise<{
     grant: { id: string; status: GrantStatus; scopes: string };
     refreshToken: string;
+    /** Opaque fingerprint of THIS token, for compare-and-set status flips. */
+    tokenVersion?: string;
   } | null>;
-  markGrantStatus: (id: string, status: GrantStatus) => Promise<void>;
+  markGrantStatus: (
+    id: string,
+    status: GrantStatus,
+    expectedTokenVersion?: string,
+  ) => Promise<void>;
   refreshAccessToken: (
     input: {
       provider: ProviderDefinition;
@@ -121,7 +128,9 @@ export async function connectionGrantEnv(
       );
     } catch (error) {
       if (error instanceof InvalidGrantError) {
-        await deps.markGrantStatus(found.grant.id, "expired");
+        // Compare-and-set against the token that was actually tested: a reconnect racing this
+        // deploy may already have rotated the row to a fresh valid token, which must stay active.
+        await deps.markGrantStatus(found.grant.id, "expired", found.tokenVersion);
         throw new Error(
           `The ${def.label} connection for this agent has expired — reconnect it from the agent's ` +
             "install page or Deployment tab, then redeploy.",
@@ -147,6 +156,10 @@ export async function connectionGrantEnv(
     env[`${def.envPrefix}_OAUTH_CLIENT_ID`] = config.clientId;
     env[`${def.envPrefix}_OAUTH_CLIENT_SECRET`] = config.clientSecret;
     env[`${def.envPrefix}_OAUTH_REFRESH_TOKEN`] = found.refreshToken;
+    // Agent-side permission visibility (issue #165): the scopes the provider actually GRANTED,
+    // space-joined exactly as stored on the grant row, so agent code can tell which permission
+    // level it holds (e.g. don't offer to send mail when only read was granted).
+    env[`${def.envPrefix}_OAUTH_SCOPES`] = found.grant.scopes;
   }
 
   return env;

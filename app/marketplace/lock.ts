@@ -91,13 +91,36 @@ const installEntrySchema = z.object({
    * so deriving the reconnect request from it perpetuates stale/narrow scopes forever. Snapshotting
    * requirements here — exactly like `secrets` — lets surfaces rebuild the correct scope set per
    * installed connector, surviving template upgrades per-version.
+   *
+   * Scope groups (issue #165): `scopes` is the always-required baseline (optional when the
+   * template declares groups); `scopeGroups` snapshots the template's selectable permission
+   * levels (the lock must be self-sufficient for the Reconnect/Permissions UI); `selectedGroups`
+   * is the installer's CURRENT choice — written at install and mutable afterwards from the
+   * Deployment tab (it's config, not history). The effective requirement is
+   * baseline ∪ scopes of the selected groups.
    */
   auth: z
     .array(
       z.object({
         provider: z.string().min(1),
         kind: z.literal("oauth2"),
-        scopes: z.array(z.string().min(1)).min(1),
+        /** Baseline scopes, always required. Optional when scopeGroups is present. */
+        scopes: z.array(z.string().min(1)).min(1).optional(),
+        /** The template's selectable permission levels, snapshotted at install (#165). */
+        scopeGroups: z
+          .array(
+            z.object({
+              id: z.string().min(1),
+              label: z.string().min(1),
+              description: z.string().min(1),
+              scopes: z.array(z.string().min(1)).min(1),
+              default: z.boolean().optional(),
+            }),
+          )
+          .min(1)
+          .optional(),
+        /** The installer's current choice — subset of scopeGroups ids. Mutable config (#165). */
+        selectedGroups: z.array(z.string().min(1)).optional(),
       }),
     )
     .optional(),
@@ -165,11 +188,46 @@ export function installedKeys(lock: EdenLock): string[] {
   return lock.installs.map((e) => installKey(e.type, e.id));
 }
 
+/** One install's auth snapshot (see `installEntrySchema.auth`). */
+export type InstallAuth = NonNullable<InstallEntry["auth"]>[number];
+
+/**
+ * The scope-group ids currently SELECTED for one auth snapshot (issue #165): the stored
+ * `selectedGroups` when the install has written one, else the template's `default`-flagged
+ * groups (a snapshot that predates any explicit choice behaves like a fresh install). Always a
+ * subset of the snapshot's group ids; empty for group-less snapshots.
+ */
+export function selectedGroupIds(auth: InstallAuth): string[] {
+  const groups = auth.scopeGroups ?? [];
+  if (groups.length === 0) return [];
+  const valid = new Set(groups.map((g) => g.id));
+  if (auth.selectedGroups) {
+    return auth.selectedGroups.filter((id) => valid.has(id));
+  }
+  return groups.filter((g) => g.default).map((g) => g.id);
+}
+
+/**
+ * One auth snapshot's EFFECTIVE required scopes (issue #165): the baseline `scopes` plus the
+ * scopes of every selected group. Group-less snapshots reduce to their baseline exactly as
+ * before scope groups existed.
+ */
+export function effectiveAuthScopes(auth: InstallAuth): string[] {
+  const selected = new Set(selectedGroupIds(auth));
+  const out = new Set<string>(auth.scopes ?? []);
+  for (const group of auth.scopeGroups ?? []) {
+    if (!selected.has(group.id)) continue;
+    for (const scope of group.scopes) out.add(scope);
+  }
+  return [...out];
+}
+
 /**
  * The OAuth scopes REQUIRED per provider by all installs owned by `member` (issue #30): the union
- * of every install's `auth` snapshot, deduped and sorted, keyed by provider. A Reconnect must
- * request THIS set, never a grant row's stored scopes (which record only what was granted before).
- * Empty for members whose installs carry no `auth` snapshot (old locks, non-connector installs).
+ * of every install's EFFECTIVE `auth` snapshot (baseline ∪ selected scope groups — issue #165),
+ * deduped and sorted, keyed by provider. A Reconnect must request THIS set, never a grant row's
+ * stored scopes (which record only what was granted before). Empty for members whose installs
+ * carry no `auth` snapshot (old locks, non-connector installs).
  * Client-safe: pure, no server imports.
  */
 export function requiredScopesByProvider(
@@ -185,7 +243,7 @@ export function requiredScopesByProvider(
         set = new Set<string>();
         byProvider.set(auth.provider, set);
       }
-      for (const scope of auth.scopes) set.add(scope);
+      for (const scope of effectiveAuthScopes(auth)) set.add(scope);
     }
   }
   const result = new Map<string, string[]>();
@@ -193,6 +251,97 @@ export function requiredScopesByProvider(
     result.set(provider, [...set].sort());
   }
   return result;
+}
+
+/** One selectable permission level as the Permissions UI renders it (issue #165). */
+export interface ScopeGroupChoice {
+  id: string;
+  label: string;
+  description: string;
+  /** Whether the group is currently selected (stored choice, else the template default). */
+  selected: boolean;
+}
+
+/**
+ * The selectable permission levels per provider for `member`'s installs (issue #165): every
+ * distinct scope group across the member's auth snapshots (deduped by id — first occurrence wins
+ * the definition, mirroring compose), with its current selection state. Providers whose installs
+ * declare no groups don't appear — their permission surface isn't editable.
+ * Client-safe: pure, no server imports.
+ */
+export function scopeGroupsByProvider(
+  lock: EdenLock,
+  member: string | null,
+): Map<string, ScopeGroupChoice[]> {
+  const byProvider = new Map<string, ScopeGroupChoice[]>();
+  for (const entry of lock.installs) {
+    if (entry.member !== member) continue;
+    for (const auth of entry.auth ?? []) {
+      if (!auth.scopeGroups || auth.scopeGroups.length === 0) continue;
+      const selected = new Set(selectedGroupIds(auth));
+      let groups = byProvider.get(auth.provider);
+      if (!groups) {
+        groups = [];
+        byProvider.set(auth.provider, groups);
+      }
+      for (const group of auth.scopeGroups) {
+        const existing = groups.find((g) => g.id === group.id);
+        if (existing) {
+          // Two installs sharing a group id: selecting it ANYWHERE keeps it in the union.
+          existing.selected = existing.selected || selected.has(group.id);
+          continue;
+        }
+        groups.push({
+          id: group.id,
+          label: group.label,
+          description: group.description,
+          selected: selected.has(group.id),
+        });
+      }
+    }
+  }
+  return byProvider;
+}
+
+/**
+ * Rewrite the stored scope-group selection for every install owned by `member` that declares
+ * groups for `provider` (issue #165 — the Deployment tab's Permissions edit). Each install keeps
+ * only the ids its own snapshot knows; group-less snapshots and other providers/members pass
+ * through untouched. Pure; returns a new lock and whether anything changed.
+ */
+export function setSelectedGroups(
+  lock: EdenLock,
+  member: string | null,
+  provider: string,
+  selected: string[],
+): { lock: EdenLock; changed: boolean } {
+  let changed = false;
+  const installs = lock.installs.map((entry) => {
+    if (entry.member !== member || !entry.auth) return entry;
+    let entryChanged = false;
+    const auth = entry.auth.map((a) => {
+      if (a.provider !== provider || !a.scopeGroups) return a;
+      // Keep the template's declaration order so the stored choice diffs stably; ids the
+      // snapshot doesn't know are dropped (the caller's list is browser-supplied).
+      const next = a.scopeGroups
+        .map((g) => g.id)
+        .filter((id) => selected.includes(id));
+      const current = selectedGroupIds(a);
+      if (
+        a.selectedGroups !== undefined &&
+        next.length === current.length &&
+        next.every((id, i) => id === current[i])
+      ) {
+        return a;
+      }
+      entryChanged = true;
+      return { ...a, selectedGroups: next };
+    });
+    if (!entryChanged) return entry;
+    changed = true;
+    return { ...entry, auth };
+  });
+  return changed ? { lock: { ...lock, installs }, changed } : { lock, changed };
 }
 
 /** Upsert an entry by (id, member): replaces the matching install, else appends. Pure. */

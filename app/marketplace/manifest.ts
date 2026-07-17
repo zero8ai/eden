@@ -141,6 +141,11 @@ export const templateManifestSchema = z
    * an operator-brokered OAuth flow for `provider`, requesting `scopes`, and stores the resulting
    * grant so deploy can inject it. `kind` is `"oauth2"` for now (the only brokered flow).
    *
+   * Permission levels (issue #165): `scopes` is the always-requested baseline; `scopeGroups`
+   * declares named, user-selectable levels (e.g. "Read mail" / "Send mail") the installer ticks
+   * at install time — the effective request is baseline ∪ selected groups. At least one of the
+   * two must be present (superRefine); a template with only `scopes` behaves exactly as before.
+   *
    * `principalType` is deliberately omitted: Phase 1 grants are APP-scoped (one shared grant per
    * agent, captured at install). It joins here when user-scoped connections land.
    */
@@ -148,7 +153,24 @@ export const templateManifestSchema = z
     .object({
       provider: slug,
       kind: z.literal("oauth2"),
-      scopes: z.array(z.string().min(1)).min(1),
+      /** Baseline scopes, always requested. Optional when scopeGroups is present. */
+      scopes: z.array(z.string().min(1)).min(1).optional(),
+      /** Named, user-selectable permission levels. Order = display order. */
+      scopeGroups: z
+        .array(
+          z.object({
+            id: slug,
+            /** Short human label, e.g. "Read mail". */
+            label: z.string().min(1),
+            /** What enabling this lets the agent do, in plain words. */
+            description: z.string().min(1),
+            scopes: z.array(z.string().min(1)).min(1),
+            /** Pre-ticked in the install wizard. */
+            default: z.boolean().optional(),
+          }),
+        )
+        .min(1)
+        .optional(),
     })
     .optional(),
   /** Sandbox setup installed alongside this template, merged by Eden into the agent sandbox. */
@@ -220,9 +242,36 @@ export const templateManifestSchema = z
         message: "auth is only valid on a connection template",
       });
     }
+    // An auth block must request SOMETHING: baseline scopes, selectable groups, or both (#165).
+    if (m.auth && !m.auth.scopes && !m.auth.scopeGroups) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["auth"],
+        message: "auth must declare scopes, scopeGroups, or both",
+      });
+    }
+    // Scope-group ids are the lock's selection keys — duplicates would make a choice ambiguous.
+    if (m.auth?.scopeGroups) {
+      const seen = new Set<string>();
+      m.auth.scopeGroups.forEach((g, i) => {
+        if (seen.has(g.id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["auth", "scopeGroups", i, "id"],
+            message: `duplicate scope group id "${g.id}"`,
+          });
+        }
+        seen.add(g.id);
+      });
+    }
   });
 
 export type TemplateManifest = z.infer<typeof templateManifestSchema>;
+
+/** One named, user-selectable permission level on a connection template's auth block (#165). */
+export type AuthScopeGroup = NonNullable<
+  NonNullable<TemplateManifest["auth"]>["scopeGroups"]
+>[number];
 
 /** One row of the catalog index — the browse-list projection (PRD §7.8: "browse from index.json"). */
 export const catalogEntrySchema = z.object({

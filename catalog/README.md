@@ -48,7 +48,7 @@ Note the plural: a template of `type: "tool"` lives under `templates/tools/`.
    | `dependencies`        | no       | npm name → version range; JSON-merged into the target's `package.json`                                               |
    | `secrets`             | no       | `[{ name: UPPER_SNAKE, description?, provisioned?, generated? }]` — the install wizard makes placeholders; `provisioned` (a guided Eden flow sets it) and `generated` (Eden mints it — see [Connection providers](#connection-providers)) are never prompted and mutually exclusive |
    | `sandbox`             | no       | sandbox setup merged into the target agent, e.g. `bootstrap` shell commands, `env` defaults, and a `revalidationKey` |
-   | `auth`                | no       | `{ provider, kind: "oauth2", scopes }` — brokered OAuth descriptor, `connection` templates only (see [Connection providers](#connection-providers)) |
+   | `auth`                | no       | `{ provider, kind: "oauth2", scopes?, scopeGroups? }` — brokered OAuth descriptor, `connection` templates only; at least one of `scopes` (always-requested baseline) / `scopeGroups` (user-selectable permission levels) required (see [Connection providers](#connection-providers)) |
    | `connections`         | no       | declared for future use                                                                                              |
    | `model`               | no       | suggested model (agent-type templates)                                                                               |
    | `setup`               | no       | Markdown, shown on the detail page before install — provider-side steps a secret description can't hold (create an app, point a webhook at the agent's endpoint, grant scopes). Mainly channels |
@@ -86,11 +86,11 @@ At install (and update) time Eden's resolver flattens each reference into the pa
 
 ## Connection providers
 
-A `connection` template with `auth: { provider, kind: "oauth2", scopes }` rides Eden's
-auth-brokered OAuth flow (issues #30, #163): the Deployment tab's Connections card shows a
-Connect button (connecting is a deployment concern — the install wizard collects nothing),
-Eden runs the consent flow against its operator-registered OAuth app, stores the grant, and
-injects the credentials at deploy. The contract:
+A `connection` template with an `auth` block rides Eden's auth-brokered OAuth flow (issues
+#30, #163): the Deployment tab's Connections card shows a Connect button (connecting is a
+deployment concern — the install wizard collects no credentials), Eden runs the consent flow
+against its operator-registered OAuth app, stores the grant, and injects the credentials at
+deploy. The contract:
 
 - **`auth.provider` must name a registered provider.** The registry lives in Eden at
   `app/connections/providers.server.ts` — one object per provider carrying its endpoints,
@@ -104,7 +104,40 @@ injects the credentials at deploy. The contract:
   the legacy `<origin>/google/callback`).
 - **At deploy Eden injects `<PREFIX>_OAUTH_CLIENT_ID` / `<PREFIX>_OAUTH_CLIENT_SECRET` /
   `<PREFIX>_OAUTH_REFRESH_TOKEN`** for every provider the agent holds an active grant for;
-  the shipped connection file refreshes its own access tokens from those at runtime.
+  the shipped connection file refreshes its own access tokens from those at runtime. It also
+  injects **`<PREFIX>_OAUTH_SCOPES`** — the scopes the account actually *granted*,
+  space-joined — so agent code can read its own permission level (don't offer to send mail
+  when only read was granted; the gmail template's connection file shows the pattern).
+
+### Permission levels: `scopes` vs `scopeGroups`
+
+The `auth` block requests permissions two ways (issue #165), and the rule is **one template
+per system — permission levels are a user choice, never template variants**. Never publish
+"`foo` read-only" and "`foo` full" as two catalog entries: the wrong pick caps the install
+forever, and every level doubles the catalog.
+
+- **`scopes`** — the always-requested baseline. Use it alone when the connector is
+  single-purpose and there is exactly one sensible permission set (google-sheets: one
+  `spreadsheets` scope). This is also the back-compat shape: templates with only `scopes`
+  behave exactly as before scope groups existed.
+- **`scopeGroups`** — named, user-selectable levels
+  (`{ id, label, description, scopes, default? }`). Use it whenever the system has separable
+  capabilities a cautious installer would want to withhold (gmail: *Read mail* / *Manage
+  labels* / *Send mail*). The installer ticks groups in the install wizard (`default: true`
+  groups pre-ticked), the OAuth consent requests baseline ∪ selected groups, and the
+  selection stays editable on the agent's Deployment tab — widening asks for one reconnect,
+  narrowing takes effect on reconnect. Overlapping groups are fine (gmail's `gmail.modify` ⊃
+  `gmail.readonly`): the union is what's requested, so keep each group's meaning simple
+  rather than carving disjoint scope sets. Group ids are **provider-level identities**: when
+  two composed templates (a bundle's includes) declare the same group id for the same
+  provider, they define ONE level — the checkbox keeps the first occurrence's
+  label/description, the scopes union, and `default` pre-ticks if either side says so. Reuse
+  an id (`read`, `send`) only when the levels genuinely coincide; otherwise pick distinct ids.
+
+At least one of the two must be present; declaring both means "always this baseline, plus
+whatever levels the installer picks". Write group `description`s as plain-words capability
+statements ("send messages as the connected account") — they render as checkbox help text in
+the install wizard and the Deployment tab's Permissions editor.
 
 Two adjacent capabilities connection/channel templates can rely on:
 

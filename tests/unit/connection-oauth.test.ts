@@ -237,7 +237,10 @@ describe("Google-unchanged regression (issue #163 acceptance criterion 2)", () =
   };
 
   it("produces the Google-only broker's authorize URL byte-for-byte", () => {
-    // The verbatim construction the pre-#163 googleAuthorizeUrl used — insertion order and all.
+    // The pre-#163 construction — insertion order and all — MINUS include_granted_scopes: issue
+    // #165 removed it deliberately (Eden always requests the full effective set, and with the
+    // param set Google folds previously granted scopes into every new token, so a narrowed
+    // scope-group selection could never re-issue a narrower grant on reconnect).
     const expected = `https://accounts.google.com/o/oauth2/v2/auth?${new URLSearchParams(
       {
         client_id: input.clientId,
@@ -246,13 +249,18 @@ describe("Google-unchanged regression (issue #163 acceptance criterion 2)", () =
         scope: `${input.scopes} openid email`,
         access_type: "offline",
         prompt: "consent",
-        include_granted_scopes: "true",
         state: input.state,
       },
     ).toString()}`;
     expect(authorizeUrl(getProvider("google")!, input)).toBe(expected);
     // The compat shim the legacy routes/tests use emits the identical bytes.
     expect(googleAuthorizeUrl(input)).toBe(expected);
+  });
+
+  it("never re-broadens a narrowed grant via incremental auth (issue #165)", () => {
+    // include_granted_scopes must stay OFF the Google authorize URL — see the registry comment.
+    const url = new URL(authorizeUrl(getProvider("google")!, input));
+    expect(url.searchParams.has("include_granted_scopes")).toBe(false);
   });
 
   it("never puts PKCE params on Google's authorize URL (google declares no pkce)", () => {

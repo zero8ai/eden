@@ -41,6 +41,14 @@
       "hash": "530407920c180a7a1c92ed8f4ca32d89f8b475af"
     },
     {
+      "id": "gmail",
+      "type": "connection",
+      "name": "Gmail",
+      "version": "0.1.0",
+      "description": "Read, label, and send mail from the connected Google account. One template, selectable permission levels: pick Read mail / Manage labels / Send mail at install (read-only by default), connect the mailbox on the agent's Deployment tab, and the agent gets gmail__* tools via eve's OpenAPI connection — access tokens self-refresh at runtime, and the granted level is visible to the agent so it never promises what it can't do.",
+      "hash": "c06d058c462132f49043a356f6d613667cc0792e"
+    },
+    {
       "id": "google-sheets",
       "type": "connection",
       "name": "Google Sheets",

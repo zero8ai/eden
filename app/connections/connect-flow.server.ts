@@ -174,15 +174,22 @@ export function connectionConnectLoader(
         lock,
         agent.root === "agent" ? null : agent.name,
       ).get(provider.id);
+      // The grant fallback exists ONLY for lock entries with no auth snapshot at all (undefined).
+      // A present-but-empty requirement is an EXPLICIT choice — every scope group deselected —
+      // and must never fall back to the old grant's scopes, which would re-request exactly the
+      // permissions the user just removed (issue #165).
       const scopes =
-        requiredScopes && requiredScopes.length > 0
+        requiredScopes !== undefined
           ? requiredScopes.join(" ")
           : (existingGrant?.scopes.trim() ?? "");
 
       if (!scopes) {
         return {
           error:
-            "No scopes were requested for this connection — nothing to authorize.",
+            requiredScopes !== undefined
+              ? "Every permission for this connection is deselected — nothing to authorize. " +
+                "Select at least one permission from the agent's Deployment tab, then connect."
+              : "No scopes were requested for this connection — nothing to authorize.",
           backUrl,
           providerLabel: provider.label,
         };
@@ -329,7 +336,7 @@ export function connectionCallbackLoader(
       }
 
       // Tenancy: the signed state names the project, but the SESSION must own it too.
-      const project = await requireProject(auth, state.projectId);
+      const project = requireRepo(await requireProject(auth, state.projectId));
       const backUrl = safeReturnTo(state.returnTo) ?? "/dashboard";
 
       const roster = (await listAgents(project.id)).filter(
@@ -339,6 +346,45 @@ export function connectionCallbackLoader(
       if (!agent) {
         return fail("This agent no longer exists in the project.", backUrl);
       }
+
+      // Lock currency (issue #165): the signed state carries the scope set computed when this
+      // flow STARTED, and several unconsumed nonces can be valid at once — so a consent tab left
+      // open across a Permissions edit + newer reconnect could, completed later, silently
+      // re-broaden a just-narrowed grant (or clobber a widened one with an under-scoped token).
+      // Re-derive the requirement from a FRESH lock read and refuse a stale flow. Undefined = no
+      // auth snapshot for this provider (legacy lock / grant-fallback flows) — nothing to compare
+      // against, so the check is skipped exactly where the fallback applies.
+      const selectionStale = async (): Promise<boolean> => {
+        const [source, drafts] = await Promise.all([
+          getAgentSource(project.repoInstallationId, {
+            owner: project.repoOwner,
+            repo: project.repoName,
+          }),
+          listDrafts(project.id),
+        ]);
+        const lock = overlayLock(
+          source.files["eden-lock.json"] ?? null,
+          drafts.map((draft) => ({ path: draft.path, content: draft.content })),
+        );
+        const requiredNow = requiredScopesByProvider(
+          lock,
+          agent.root === "agent" ? null : agent.name,
+        ).get(provider.id);
+        if (requiredNow === undefined) return false;
+        const started = new Set(state.scopes.split(/\s+/).filter(Boolean));
+        return (
+          started.size !== requiredNow.length ||
+          requiredNow.some((s) => !started.has(s))
+        );
+      };
+      const staleSelectionFail = () =>
+        fail(
+          `The permissions selected for ${label} changed while this consent was in progress — ` +
+            "no connection was made. Start again from the agent's Deployment tab.",
+          backUrl,
+        );
+      // First pass BEFORE the exchange: refuse an obviously stale flow without minting tokens.
+      if (await selectionStale()) return staleSelectionFail();
 
       const config = deps.getConfig(provider);
       if (!config) {
@@ -379,6 +425,15 @@ export function connectionCallbackLoader(
         provider,
         grant.accessToken,
       );
+
+      // Second pass IMMEDIATELY before the write: the pre-exchange check reads the lock before
+      // the exchange + userinfo network round-trips, so a Permissions edit + newer reconnect
+      // could complete entirely inside that gap and this older flow — its exchange finishing
+      // last — would still overwrite the fresher grant. Re-checking here shrinks the remaining
+      // window to the upsert itself (no network calls inside it), which a full consent
+      // round-trip cannot fit into. The freshly minted token is simply discarded, exactly like
+      // the granular-consent refusal above.
+      if (await selectionStale()) return staleSelectionFail();
 
       await upsertGrant({
         projectId: project.id,

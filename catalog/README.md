@@ -49,6 +49,7 @@ Note the plural: a template of `type: "tool"` lives under `templates/tools/`.
    | `secrets`             | no       | `[{ name: UPPER_SNAKE, description?, provisioned?, generated? }]` — the install wizard makes placeholders; `provisioned` (a guided Eden flow sets it) and `generated` (Eden mints it — see [Connection providers](#connection-providers)) are never prompted and mutually exclusive |
    | `sandbox`             | no       | sandbox setup merged into the target agent, e.g. `bootstrap` shell commands, `env` defaults, and a `revalidationKey` |
    | `auth`                | no       | `{ provider, kind: "oauth2", scopes?, scopeGroups? }` — brokered OAuth descriptor, `connection` templates only; at least one of `scopes` (always-requested baseline) / `scopeGroups` (user-selectable permission levels) required (see [Connection providers](#connection-providers)) |
+   | `capability`          | no       | `{ groups }` — operation-group enablement for a brokered-capability provider (issue #166); only valid alongside `auth` on a `connection` template. Group ids must exist in Eden's capability registry (see [Brokered capabilities](#brokered-capabilities-issue-166)) |
    | `connections`         | no       | declared for future use                                                                                              |
    | `model`               | no       | suggested model (agent-type templates)                                                                               |
    | `setup`               | no       | Markdown, shown on the detail page before install — provider-side steps a secret description can't hold (create an app, point a webhook at the agent's endpoint, grant scopes). Mainly channels |
@@ -135,6 +136,46 @@ the shipped credential code looks like):
   (the operator only needs a publicly reachable `EDEN_PUBLIC_ORIGIN`). An environment created
   **after** Connect isn't covered by the immutable client — the Connections card flips to
   "reconnect needed" and one reconnect registers a fresh client (same UX as a scope change).
+
+### Brokered capabilities (issue #166)
+
+For high-risk systems (money, destructive writes) a broad connector is the wrong shape:
+shipping the OAuth grant to the instance hands the model the whole vendor API. Providers whose
+registry entry declares `credentialDelivery: "capability"` (Xero is the first) invert that —
+**no credential material of any kind reaches the container**, and the deploy injects no
+`<PREFIX>_OAUTH_*` vars at all. Eden holds the grant and exposes a fixed, code-defined
+whitelist of operations (`app/capabilities/` in Eden), grouped into operation groups; the
+agent's shipped tools are thin: each POSTs its typed input to
+`POST <EDEN_API_URL>/api/capabilities/<provider>/<operation>` with the deployment's injected
+`EDEN_TEAM_TOKEN`, and Eden validates the request server-side (e.g. "bills are always DRAFT")
+and performs the one blessed operation itself. Anything not in the whitelist does not exist —
+regardless of what the consented OAuth scopes would allow (the `auth.scopes` set is a fixed
+superset; the operation whitelist, not the token scope, is the enforcement plane). Every call
+— allowed or refused — is audit-logged control-plane-side.
+
+What a template author declares:
+
+- **`capability: { groups: [...] }`** — the operation-group ids this template offers the
+  installer, only valid alongside `auth` on a `connection` template. The ids must exist in the
+  provider's capability definition in Eden's registry (labels, descriptions, risk, and the
+  validation logic are code there, not template data — Eden's unit tests cross-check the
+  catalog against the registry). The installer ticks groups on the install wizard's Operations
+  card (`default`-flagged read groups pre-ticked; write groups are opt-in and render with a
+  "write" badge), and the selection stays editable on the agent's Deployment tab. Because Eden
+  enforces the selection **per call** — never baked into a token — edits take effect at the
+  agent's very next call: no reconnect, no redeploy.
+- **One thin tool file per operation** (see `templates/connections/xero/files/tools/`): a zod
+  schema mirroring the operation's input, one POST, return the response body. No credential
+  handling, no vendor SDK.
+- **`setup` text carrying the operator app registration** as usual (Xero: an Eden-owned app at
+  developer.xero.com, `EDEN_XERO_CLIENT_ID` / `EDEN_XERO_CLIENT_SECRET`, redirect
+  `<origin>/connections/xero/callback`).
+
+Providers whose capability declares a **resource binding** (Xero: the tenant/organisation)
+bind it at Connect time: exactly one resource binds silently; several send the user to a
+picker page before the connection is usable. A second capability provider is a capability
+definition + provider registry entry in Eden plus a catalog template here — no new routes,
+schema, or UI.
 
 ### Permission levels: `scopes` vs `scopeGroups`
 

@@ -513,9 +513,17 @@ export async function deployRelease(
       ? await deps.connectionGrantEnv(scope, requiredConnectionScopes)
       : {};
     if (Object.keys(grantEnv).length > 0) {
+      let hasBrokeredProvider = false;
       for (const def of listProviders()) {
-        // Only the providers Eden actually brokered this deploy — a present refresh token marks one.
-        if (!(`${def.envPrefix}_OAUTH_REFRESH_TOKEN` in grantEnv)) continue;
+        // Only the providers Eden actually brokered this deploy — a present <PREFIX>_OAUTH_SCOPES
+        // or refresh token marks one (access-token-broker providers ship scopes but no refresh
+        // token, issue #167; both deliveries set scopes).
+        if (
+          !(`${def.envPrefix}_OAUTH_SCOPES` in grantEnv) &&
+          !(`${def.envPrefix}_OAUTH_REFRESH_TOKEN` in grantEnv)
+        ) {
+          continue;
+        }
         for (const suffix of [
           "CLIENT_ID",
           "CLIENT_SECRET",
@@ -524,9 +532,29 @@ export async function deployRelease(
         ]) {
           delete envVars[`${def.envPrefix}_OAUTH_${suffix}`];
         }
+        // The provider's static deploy constants (issue #167) are Eden-owned too.
+        for (const key of Object.keys(def.deployEnv ?? {})) {
+          delete envVars[key];
+        }
+        if (def.credentialDelivery === "access-token-broker") {
+          hasBrokeredProvider = true;
+        }
       }
       for (const [key, value] of Object.entries(grantEnv)) {
         envVars[key] = value;
+      }
+      // Broker coordinates (issue #167): an access-token-broker provider's instance fetches its
+      // tokens from the control plane, so it needs the base URL plus a deployment-scoped
+      // delegation token (the SAME auth story as the team relay and Discord send proxy — the
+      // token grants no team powers, authorization happens per surface). EDEN_API_URL is
+      // Eden-owned when injected (anti-shadowing); EDEN_TEAM_TOKEN was already stripped from
+      // user secrets by the team block above.
+      if (hasBrokeredProvider) {
+        delete envVars.EDEN_API_URL;
+        envVars.EDEN_API_URL =
+          process.env.EDEN_TEAM_RELAY_URL ??
+          `http://host.docker.internal:${process.env.PORT ?? (process.env.NODE_ENV === "production" ? "3000" : "5173")}`;
+        envVars.EDEN_TEAM_TOKEN ??= mintDelegationToken(dep.id);
       }
     }
 

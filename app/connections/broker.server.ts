@@ -1,0 +1,231 @@
+/**
+ * Instance token broker (issue #167) — the control-plane half of the "access-token-broker"
+ * credential delivery. Providers with ROTATING refresh grants (mayi: a refresh mints a new
+ * refresh token, and reusing an old one revokes the whole token family) can't ship
+ * `<PREFIX>_OAUTH_REFRESH_TOKEN` to instances: Eden and the instance would race the rotation and
+ * kill the grant. Instead Eden stays the SINGLE WRITER — the instance POSTs
+ * `/api/connections/token` (see routes/api.connections.token.ts) and gets back a fresh
+ * short-lived access token; every refresh happens here, and the rotated refresh token is
+ * persisted before the access token is released.
+ *
+ * Concurrency: refreshes are serialized PER GRANT via an in-process promise chain — two
+ * concurrent broker calls (or a broker call racing a deploy validation in the same process)
+ * can't both consume the same stored token. Cross-process races (deploy worker vs web) are
+ * caught by the compare-and-set in `rotateGrantRefreshToken` and surface as a retryable error.
+ *
+ * eve-side traffic is cheap: the shipped credentials binding caches the token until close to
+ * `expiresAt`, so this is ~one call per access-token lifetime (an hour for mayi) per instance,
+ * not per request.
+ *
+ * Deps are injectable so the decision logic unit-tests with fakes; default wiring hits
+ * Postgres + operator env (same seams as deploy.server.ts).
+ */
+import {
+  getProviderOAuthConfig,
+  type OAuthClientConfig,
+} from "./config.server";
+import {
+  InvalidGrantError,
+  refreshAccessToken as realRefreshAccessToken,
+} from "./oauth.server";
+import { getProvider, type ProviderDefinition } from "./providers.server";
+import {
+  markGrantStatus as realMarkGrantStatus,
+  openRefreshToken as realOpenRefreshToken,
+  rotateGrantRefreshToken as realRotateGrantRefreshToken,
+  type GrantStatus,
+} from "./grants.server";
+
+export interface BrokerDeps {
+  getConfig: (provider: ProviderDefinition) => OAuthClientConfig | null;
+  openRefreshToken: (input: {
+    projectId: string;
+    agentId: string;
+    provider: string;
+  }) => Promise<{
+    grant: {
+      id: string;
+      status: GrantStatus;
+      scopes: string;
+      clientId?: string | null;
+    };
+    refreshToken: string;
+    tokenVersion?: string;
+  } | null>;
+  markGrantStatus: (
+    id: string,
+    status: GrantStatus,
+    expectedTokenVersion?: string,
+  ) => Promise<void>;
+  rotateRefreshToken: (
+    id: string,
+    refreshToken: string,
+    expectedTokenVersion?: string,
+  ) => Promise<boolean>;
+  refreshAccessToken: (
+    input: {
+      provider: ProviderDefinition;
+      config: OAuthClientConfig;
+      refreshToken: string;
+    },
+    fetchImpl: typeof fetch,
+  ) => Promise<{ accessToken: string; expiresIn: number; refreshToken?: string }>;
+}
+
+function defaultDeps(): BrokerDeps {
+  return {
+    getConfig: getProviderOAuthConfig,
+    openRefreshToken: realOpenRefreshToken,
+    markGrantStatus: realMarkGrantStatus,
+    rotateRefreshToken: realRotateGrantRefreshToken,
+    refreshAccessToken: realRefreshAccessToken,
+  };
+}
+
+export type BrokerResult =
+  | { ok: true; accessToken: string; expiresAt: number }
+  | { ok: false; error: string; status: number };
+
+/** Per-grant-scope serialization chain (see module doc). Keyed before the grant row is read. */
+const refreshChains = new Map<string, Promise<unknown>>();
+
+/**
+ * Run `task` after every earlier task for the same key has settled — a failed predecessor never
+ * poisons the chain (its rejection is observed by its own caller only).
+ */
+async function serialized<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const tail = refreshChains.get(key) ?? Promise.resolve();
+  const run = tail.then(task, task);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  refreshChains.set(key, settled);
+  try {
+    return await run;
+  } finally {
+    if (refreshChains.get(key) === settled) refreshChains.delete(key);
+  }
+}
+
+/**
+ * A fresh access token for (project, agent, provider), refreshed centrally with the rotation
+ * persisted (issue #167). Business failures come back as `{ ok: false }` with an HTTP-ish status
+ * hint so the resource route can surface a readable message to the instance's credentials
+ * binding.
+ */
+export async function brokerAccessToken(
+  input: { projectId: string; agentId: string; provider: string },
+  fetchImpl: typeof fetch = fetch,
+  deps: BrokerDeps = defaultDeps(),
+): Promise<BrokerResult> {
+  const def = getProvider(input.provider);
+  if (!def) {
+    return {
+      ok: false,
+      status: 404,
+      error: `"${input.provider}" is not a connection provider this Eden installation supports.`,
+    };
+  }
+  // Only brokered-delivery providers are served: refresh-token providers ship their grant to the
+  // instance and self-refresh — brokering them too would put two writers on one grant.
+  if (def.credentialDelivery !== "access-token-broker") {
+    return {
+      ok: false,
+      status: 404,
+      error: `${def.label} connections are delivered to the instance directly — the token broker only serves access-token-broker providers.`,
+    };
+  }
+
+  return serialized(
+    `${input.projectId}/${input.agentId}/${def.id}`,
+    async (): Promise<BrokerResult> => {
+      const found = await deps.openRefreshToken({
+        projectId: input.projectId,
+        agentId: input.agentId,
+        provider: def.id,
+      });
+      if (!found || found.grant.status !== "active") {
+        return {
+          ok: false,
+          status: 403,
+          error:
+            `This agent has no active ${def.label} connection — connect it from the agent's ` +
+            "Deployment tab, then redeploy.",
+        };
+      }
+      const config: OAuthClientConfig | null = found.grant.clientId
+        ? { clientId: found.grant.clientId }
+        : deps.getConfig(def);
+      if (!config) {
+        return {
+          ok: false,
+          status: 503,
+          error: `This Eden installation has no ${def.label} OAuth client configured for this grant.`,
+        };
+      }
+
+      let refreshed: {
+        accessToken: string;
+        expiresIn: number;
+        refreshToken?: string;
+      };
+      try {
+        refreshed = await deps.refreshAccessToken(
+          { provider: def, config, refreshToken: found.refreshToken },
+          fetchImpl,
+        );
+      } catch (error) {
+        if (error instanceof InvalidGrantError) {
+          // Same compare-and-set discipline as deploy validation: never expire a row a
+          // concurrent reconnect already rotated to a fresh valid token.
+          await deps.markGrantStatus(
+            found.grant.id,
+            "expired",
+            found.tokenVersion,
+          );
+          return {
+            ok: false,
+            status: 403,
+            error:
+              `The ${def.label} connection for this agent has expired — reconnect it from the ` +
+              "agent's Deployment tab, then redeploy.",
+          };
+        }
+        return {
+          ok: false,
+          status: 502,
+          error: `Couldn't refresh the ${def.label} token: ${(error as Error).message}`,
+        };
+      }
+
+      // Persist the rotation BEFORE releasing the access token — the stored token was just
+      // consumed, and a replay would trip the provider's family-reuse revocation. A failed
+      // compare-and-set means a concurrent (cross-process) write replaced the grant: drop this
+      // result and let the caller retry against the fresh grant.
+      if (
+        refreshed.refreshToken &&
+        refreshed.refreshToken !== found.refreshToken
+      ) {
+        const persisted = await deps.rotateRefreshToken(
+          found.grant.id,
+          refreshed.refreshToken,
+          found.tokenVersion,
+        );
+        if (!persisted) {
+          return {
+            ok: false,
+            status: 503,
+            error: `The ${def.label} connection changed while refreshing — retry.`,
+          };
+        }
+      }
+
+      return {
+        ok: true,
+        accessToken: refreshed.accessToken,
+        expiresAt: Date.now() + refreshed.expiresIn * 1000,
+      };
+    },
+  );
+}

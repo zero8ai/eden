@@ -15,8 +15,15 @@
  * controller still records the Release + deployment rows and marks the deployment `failed` with
  * the tooling error, so the control plane and UI work end-to-end without real infra.
  */
+import { randomBytes } from "node:crypto";
+
 import type { DataStore, Deployment, Release } from "~/data/ports";
-import { overlayLock, requiredScopesByProvider } from "~/marketplace/lock";
+import {
+  overlayLock,
+  requiredScopesByProvider,
+  type EdenLock,
+} from "~/marketplace/lock";
+import { lockSecretsForMember } from "~/project/secrets.server";
 import { listProviders } from "~/connections/providers.server";
 import { enqueue } from "~/jobs/queue.server";
 import { getRuntime } from "~/seams/index.server";
@@ -294,6 +301,58 @@ export async function deployRelease(
       environmentId: input.environmentId,
     };
     const envVars = await secrets.resolve(scope);
+
+    // Committed `eden-lock.json` at THIS release's commit — fetched ONCE, best-effort (a
+    // lock-fetch hiccup must never block a deploy), and shared by the generated-secret mint
+    // below and the connection scope-coverage check further down (issue #69). Attribution
+    // matches the route loaders': a team member is keyed by name, the single-agent root by null.
+    let lock: EdenLock | null = null;
+    try {
+      if (
+        deps.agentLock &&
+        project?.repoOwner &&
+        project.repoName &&
+        project.repoInstallationId
+      ) {
+        const lockJson = await deps.agentLock({
+          installationId: project.repoInstallationId,
+          owner: project.repoOwner,
+          repo: project.repoName,
+          ref: release.gitSha,
+        });
+        lock = overlayLock(lockJson, []);
+      }
+    } catch {
+      lock = null;
+    }
+    const member = isTeamMember && agent ? agent.name : null;
+
+    // Generated secrets (issue #163): lock-declared `generated` secrets are minted ONCE per
+    // (agent, environment) — 32 random bytes base64url, sealed into secret_values via the normal
+    // secrets seam — and reused verbatim on every later deploy (secrets.resolve returns the
+    // stored row, which suppresses the mint). A value resolved from ANY scope level also
+    // suppresses it, so an operator override always wins. Two concurrent first deploys of the
+    // same env can race; last write wins, resolved by the next redeploy.
+    if (lock && agent) {
+      const generatedNames = lockSecretsForMember(lock, agent.name, isTeamMember)
+        .flatMap((e) => e.secrets.filter((s) => s.generated).map((s) => s.name));
+      for (const name of new Set(generatedNames)) {
+        if (envVars[name] || isReservedModelEnvName(name)) continue;
+        const value = randomBytes(32).toString("base64url");
+        await secrets.set(
+          {
+            projectId: release.projectId,
+            agentId: release.agentId,
+            environmentId: input.environmentId,
+            key: name,
+          },
+          value,
+          { updatedBy: input.createdBy ?? undefined },
+        );
+        envVars[name] = value;
+      }
+    }
+
     // Legacy/plain Eve model strings call Vercel AI Gateway. Eden-authored model choices use
     // OpenRouter wiring, but keep this fallback so older repos still run if configured.
     for (const key of ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"] as const) {
@@ -428,31 +487,12 @@ export async function deployRelease(
     // block above, anti-shadowing runs ONLY per injected provider — so a self-hoster's manually-set
     // GOOGLE_OAUTH_* (their own client + token, no broker) passes through untouched. No-op when
     // there are no grants / no operator config.
-    // Deploy-time scope coverage (issue #69): the committed lock at THIS release's commit names the
-    // scopes the installed connectors require, per provider. Best-effort — a lock-fetch hiccup must
-    // never block a deploy, and coverage is simply skipped (the grant liveness check still runs).
-    // Attribution matches the loader's: a team member is keyed by name, the single-agent root by null.
-    let requiredConnectionScopes: Map<string, string[]> | null = null;
-    try {
-      if (
-        deps.agentLock &&
-        project?.repoOwner &&
-        project.repoName &&
-        project.repoInstallationId
-      ) {
-        const lockJson = await deps.agentLock({
-          installationId: project.repoInstallationId,
-          owner: project.repoOwner,
-          repo: project.repoName,
-          ref: release.gitSha,
-        });
-        const lock = overlayLock(lockJson, []);
-        const member = isTeamMember && agent ? agent.name : null;
-        requiredConnectionScopes = requiredScopesByProvider(lock, member);
-      }
-    } catch {
-      requiredConnectionScopes = null; // best-effort: never block a deploy on a lock-fetch hiccup
-    }
+    // Deploy-time scope coverage (issue #69): the committed lock at THIS release's commit (fetched
+    // once above, best-effort) names the scopes the installed connectors require, per provider.
+    // When the lock is unavailable, coverage is simply skipped (grant liveness still runs).
+    const requiredConnectionScopes: Map<string, string[]> | null = lock
+      ? requiredScopesByProvider(lock, member)
+      : null;
     const grantEnv = deps.connectionGrantEnv
       ? await deps.connectionGrantEnv(scope, requiredConnectionScopes)
       : {};

@@ -194,12 +194,15 @@ export async function handleSecretIntent(
  * the deploy guard before the guided flow has run. It DELIBERATELY stays in `all` — the
  * Deployment tab detects which channel-setup cards to show (GitHub/Discord guided flows) by
  * looking for those names in `all`, so dropping them there would hide the very flow that sets them.
+ * Issue #163: a `generated` secret (minted by Eden at first deploy) gets the same treatment —
+ * never missing/dismissed, kept in `all`.
  */
 export interface RequiredSecretComputed {
   name: string;
   description?: string;
   sandbox?: boolean;
   provisioned?: boolean;
+  generated?: boolean;
   sources: string[];
 }
 
@@ -207,7 +210,13 @@ export function computeRequiredSecrets(input: {
   /** Lock entries owned by this member (already filtered by member). */
   lockSecrets: Array<{
     templateId: string;
-    secrets: Array<{ name: string; description?: string; sandbox?: boolean; provisioned?: boolean }>;
+    secrets: Array<{
+      name: string;
+      description?: string;
+      sandbox?: boolean;
+      provisioned?: boolean;
+      generated?: boolean;
+    }>;
   }>;
   setNames: string[];
   attachedNames: string[];
@@ -219,16 +228,18 @@ export function computeRequiredSecrets(input: {
       const existing = byName.get(s.name);
       if (existing) {
         existing.sources.push(entry.templateId);
-        // First description wins; sandbox/provisioned true from ANY source sticks.
+        // First description wins; sandbox/provisioned/generated true from ANY source sticks.
         if (!existing.description && s.description) existing.description = s.description;
         if (s.sandbox) existing.sandbox = true;
         if (s.provisioned) existing.provisioned = true;
+        if (s.generated) existing.generated = true;
       } else {
         byName.set(s.name, {
           name: s.name,
           description: s.description,
           sandbox: s.sandbox,
           provisioned: s.provisioned,
+          generated: s.generated,
           sources: [entry.templateId],
         });
       }
@@ -242,11 +253,14 @@ export function computeRequiredSecrets(input: {
     // Issue #47: provisioned secrets are Eden's to set, never the user's — they can't be
     // "missing" or "dismissed" from the user's perspective, so exclude them from both lists.
     // They remain in `all` for Deployment-tab channel-setup detection (see the doc comment).
+    // Issue #163: generated secrets are Eden-minted at deploy — same exclusion.
     missing: all.filter(
-      (r) => !r.provisioned && !satisfied.has(r.name) && !dismissedSet.has(r.name),
+      (r) =>
+        !r.provisioned && !r.generated && !satisfied.has(r.name) && !dismissedSet.has(r.name),
     ),
     dismissed: all.filter(
-      (r) => !r.provisioned && !satisfied.has(r.name) && dismissedSet.has(r.name),
+      (r) =>
+        !r.provisioned && !r.generated && !satisfied.has(r.name) && dismissedSet.has(r.name),
     ),
   };
 }
@@ -312,17 +326,18 @@ export type InstallSecretOp =
  *  - `secretsandbox:<name>` = "1"/"0" — pre-checked from the manifest, user-editable.
  * A `provisioned` secret (set by a guided Eden flow, never collected by the wizard) is always
  * a skip, no matter what the form carries — the wizard renders no input for it, and this is
- * the defense in depth if a value is somehow submitted anyway.
+ * the defense in depth if a value is somehow submitted anyway. A `generated` secret (minted by
+ * Eden at first deploy, issue #163) is a skip for the same reason.
  * Values pass through here transiently; they are never returned to a client or logged.
  */
 export function planInstallSecretOps(input: {
-  secrets: Array<{ name: string; sandbox?: boolean; provisioned?: boolean }>;
+  secrets: Array<{ name: string; sandbox?: boolean; provisioned?: boolean; generated?: boolean }>;
   form: Pick<FormData, "get" | "has">;
   sharedNames: string[];
 }): InstallSecretOp[] {
   const shared = new Set(input.sharedNames);
   return input.secrets.map((s) => {
-    if (s.provisioned) return { kind: "skip", name: s.name };
+    if (s.provisioned || s.generated) return { kind: "skip", name: s.name };
     const sandbox = input.form.has(`secretsandbox:${s.name}`)
       ? input.form.get(`secretsandbox:${s.name}`) === "1"
       : (s.sandbox ?? false);

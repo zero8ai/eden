@@ -127,6 +127,11 @@ export const templateManifestSchema = z
          * for it.
          */
         provisioned: z.boolean().optional(),
+        /**
+         * A secret nobody types (issue #163) — Eden mints a random value at first deploy and
+         * keeps it stable across redeploys. Never prompted; mutually exclusive with provisioned.
+         */
+        generated: z.boolean().optional(),
       }),
     )
     .optional(),
@@ -196,6 +201,16 @@ export const templateManifestSchema = z
         message: "a bundle with no files must include at least one template",
       });
     }
+    // A secret is either operator/flow-set (provisioned) or Eden-minted (generated) — never both.
+    (m.secrets ?? []).forEach((s, i) => {
+      if (s.provisioned && s.generated) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["secrets", i, "generated"],
+          message: "a secret can't be both provisioned and generated",
+        });
+      }
+    });
     // `auth` is a connection-template concern only — a brokered OAuth grant belongs to a
     // connector, not to a tool/skill/agent/etc. (bundles carry auth by INCLUDING a connection).
     if (m.auth && m.type !== "connection") {

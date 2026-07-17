@@ -621,6 +621,9 @@ export const loader = (args: LoaderFunctionArgs) =>
           // exact-match callback URIs, so an environment created AFTER the grant was made can't
           // receive callbacks — a reconnect registers a fresh client covering the new set.
           // `createdAt` is refreshed on reconnect (grants.server.ts) and untouched by rotation.
+          // It is a SOUND watermark: the connect callback refuses any flow during which an
+          // environment appeared (connect-flow.server.ts), so every environment older than the
+          // grant is covered by its client.
           const staleClientCoverage =
             def?.clientRegistration !== undefined &&
             grant?.clientId != null &&

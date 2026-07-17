@@ -114,6 +114,15 @@ export interface ConnectState {
    * authorize URL named, then persists it on the grant for every later refresh.
    */
   clientId?: string;
+  /**
+   * The environment ids whose approval-callback URLs were registered on the minted client
+   * (issue #167). The registered client is IMMUTABLE, so the callback re-lists the agent's
+   * environments and refuses the flow when one exists that this set doesn't cover — an
+   * environment created while the consent tab was open would otherwise store a grant whose
+   * client silently can't receive that environment's callbacks (and, having been created BEFORE
+   * the grant, would never trip the Connections card's needs-reconnect watermark).
+   */
+  environmentIds?: string[];
 }
 
 /** The HMAC key: the same tenant-wide key that seals secrets. */
@@ -165,6 +174,15 @@ export function verifyConnectState(
   if (
     parsed.clientId !== undefined &&
     (typeof parsed.clientId !== "string" || parsed.clientId.length === 0)
+  ) {
+    return null;
+  }
+  if (
+    parsed.environmentIds !== undefined &&
+    (!Array.isArray(parsed.environmentIds) ||
+      parsed.environmentIds.some(
+        (id) => typeof id !== "string" || id.length === 0,
+      ))
   ) {
     return null;
   }

@@ -532,6 +532,9 @@ describe("per-grant dynamic client registration (issue #167)", () => {
       connectStateKey(),
     );
     expect(state?.clientId).toBe("reg_client_1");
+    // The registered environment SET rides the signed state too — the callback compares it
+    // against a fresh listing to refuse a flow during which an environment appeared.
+    expect(state?.environmentIds).toEqual(["envaaaaaaaaa", "envbbbbbbbbb"]);
   });
 
   it("exchanges against the state's registered client on callback and persists it on the grant", async () => {
@@ -552,6 +555,9 @@ describe("per-grant dynamic client registration (issue #167)", () => {
         exp: Date.now() + 60_000,
         codeVerifier: "v".repeat(43),
         clientId: "reg_client_1",
+        // A superset of the current environments: an environment REMOVED during consent leaves
+        // a harmless extra registered URI and must not refuse the flow.
+        environmentIds: ["envaaaaaaaaa", "envbbbbbbbbb", "envremovedxx"],
       },
       connectStateKey(),
     );
@@ -598,6 +604,108 @@ describe("per-grant dynamic client registration (issue #167)", () => {
         refreshToken: "refresh-token",
       }),
     );
+  });
+
+  it("refuses a callback when an environment was created while the consent was in progress", async () => {
+    // The registered client is IMMUTABLE and covers only the environments captured at connect
+    // time. Storing this grant would render "connected" forever (the new environment PREDATES
+    // grant.createdAt — the Connections card's staleness watermark) while its approval callbacks
+    // are silently rejected. The flow must refuse instead; reconnecting registers a fresh client.
+    const { loader } = await import("~/routes/connections.$provider.callback");
+    const { connectStateKey, signConnectState } = await import(
+      "~/connections/oauth.server"
+    );
+    const state = signConnectState(
+      {
+        projectId: PROJECT.id,
+        agentId: AGENT.id,
+        userId: mocks.auth.user.id,
+        sessionId: mocks.auth.session.id,
+        nonce: "regprov-nonce",
+        provider: "regprov",
+        scopes: "approval:create",
+        returnTo: "/dashboard",
+        exp: Date.now() + 60_000,
+        codeVerifier: "v".repeat(43),
+        clientId: "reg_client_1",
+        // Only environment A existed when the client was registered…
+        environmentIds: ["envaaaaaaaaa"],
+      },
+      connectStateKey(),
+    );
+    // …but environment B exists by the time the consent completes (beforeEach lists A and B).
+    const staged = await loader(
+      routeArgs(
+        `https://eden.example.com/connections/regprov/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+        { provider: "regprov" },
+      ),
+    );
+    const cookie = (staged as Response).headers
+      .get("set-cookie")!
+      .split(";", 1)[0];
+    const result = await loader(
+      routeArgs(
+        "https://eden.example.com/connections/regprov/callback",
+        { provider: "regprov" },
+        { cookie },
+      ),
+    );
+    expect(result).toMatchObject({
+      error: expect.stringContaining("An environment was added"),
+      backUrl: "/dashboard",
+    });
+    // Refused BEFORE the exchange — no token minted, no grant stored.
+    expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    expect(mocks.upsertGrant).not.toHaveBeenCalled();
+  });
+
+  it("stays lenient on an in-flight state without environmentIds (pre-coverage token)", async () => {
+    const { loader } = await import("~/routes/connections.$provider.callback");
+    const { connectStateKey, signConnectState } = await import(
+      "~/connections/oauth.server"
+    );
+    const state = signConnectState(
+      {
+        projectId: PROJECT.id,
+        agentId: AGENT.id,
+        userId: mocks.auth.user.id,
+        sessionId: mocks.auth.session.id,
+        nonce: "regprov-nonce",
+        provider: "regprov",
+        scopes: "approval:create",
+        returnTo: "/dashboard",
+        exp: Date.now() + 60_000,
+        codeVerifier: "v".repeat(43),
+        clientId: "reg_client_1",
+      },
+      connectStateKey(),
+    );
+    mocks.exchangeCode.mockResolvedValue({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+      expiresIn: 3599,
+      scope: "approval:create",
+    });
+    const staged = await loader(
+      routeArgs(
+        `https://eden.example.com/connections/regprov/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+        { provider: "regprov" },
+      ),
+    );
+    const cookie = (staged as Response).headers
+      .get("set-cookie")!
+      .split(";", 1)[0];
+    const response = await redirectFrom(
+      loader(
+        routeArgs(
+          "https://eden.example.com/connections/regprov/callback",
+          { provider: "regprov" },
+          { cookie },
+        ),
+      ),
+    );
+    expect(response.status).toBe(302);
+    expect(mocks.upsertGrant).toHaveBeenCalled();
   });
 
   it("surfaces a readable error when registration fails (public-HTTPS callback rule / local dev)", async () => {

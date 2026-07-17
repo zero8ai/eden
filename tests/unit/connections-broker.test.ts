@@ -17,6 +17,10 @@ import {
   brokerAccessToken,
   type BrokerDeps,
 } from "~/connections/broker.server";
+import {
+  connectionGrantEnv,
+  type ConnectionDeployDeps,
+} from "~/connections/deploy.server";
 import { InvalidGrantError } from "~/connections/oauth.server";
 
 const routeMocks = vi.hoisted(() => ({
@@ -233,6 +237,82 @@ describe("brokerAccessToken", () => {
     expect(a.ok).toBe(true);
     expect(b.ok).toBe(true);
     // Strictly sequential: open → refresh → rotate, twice — never two refreshes of one token.
+    expect(events).toEqual([
+      "open:rt_1",
+      "refresh:rt_1",
+      "rotate:rt_2",
+      "open:rt_2",
+      "refresh:rt_2",
+      "rotate:rt_3",
+    ]);
+  });
+
+  it("serializes a broker call against a concurrent DEPLOY validation — one shared per-grant chain", async () => {
+    // The scenario the chain exists for: a deployed instance asks the broker for a token while a
+    // redeploy validates the same grant. Unserialized, both would read rt_1 and refresh it twice
+    // — mayi's family-reuse revocation would kill the grant. The shared chain
+    // (refresh-serialization.server.ts) makes the second task re-read and consume the first's
+    // rotated token, whichever side wins the race.
+    const events: string[] = [];
+    let stored = "rt_1";
+    let mint = 1;
+    const openRefreshToken = async () => {
+      events.push(`open:${stored}`);
+      return {
+        grant: {
+          id: "grant_mayi",
+          status: "active" as const,
+          scopes: "approval:create",
+          clientId: "mayi_client_1",
+        },
+        refreshToken: stored,
+        tokenVersion: `iv:${stored}`,
+      };
+    };
+    const refreshAccessToken = async (input: { refreshToken: string }) => {
+      events.push(`refresh:${input.refreshToken}`);
+      mint += 1;
+      // Yield so an unserialized second refresh COULD interleave here — the chain must prevent it.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { accessToken: `at_${mint}`, expiresIn: 3600, refreshToken: `rt_${mint}` };
+    };
+    const rotateRefreshToken = async (_id: string, rt: string) => {
+      events.push(`rotate:${rt}`);
+      stored = rt;
+      return true;
+    };
+    const deployDeps: ConnectionDeployDeps = {
+      getConfig: () => null,
+      listGrantsForAgent: async () => [
+        { provider: "mayi", status: "active" as const },
+      ],
+      openRefreshToken,
+      markGrantStatus: async () => {},
+      rotateRefreshToken,
+      refreshAccessToken:
+        refreshAccessToken as ConnectionDeployDeps["refreshAccessToken"],
+    };
+    const [env, brokered] = await Promise.all([
+      connectionGrantEnv(
+        { ...SCOPE, environmentId: "envabcdefghi" },
+        okFetch,
+        deployDeps,
+      ),
+      realBroker(
+        { ...SCOPE, provider: "mayi" },
+        okFetch,
+        brokerDeps({
+          openRefreshToken,
+          refreshAccessToken:
+            refreshAccessToken as BrokerDeps["refreshAccessToken"],
+          rotateRefreshToken,
+        }),
+      ),
+    ]);
+    expect(brokered.ok).toBe(true);
+    expect(env.MAYI_OAUTH_SCOPES).toBe("approval:create");
+    // Strictly sequential regardless of which side entered the chain first: the second task
+    // opened the FIRST's rotated token — never two refreshes of one stored token.
     expect(events).toEqual([
       "open:rt_1",
       "refresh:rt_1",

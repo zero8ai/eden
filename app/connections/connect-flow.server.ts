@@ -212,6 +212,10 @@ export function connectionConnectLoader(
       // LATER invalidates coverage — the Connections card flips to needs-reconnect and the
       // reconnect registers a fresh client (same UX as a scope change, issue #165).
       let registeredClientId: string | undefined;
+      // The exact environment set the minted client's approval callbacks cover — carried in the
+      // signed state so the callback can refuse the flow if an environment appeared while the
+      // consent tab was open (the client is immutable; see the callback's coverage check).
+      let registeredEnvironmentIds: string[] | undefined;
       if (provider.clientRegistration) {
         // Instance callbacks must be publicly reachable — prefer the operator's EDEN_PUBLIC_ORIGIN
         // (the same origin EVE_PUBLIC_ORIGIN injection uses) over the request-derived origin.
@@ -231,6 +235,9 @@ export function connectionConnectLoader(
             ),
           });
           registeredClientId = registered.clientId;
+          if (callbackPath) {
+            registeredEnvironmentIds = environments.map((env) => env.id);
+          }
         } catch (error) {
           return {
             error:
@@ -274,6 +281,9 @@ export function connectionConnectLoader(
           exp: expiresAt,
           ...(codeVerifier ? { codeVerifier } : {}),
           ...(registeredClientId ? { clientId: registeredClientId } : {}),
+          ...(registeredEnvironmentIds
+            ? { environmentIds: registeredEnvironmentIds }
+            : {}),
         },
         connectStateKey(),
       );
@@ -440,8 +450,30 @@ export function connectionCallbackLoader(
             "no connection was made. Start again from the agent's Deployment tab.",
           backUrl,
         );
+      // Callback-coverage currency (issue #167): the per-grant client registered when this flow
+      // STARTED is immutable, and its approval callbacks cover exactly the environments captured
+      // in the signed state. An environment created while the consent tab was open would be
+      // silently unregistered — and, predating the grant, would never trip the Connections
+      // card's needs-reconnect watermark — so the grant must not be stored. Undefined = no
+      // approval callbacks were registered for this flow (operator-client providers, providers
+      // without an approvalCallbackPath, or an in-flight pre-coverage state) — nothing to check.
+      // Environments REMOVED during consent stay fine: extra registered URIs are harmless.
+      const environmentCoverageStale = async (): Promise<boolean> => {
+        if (state.environmentIds === undefined) return false;
+        const registered = new Set(state.environmentIds);
+        const environments = await listAgentEnvironments(agent.id);
+        return environments.some((env) => !registered.has(env.id));
+      };
+      const staleCoverageFail = () =>
+        fail(
+          `An environment was added to this agent while the ${label} consent was in progress — ` +
+            "its approval callbacks aren't covered by the connection's OAuth client, so no " +
+            "connection was made. Start again from the agent's Deployment tab.",
+          backUrl,
+        );
       // First pass BEFORE the exchange: refuse an obviously stale flow without minting tokens.
       if (await selectionStale()) return staleSelectionFail();
+      if (await environmentCoverageStale()) return staleCoverageFail();
 
       // Per-grant registered client (issue #167): the exchange must run against the SAME client
       // the authorize URL named — the signed state carries it. Operator-client providers resolve
@@ -494,8 +526,12 @@ export function connectionCallbackLoader(
       // last — would still overwrite the fresher grant. Re-checking here shrinks the remaining
       // window to the upsert itself (no network calls inside it), which a full consent
       // round-trip cannot fit into. The freshly minted token is simply discarded, exactly like
-      // the granular-consent refusal above.
+      // the granular-consent refusal above. Environment coverage gets the same second pass: an
+      // environment created during the exchange round-trip must also refuse the flow, so a
+      // stored grant's creation time is a SOUND watermark for the Connections card (every
+      // environment older than the grant is covered by its client).
       if (await selectionStale()) return staleSelectionFail();
+      if (await environmentCoverageStale()) return staleCoverageFail();
 
       await upsertGrant({
         projectId: project.id,

@@ -8,10 +8,11 @@
  * short-lived access token; every refresh happens here, and the rotated refresh token is
  * persisted before the access token is released.
  *
- * Concurrency: refreshes are serialized PER GRANT via an in-process promise chain — two
- * concurrent broker calls (or a broker call racing a deploy validation in the same process)
- * can't both consume the same stored token. Cross-process races (deploy worker vs web) are
- * caught by the compare-and-set in `rotateGrantRefreshToken` and surface as a retryable error.
+ * Concurrency: refreshes are serialized PER GRANT via the shared in-process promise chain in
+ * refresh-serialization.server.ts — deploy-time validation (deploy.server.ts) runs on the SAME
+ * chain, so two concurrent broker calls, or a broker call racing a deploy validation, can't both
+ * consume the same stored token. Cross-process races are caught by the compare-and-set in
+ * `rotateGrantRefreshToken` and surface as a retryable error.
  *
  * eve-side traffic is cheap: the shipped credentials binding caches the token until close to
  * `expiresAt`, so this is ~one call per access-token lifetime (an hour for mayi) per instance,
@@ -29,6 +30,10 @@ import {
   refreshAccessToken as realRefreshAccessToken,
 } from "./oauth.server";
 import { getProvider, type ProviderDefinition } from "./providers.server";
+import {
+  grantRefreshKey,
+  serializedRefresh,
+} from "./refresh-serialization.server";
 import {
   markGrantStatus as realMarkGrantStatus,
   openRefreshToken as realOpenRefreshToken,
@@ -86,28 +91,6 @@ export type BrokerResult =
   | { ok: true; accessToken: string; expiresAt: number }
   | { ok: false; error: string; status: number };
 
-/** Per-grant-scope serialization chain (see module doc). Keyed before the grant row is read. */
-const refreshChains = new Map<string, Promise<unknown>>();
-
-/**
- * Run `task` after every earlier task for the same key has settled — a failed predecessor never
- * poisons the chain (its rejection is observed by its own caller only).
- */
-async function serialized<T>(key: string, task: () => Promise<T>): Promise<T> {
-  const tail = refreshChains.get(key) ?? Promise.resolve();
-  const run = tail.then(task, task);
-  const settled = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  refreshChains.set(key, settled);
-  try {
-    return await run;
-  } finally {
-    if (refreshChains.get(key) === settled) refreshChains.delete(key);
-  }
-}
-
 /**
  * A fresh access token for (project, agent, provider), refreshed centrally with the rotation
  * persisted (issue #167). Business failures come back as `{ ok: false }` with an HTTP-ish status
@@ -137,8 +120,12 @@ export async function brokerAccessToken(
     };
   }
 
-  return serialized(
-    `${input.projectId}/${input.agentId}/${def.id}`,
+  return serializedRefresh(
+    grantRefreshKey({
+      projectId: input.projectId,
+      agentId: input.agentId,
+      provider: def.id,
+    }),
     async (): Promise<BrokerResult> => {
       const found = await deps.openRefreshToken({
         projectId: input.projectId,

@@ -503,3 +503,34 @@ describe("connect-state clientId (issue #167)", () => {
     expect(verifyConnectState(plain, key, state.exp - 1000)).toEqual(state);
   });
 });
+
+describe("connect-state environmentIds (issue #167)", () => {
+  it("round-trips the registered environment set through the signed state", () => {
+    const key = randomBytes(32);
+    const token = signConnectState(
+      { ...state, environmentIds: ["envaaaaaaaaa", "envbbbbbbbbb"] },
+      key,
+    );
+    expect(
+      verifyConnectState(token, key, state.exp - 1000)?.environmentIds,
+    ).toEqual(["envaaaaaaaaa", "envbbbbbbbbb"]);
+    // An empty set is valid (an agent with no environments registers no callbacks).
+    const none = signConnectState({ ...state, environmentIds: [] }, key);
+    expect(
+      verifyConnectState(none, key, state.exp - 1000)?.environmentIds,
+    ).toEqual([]);
+  });
+
+  it("rejects a malformed environmentIds; a state without one stays valid", () => {
+    const key = randomBytes(32);
+    for (const environmentIds of ["env", [""], [42], {}]) {
+      const bad = signConnectState(
+        { ...state, environmentIds } as unknown as ConnectState,
+        key,
+      );
+      expect(verifyConnectState(bad, key, state.exp - 1000)).toBeNull();
+    }
+    const plain = signConnectState(state, key);
+    expect(verifyConnectState(plain, key, state.exp - 1000)).toEqual(state);
+  });
+});

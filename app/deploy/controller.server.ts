@@ -69,8 +69,10 @@ export interface DeployDeps {
     requiredScopes?: ReadonlyMap<string, string[]> | null,
   ) => Promise<Record<string, string>>;
   /**
-   * Committed `eden-lock.json` content at a release's commit, for deploy-time scope-coverage
-   * validation (issue #69). null when absent/unfetchable — coverage is then skipped.
+   * Committed `eden-lock.json` content at a release's commit — the generated-secret mint
+   * (issue #163) and deploy-time scope-coverage validation (issue #69) both read it. null when
+   * the repo has no lock file; a fetch failure THROWS (failing the deploy) — without the lock
+   * Eden can't know which generated secrets the agent requires, and deploys are repeatable.
    */
   agentLock?: (input: {
     installationId: string;
@@ -103,11 +105,11 @@ function deployDeps(): DeployDeps {
       import("~/connections/deploy.server").then((m) =>
         m.connectionGrantEnv(scope, fetch, undefined, requiredScopes),
       ),
+    // A missing lock FILE resolves null; a failed FETCH rejects (deployRelease fails the deploy).
     agentLock: ({ installationId, owner, repo, ref }) =>
       import("~/github/repo.server")
         .then((m) => m.fetchAgentSource(installationId, { owner, repo, ref }))
-        .then((s) => s.files["eden-lock.json"] ?? null)
-        .catch(() => null),
+        .then((s) => s.files["eden-lock.json"] ?? null),
   };
 }
 
@@ -303,53 +305,65 @@ export async function deployRelease(
     };
     const envVars = await secrets.resolve(scope);
 
-    // Committed `eden-lock.json` at THIS release's commit — fetched ONCE, best-effort (a
-    // lock-fetch hiccup must never block a deploy), and shared by the generated-secret mint
-    // below and the connection scope-coverage check further down (issue #69). Attribution
-    // matches the route loaders': a team member is keyed by name, the single-agent root by null.
+    // Committed `eden-lock.json` at THIS release's commit — fetched ONCE and shared by the
+    // generated-secret mint below and the connection scope-coverage check further down (issue
+    // #69). A repo without a lock FILE is fine (nothing to mint or validate), but a failed
+    // FETCH fails the deploy: without the lock Eden can't know which generated secrets the
+    // agent requires, and silently launching without them ships a broken container. Deploys
+    // are repeatable — redeploying retries. (A corrupt lock still degrades to empty inside
+    // overlayLock; the next install rewrites it cleanly.) Attribution matches the route
+    // loaders': a team member is keyed by name, the single-agent root by null.
     let lock: EdenLock | null = null;
-    try {
-      if (
-        deps.agentLock &&
-        project?.repoOwner &&
-        project.repoName &&
-        project.repoInstallationId
-      ) {
-        const lockJson = await deps.agentLock({
+    if (
+      deps.agentLock &&
+      project?.repoOwner &&
+      project.repoName &&
+      project.repoInstallationId
+    ) {
+      let lockJson: string | null;
+      try {
+        lockJson = await deps.agentLock({
           installationId: project.repoInstallationId,
           owner: project.repoOwner,
           repo: project.repoName,
           ref: release.gitSha,
         });
-        lock = overlayLock(lockJson, []);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Could not fetch eden-lock.json at ${release.gitSha.slice(0, 7)} (${detail}) — the deploy needs it to mint generated secrets and validate connection scopes. Redeploy to retry.`,
+        );
       }
-    } catch {
-      lock = null;
+      lock = overlayLock(lockJson, []);
     }
     const member = isTeamMember && agent ? agent.name : null;
 
     // Generated secrets (issue #163): lock-declared `generated` secrets are minted ONCE per
     // (agent, environment) — 32 random bytes base64url, sealed into secret_values via the normal
-    // secrets seam — and reused verbatim on every later deploy (secrets.resolve returns the
-    // stored row, which suppresses the mint). A value resolved from ANY scope level also
-    // suppresses it, so an operator override always wins. Two concurrent first deploys of the
-    // same env can race; last write wins, resolved by the next redeploy.
+    // secrets seam — and reused verbatim on every later deploy. The mint gate is the EXACT
+    // (agent, environment, name) row, never the resolved cascade: generated material is nobody's
+    // credential, so a user/shared/agent-scoped value of the same name can neither pre-seed nor
+    // shadow it (the injected value is always the stored row, regenerated only if that row is
+    // deleted). Two concurrent first deploys of the same env can race; last write wins, resolved
+    // by the next redeploy.
     if (lock && agent) {
       const generatedNames = lockSecretsForMember(lock, agent.name, isTeamMember)
         .flatMap((e) => e.secrets.filter((s) => s.generated).map((s) => s.name));
       for (const name of new Set(generatedNames)) {
-        if (envVars[name] || isReservedModelEnvName(name)) continue;
-        const value = randomBytes(32).toString("base64url");
-        await secrets.set(
-          {
-            projectId: release.projectId,
-            agentId: release.agentId,
-            environmentId: input.environmentId,
-            key: name,
-          },
-          value,
-          { updatedBy: input.createdBy ?? undefined },
-        );
+        if (isReservedModelEnvName(name)) continue;
+        const ref = {
+          projectId: release.projectId,
+          agentId: release.agentId,
+          environmentId: input.environmentId,
+          key: name,
+        };
+        const existing = await secrets.get(ref);
+        const value = existing ?? randomBytes(32).toString("base64url");
+        if (existing === null) {
+          await secrets.set(ref, value, {
+            updatedBy: input.createdBy ?? undefined,
+          });
+        }
         envVars[name] = value;
       }
     }
@@ -489,8 +503,9 @@ export async function deployRelease(
     // GOOGLE_OAUTH_* (their own client + token, no broker) passes through untouched. No-op when
     // there are no grants / no operator config.
     // Deploy-time scope coverage (issue #69): the committed lock at THIS release's commit (fetched
-    // once above, best-effort) names the scopes the installed connectors require, per provider.
-    // When the lock is unavailable, coverage is simply skipped (grant liveness still runs).
+    // once above; a fetch failure already failed the deploy) names the scopes the installed
+    // connectors require, per provider. When the repo has no lock file, coverage is simply
+    // skipped (grant liveness still runs).
     const requiredConnectionScopes: Map<string, string[]> | null = lock
       ? requiredScopesByProvider(lock, member)
       : null;

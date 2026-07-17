@@ -1001,7 +1001,12 @@ export default function Deployment({
   const connected = params.get("connected");
   const redeploy = params.get("redeploy");
   const redeployError = params.get("redeployError");
-  const connectedLabel = connected === "google" ? "Google" : connected;
+  // Registry label from the Connections rows (the callback just upserted a grant, so the row
+  // exists); raw id only if the row is somehow gone.
+  const connectedLabel = connected
+    ? (loaderData.connections.find((c) => c.provider === connected)?.label ??
+      connected)
+    : connected;
 
   // Progress: re-fetch faster while any deployment is pending/building. A slower
   // baseline poll runs regardless, so a deploy STARTED after this page loaded is

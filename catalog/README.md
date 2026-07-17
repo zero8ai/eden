@@ -87,9 +87,10 @@ At install (and update) time Eden's resolver flattens each reference into the pa
 ## Connection providers
 
 A `connection` template with `auth: { provider, kind: "oauth2", scopes }` rides Eden's
-auth-brokered OAuth flow (issues #30, #163): the install wizard / Deployment tab shows a
-Connect button, Eden runs the consent flow against its operator-registered OAuth app, stores
-the grant, and injects the credentials at deploy. The contract:
+auth-brokered OAuth flow (issues #30, #163): the Deployment tab's Connections card shows a
+Connect button (connecting is a deployment concern — the install wizard collects nothing),
+Eden runs the consent flow against its operator-registered OAuth app, stores the grant, and
+injects the credentials at deploy. The contract:
 
 - **`auth.provider` must name a registered provider.** The registry lives in Eden at
   `app/connections/providers.server.ts` — one object per provider carrying its endpoints,

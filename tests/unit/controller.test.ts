@@ -1669,9 +1669,16 @@ describe("generated-secret mint-once (issue #163)", () => {
     });
   });
 
-  /** A stateful SecretsProvider: set() persists, resolve() returns base + stored (like the DB). */
-  function mintingSecrets(base: Record<string, string>) {
-    const stored: Record<string, string> = {};
+  /**
+   * A stateful SecretsProvider: set() persists to the exact (agent, env, name) rows that get()
+   * reads back, and resolve() layers those rows over `base` (values from OTHER cascade scopes),
+   * like the DB. `exactRows` pre-seeds stored (agent, env, name) rows.
+   */
+  function mintingSecrets(
+    base: Record<string, string>,
+    exactRows: Record<string, string> = {},
+  ) {
+    const stored: Record<string, string> = { ...exactRows };
     const setCalls: { key: string; value: string }[] = [];
     const provider: SecretsProvider = {
       name: "fake",
@@ -1679,8 +1686,8 @@ describe("generated-secret mint-once (issue #163)", () => {
         stored[ref.key] = value;
         setCalls.push({ key: ref.key, value });
       },
-      async get() {
-        return null;
+      async get(ref) {
+        return stored[ref.key] ?? null;
       },
       async delete() {},
       async listNames() {
@@ -1723,16 +1730,16 @@ describe("generated-secret mint-once (issue #163)", () => {
     expect(deployedEnvs[1].MAYI_STATE_KEY).toBe(setCalls[0].value);
   });
 
-  it("suppresses the mint when a value already resolves from any scope level", async () => {
+  it("suppresses the mint only for an existing exact (agent, env, name) row", async () => {
     const release = await createRelease(
       { projectId: PROJECT, agentId: AGENT, gitSha: "dd".repeat(20) },
       store,
     );
     const deployedEnvs: Record<string, string>[] = [];
-    const { provider, setCalls } = mintingSecrets({
-      OPENROUTER_API_KEY: "k",
-      MAYI_STATE_KEY: "operator-override",
-    });
+    const { provider, setCalls } = mintingSecrets(
+      { OPENROUTER_API_KEY: "k" },
+      { MAYI_STATE_KEY: "already-minted" },
+    );
 
     await deployRelease(
       { environmentId: ENV, releaseId: release.id },
@@ -1748,7 +1755,76 @@ describe("generated-secret mint-once (issue #163)", () => {
     );
 
     expect(setCalls).toHaveLength(0);
-    expect(deployedEnvs[0].MAYI_STATE_KEY).toBe("operator-override");
+    expect(deployedEnvs[0].MAYI_STATE_KEY).toBe("already-minted");
+  });
+
+  it("mints despite a same-named value from another scope level — generated material is nobody's credential", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "ab".repeat(20) },
+      store,
+    );
+    const deployedEnvs: Record<string, string>[] = [];
+    // A user/shared/agent-scoped MAYI_STATE_KEY resolves from the cascade, but no exact
+    // (agent, env, name) row exists — Eden must still mint, and the mint must win.
+    const { provider, setCalls } = mintingSecrets({
+      OPENROUTER_API_KEY: "k",
+      MAYI_STATE_KEY: "user-shadow-attempt",
+    });
+
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        secrets: provider,
+        agentLock: async () => LOCK,
+      },
+    );
+
+    expect(setCalls).toHaveLength(1);
+    expect(deployedEnvs[0].MAYI_STATE_KEY).toBe(setCalls[0].value);
+    expect(deployedEnvs[0].MAYI_STATE_KEY).not.toBe("user-shadow-attempt");
+  });
+
+  it("fails the deploy when the lock fetch fails — required generated secrets can't be determined", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "ba".repeat(20) },
+      store,
+    );
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" } }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+        agentLock: async () => {
+          throw new Error("GitHub 502");
+        },
+      },
+    );
+    expect(dep.status).toBe("failed");
+    expect(dep.errorDetail).toContain("eden-lock.json");
+    expect(dep.errorDetail).toContain("GitHub 502");
+  });
+
+  it("deploys with nothing to mint when the repo simply has no lock file", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "cd".repeat(20) },
+      store,
+    );
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" } }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+        agentLock: async () => null,
+      },
+    );
+    expect(dep.status).toBe("live");
   });
 });
 

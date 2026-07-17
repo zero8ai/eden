@@ -46,8 +46,9 @@ Note the plural: a template of `type: "tool"` lives under `templates/tools/`.
    | `eve`                 | yes      | semver _range_ the template targets, e.g. `">=0.1.0"`                                                                |
    | `files`               | yes      | list of install-relative paths — **no absolute paths, no `..`, no backslashes**; non-empty for every type except `bundle` (a bundle may be pure composition) |
    | `dependencies`        | no       | npm name → version range; JSON-merged into the target's `package.json`                                               |
-   | `secrets`             | no       | `[{ name: UPPER_SNAKE, description? }]` — the install wizard makes placeholders                                      |
+   | `secrets`             | no       | `[{ name: UPPER_SNAKE, description?, provisioned?, generated? }]` — the install wizard makes placeholders; `provisioned` (a guided Eden flow sets it) and `generated` (Eden mints it — see [Connection providers](#connection-providers)) are never prompted and mutually exclusive |
    | `sandbox`             | no       | sandbox setup merged into the target agent, e.g. `bootstrap` shell commands, `env` defaults, and a `revalidationKey` |
+   | `auth`                | no       | `{ provider, kind: "oauth2", scopes }` — brokered OAuth descriptor, `connection` templates only (see [Connection providers](#connection-providers)) |
    | `connections`         | no       | declared for future use                                                                                              |
    | `model`               | no       | suggested model (agent-type templates)                                                                               |
    | `setup`               | no       | Markdown, shown on the detail page before install — provider-side steps a secret description can't hold (create an app, point a webhook at the agent's endpoint, grant scopes). Mainly channels |
@@ -82,3 +83,35 @@ At install (and update) time Eden's resolver flattens each reference into the pa
 - **the same catalog snapshot** the parent came from resolves its includes — there is no per-include version pin. The **parent's own version bump** is what delivers newer included artifacts to an existing install (update detection compares the parent's version, unchanged).
 - **the parent wins collisions**: on a duplicated dependency range or sandbox `env` key the parent's value wins; secrets union by name (first occurrence keeps its description, `sandbox` flags OR); `model` and the `eve` range are the parent's only.
 - **file-path collisions and cycles are CI failures** (above), caught before publish.
+
+## Connection providers
+
+A `connection` template with `auth: { provider, kind: "oauth2", scopes }` rides Eden's
+auth-brokered OAuth flow (issues #30, #163): the install wizard / Deployment tab shows a
+Connect button, Eden runs the consent flow against its operator-registered OAuth app, stores
+the grant, and injects the credentials at deploy. The contract:
+
+- **`auth.provider` must name a registered provider.** The registry lives in Eden at
+  `app/connections/providers.server.ts` — one object per provider carrying its endpoints,
+  PKCE flag, authorize params, and env prefix. A template naming an unregistered provider
+  renders on the Deployment tab as "not supported by this Eden installation"; supporting a
+  new provider is a registry addition in Eden, not a template concern.
+- **The template's `setup` text carries the operator instructions** (following the
+  google-sheets template's pattern): create the OAuth app with the provider, set
+  `EDEN_<PREFIX>_CLIENT_ID` / `EDEN_<PREFIX>_CLIENT_SECRET` on the Eden control plane, and
+  register the redirect URI `<origin>/connections/<provider>/callback` (Google alone keeps
+  the legacy `<origin>/google/callback`).
+- **At deploy Eden injects `<PREFIX>_OAUTH_CLIENT_ID` / `<PREFIX>_OAUTH_CLIENT_SECRET` /
+  `<PREFIX>_OAUTH_REFRESH_TOKEN`** for every provider the agent holds an active grant for;
+  the shipped connection file refreshes its own access tokens from those at runtime.
+
+Two adjacent capabilities connection/channel templates can rely on:
+
+- **Generated secrets** — a secrets entry with `generated: true` is a value nobody types
+  (e.g. a random state-encryption key). It is never prompted in the install wizard; Eden
+  mints a random value once per agent + environment at first deploy and keeps it stable
+  across redeploys (mutually exclusive with `provisioned`).
+- **`EVE_PUBLIC_ORIGIN`** — when the operator configures `EDEN_PUBLIC_ORIGIN`, every deployed
+  instance receives `EVE_PUBLIC_ORIGIN`, its per-environment public ingress URL, so adapters
+  that take inbound webhooks can build callback URLs. Treat it as optional at runtime — it is
+  unset in local dev and on installations without a public origin.

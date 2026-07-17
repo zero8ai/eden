@@ -144,6 +144,10 @@ Fill in every value (`deploy/vps/.env` is gitignored). Notes per section:
     `EDEN_DISCORD_PUBLIC_KEY`, and a **Bot** token → `EDEN_DISCORD_BOT_TOKEN`. The bot token
     stays on the control plane and is never shipped to agent instances. Users then connect
     servers from each agent's Deployment tab — nothing else to configure per agent.
+- **`EDEN_PUBLIC_ORIGIN` (optional)** — set it to Eden's public origin
+  (`https://eden.example.com`) so every deployed instance receives `EVE_PUBLIC_ORIGIN` — its
+  per-environment public ingress URL — letting channels/connections that take inbound webhooks
+  build callback URLs.
 
 ## 5. Build and start the stack
 

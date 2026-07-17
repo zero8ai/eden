@@ -25,6 +25,7 @@ import {
 } from "~/marketplace/lock";
 import { lockSecretsForMember } from "~/project/secrets.server";
 import { listProviders } from "~/connections/providers.server";
+import { envIngressUrl } from "~/lib/ingress";
 import { enqueue } from "~/jobs/queue.server";
 import { getRuntime } from "~/seams/index.server";
 import type { DeployTarget, SecretScope, SecretsProvider } from "~/seams/types";
@@ -507,6 +508,20 @@ export async function deployRelease(
       for (const [key, value] of Object.entries(grantEnv)) {
         envVars[key] = value;
       }
+    }
+
+    // Public origin (issue #163): instances that receive inbound webhooks need their
+    // per-environment public ingress URL to construct callback URLs. Operator-level env (deploys
+    // can be webhook-driven with no meaningful request origin). Anti-shadowing only when
+    // injecting — unset means a user-set EVE_PUBLIC_ORIGIN passes through (local dev /
+    // self-managed ingress).
+    const publicOriginConfig = process.env.EDEN_PUBLIC_ORIGIN?.trim();
+    if (publicOriginConfig) {
+      delete envVars.EVE_PUBLIC_ORIGIN;
+      envVars.EVE_PUBLIC_ORIGIN = envIngressUrl(
+        publicOriginConfig,
+        input.environmentId,
+      );
     }
 
     let imageRef = release.imageRef;

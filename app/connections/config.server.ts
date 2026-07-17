@@ -16,17 +16,24 @@ import { getProvider } from "./providers.server";
 
 export interface OAuthClientConfig {
   clientId: string;
-  clientSecret: string;
+  /** Absent for PUBLIC clients (`tokenEndpointAuth: "none"`, issue #167) — no secret exists. */
+  clientSecret?: string;
 }
 
-/** A provider's shared-client config, or null when the operator hasn't set both env vars. */
+/**
+ * A provider's shared-client config, or null when the operator hasn't set the required env vars.
+ * A PUBLIC client (`tokenEndpointAuth: "none"`, issue #167) has no secret to set, so only
+ * `EDEN_<PREFIX>_CLIENT_ID` is required; confidential providers need both, as before.
+ */
 export function getProviderOAuthConfig(
   provider: ProviderDefinition,
 ): OAuthClientConfig | null {
   const clientId = process.env[`EDEN_${provider.envPrefix}_CLIENT_ID`]?.trim();
+  if (!clientId) return null;
+  if (provider.tokenEndpointAuth === "none") return { clientId };
   const clientSecret =
     process.env[`EDEN_${provider.envPrefix}_CLIENT_SECRET`]?.trim();
-  if (!clientId || !clientSecret) return null;
+  if (!clientSecret) return null;
   return { clientId, clientSecret };
 }
 

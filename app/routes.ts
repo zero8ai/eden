@@ -173,6 +173,9 @@ export default [
   // registered provider; /google/* stay as aliases for redirect-URI back-compat.
   route("connections/:provider/connect", "routes/connections.$provider.connect.tsx"),
   route("connections/:provider/callback", "routes/connections.$provider.callback.tsx"),
+  // Instance token broker (issue #167): instances of access-token-broker providers (rotating
+  // refresh grants — mayi) fetch fresh access tokens here with their EDEN_TEAM_TOKEN.
+  route("api/connections/token", "routes/api.connections.token.ts"),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
   // Hosted MCP Streamable HTTP transport. Bearer API keys are verified per stateless request.
   route("api/mcp", "routes/api.mcp.ts"),

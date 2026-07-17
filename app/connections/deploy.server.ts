@@ -1,16 +1,38 @@
 /**
- * Deploy-side connection injection (issues #30, #163). Turns an agent's active OAuth grants into
- * the env the shipped eve connections need to self-refresh access tokens at runtime — per
- * registered provider, the operator client creds plus the sealed refresh token (unsealed here) as
- * `<PREFIX>_OAUTH_CLIENT_ID` / `<PREFIX>_OAUTH_CLIENT_SECRET` / `<PREFIX>_OAUTH_REFRESH_TOKEN`,
- * plus `<PREFIX>_OAUTH_SCOPES` — the grant's GRANTED scopes (issue #165) so agent code can read
- * its actual permission level. There is NO per-turn control-plane dependency: once these vars are
- * in the container, eve's `getToken` exchanges the refresh token for access tokens on its own.
+ * Deploy-side connection injection (issues #30, #163, #167). Turns an agent's active OAuth grants
+ * into the env the shipped eve connections need at runtime, per registered provider and per the
+ * provider's `credentialDelivery`:
+ *
+ *  - "refresh-token" (default; google unchanged): the operator client creds plus the sealed
+ *    refresh token (unsealed here) as `<PREFIX>_OAUTH_CLIENT_ID` / `<PREFIX>_OAUTH_CLIENT_SECRET`
+ *    / `<PREFIX>_OAUTH_REFRESH_TOKEN` — no per-turn control-plane dependency: once these vars are
+ *    in the container, eve's `getToken` exchanges the refresh token for access tokens on its own.
+ *  - "access-token-broker" (issue #167): the refresh token NEVER ships — rotating-grant providers
+ *    (mayi) revoke the whole token family if two writers race a rotation, so Eden stays the
+ *    single writer and the instance fetches short-lived access tokens from the control-plane
+ *    broker (`POST <EDEN_API_URL>/api/connections/token`, see broker.server.ts). Deploy injects
+ *    only `<PREFIX>_OAUTH_SCOPES` plus the provider's static `deployEnv` constants; the broker
+ *    coordinates (EDEN_API_URL / EDEN_TEAM_TOKEN) are deployment-scoped and injected by the
+ *    controller.
+ *
+ * Both paths also inject `<PREFIX>_OAUTH_SCOPES` — the grant's GRANTED scopes (issue #165) so
+ * agent code can read its actual permission level.
  *
  * Each grant is VALIDATED once at deploy by attempting a refresh: a dead grant (invalid_grant) is
  * marked "expired" and the deploy fails honestly with a reconnect message, rather than shipping a
  * container that can never authenticate. A transient refresh failure throws too (deploys should be
- * repeatable), but leaves the grant active.
+ * repeatable), but leaves the grant active. When the provider ROTATES refresh tokens (issue #167),
+ * the rotated token from the validation refresh is persisted back onto the grant before anything
+ * uses it — otherwise the deploy itself would burn the stored token and the provider's
+ * family-reuse detection would kill the grant. The read→refresh→rotate section runs on the SAME
+ * per-grant serialization chain as the token broker (refresh-serialization.server.ts): a deployed
+ * instance requesting a broker token while a redeploy validates the same grant must queue behind
+ * the validation (and vice versa), or both would consume one stored token and the reuse would
+ * revoke the family.
+ *
+ * Per-grant OAuth clients (issue #167): a grant carrying a `clientId` (dynamic registration at
+ * connect time) refreshes against ITS OWN client — no operator config involved; operator-level
+ * grants keep using `getProviderOAuthConfig` exactly as before.
  *
  * When the caller supplies the installed connectors' required scopes (issue #69), it ALSO validates
  * scope COVERAGE per provider: an active grant whose granted scopes don't cover what the installs
@@ -32,9 +54,14 @@ import {
 } from "./oauth.server";
 import { getProvider, type ProviderDefinition } from "./providers.server";
 import {
+  grantRefreshKey,
+  serializedRefresh,
+} from "./refresh-serialization.server";
+import {
   listGrantsForAgent as realListGrantsForAgent,
   markGrantStatus as realMarkGrantStatus,
   openRefreshToken as realOpenRefreshToken,
+  rotateGrantRefreshToken as realRotateGrantRefreshToken,
   type GrantStatus,
 } from "./grants.server";
 
@@ -49,7 +76,13 @@ export interface ConnectionDeployDeps {
     agentId: string;
     provider: string;
   }) => Promise<{
-    grant: { id: string; status: GrantStatus; scopes: string };
+    grant: {
+      id: string;
+      status: GrantStatus;
+      scopes: string;
+      /** Per-grant OAuth client from dynamic registration (issue #167). */
+      clientId?: string | null;
+    };
     refreshToken: string;
     /** Opaque fingerprint of THIS token, for compare-and-set status flips. */
     tokenVersion?: string;
@@ -59,6 +92,12 @@ export interface ConnectionDeployDeps {
     status: GrantStatus,
     expectedTokenVersion?: string,
   ) => Promise<void>;
+  /** Persist a rotated refresh token (issue #167); false = a concurrent write won, drop ours. */
+  rotateRefreshToken: (
+    id: string,
+    refreshToken: string,
+    expectedTokenVersion?: string,
+  ) => Promise<boolean>;
   refreshAccessToken: (
     input: {
       provider: ProviderDefinition;
@@ -66,7 +105,7 @@ export interface ConnectionDeployDeps {
       refreshToken: string;
     },
     fetchImpl: typeof fetch,
-  ) => Promise<{ accessToken: string; expiresIn: number }>;
+  ) => Promise<{ accessToken: string; expiresIn: number; refreshToken?: string }>;
 }
 
 function defaultDeps(): ConnectionDeployDeps {
@@ -75,6 +114,7 @@ function defaultDeps(): ConnectionDeployDeps {
     listGrantsForAgent: realListGrantsForAgent,
     openRefreshToken: realOpenRefreshToken,
     markGrantStatus: realMarkGrantStatus,
+    rotateRefreshToken: realRotateGrantRefreshToken,
     refreshAccessToken: realRefreshAccessToken,
   };
 }
@@ -92,12 +132,13 @@ export async function connectionGrantEnv(
   requiredScopes: ReadonlyMap<string, string[]> | null = null,
 ): Promise<Record<string, string>> {
   // Grants are per-agent; a scope without a concrete agent (shouldn't happen at deploy) has none.
-  if (!scope.agentId) return {};
+  const agentId = scope.agentId;
+  if (!agentId) return {};
 
   // Union of "has a grant row" and "the lock requires it" — a lock-required provider with a dead
   // or missing grant must still be considered (its coverage/liveness failures surface elsewhere),
   // and a granted provider the lock no longer names keeps injecting (grants are the authority).
-  const grants = await deps.listGrantsForAgent(scope.agentId);
+  const grants = await deps.listGrantsForAgent(agentId);
   const providerIds = [
     ...new Set([
       ...grants.map((g) => g.provider),
@@ -111,40 +152,86 @@ export async function connectionGrantEnv(
     // doesn't know) → skip silently; the Connections card handles the messaging.
     const def = getProvider(id);
     if (!def) continue;
-    const config = deps.getConfig(def);
-    if (!config) continue;
+    // Registration providers (issue #167) carry their client on the GRANT, so a missing operator
+    // config only skips providers whose refresh would need the shared client.
+    const operatorConfig = deps.getConfig(def);
+    if (!operatorConfig && !def.clientRegistration) continue;
 
-    const found = await deps.openRefreshToken({
-      projectId: scope.projectId,
-      agentId: scope.agentId,
-      provider: def.id,
-    });
-    if (!found || found.grant.status !== "active") continue;
+    // The read→refresh→rotate section shares the token broker's per-grant serialization chain
+    // (see module doc): the grant row is read INSIDE the chain, so a queued task consumes its
+    // predecessor's rotated token, never the same stored one. Throws propagate to the deploy
+    // (a failed task never poisons the chain).
+    const validated = await serializedRefresh(
+      grantRefreshKey({ projectId: scope.projectId, agentId, provider: def.id }),
+      async () => {
+        const found = await deps.openRefreshToken({
+          projectId: scope.projectId,
+          agentId,
+          provider: def.id,
+        });
+        if (!found || found.grant.status !== "active") return null;
 
-    try {
-      await deps.refreshAccessToken(
-        { provider: def, config, refreshToken: found.refreshToken },
-        fetchImpl,
-      );
-    } catch (error) {
-      if (error instanceof InvalidGrantError) {
-        // Compare-and-set against the token that was actually tested: a reconnect racing this
-        // deploy may already have rotated the row to a fresh valid token, which must stay active.
-        await deps.markGrantStatus(found.grant.id, "expired", found.tokenVersion);
-        throw new Error(
-          `The ${def.label} connection for this agent has expired — reconnect it from the agent's ` +
-            "install page or Deployment tab, then redeploy.",
-        );
-      }
-      throw error;
-    }
+        // The grant's own registered client wins (issue #167 — exchange and refresh must use the
+        // client the consent was minted for); null falls back to the operator-level shared client.
+        const config: OAuthClientConfig | null = found.grant.clientId
+          ? { clientId: found.grant.clientId }
+          : operatorConfig;
+        if (!config) return null;
+
+        let refreshed: { accessToken: string; expiresIn: number; refreshToken?: string };
+        try {
+          refreshed = await deps.refreshAccessToken(
+            { provider: def, config, refreshToken: found.refreshToken },
+            fetchImpl,
+          );
+        } catch (error) {
+          if (error instanceof InvalidGrantError) {
+            // Compare-and-set against the token that was actually tested: a reconnect racing this
+            // deploy may already have rotated the row to a fresh valid token, which must stay
+            // active.
+            await deps.markGrantStatus(found.grant.id, "expired", found.tokenVersion);
+            throw new Error(
+              `The ${def.label} connection for this agent has expired — reconnect it from the agent's ` +
+                "install page or Deployment tab, then redeploy.",
+            );
+          }
+          throw error;
+        }
+
+        // Rotating grants (issue #167): the validation refresh consumed the stored token — persist
+        // the rotated replacement BEFORE injecting anything, or the next refresh (deploy or broker)
+        // would replay a used token and trip the provider's family-reuse revocation. A failed
+        // compare-and-set means a concurrent reconnect replaced the grant while we deployed: our
+        // rotation belongs to the dead family, so fail the deploy honestly (deploys are repeatable
+        // and the retry picks up the fresh grant).
+        let liveRefreshToken = found.refreshToken;
+        if (refreshed.refreshToken && refreshed.refreshToken !== found.refreshToken) {
+          const persisted = await deps.rotateRefreshToken(
+            found.grant.id,
+            refreshed.refreshToken,
+            found.tokenVersion,
+          );
+          if (!persisted) {
+            throw new Error(
+              `The ${def.label} connection for this agent was reconnected while this deploy was ` +
+                "validating it — redeploy to use the new connection.",
+            );
+          }
+          liveRefreshToken = refreshed.refreshToken;
+        }
+
+        return { config, grantScopes: found.grant.scopes, liveRefreshToken };
+      },
+    );
+    if (!validated) continue;
+    const { config, grantScopes, liveRefreshToken } = validated;
 
     // Scope-coverage validation (issue #69): the grant is alive, but if its granted scopes don't
     // cover what the installed connectors require, the container would 403 at runtime. Fail the
     // deploy honestly. The grant is active (not dead), so it is NOT marked expired here.
     const required = requiredScopes?.get(def.id)?.join(" ");
     if (required) {
-      const missing = missingScopes(required, found.grant.scopes);
+      const missing = missingScopes(required, grantScopes);
       if (missing.length > 0) {
         throw new Error(
           `The ${def.label} connection for this agent is missing required permission(s): ${missing.join(", ")}. ` +
@@ -153,13 +240,24 @@ export async function connectionGrantEnv(
       }
     }
 
-    env[`${def.envPrefix}_OAUTH_CLIENT_ID`] = config.clientId;
-    env[`${def.envPrefix}_OAUTH_CLIENT_SECRET`] = config.clientSecret;
-    env[`${def.envPrefix}_OAUTH_REFRESH_TOKEN`] = found.refreshToken;
+    if (def.credentialDelivery === "access-token-broker") {
+      // Brokered delivery (issue #167): the refresh token (and any client credential) stays on
+      // the control plane. Static provider constants (`deployEnv`) ride along; the broker
+      // coordinates are deployment-scoped and injected by the controller.
+      for (const [key, value] of Object.entries(def.deployEnv ?? {})) {
+        env[key] = value;
+      }
+    } else {
+      env[`${def.envPrefix}_OAUTH_CLIENT_ID`] = config.clientId;
+      if (config.clientSecret !== undefined) {
+        env[`${def.envPrefix}_OAUTH_CLIENT_SECRET`] = config.clientSecret;
+      }
+      env[`${def.envPrefix}_OAUTH_REFRESH_TOKEN`] = liveRefreshToken;
+    }
     // Agent-side permission visibility (issue #165): the scopes the provider actually GRANTED,
     // space-joined exactly as stored on the grant row, so agent code can tell which permission
     // level it holds (e.g. don't offer to send mail when only read was granted).
-    env[`${def.envPrefix}_OAUTH_SCOPES`] = found.grant.scopes;
+    env[`${def.envPrefix}_OAUTH_SCOPES`] = grantScopes;
   }
 
   return env;

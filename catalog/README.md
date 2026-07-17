@@ -101,13 +101,40 @@ deploy. The contract:
   google-sheets template's pattern): create the OAuth app with the provider, set
   `EDEN_<PREFIX>_CLIENT_ID` / `EDEN_<PREFIX>_CLIENT_SECRET` on the Eden control plane, and
   register the redirect URI `<origin>/connections/<provider>/callback` (Google alone keeps
-  the legacy `<origin>/google/callback`).
+  the legacy `<origin>/google/callback`). Providers whose registry entry declares
+  `clientRegistration` (below) need **no** operator OAuth app at all.
 - **At deploy Eden injects `<PREFIX>_OAUTH_CLIENT_ID` / `<PREFIX>_OAUTH_CLIENT_SECRET` /
   `<PREFIX>_OAUTH_REFRESH_TOKEN`** for every provider the agent holds an active grant for;
   the shipped connection file refreshes its own access tokens from those at runtime. It also
   injects **`<PREFIX>_OAUTH_SCOPES`** — the scopes the account actually *granted*,
   space-joined — so agent code can read its own permission level (don't offer to send mail
   when only read was granted; the gmail template's connection file shows the pattern).
+
+### Provider capabilities beyond the Google shape (issue #167)
+
+Registry entries can declare three orthogonal capabilities for OAuth hosts that don't behave
+like Google. The mayi template (`templates/connections/mayi/`) is the first consumer of all
+three; template authors only need to know which delivery their provider uses (it decides what
+the shipped credential code looks like):
+
+- **Public clients** — `tokenEndpointAuth: "none"` (RFC 8414
+  `token_endpoint_auth_methods_supported: ["none"]`): no client secret exists, PKCE is the
+  code-exchange proof, and only `EDEN_<PREFIX>_CLIENT_ID` is required operator config.
+- **Access-token-broker delivery** — `credentialDelivery: "access-token-broker"` for
+  providers that **rotate the refresh token on every refresh** (and revoke the whole token
+  family on reuse). The refresh token never ships to the instance; Eden stays the grant's
+  single writer, and the shipped credential file fetches short-lived access tokens from
+  Eden's token broker (`POST <EDEN_API_URL>/api/connections/token`, authenticated with the
+  deployment's injected `EDEN_TEAM_TOKEN`) instead of self-refreshing — see the mayi
+  template's `credentials.server.ts` for the caching pattern (~one call per token lifetime).
+  The default `"refresh-token"` delivery keeps the `<PREFIX>_OAUTH_*` trio exactly as before.
+- **Per-grant dynamic client registration** — `clientRegistration: { endpoint }` (RFC
+  7591-shaped) for providers whose OAuth clients are register-once/immutable with exact-match
+  callback URIs: Connect registers a fresh client per grant covering the exact instance
+  callback URL of every environment the agent has, so there is no operator OAuth-app step
+  (the operator only needs a publicly reachable `EDEN_PUBLIC_ORIGIN`). An environment created
+  **after** Connect isn't covered by the immutable client — the Connections card flips to
+  "reconnect needed" and one reconnect registers a fresh client (same UX as a scope change).
 
 ### Permission levels: `scopes` vs `scopeGroups`
 

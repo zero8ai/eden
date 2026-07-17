@@ -174,6 +174,12 @@ export const connectionGrants = pgTable(
     scopes: text("scopes").notNull(),
     /** "active" | "expired" | "revoked" — display + deploy-guard state, not a secret. */
     status: varchar("status", { length: 16 }).notNull().default("active"),
+    /**
+     * Per-grant OAuth client id from dynamic registration at connect time (issue #167). Null =
+     * the operator-level shared client (every provider before #167 — no behavior change). Token
+     * exchange and every later refresh use the grant's own client when set.
+     */
+    clientId: text("client_id"),
     /** Sealed OAuth refresh token (AES-256-GCM, same secretbox as secret_values). */
     refreshTokenCiphertext: text("refresh_token_ciphertext").notNull(),
     refreshTokenIv: text("refresh_token_iv").notNull(),

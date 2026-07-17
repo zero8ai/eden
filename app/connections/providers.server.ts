@@ -29,6 +29,37 @@ export interface ProviderDefinition {
   redirectPath?: string;
   /** Extra remediation appended to the "no refresh token" exchange error (Google's myaccount hint). */
   noRefreshTokenHint?: string;
+  /**
+   * How the token endpoint authenticates Eden's client (issue #167). `"client_secret_post"`
+   * (default) posts the operator secret; `"none"` is a PUBLIC client (RFC 8414
+   * `token_endpoint_auth_methods_supported: ["none"]`) — no secret exists, PKCE is the
+   * code-exchange proof, and only `EDEN_<PREFIX>_CLIENT_ID` is required operator config.
+   */
+  tokenEndpointAuth?: "client_secret_post" | "none";
+  /**
+   * How a validated grant reaches the agent's instance (issue #167; shared axis with #166).
+   * `"refresh-token"` (default) ships the `<PREFIX>_OAUTH_*` trio so the instance self-refreshes.
+   * `"access-token-broker"` never ships the refresh token — providers that ROTATE it per refresh
+   * (and revoke the whole family on reuse) can only have ONE writer, so Eden refreshes centrally
+   * and the instance fetches short-lived access tokens from `POST <EDEN_API_URL>/api/connections/token`
+   * (authenticated by its `EDEN_TEAM_TOKEN` delegation token).
+   */
+  credentialDelivery?: "refresh-token" | "access-token-broker";
+  /**
+   * RFC 7591-shaped dynamic client registration (issue #167). When present, the connect flow
+   * registers ONE OAuth client PER GRANT at Connect time (no `EDEN_<PREFIX>_CLIENT_ID` operator
+   * step) — required when the provider's clients are immutable with exact-match callback URIs,
+   * so a single shared client can't cover per-environment callback URLs. `approvalCallbackPath`
+   * is the instance-side route the provider calls back (registered as
+   * `<EDEN_PUBLIC_ORIGIN>/e/<envId><approvalCallbackPath>` for every environment the agent has).
+   */
+  clientRegistration?: { endpoint: string; approvalCallbackPath?: string };
+  /**
+   * Static env constants injected alongside this provider's grant env at deploy (issue #167),
+   * anti-shadowed like the `<PREFIX>_OAUTH_*` names. For mayi this carries the callback-state
+   * key id that pairs with the `generated` MAYI_CALLBACK_STATE_KEY secret.
+   */
+  deployEnv?: Record<string, string>;
 }
 
 const PROVIDERS: Record<string, ProviderDefinition> = {
@@ -53,6 +84,33 @@ const PROVIDERS: Record<string, ProviderDefinition> = {
     redirectPath: "/google/callback",
     noRefreshTokenHint:
       "Remove Eden's access at myaccount.google.com/permissions and connect again so Google re-issues one.",
+  },
+  // May I? (issue #167) — human-approval channel. Verified against asiraky/mayi: PUBLIC client
+  // (token_endpoint_auth_methods_supported: ["none"], PKCE S256 required), refresh tokens ROTATE
+  // per use with family-reuse revocation (so the instance never holds one — access-token broker),
+  // clients are register-once/immutable with exact-match approval callback URIs (so one client is
+  // registered PER GRANT, covering every environment's callback URL at Connect time). No userinfo
+  // endpoint — the card shows "Connected" without an account email. Hosted origin is mayi.sh;
+  // self-hosted mayi origins are deferred until a consumer exists (issue #167 open question).
+  mayi: {
+    id: "mayi",
+    label: "May I?",
+    authorizeUrl: "https://mayi.sh/api/oauth/authorize",
+    tokenUrl: "https://mayi.sh/api/oauth/token",
+    pkce: true,
+    envPrefix: "MAYI",
+    tokenEndpointAuth: "none",
+    credentialDelivery: "access-token-broker",
+    clientRegistration: {
+      endpoint: "https://mayi.sh/api/oauth/register",
+      // The @mayiapp/eve adapter registers exactly this route on the instance and builds its
+      // callback URL as <EVE_PUBLIC_ORIGIN>/eve/v1/mayi/approval-resolved.
+      approvalCallbackPath: "/eve/v1/mayi/approval-resolved",
+    },
+    // The adapter's callback-state key id — a purely local rotation identifier paired with the
+    // generated MAYI_CALLBACK_STATE_KEY (mayi's channel.ts: currentKey { kid, key }); a fixed
+    // first id is correct, and a future rotation moves "k1" into MAYI_CALLBACK_STATE_PREVIOUS_KEYS.
+    deployEnv: { MAYI_CALLBACK_STATE_KEY_ID: "k1" },
   },
 };
 

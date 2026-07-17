@@ -9,7 +9,7 @@
  * Same seam mocking as google-auth-routes.test.ts; the registry is extended with a hypothetical
  * "mayi" PKCE provider (the real registry ships only google, which declares no pkce).
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ProviderDefinition } from "~/connections/providers.server";
 
@@ -28,9 +28,11 @@ const mocks = vi.hoisted(() => ({
   findGrant: vi.fn(),
   getAgentSource: vi.fn(),
   getConfig: vi.fn(),
+  listAgentEnvironments: vi.fn(),
   listAgents: vi.fn(),
   listDrafts: vi.fn(),
   redeployAfterConnect: vi.fn(),
+  registerOAuthClient: vi.fn(),
   requireProject: vi.fn(),
   upsertGrant: vi.fn(),
 }));
@@ -43,6 +45,27 @@ const MAYI = vi.hoisted(
     tokenUrl: "https://auth.mayi.example/oauth/token",
     pkce: true,
     envPrefix: "MAYI",
+  }),
+);
+
+/**
+ * A hypothetical provider with per-grant dynamic client registration (issue #167) — a PUBLIC
+ * client whose immutable, exact-match callback URIs force one registered client per grant.
+ */
+const REGPROV = vi.hoisted(
+  (): ProviderDefinition => ({
+    id: "regprov",
+    label: "Regprov",
+    authorizeUrl: "https://auth.regprov.example/oauth/authorize",
+    tokenUrl: "https://auth.regprov.example/oauth/token",
+    pkce: true,
+    envPrefix: "REGPROV",
+    tokenEndpointAuth: "none",
+    credentialDelivery: "access-token-broker",
+    clientRegistration: {
+      endpoint: "https://auth.regprov.example/oauth/register",
+      approvalCallbackPath: "/eve/v1/regprov/approval-resolved",
+    },
   }),
 );
 
@@ -62,8 +85,8 @@ vi.mock("~/connections/providers.server", async (importOriginal) => {
   return {
     ...actual,
     getProvider: (id: string) =>
-      id === "mayi" ? MAYI : actual.getProvider(id),
-    listProviders: () => [...actual.listProviders(), MAYI],
+      id === "mayi" ? MAYI : id === "regprov" ? REGPROV : actual.getProvider(id),
+    listProviders: () => [...actual.listProviders(), MAYI, REGPROV],
   };
 });
 
@@ -79,6 +102,7 @@ vi.mock("~/connections/oauth.server", async (importOriginal) => {
     ...actual,
     exchangeCode: mocks.exchangeCode,
     fetchAccountEmail: mocks.fetchAccountEmail,
+    registerOAuthClient: mocks.registerOAuthClient,
   };
 });
 
@@ -96,14 +120,18 @@ vi.mock("~/connections/redeploy.server", () => ({
   redeployAfterConnect: mocks.redeployAfterConnect,
 }));
 
-vi.mock("~/db/queries.server", () => ({ listAgents: mocks.listAgents }));
+vi.mock("~/db/queries.server", () => ({
+  listAgentEnvironments: mocks.listAgentEnvironments,
+  listAgents: mocks.listAgents,
+}));
 vi.mock("~/drafts/drafts.server", () => ({ listDrafts: mocks.listDrafts }));
 vi.mock("~/github/cached.server", () => ({
   getAgentSource: mocks.getAgentSource,
 }));
-vi.mock("~/lib/ingress", () => ({
-  publicOrigin: () => "https://eden.example.com",
-}));
+vi.mock("~/lib/ingress", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("~/lib/ingress")>();
+  return { ...actual, publicOrigin: () => "https://eden.example.com" };
+});
 vi.mock("~/project/guard.server", () => ({
   requireProject: mocks.requireProject,
   requireRepo: (project: unknown) => project,
@@ -175,31 +203,35 @@ async function redirectFrom(operation: unknown): Promise<Response> {
   throw new Error("expected the loader to throw a redirect Response");
 }
 
-describe("provider-generic connection routes (issue #163)", () => {
-  beforeEach(() => {
-    vi.resetModules();
-    mocks.auditRecord.mockReset().mockResolvedValue(undefined);
-    mocks.consumeOAuthStateNonce.mockReset().mockResolvedValue(true);
-    mocks.createOAuthStateNonce.mockReset().mockResolvedValue("nonce-owner");
-    mocks.exchangeCode.mockReset();
-    mocks.fetchAccountEmail.mockReset().mockResolvedValue(null);
-    mocks.findGrant.mockReset().mockResolvedValue(null);
-    mocks.getAgentSource.mockReset().mockResolvedValue({
-      files: { "eden-lock.json": lockWith("google", SHEETS_SCOPE) },
-      paths: [],
-    });
-    mocks.getConfig.mockReset().mockReturnValue({
-      clientId: "client_1",
-      clientSecret: "secret_1",
-    });
-    mocks.listAgents.mockReset().mockResolvedValue([AGENT]);
-    mocks.listDrafts.mockReset().mockResolvedValue([]);
-    mocks.redeployAfterConnect
-      .mockReset()
-      .mockResolvedValue({ status: "not-deployed" });
-    mocks.requireProject.mockReset().mockResolvedValue(PROJECT);
-    mocks.upsertGrant.mockReset().mockResolvedValue(undefined);
+function resetSeams() {
+  vi.resetModules();
+  mocks.auditRecord.mockReset().mockResolvedValue(undefined);
+  mocks.consumeOAuthStateNonce.mockReset().mockResolvedValue(true);
+  mocks.createOAuthStateNonce.mockReset().mockResolvedValue("nonce-owner");
+  mocks.exchangeCode.mockReset();
+  mocks.fetchAccountEmail.mockReset().mockResolvedValue(null);
+  mocks.findGrant.mockReset().mockResolvedValue(null);
+  mocks.getAgentSource.mockReset().mockResolvedValue({
+    files: { "eden-lock.json": lockWith("google", SHEETS_SCOPE) },
+    paths: [],
   });
+  mocks.getConfig.mockReset().mockReturnValue({
+    clientId: "client_1",
+    clientSecret: "secret_1",
+  });
+  mocks.listAgentEnvironments.mockReset().mockResolvedValue([]);
+  mocks.listAgents.mockReset().mockResolvedValue([AGENT]);
+  mocks.listDrafts.mockReset().mockResolvedValue([]);
+  mocks.redeployAfterConnect
+    .mockReset()
+    .mockResolvedValue({ status: "not-deployed" });
+  mocks.registerOAuthClient.mockReset();
+  mocks.requireProject.mockReset().mockResolvedValue(PROJECT);
+  mocks.upsertGrant.mockReset().mockResolvedValue(undefined);
+}
+
+describe("provider-generic connection routes (issue #163)", () => {
+  beforeEach(resetSeams);
 
   it("renders a readable error for an unknown provider on connect — no consent redirect", async () => {
     const { loader } = await import(
@@ -439,5 +471,302 @@ describe("provider-generic connection routes (issue #163)", () => {
       error: expect.stringContaining("invalid or has expired"),
     });
     expect(mocks.exchangeCode).not.toHaveBeenCalled();
+  });
+});
+
+describe("per-grant dynamic client registration (issue #167)", () => {
+  const OLD_PUBLIC_ORIGIN = process.env.EDEN_PUBLIC_ORIGIN;
+  beforeEach(() => {
+    resetSeams();
+    process.env.EDEN_PUBLIC_ORIGIN = "https://eden.public.example";
+    // Registration providers have NO operator client env — that must not block Connect.
+    mocks.getConfig.mockReturnValue(null);
+    mocks.getAgentSource.mockResolvedValue({
+      files: { "eden-lock.json": lockWith("regprov", "approval:create") },
+      paths: [],
+    });
+    mocks.listAgentEnvironments.mockResolvedValue([
+      { id: "envaaaaaaaaa" },
+      { id: "envbbbbbbbbb" },
+    ]);
+    mocks.registerOAuthClient.mockResolvedValue({ clientId: "reg_client_1" });
+  });
+  afterEach(() => {
+    if (OLD_PUBLIC_ORIGIN === undefined) delete process.env.EDEN_PUBLIC_ORIGIN;
+    else process.env.EDEN_PUBLIC_ORIGIN = OLD_PUBLIC_ORIGIN;
+  });
+
+  it("registers one client at Connect covering every environment's exact callback URL, and the minted client_id rides the authorize URL + signed state", async () => {
+    const { loader } = await import("~/routes/connections.$provider.connect");
+    const { connectStateKey, verifyConnectState } = await import(
+      "~/connections/oauth.server"
+    );
+    const response = await redirectFrom(
+      loader(
+        routeArgs(
+          "https://eden.example.com/connections/regprov/connect?project=projabcdefgh&agent=agent&returnTo=%2Fdashboard",
+          { provider: "regprov" },
+        ),
+      ),
+    );
+    expect(mocks.registerOAuthClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: expect.objectContaining({ id: "regprov" }),
+        clientName: "Eden — projabcdefgh / agent",
+        redirectUris: ["https://eden.example.com/connections/regprov/callback"],
+        // Exact per-environment instance callback URLs, rooted at the OPERATOR's public origin
+        // (EDEN_PUBLIC_ORIGIN — the same origin EVE_PUBLIC_ORIGIN injection uses).
+        approvalCallbackUris: [
+          "https://eden.public.example/e/envaaaaaaaaa/eve/v1/regprov/approval-resolved",
+          "https://eden.public.example/e/envbbbbbbbbb/eve/v1/regprov/approval-resolved",
+        ],
+      }),
+    );
+    const location = new URL(response.headers.get("location")!);
+    expect(location.origin + location.pathname).toBe(
+      "https://auth.regprov.example/oauth/authorize",
+    );
+    expect(location.searchParams.get("client_id")).toBe("reg_client_1");
+    const state = verifyConnectState(
+      location.searchParams.get("state")!,
+      connectStateKey(),
+    );
+    expect(state?.clientId).toBe("reg_client_1");
+    // The registered environment SET rides the signed state too — the callback compares it
+    // against a fresh listing to refuse a flow during which an environment appeared.
+    expect(state?.environmentIds).toEqual(["envaaaaaaaaa", "envbbbbbbbbb"]);
+  });
+
+  it("exchanges against the state's registered client on callback and persists it on the grant", async () => {
+    const { loader } = await import("~/routes/connections.$provider.callback");
+    const { connectStateKey, signConnectState } = await import(
+      "~/connections/oauth.server"
+    );
+    const state = signConnectState(
+      {
+        projectId: PROJECT.id,
+        agentId: AGENT.id,
+        userId: mocks.auth.user.id,
+        sessionId: mocks.auth.session.id,
+        nonce: "regprov-nonce",
+        provider: "regprov",
+        scopes: "approval:create",
+        returnTo: "/dashboard",
+        exp: Date.now() + 60_000,
+        codeVerifier: "v".repeat(43),
+        clientId: "reg_client_1",
+        // A superset of the current environments: an environment REMOVED during consent leaves
+        // a harmless extra registered URI and must not refuse the flow.
+        environmentIds: ["envaaaaaaaaa", "envbbbbbbbbb", "envremovedxx"],
+      },
+      connectStateKey(),
+    );
+    mocks.exchangeCode.mockResolvedValue({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+      expiresIn: 3599,
+      scope: "approval:create",
+    });
+
+    const staged = await loader(
+      routeArgs(
+        `https://eden.example.com/connections/regprov/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+        { provider: "regprov" },
+      ),
+    );
+    const cookie = (staged as Response).headers
+      .get("set-cookie")!
+      .split(";", 1)[0];
+    const response = await redirectFrom(
+      loader(
+        routeArgs(
+          "https://eden.example.com/connections/regprov/callback",
+          { provider: "regprov" },
+          { cookie },
+        ),
+      ),
+    );
+    expect(response.status).toBe(302);
+    // The exchange ran against the SAME client the authorize URL named — secretless (the config
+    // is the grant's registered public client, never the missing operator config).
+    expect(mocks.exchangeCode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: expect.objectContaining({ id: "regprov" }),
+        config: { clientId: "reg_client_1" },
+        code: "one-time-code",
+      }),
+    );
+    // Persisted on the grant so every later refresh (deploy validation, broker) uses it.
+    expect(mocks.upsertGrant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "regprov",
+        clientId: "reg_client_1",
+        refreshToken: "refresh-token",
+      }),
+    );
+  });
+
+  it("refuses a callback when an environment was created while the consent was in progress", async () => {
+    // The registered client is IMMUTABLE and covers only the environments captured at connect
+    // time. Storing this grant would render "connected" forever (the new environment PREDATES
+    // grant.createdAt — the Connections card's staleness watermark) while its approval callbacks
+    // are silently rejected. The flow must refuse instead; reconnecting registers a fresh client.
+    const { loader } = await import("~/routes/connections.$provider.callback");
+    const { connectStateKey, signConnectState } = await import(
+      "~/connections/oauth.server"
+    );
+    const state = signConnectState(
+      {
+        projectId: PROJECT.id,
+        agentId: AGENT.id,
+        userId: mocks.auth.user.id,
+        sessionId: mocks.auth.session.id,
+        nonce: "regprov-nonce",
+        provider: "regprov",
+        scopes: "approval:create",
+        returnTo: "/dashboard",
+        exp: Date.now() + 60_000,
+        codeVerifier: "v".repeat(43),
+        clientId: "reg_client_1",
+        // Only environment A existed when the client was registered…
+        environmentIds: ["envaaaaaaaaa"],
+      },
+      connectStateKey(),
+    );
+    // …but environment B exists by the time the consent completes (beforeEach lists A and B).
+    const staged = await loader(
+      routeArgs(
+        `https://eden.example.com/connections/regprov/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+        { provider: "regprov" },
+      ),
+    );
+    const cookie = (staged as Response).headers
+      .get("set-cookie")!
+      .split(";", 1)[0];
+    const result = await loader(
+      routeArgs(
+        "https://eden.example.com/connections/regprov/callback",
+        { provider: "regprov" },
+        { cookie },
+      ),
+    );
+    expect(result).toMatchObject({
+      error: expect.stringContaining("An environment was added"),
+      backUrl: "/dashboard",
+    });
+    // Refused BEFORE the exchange — no token minted, no grant stored.
+    expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    expect(mocks.upsertGrant).not.toHaveBeenCalled();
+  });
+
+  it("stays lenient on an in-flight state without environmentIds (pre-coverage token)", async () => {
+    const { loader } = await import("~/routes/connections.$provider.callback");
+    const { connectStateKey, signConnectState } = await import(
+      "~/connections/oauth.server"
+    );
+    const state = signConnectState(
+      {
+        projectId: PROJECT.id,
+        agentId: AGENT.id,
+        userId: mocks.auth.user.id,
+        sessionId: mocks.auth.session.id,
+        nonce: "regprov-nonce",
+        provider: "regprov",
+        scopes: "approval:create",
+        returnTo: "/dashboard",
+        exp: Date.now() + 60_000,
+        codeVerifier: "v".repeat(43),
+        clientId: "reg_client_1",
+      },
+      connectStateKey(),
+    );
+    mocks.exchangeCode.mockResolvedValue({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+      expiresIn: 3599,
+      scope: "approval:create",
+    });
+    const staged = await loader(
+      routeArgs(
+        `https://eden.example.com/connections/regprov/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+        { provider: "regprov" },
+      ),
+    );
+    const cookie = (staged as Response).headers
+      .get("set-cookie")!
+      .split(";", 1)[0];
+    const response = await redirectFrom(
+      loader(
+        routeArgs(
+          "https://eden.example.com/connections/regprov/callback",
+          { provider: "regprov" },
+          { cookie },
+        ),
+      ),
+    );
+    expect(response.status).toBe(302);
+    expect(mocks.upsertGrant).toHaveBeenCalled();
+  });
+
+  it("surfaces a readable error when registration fails (public-HTTPS callback rule / local dev)", async () => {
+    mocks.registerOAuthClient.mockRejectedValue(
+      new Error("Regprov rejected the OAuth client registration (HTTP 400): invalid callback"),
+    );
+    const { loader } = await import("~/routes/connections.$provider.connect");
+    const result = await loader(
+      routeArgs(
+        "https://eden.example.com/connections/regprov/connect?project=projabcdefgh&agent=agent&returnTo=%2Fdashboard",
+        { provider: "regprov" },
+      ),
+    );
+    expect(result).toMatchObject({
+      error: expect.stringContaining("publicly reachable"),
+      backUrl: "/dashboard",
+      providerLabel: "Regprov",
+    });
+    expect((result as { error: string }).error).toContain("EDEN_PUBLIC_ORIGIN");
+    // Failed before any consent state was minted.
+    expect(mocks.createOAuthStateNonce).not.toHaveBeenCalled();
+  });
+
+  it("google never registers a client and keeps requiring the operator config (regression)", async () => {
+    mocks.getAgentSource.mockResolvedValue({
+      files: { "eden-lock.json": lockWith("google", SHEETS_SCOPE) },
+      paths: [],
+    });
+    const { loader } = await import("~/routes/connections.$provider.connect");
+    // Unconfigured google still renders the operator-env error — registration is no substitute.
+    const result = await loader(
+      routeArgs(
+        "https://eden.example.com/connections/google/connect?project=projabcdefgh&agent=agent&returnTo=%2Fdashboard",
+        { provider: "google" },
+      ),
+    );
+    expect(result).toMatchObject({
+      error: expect.stringContaining("no Google OAuth client configured"),
+    });
+    expect(mocks.registerOAuthClient).not.toHaveBeenCalled();
+
+    // Configured google connects exactly as before — no registration call, no state clientId.
+    mocks.getConfig.mockReturnValue({ clientId: "client_1", clientSecret: "secret_1" });
+    const { connectStateKey, verifyConnectState } = await import(
+      "~/connections/oauth.server"
+    );
+    const response = await redirectFrom(
+      loader(
+        routeArgs(
+          "https://eden.example.com/connections/google/connect?project=projabcdefgh&agent=agent&returnTo=%2Fdashboard",
+          { provider: "google" },
+        ),
+      ),
+    );
+    const location = new URL(response.headers.get("location")!);
+    expect(location.searchParams.get("client_id")).toBe("client_1");
+    const state = verifyConnectState(
+      location.searchParams.get("state")!,
+      connectStateKey(),
+    );
+    expect(mocks.registerOAuthClient).not.toHaveBeenCalled();
+    expect(state?.clientId).toBeUndefined();
   });
 });

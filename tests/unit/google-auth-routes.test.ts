@@ -578,6 +578,8 @@ describe("Google routes with Better Auth", () => {
       accountEmail: "google@example.com",
       scopes: `${SHEETS_SCOPE} openid email`,
       refreshToken: "refresh-token",
+      // Google never registers per-grant clients (issue #167 acceptance criterion 3).
+      clientId: null,
       createdBy: mocks.auth.user.id,
     });
     expect(mocks.auditRecord).toHaveBeenCalledWith(

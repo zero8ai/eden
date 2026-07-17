@@ -22,6 +22,11 @@
  * Postgres + operator env (same seams as deploy.server.ts).
  */
 import {
+  deleteCachedCapabilityToken,
+  getCachedCapabilityToken,
+  setCachedCapabilityToken,
+} from "./capability-token-cache.server";
+import {
   getProviderOAuthConfig,
   type OAuthClientConfig,
 } from "./config.server";
@@ -235,25 +240,16 @@ export async function brokerAccessToken(
 /* ─────────────────── capability access tokens (issue #166) ─────────────────── */
 
 /**
- * Control-plane-side access-token cache for CAPABILITY providers, keyed per grant scope. Xero
- * rotates the refresh token on EVERY refresh, and its access tokens live ~30 minutes — refreshing
- * per capability call would burn a rotation per call and race concurrent calls, so the token from
- * one refresh is reused until shortly before `expiresAt`. In-memory (single-container control
- * plane, same trust model as the refresh serialization chains); the plaintext never leaves this
- * module except as the returned token.
+ * The cache itself lives in capability-token-cache.server.ts so grant writers (grants.server.ts's
+ * `upsertGrant`) can invalidate a scope's entry on reconnect without importing the broker —
+ * refreshing per capability call would burn a rotation per call and race concurrent calls, so the
+ * token from one refresh is reused until shortly before `expiresAt`, but never across a grant
+ * replacement.
  */
-const capabilityTokenCache = new Map<
-  string,
-  { accessToken: string; expiresAt: number }
->();
+export { clearCapabilityTokenCache } from "./capability-token-cache.server";
 
 /** Refresh this long before `expiresAt` so a token is never used at the edge of its life. */
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
-
-/** Drop every cached capability access token (tests, and reconnect hygiene). */
-export function clearCapabilityTokenCache(): void {
-  capabilityTokenCache.clear();
-}
 
 /**
  * A CURRENT access token for a capability provider's grant (issue #166): the cached one while it
@@ -294,25 +290,25 @@ export async function capabilityAccessToken(
 
   // Fast path outside the chain; re-checked INSIDE it so a queued concurrent call picks up the
   // leader's freshly cached token instead of spending a second rotation.
-  const cached = capabilityTokenCache.get(key);
+  const cached = getCachedCapabilityToken(key);
   if (fresh(cached)) {
     return { ok: true, accessToken: cached!.accessToken, expiresAt: cached!.expiresAt };
   }
 
   return serializedRefresh(key, async (): Promise<BrokerResult> => {
-    const inChain = capabilityTokenCache.get(key);
+    const inChain = getCachedCapabilityToken(key);
     if (fresh(inChain)) {
       return { ok: true, accessToken: inChain!.accessToken, expiresAt: inChain!.expiresAt };
     }
     const result = await refreshGrantAccessToken(def, input, fetchImpl, deps);
     if (result.ok) {
-      capabilityTokenCache.set(key, {
+      setCachedCapabilityToken(key, {
         accessToken: result.accessToken,
         expiresAt: result.expiresAt,
       });
     } else {
       // A dead/replaced grant invalidates whatever was cached for it.
-      capabilityTokenCache.delete(key);
+      deleteCachedCapabilityToken(key);
     }
     return result;
   });

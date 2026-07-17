@@ -167,7 +167,24 @@ export async function connectionGrantEnv(
     // Registration providers (issue #167) carry their client on the GRANT, so a missing operator
     // config only skips providers whose refresh would need the shared client.
     const operatorConfig = deps.getConfig(def);
-    if (!operatorConfig && !def.clientRegistration) continue;
+    if (!operatorConfig && !def.clientRegistration) {
+      // A capability provider's grant is USELESS without the operator client — Eden itself makes
+      // every vendor call, so shipping the container anyway would leave each tool failing "not
+      // configured" at runtime with no deploy-time signal. An ACTIVE grant therefore fails the
+      // deploy honestly (the operator env was removed after the connection was made); refresh-
+      // token providers keep the historical silent skip (self-hosters run their own client).
+      const hasActiveGrant = grants.some(
+        (g) => g.provider === id && g.status === "active",
+      );
+      if (def.credentialDelivery === "capability" && hasActiveGrant) {
+        throw new Error(
+          `The ${def.label} connection for this agent can't be used: this Eden installation has ` +
+            `no ${def.label} OAuth client configured. Set EDEN_${def.envPrefix}_CLIENT_ID and ` +
+            `EDEN_${def.envPrefix}_CLIENT_SECRET on the control plane, then redeploy.`,
+        );
+      }
+      continue;
+    }
 
     // The read→refresh→rotate section shares the token broker's per-grant serialization chain
     // (see module doc): the grant row is read INSIDE the chain, so a queued task consumes its

@@ -17,7 +17,9 @@
  *     context), then `execute`. Business refusals → 200 `{ ok:false }`; vendor/transport
  *     failures → 502, exactly like the Discord send proxy.
  *  5. AUDIT every call that got this far — allowed, refused, or errored — with the operation's
- *     redacted input digest.
+ *     redacted input digest. Refusals are single appends (fail-open: a lost log line must not
+ *     mask the refusal); the execute path is WRITE-AHEAD (a "pending" row lands before the vendor
+ *     operation and is settled after — no row, no execution).
  */
 import type { ZodError } from "zod";
 
@@ -32,6 +34,8 @@ import { getAgentSource } from "~/github/cached.server";
 import { overlayLock } from "~/marketplace/lock";
 import { getRuntime } from "~/seams/index.server";
 import {
+  beginCapabilityCall as realBeginCapabilityCall,
+  finalizeCapabilityCall as realFinalizeCapabilityCall,
   recordCapabilityCall as realRecordCapabilityCall,
   type CapabilityCallRecord,
 } from "./audit.server";
@@ -85,7 +89,21 @@ export interface CapabilityExecuteDeps {
     agentId: string;
     provider: string;
   }) => Promise<BrokerResult>;
+  /** Single-append audit for outcomes known up front (refusals, pre-execute errors). */
   record: (record: CapabilityCallRecord) => Promise<void>;
+  /**
+   * WRITE-AHEAD audit row ("pending") inserted before `execute()` — a throw here refuses the
+   * call, so a vendor mutation can never exist without a queryable row.
+   */
+  begin: (
+    record: Omit<CapabilityCallRecord, "outcome" | "error">,
+  ) => Promise<string>;
+  /** Settle the write-ahead row with the execution's outcome. */
+  finalize: (
+    id: string,
+    outcome: "ok" | "error",
+    error: string | null,
+  ) => Promise<void>;
   fetchImpl: typeof fetch;
 }
 
@@ -125,6 +143,8 @@ function defaultDeps(): CapabilityExecuteDeps {
     findGrant: realFindGrant,
     accessToken: (input) => realCapabilityAccessToken(input),
     record: realRecordCapabilityCall,
+    begin: realBeginCapabilityCall,
+    finalize: realFinalizeCapabilityCall,
     fetchImpl: fetch,
   };
 }
@@ -168,7 +188,9 @@ export async function executeCapabilityCall(
         inputSummary,
       });
     } catch (err) {
-      // Auditing must never mask the call's own result; a failed write is an ops signal.
+      // Refusal-path audits are fail-open: nothing reached the vendor, so the refusal itself must
+      // not be masked by a failed log write. The EXECUTE path is different — see the write-ahead
+      // `begin` below, which fail-closes so a vendor mutation can never exist without a row.
       console.error("[capabilities] audit write failed:", err);
     }
   };
@@ -258,14 +280,47 @@ export async function executeCapabilityCall(
     }
   }
 
+  // ── Write-ahead audit: the "pending" row lands BEFORE the vendor operation, so a mutation
+  // can never exist without a queryable capability_calls row (acceptance criterion 5). If the
+  // row can't be written, the call is refused before anything reaches the vendor. ──
+  let auditId: string;
+  try {
+    auditId = await deps.begin({
+      agentId: caller.agent.id,
+      deploymentId: caller.deploymentId,
+      provider: input.provider,
+      operation: input.operation,
+      groupId: group.id,
+      inputSummary: summary,
+    });
+  } catch (err) {
+    console.error("[capabilities] write-ahead audit failed:", err);
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error:
+          "Eden couldn't record this call in its audit log, so it was not executed — retry.",
+      },
+    };
+  }
+  const finalize = async (outcome: "ok" | "error", error: string | null) => {
+    try {
+      await deps.finalize(auditId, outcome, error);
+    } catch (err) {
+      // The pending row already recorded the call; a failed settle must not mask the result.
+      console.error("[capabilities] audit finalize failed:", err);
+    }
+  };
+
   // ── Execute — the control plane performs the one blessed operation itself. ──
   try {
     const result = await operation.execute(parsed.data, ctx);
-    await audit("ok", null, group.id, summary);
+    await finalize("ok", null);
     return { status: 200, body: { ok: true, result } };
   } catch (error) {
     const message = (error as Error).message;
-    await audit("error", message, group.id, summary);
+    await finalize("error", message);
     return { status: 502, body: { ok: false, error: message } };
   }
 }

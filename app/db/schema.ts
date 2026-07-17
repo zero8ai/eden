@@ -229,7 +229,11 @@ export const capabilityCalls = pgTable(
     operation: text("operation").notNull(),
     /** The operation's group, or null when the request named an unknown operation. */
     groupId: text("group_id"),
-    /** "ok" | "refused" | "error" */
+    /**
+     * "ok" | "refused" | "error" | "pending" — "pending" is the write-ahead state inserted
+     * BEFORE the vendor operation runs (a mutation can never exist without a queryable row);
+     * a row stuck on it means the control plane died mid-execution.
+     */
     outcome: varchar("outcome", { length: 16 }).notNull(),
     /** Refusal/error text returned to the caller; null for "ok". */
     error: text("error"),

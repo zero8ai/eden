@@ -8,11 +8,14 @@
  *    refresh — refreshing per call would also race concurrent calls); concurrent calls share ONE
  *    refresh (the queued task finds the leader's cached token); sequential calls after expiry
  *    consume the PERSISTED rotated refresh token (two calls succeed against a rotate-on-refresh
- *    fake); a dead grant surfaces the reconnect message and drops the cache entry.
+ *    fake); a dead grant surfaces the reconnect message and drops the cache entry; a RECONNECT
+ *    (the real `upsertGrant`, faked Drizzle) invalidates the cache so the replaced account's
+ *    token never serves another call.
  *  - `connectionGrantEnv`: a capability provider's deploy injects NO `<PREFIX>_OAUTH_*` vars —
  *    only the Eden-owned `EDEN_CAPABILITY_PROVIDERS` marker — but still liveness-validates the
- *    grant (dead → readable throw) and requires the resource binding when the capability
- *    declares one.
+ *    grant (dead → readable throw), requires the resource binding when the capability declares
+ *    one, and fails honestly when the operator OAuth client was removed after an active grant
+ *    was made.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -25,7 +28,13 @@ import {
   connectionGrantEnv,
   type ConnectionDeployDeps,
 } from "~/connections/deploy.server";
+import { upsertGrant } from "~/connections/grants.server";
 import { InvalidGrantError } from "~/connections/oauth.server";
+
+// upsertGrant persists through Drizzle — faked here so the reconnect-invalidation test can drive
+// the REAL grant writer (the cache invalidation lives inside it) without a database.
+const dbMocks = vi.hoisted(() => ({ insert: vi.fn() }));
+vi.mock("~/db/client.server", () => ({ db: { insert: dbMocks.insert } }));
 
 const SCOPE = { projectId: "projabcdefgh", agentId: "agntabcdefgh" };
 const okFetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
@@ -162,6 +171,56 @@ describe("capabilityAccessToken", () => {
     expect(b.accessToken).not.toBe(a.accessToken);
   });
 
+  it("invalidates the cached token when the grant is replaced — a reconnect's account is honored at the very next call", async () => {
+    const OLD_KEY = process.env.EDEN_SECRETS_KEY;
+    process.env.EDEN_SECRETS_KEY = "a".repeat(64);
+    dbMocks.insert.mockReturnValue({
+      values: () => ({
+        onConflictDoUpdate: () => ({
+          returning: async () => [
+            {
+              id: "grant_xero",
+              projectId: SCOPE.projectId,
+              agentId: SCOPE.agentId,
+              environmentId: null,
+              provider: "xero",
+              accountEmail: "new@acme.example",
+              scopes: XERO_SCOPES,
+              status: "active",
+              clientId: null,
+              resourceId: "tenant-2",
+              resourceName: "New Org",
+              createdAt: new Date(),
+            },
+          ],
+        }),
+      }),
+    });
+    try {
+      const { deps, events } = rotatingXero();
+      const first = await capabilityAccessToken({ ...SCOPE, provider: "xero" }, okFetch, deps);
+      expect(first.ok).toBe(true);
+      // The installer reconnects Xero (possibly as a DIFFERENT account) — the real grant writer.
+      await upsertGrant({
+        projectId: SCOPE.projectId,
+        agentId: SCOPE.agentId,
+        provider: "xero",
+        accountEmail: "new@acme.example",
+        scopes: XERO_SCOPES,
+        refreshToken: "rt_new",
+      });
+      // The next call must NOT ride the old account's still-live token: it refreshes again.
+      const second = await capabilityAccessToken({ ...SCOPE, provider: "xero" }, okFetch, deps);
+      expect(second.ok).toBe(true);
+      if (!first.ok || !second.ok) return;
+      expect(second.accessToken).not.toBe(first.accessToken);
+      expect(events.filter((e) => e.startsWith("refresh:"))).toHaveLength(2);
+    } finally {
+      if (OLD_KEY === undefined) delete process.env.EDEN_SECRETS_KEY;
+      else process.env.EDEN_SECRETS_KEY = OLD_KEY;
+    }
+  });
+
   it("surfaces a dead grant with the reconnect message and drops the cache entry", async () => {
     const markGrantStatus = vi.fn(async () => {});
     const out = await capabilityAccessToken(
@@ -268,6 +327,24 @@ describe("connectionGrantEnv — capability delivery (issue #166)", () => {
         }),
       ),
     ).rejects.toThrow(/isn't bound to an organisation/);
+  });
+
+  it("fails the deploy honestly when an ACTIVE capability grant has no operator OAuth client (config removed after connect)", async () => {
+    await expect(
+      connectionGrantEnv(deployScope, okFetch, deployDeps({ getConfig: () => null })),
+    ).rejects.toThrow(/no Xero OAuth client configured.*EDEN_XERO_CLIENT_ID/);
+  });
+
+  it("still skips silently when the operator config is missing and no ACTIVE capability grant exists", async () => {
+    const out = await connectionGrantEnv(
+      deployScope,
+      okFetch,
+      deployDeps({
+        getConfig: () => null,
+        listGrantsForAgent: async () => [{ provider: "xero", status: "expired" as const }],
+      }),
+    );
+    expect(out).toEqual({});
   });
 
   it("leaves refresh-token providers byte-identical (google regression)", async () => {

@@ -26,6 +26,15 @@ const XERO_API = "https://api.xero.com/api.xro/2.0";
 /** Attachment cap (issue #166 whitelist): 10 MiB of DECODED bytes. */
 export const XERO_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 
+/**
+ * The ENCODED-length ceiling matching that cap (base64 grows 3→4), enforced by the input schema
+ * so an oversize payload is refused before `Buffer.from` ever allocates the decoded bytes. The
+ * decoded-length check in `validateAttachFile` remains the authoritative boundary (a string of
+ * exactly this length can still decode to a byte over the cap).
+ */
+export const XERO_ATTACHMENT_MAX_BASE64_CHARS =
+  Math.ceil(XERO_ATTACHMENT_MAX_BYTES / 3) * 4;
+
 /** Content types the attachment whitelist allows. */
 export const XERO_ATTACHMENT_CONTENT_TYPES = [
   "application/pdf",
@@ -267,7 +276,13 @@ const attachFileSchema = z.object({
     ),
   contentType: z.enum(XERO_ATTACHMENT_CONTENT_TYPES),
   /** Base64-encoded file bytes, ≤ 10 MiB decoded. */
-  contentBase64: z.string().min(1),
+  contentBase64: z
+    .string()
+    .min(1)
+    .max(
+      XERO_ATTACHMENT_MAX_BASE64_CHARS,
+      "is longer than a 10 MiB file's base64 — attachments are capped at 10 MiB",
+    ),
 });
 
 type AttachFile = z.infer<typeof attachFileSchema>;

@@ -9,10 +9,13 @@
  *    reconnect), inputs zod-parse with unknown keys stripped, a dead grant surfaces the reconnect
  *    text, invariant refusals are 200 business outcomes, vendor throws are 502 — and EVERY call
  *    that got past auth lands one audit row (ok/refused/error) with the operation's REDACTED
- *    digest, never the raw payload.
+ *    digest, never the raw payload. The execute path is WRITE-AHEAD: a "pending" row must land
+ *    before the vendor operation runs (no row → no execution), and a failed finalize never masks
+ *    the result.
  *  - the `POST /api/capabilities/:provider/:operation` action (mocked seams): EDEN_TEAM_TOKEN
  *    delegation auth (the Discord-send-proxy pattern), deployment → environment → agent
- *    resolution, and outcome passthrough.
+ *    resolution, a hard body-size cap enforced while streaming (413), transport refusals
+ *    (malformed/oversized bodies) audited for the authenticated caller, and outcome passthrough.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -27,6 +30,7 @@ import {
 
 const routeMocks = vi.hoisted(() => ({
   executeCapabilityCall: vi.fn(),
+  recordCapabilityCall: vi.fn(),
   store: {
     deployments: { findById: vi.fn() },
     environments: { findById: vi.fn() },
@@ -39,6 +43,11 @@ vi.mock("~/capabilities/execute.server", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("~/capabilities/execute.server")>();
   return { ...actual, executeCapabilityCall: routeMocks.executeCapabilityCall };
+});
+vi.mock("~/capabilities/audit.server", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("~/capabilities/audit.server")>();
+  return { ...actual, recordCapabilityCall: routeMocks.recordCapabilityCall };
 });
 vi.mock("~/seams/index.server", () => ({
   getRuntime: () => ({ data: routeMocks.store }),
@@ -129,6 +138,15 @@ function deps(over: Partial<CapabilityExecuteDeps> = {}): {
       }),
       record: async (record) => {
         audits.push(record);
+      },
+      // The write-ahead pair: begin appends a "pending" row, finalize settles it in place —
+      // the same shape the real Drizzle-backed audit takes.
+      begin: async (record) => {
+        audits.push({ ...record, outcome: "pending", error: null });
+        return String(audits.length - 1);
+      },
+      finalize: async (id, outcome, error) => {
+        audits[Number(id)] = { ...audits[Number(id)], outcome, error };
       },
       fetchImpl: fetch,
       ...over,
@@ -267,16 +285,63 @@ describe("executeCapabilityCall", () => {
     expect(JSON.stringify(audits[0].inputSummary)).not.toContain("top-secret");
   });
 
-  it("never lets a failed audit write mask the call's own result", async () => {
+  it("refuses to EXECUTE when the write-ahead audit row can't be written — no unrecorded vendor mutation", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
+      const capability = fakeCapability();
+      let executed = false;
+      capability.operationGroups[0].operations[0].execute = async () => {
+        executed = true;
+        return {};
+      };
       const { deps: d } = deps({
-        record: async () => {
+        getCapability: () => capability,
+        begin: async () => {
+          throw new Error("audit table unavailable");
+        },
+      });
+      const out = await call("echo", { name: "x" }, d);
+      expect(out.status).toBe(502);
+      expect(out.body.ok).toBe(false);
+      expect(out.body.error).toMatch(/audit log.*not executed/);
+      expect(executed).toBe(false);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("never lets a failed finalize mask the result — the pending row already recorded the call", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { deps: d, audits } = deps({
+        finalize: async () => {
           throw new Error("audit table unavailable");
         },
       });
       const out = await call("echo", { name: "x" }, d);
       expect(out.body).toEqual({ ok: true, result: { echoed: "x" } });
+      // The write-ahead row survives as the queryable trace of the executed call.
+      expect(audits).toMatchObject([
+        { operation: "echo", outcome: "pending", inputSummary: { name: "x" } },
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("never lets a failed refusal audit mask the refusal itself (no mutation at stake)", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { deps: d } = deps({
+        enabledGroups: async () => [],
+        record: async () => {
+          throw new Error("audit table unavailable");
+        },
+      });
+      const out = await call("echo", { name: "x" }, d);
+      expect(out.status).toBe(200);
+      expect(out.body.ok).toBe(false);
+      expect(out.body.error).toMatch(/permission isn't enabled/);
     } finally {
       errorSpy.mockRestore();
     }
@@ -333,6 +398,7 @@ const PARAMS = { provider: "xero", operation: "echo" };
 describe("POST /api/capabilities/:provider/:operation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    routeMocks.recordCapabilityCall.mockReset().mockResolvedValue(undefined);
     routeMocks.verifyDelegationToken.mockReturnValue("dep_1");
     routeMocks.store.deployments.findById.mockResolvedValue({
       id: "dep_1",
@@ -371,7 +437,7 @@ describe("POST /api/capabilities/:provider/:operation", () => {
     expect(routeMocks.executeCapabilityCall).not.toHaveBeenCalled();
   });
 
-  it("400s a non-JSON body", async () => {
+  it("400s a non-JSON body AND audits the refused call for the authenticated caller", async () => {
     const { action } = await import(
       "~/routes/api.capabilities.$provider.$operation"
     );
@@ -380,6 +446,54 @@ describe("POST /api/capabilities/:provider/:operation", () => {
     );
     expect(unwrap(result).status).toBe(400);
     expect(routeMocks.executeCapabilityCall).not.toHaveBeenCalled();
+    // Every request past auth is queryable (acceptance criterion 5) — transport refusals too.
+    expect(routeMocks.recordCapabilityCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agnt_1",
+        deploymentId: "dep_1",
+        provider: "xero",
+        operation: "echo",
+        outcome: "refused",
+        error: expect.stringMatching(/JSON body/),
+      }),
+    );
+  });
+
+  it("413s a body over the route's cap without handing it to the framework, and audits the refusal", async () => {
+    const { action } = await import(
+      "~/routes/api.capabilities.$provider.$operation"
+    );
+    // Just over 15 MiB of raw body — the stream reader must bail before buffering it whole.
+    const huge = "x".repeat(15 * 1024 * 1024 + 1);
+    const result = await action(
+      actionArgs(capabilityRequest(huge, "Bearer good"), PARAMS),
+    );
+    expect(unwrap(result).status).toBe(413);
+    expect(routeMocks.executeCapabilityCall).not.toHaveBeenCalled();
+    expect(routeMocks.recordCapabilityCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "refused",
+        error: expect.stringMatching(/15 MiB limit/),
+      }),
+    );
+  });
+
+  it("keeps a failed transport-refusal audit from masking the 400 itself", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      routeMocks.recordCapabilityCall.mockRejectedValue(
+        new Error("audit table unavailable"),
+      );
+      const { action } = await import(
+        "~/routes/api.capabilities.$provider.$operation"
+      );
+      const result = await action(
+        actionArgs(capabilityRequest("not json", "Bearer good"), PARAMS),
+      );
+      expect(unwrap(result).status).toBe(400);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("resolves deployment → environment → agent and executes for THAT caller", async () => {

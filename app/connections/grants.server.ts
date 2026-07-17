@@ -14,6 +14,7 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "~/db/client.server";
 import { connectionGrants } from "~/db/schema";
 import { decodeKey, open, seal } from "~/seams/oss/secretbox";
+import { invalidateCapabilityToken } from "./capability-token-cache.server";
 
 export type GrantStatus = "active" | "expired" | "revoked";
 
@@ -136,6 +137,15 @@ export async function upsertGrant(input: UpsertGrantInput): Promise<ConnectionGr
       },
     })
     .returning();
+  // A reconnect may bind a DIFFERENT vendor account to the same scope: any control-plane-cached
+  // capability access token minted under the replaced grant must die with it (issue #166) —
+  // otherwise capability calls would ride the old account's token for the rest of its ~30-minute
+  // life. No-op for non-capability providers (nothing cached under their scope).
+  invalidateCapabilityToken({
+    projectId: input.projectId,
+    agentId: input.agentId,
+    provider: input.provider,
+  });
   return toGrant(row);
 }
 

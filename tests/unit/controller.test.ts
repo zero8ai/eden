@@ -1612,6 +1612,44 @@ describe("Google connection env injection (issue #30)", () => {
     expect(verifyDelegationToken(env.EDEN_TEAM_TOKEN)).toBe(dep.id);
   });
 
+  it("strips user-set XERO_OAUTH_* for a capability provider — the marker, not <PREFIX>_OAUTH_*, names it (issue #166)", async () => {
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "d6".repeat(20) },
+      store,
+    );
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        // A leftover self-managed Xero connector's secrets: capability delivery means the
+        // container must hold NO Xero credential material at all (acceptance criterion 3).
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          XERO_OAUTH_CLIENT_ID: "user_client",
+          XERO_OAUTH_CLIENT_SECRET: "user_secret",
+          XERO_OAUTH_REFRESH_TOKEN: "user_token",
+          XERO_OAUTH_SCOPES: "user_scopes",
+          EDEN_CAPABILITY_PROVIDERS: "user_marker",
+        }),
+        // Capability delivery (real xero entry): ONLY the Eden-owned marker, no OAuth vars.
+        connectionGrantEnv: async () => ({ EDEN_CAPABILITY_PROVIDERS: "xero" }),
+      },
+    );
+    const env = deployedEnvs[0];
+    for (const suffix of ["CLIENT_ID", "CLIENT_SECRET", "REFRESH_TOKEN", "SCOPES"]) {
+      expect(env).not.toHaveProperty(`XERO_OAUTH_${suffix}`);
+    }
+    expect(env.EDEN_CAPABILITY_PROVIDERS).toBe("xero");
+    // The capability tools' coordinates ride along, same as the token broker's.
+    expect(env.EDEN_API_URL).toMatch(/^http:\/\/host\.docker\.internal:/);
+    expect(verifyDelegationToken(env.EDEN_TEAM_TOKEN)).toBe(dep.id);
+  });
+
   it("does not inject broker coordinates for refresh-token providers (google regression, issue #167)", async () => {
     const deployedEnvs: Record<string, string>[] = [];
     const release = await createRelease(

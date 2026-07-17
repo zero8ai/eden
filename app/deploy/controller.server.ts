@@ -514,13 +514,23 @@ export async function deployRelease(
       : {};
     if (Object.keys(grantEnv).length > 0) {
       let hasBrokeredProvider = false;
+      // Capability providers (issue #166) inject NO <PREFIX>_OAUTH_* vars at all — their only
+      // trace in grantEnv is the EDEN_CAPABILITY_PROVIDERS marker, so anti-shadowing must read
+      // it to know Eden brokered them: a user secret like XERO_OAUTH_REFRESH_TOKEN (a leftover
+      // self-managed connector) must not survive into a container whose whole safety story is
+      // "the instance holds no vendor credential".
+      const capabilityProviderIds = new Set(
+        (grantEnv.EDEN_CAPABILITY_PROVIDERS ?? "").split(",").filter(Boolean),
+      );
       for (const def of listProviders()) {
         // Only the providers Eden actually brokered this deploy — a present <PREFIX>_OAUTH_SCOPES
         // or refresh token marks one (access-token-broker providers ship scopes but no refresh
-        // token, issue #167; both deliveries set scopes).
+        // token, issue #167; both deliveries set scopes), and capability providers are named by
+        // the marker.
         if (
           !(`${def.envPrefix}_OAUTH_SCOPES` in grantEnv) &&
-          !(`${def.envPrefix}_OAUTH_REFRESH_TOKEN` in grantEnv)
+          !(`${def.envPrefix}_OAUTH_REFRESH_TOKEN` in grantEnv) &&
+          !capabilityProviderIds.has(def.id)
         ) {
           continue;
         }

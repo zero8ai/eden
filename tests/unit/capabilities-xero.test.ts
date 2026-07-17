@@ -18,6 +18,7 @@ import { executeCapabilityCall, type CapabilityCaller } from "~/capabilities/exe
 import { getCapability } from "~/capabilities/registry.server";
 import {
   billsWhereClause,
+  XERO_ATTACHMENT_MAX_BASE64_CHARS,
   XERO_ATTACHMENT_MAX_BYTES,
   xeroCapability,
 } from "~/capabilities/xero.server";
@@ -100,6 +101,13 @@ function xeroDeps(fetchImpl: typeof fetch): {
       }),
       record: async (record) => {
         audits.push(record);
+      },
+      begin: async (record) => {
+        audits.push({ ...record, outcome: "pending", error: null });
+        return String(audits.length - 1);
+      },
+      finalize: async (id, outcome, error) => {
+        audits[Number(id)] = { ...audits[Number(id)], outcome, error };
       },
       fetchImpl,
     },
@@ -245,6 +253,22 @@ describe("xero attach_file_to_bill", () => {
     expect(out.body.ok).toBe(false);
     expect(out.body.error).toMatch(/capped at 10 MiB/);
     expect(requests.find((r) => r.method === "PUT")).toBeUndefined();
+  });
+
+  it("refuses an over-long base64 string at the SCHEMA — before any decode allocates the bytes", async () => {
+    const { fetchImpl, requests } = fakeXero();
+    const { deps } = xeroDeps(fetchImpl);
+    const oversize = "A".repeat(XERO_ATTACHMENT_MAX_BASE64_CHARS + 4);
+    const out = await call(
+      "attach_file_to_bill",
+      { invoiceId: BILL_ID, filename: "big.pdf", contentType: "application/pdf", contentBase64: oversize },
+      deps,
+    );
+    expect(out.body.ok).toBe(false);
+    expect(out.body.error).toMatch(/Invalid input: contentBase64/);
+    expect(out.body.error).toMatch(/capped at 10 MiB/);
+    // Refused at the shape step: Xero was never consulted.
+    expect(requests).toHaveLength(0);
   });
 
   it("refuses a non-whitelisted content type at the schema (zip never reaches Xero)", async () => {

@@ -103,9 +103,11 @@ function validateManifest(where, m) {
   }
 
   // auth (issue #30): a brokered OAuth connector descriptor — connection templates only.
+  // `scopes` is the always-requested baseline; `scopeGroups` (issue #165) declares named,
+  // user-selectable permission levels. At least one of the two must be present.
   if (m.auth !== undefined) {
     if (!m.auth || typeof m.auth !== "object" || Array.isArray(m.auth)) {
-      fail(where, "auth must be an object { provider, kind, scopes }");
+      fail(where, "auth must be an object { provider, kind, scopes?, scopeGroups? }");
     } else {
       if (m.type !== "connection") {
         fail(where, "auth is only valid on a connection template");
@@ -116,12 +118,48 @@ function validateManifest(where, m) {
       if (m.auth.kind !== "oauth2") {
         fail(where, `auth.kind "${m.auth.kind}" must be "oauth2"`);
       }
-      if (
-        !Array.isArray(m.auth.scopes) ||
-        m.auth.scopes.length === 0 ||
-        m.auth.scopes.some((s) => typeof s !== "string" || s.length === 0)
-      ) {
+      const badScopeList = (list) =>
+        !Array.isArray(list) ||
+        list.length === 0 ||
+        list.some((s) => typeof s !== "string" || s.length === 0);
+      if (m.auth.scopes !== undefined && badScopeList(m.auth.scopes)) {
         fail(where, "auth.scopes must be a non-empty array of non-empty strings");
+      }
+      if (m.auth.scopeGroups !== undefined) {
+        if (!Array.isArray(m.auth.scopeGroups) || m.auth.scopeGroups.length === 0) {
+          fail(where, "auth.scopeGroups must be a non-empty array");
+        } else {
+          const seen = new Set();
+          for (const g of m.auth.scopeGroups) {
+            if (!g || typeof g !== "object" || Array.isArray(g)) {
+              fail(where, "each scope group must be an object { id, label, description, scopes }");
+              continue;
+            }
+            if (!KEBAB.test(g.id ?? "")) {
+              fail(where, `scope group id "${g.id}" is not a kebab-case slug`);
+            }
+            if (seen.has(g.id)) {
+              fail(where, `duplicate scope group id "${g.id}"`);
+            }
+            seen.add(g.id);
+            if (!g.label) fail(where, `scope group "${g.id}" needs a label`);
+            if (!g.description) {
+              fail(where, `scope group "${g.id}" needs a description`);
+            }
+            if (badScopeList(g.scopes)) {
+              fail(
+                where,
+                `scope group "${g.id}" scopes must be a non-empty array of non-empty strings`,
+              );
+            }
+            if (g.default !== undefined && typeof g.default !== "boolean") {
+              fail(where, `scope group "${g.id}" default must be a boolean`);
+            }
+          }
+        }
+      }
+      if (m.auth.scopes === undefined && m.auth.scopeGroups === undefined) {
+        fail(where, "auth must declare scopes, scopeGroups, or both");
       }
     }
   }

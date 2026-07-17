@@ -71,26 +71,59 @@ function hasSandboxWork(
   );
 }
 
+/** One lock-shaped auth snapshot entry — mirrors `installEntrySchema.auth` items. */
+type AuthSnapshotEntry = NonNullable<InstallEntry["auth"]>[number];
+
 /**
  * The OAuth connection descriptors to snapshot into the lock for this install (issue #30). Prefer
  * the resolved template's `auths` (parent + every included connector, deduped by provider), dropping
  * the `templateId` provenance the lock doesn't need. A plain (non-resolved) template has no `auths`,
  * so fall back to its single `manifest.auth` descriptor as a one-element array.
+ *
+ * Scope groups (issue #165): a descriptor with `scopeGroups` also records the installer's
+ * `selectedGroups` — the caller's explicit choice for that provider when one was posted, else the
+ * template's `default`-flagged groups. Group-less descriptors snapshot byte-for-byte as before.
  */
 function authSnapshot(
   template: PlanContext["template"],
-): Array<{ provider: string; kind: "oauth2"; scopes: string[] }> {
-  if (template.auths && template.auths.length > 0) {
-    return template.auths.map((a) => ({
-      provider: a.provider,
-      kind: a.kind,
-      scopes: a.scopes,
-    }));
-  }
-  const auth = template.manifest.auth;
-  return auth
-    ? [{ provider: auth.provider, kind: auth.kind, scopes: auth.scopes }]
-    : [];
+  authSelections?: Record<string, string[]>,
+): AuthSnapshotEntry[] {
+  const descriptors: Array<{
+    provider: string;
+    kind: "oauth2";
+    scopes?: string[];
+    scopeGroups?: NonNullable<AuthSnapshotEntry["scopeGroups"]>;
+  }> =
+    template.auths && template.auths.length > 0
+      ? template.auths.map((a) => ({
+          provider: a.provider,
+          kind: a.kind,
+          ...(a.scopes.length > 0 ? { scopes: a.scopes } : {}),
+          ...(a.scopeGroups ? { scopeGroups: a.scopeGroups } : {}),
+        }))
+      : template.manifest.auth
+        ? [
+            {
+              provider: template.manifest.auth.provider,
+              kind: template.manifest.auth.kind,
+              ...(template.manifest.auth.scopes
+                ? { scopes: template.manifest.auth.scopes }
+                : {}),
+              ...(template.manifest.auth.scopeGroups
+                ? { scopeGroups: template.manifest.auth.scopeGroups }
+                : {}),
+            },
+          ]
+        : [];
+  return descriptors.map((d) => {
+    if (!d.scopeGroups) return d;
+    const chosen = authSelections?.[d.provider];
+    const selectedGroups = chosen
+      ? // Keep declaration order and drop unknown ids — the list is form-posted.
+        d.scopeGroups.map((g) => g.id).filter((id) => chosen.includes(id))
+      : d.scopeGroups.filter((g) => g.default).map((g) => g.id);
+    return { ...d, selectedGroups };
+  });
 }
 
 function renderSandboxAddon(setup: SandboxSetup): string {
@@ -199,6 +232,12 @@ export interface PlanContext {
   model?: string | null;
   /** Explicit workspace/member effort paired with the model. */
   effort?: ReasoningEffort | null;
+  /**
+   * The installer's scope-group choice per provider (issue #165): provider id → selected group
+   * ids, as posted by the wizard's Permissions step. A provider absent here falls back to the
+   * template's `default`-flagged groups; ignored for group-less descriptors.
+   */
+  authSelections?: Record<string, string[]>;
 }
 
 export interface InstallPlan {
@@ -528,8 +567,9 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     // (issue #30) — a grant row's stored scopes are only a record of what was granted, never the
     // request template. Prefer the resolved template's `auths` (parent + every included connector,
     // deduped by provider); fall back to a plain template's single `manifest.auth` descriptor.
-    ...(authSnapshot(template).length > 0
-      ? { auth: authSnapshot(template) }
+    // Scope groups (issue #165): the snapshot also records the installer's selection.
+    ...(authSnapshot(template, ctx.authSelections).length > 0
+      ? { auth: authSnapshot(template, ctx.authSelections) }
       : {}),
   };
   let baseLock = ctx.lock;

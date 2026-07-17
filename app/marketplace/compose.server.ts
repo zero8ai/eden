@@ -34,7 +34,11 @@
  * matches the parent's `index.json` row; each ResolvedInclude.hash is likewise that include's own
  * content hash. Both use the shared hash rule (hash.server.ts) — never a fork.
  */
-import type { TemplateManifest, TemplateType } from "./manifest";
+import type {
+  AuthScopeGroup,
+  TemplateManifest,
+  TemplateType,
+} from "./manifest";
 import { templateContentHash } from "./hash.server";
 import type { CatalogSource, CatalogTemplate } from "~/seams/types";
 
@@ -55,7 +59,10 @@ export interface ResolvedAuth {
   templateId: string;
   provider: string;
   kind: "oauth2";
+  /** Baseline scopes, always requested (empty when the template declares only groups — #165). */
   scopes: string[];
+  /** User-selectable permission levels (issue #165), deduped by id across composed templates. */
+  scopeGroups?: AuthScopeGroup[];
 }
 
 /** A template with every include flattened into it — what the planner installs. */
@@ -214,23 +221,42 @@ async function resolve(
   addSecrets(manifest.secrets);
   const secrets = [...secretByName.values()];
 
-  // ── auths: union by provider, includes-first then parent; scopes unioned per provider ──
+  // ── auths: union by provider, includes-first then parent; scopes unioned per provider;
+  // scope groups (issue #165) deduped by id — the FIRST occurrence keeps its definition,
+  // mirroring the secrets rule (two composed connectors sharing a group id is authored intent
+  // to present one checkbox, not two) ──
   const authByProvider = new Map<string, ResolvedAuth>();
   const addAuth = (auth: ResolvedAuth) => {
     const existing = authByProvider.get(auth.provider);
     if (!existing) {
-      authByProvider.set(auth.provider, { ...auth, scopes: [...auth.scopes] });
+      authByProvider.set(auth.provider, {
+        ...auth,
+        scopes: [...auth.scopes],
+        ...(auth.scopeGroups ? { scopeGroups: [...auth.scopeGroups] } : {}),
+      });
       return;
     }
     for (const scope of auth.scopes) {
       if (!existing.scopes.includes(scope)) existing.scopes.push(scope);
+    }
+    for (const group of auth.scopeGroups ?? []) {
+      const groups = (existing.scopeGroups ??= []);
+      if (!groups.some((g) => g.id === group.id)) groups.push(group);
     }
   };
   for (const child of resolvedIncludes) {
     for (const a of child.auths) addAuth(a);
   }
   if (manifest.auth) {
-    addAuth({ templateId: manifest.id, ...manifest.auth });
+    addAuth({
+      templateId: manifest.id,
+      provider: manifest.auth.provider,
+      kind: manifest.auth.kind,
+      scopes: manifest.auth.scopes ?? [],
+      ...(manifest.auth.scopeGroups
+        ? { scopeGroups: manifest.auth.scopeGroups }
+        : {}),
+    });
   }
   const auths = [...authByProvider.values()];
 

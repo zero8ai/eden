@@ -160,6 +160,84 @@ describe("manifest schema", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts scope groups without baseline scopes (issue #165)", () => {
+    const auth = {
+      provider: "google",
+      kind: "oauth2" as const,
+      scopeGroups: [
+        {
+          id: "read",
+          label: "Read mail",
+          description: "Search and read messages.",
+          scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+          default: true,
+        },
+        {
+          id: "send",
+          label: "Send mail",
+          description: "Send messages as the connected account.",
+          scopes: ["https://www.googleapis.com/auth/gmail.send"],
+        },
+      ],
+    };
+    const parsed = parseManifest({
+      ...VALID,
+      id: "gmail",
+      type: "connection",
+      auth,
+    });
+    expect(parsed.auth).toEqual(auth);
+  });
+
+  it("rejects an auth with neither scopes nor scopeGroups (issue #165)", () => {
+    expect(() =>
+      parseManifest({
+        ...VALID,
+        id: "gmail",
+        type: "connection",
+        auth: { provider: "google", kind: "oauth2" },
+      }),
+    ).toThrow(/scopes, scopeGroups, or both/);
+  });
+
+  it("rejects duplicate scope group ids (issue #165)", () => {
+    const group = {
+      id: "read",
+      label: "Read",
+      description: "Read things.",
+      scopes: ["scope-a"],
+    };
+    expect(() =>
+      parseManifest({
+        ...VALID,
+        id: "gmail",
+        type: "connection",
+        auth: {
+          provider: "google",
+          kind: "oauth2",
+          scopeGroups: [group, { ...group, scopes: ["scope-b"] }],
+        },
+      }),
+    ).toThrow(/duplicate scope group id/);
+  });
+
+  it("rejects a scope group with an empty scopes list (issue #165)", () => {
+    expect(() =>
+      parseManifest({
+        ...VALID,
+        id: "gmail",
+        type: "connection",
+        auth: {
+          provider: "google",
+          kind: "oauth2",
+          scopeGroups: [
+            { id: "read", label: "Read", description: "Read.", scopes: [] },
+          ],
+        },
+      }),
+    ).toThrow();
+  });
 });
 
 /**

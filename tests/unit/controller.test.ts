@@ -1503,11 +1503,14 @@ describe("Google connection env injection (issue #30)", () => {
         secrets: fakeSecrets({
           OPENROUTER_API_KEY: "k",
           GOOGLE_OAUTH_REFRESH_TOKEN: "user_token",
+          // Shadowing the granted-scope report (issue #165) is also anti-shadowed away.
+          GOOGLE_OAUTH_SCOPES: "user_scopes",
         }),
         connectionGrantEnv: async () => ({
           GOOGLE_OAUTH_CLIENT_ID: "broker_client",
           GOOGLE_OAUTH_CLIENT_SECRET: "broker_secret",
           GOOGLE_OAUTH_REFRESH_TOKEN: "broker_token",
+          GOOGLE_OAUTH_SCOPES: "https://www.googleapis.com/auth/gmail.readonly",
         }),
       },
     );
@@ -1515,6 +1518,9 @@ describe("Google connection env injection (issue #30)", () => {
     expect(env.GOOGLE_OAUTH_CLIENT_ID).toBe("broker_client");
     expect(env.GOOGLE_OAUTH_CLIENT_SECRET).toBe("broker_secret");
     expect(env.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("broker_token");
+    expect(env.GOOGLE_OAUTH_SCOPES).toBe(
+      "https://www.googleapis.com/auth/gmail.readonly",
+    );
   });
 
   it("injects a second provider's <PREFIX>_OAUTH_* trio alongside Google's, replacing user-set values (issue #163)", async () => {

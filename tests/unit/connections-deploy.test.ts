@@ -56,6 +56,7 @@ function deps(over: Partial<ConnectionDeployDeps>): ConnectionDeployDeps {
       refreshToken: "rt",
     }),
     markGrantStatus: async () => {},
+    rotateRefreshToken: async () => true,
     refreshAccessToken: async () => ({ accessToken: "at", expiresIn: 3599 }),
     ...over,
   };
@@ -327,6 +328,158 @@ describe("connectionGrantEnv", () => {
     );
     // Under-scoped is not dead: the grant stays active.
     expect(markGrantStatus).not.toHaveBeenCalled();
+  });
+
+  it("persists a rotated refresh token from the validation refresh and injects the NEW token (issue #167)", async () => {
+    const rotateRefreshToken = vi.fn(async () => true);
+    const out = await connectionGrantEnv(
+      scope,
+      okFetch,
+      deps({
+        rotateRefreshToken,
+        openRefreshToken: async () => ({
+          grant: {
+            id: "grant_1",
+            status: "active",
+            scopes: "https://www.googleapis.com/auth/spreadsheets",
+          },
+          refreshToken: "rt_old",
+          tokenVersion: "iv_old",
+        }),
+        refreshAccessToken: async () => ({
+          accessToken: "at",
+          expiresIn: 3599,
+          refreshToken: "rt_rotated",
+        }),
+      }),
+    );
+    // Persisted BEFORE injection, compare-and-set against the token that was refreshed.
+    expect(rotateRefreshToken).toHaveBeenCalledWith("grant_1", "rt_rotated", "iv_old");
+    expect(out.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("rt_rotated");
+  });
+
+  it("does not touch the grant when the refresh response carries no rotation (google unchanged)", async () => {
+    const rotateRefreshToken = vi.fn(async () => true);
+    const out = await connectionGrantEnv(scope, okFetch, deps({ rotateRefreshToken }));
+    expect(rotateRefreshToken).not.toHaveBeenCalled();
+    expect(out.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("rt");
+  });
+
+  it("fails the deploy when a concurrent reconnect wins the rotation compare-and-set (issue #167)", async () => {
+    await expect(
+      connectionGrantEnv(
+        scope,
+        okFetch,
+        deps({
+          rotateRefreshToken: async () => false,
+          refreshAccessToken: async () => ({
+            accessToken: "at",
+            expiresIn: 3599,
+            refreshToken: "rt_rotated",
+          }),
+        }),
+      ),
+    ).rejects.toThrow(/reconnected while this deploy was validating/);
+  });
+
+  it("brokered delivery (real mayi entry): no OAuth trio, scopes + deployEnv constants only (issue #167)", async () => {
+    const rotateRefreshToken = vi.fn(async () => true);
+    const refreshAccessToken = vi.fn(async () => ({
+      accessToken: "at",
+      expiresIn: 3600,
+      refreshToken: "rt_next",
+    }));
+    const out = await connectionGrantEnv(
+      scope,
+      okFetch,
+      deps({
+        // No operator config exists for mayi — the grant carries its registered client.
+        getConfig: () => null,
+        rotateRefreshToken,
+        refreshAccessToken,
+        listGrantsForAgent: async () => [
+          { provider: "mayi", status: "active" as const },
+        ],
+        openRefreshToken: async () => ({
+          grant: {
+            id: "grant_mayi",
+            status: "active",
+            scopes: "approval:create approval:read approval:cancel",
+            clientId: "mayi_client_1",
+          },
+          refreshToken: "rt_mayi",
+          tokenVersion: "iv_mayi",
+        }),
+      }),
+    );
+    // The validation refresh ran against the grant's OWN registered client — secretless.
+    expect(refreshAccessToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: { clientId: "mayi_client_1" },
+        refreshToken: "rt_mayi",
+      }),
+      okFetch,
+    );
+    // The rotation was persisted even though the refresh token never ships.
+    expect(rotateRefreshToken).toHaveBeenCalledWith("grant_mayi", "rt_next", "iv_mayi");
+    expect(out).toEqual({
+      MAYI_CALLBACK_STATE_KEY_ID: "k1",
+      MAYI_OAUTH_SCOPES: "approval:create approval:read approval:cancel",
+    });
+  });
+
+  it("marks a dead brokered grant expired and fails the deploy with the reconnect message", async () => {
+    const markGrantStatus = vi.fn(async () => {});
+    await expect(
+      connectionGrantEnv(
+        scope,
+        okFetch,
+        deps({
+          getConfig: () => null,
+          markGrantStatus,
+          listGrantsForAgent: async () => [
+            { provider: "mayi", status: "active" as const },
+          ],
+          openRefreshToken: async () => ({
+            grant: {
+              id: "grant_mayi",
+              status: "active",
+              scopes: "approval:create",
+              clientId: "mayi_client_1",
+            },
+            refreshToken: "rt_mayi",
+            tokenVersion: "iv_mayi",
+          }),
+          refreshAccessToken: async () => {
+            throw new InvalidGrantError("family revoked");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/The May I\? connection for this agent has expired/);
+    expect(markGrantStatus).toHaveBeenCalledWith("grant_mayi", "expired", "iv_mayi");
+  });
+
+  it("skips a registration provider whose grant has no clientId and no operator config", async () => {
+    const out = await connectionGrantEnv(
+      scope,
+      okFetch,
+      deps({
+        getConfig: () => null,
+        listGrantsForAgent: async () => [
+          { provider: "mayi", status: "active" as const },
+        ],
+        openRefreshToken: async () => ({
+          grant: {
+            id: "grant_mayi",
+            status: "active",
+            scopes: "approval:create",
+            clientId: null,
+          },
+          refreshToken: "rt_mayi",
+        }),
+      }),
+    );
+    expect(out).toEqual({});
   });
 
   it("still injects a granted provider the lock no longer requires (grants ∪ lock union)", async () => {

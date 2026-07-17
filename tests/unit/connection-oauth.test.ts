@@ -15,6 +15,8 @@ import {
   exchangeCode,
   fetchAccountEmail,
   generateCodeVerifier,
+  refreshAccessToken,
+  registerOAuthClient,
   signConnectState,
   verifyConnectState,
   type ConnectState,
@@ -26,7 +28,11 @@ import {
   type ProviderDefinition,
 } from "~/connections/providers.server";
 
-/** A hypothetical PKCE provider — NOT in the registry (that's part of what's under test). */
+/**
+ * A hypothetical PKCE provider definition, passed DIRECTLY (never resolved via the registry).
+ * The real registry's mayi entry (issue #167) has different endpoints/flags — this local shape
+ * deliberately exercises the generic builders (authorizeParams/identityScopes) instead.
+ */
 const MAYI: ProviderDefinition = {
   id: "mayi",
   label: "May I?",
@@ -105,8 +111,9 @@ describe("PKCE (RFC 7636)", () => {
 
 describe("verifyConnectState registry validation", () => {
   it("rejects a state whose provider is not registered (the registry is the authority)", () => {
+    // "mayi" is REAL as of issue #167, so an unknown id proves the registry check now.
     const key = randomBytes(32);
-    const token = signConnectState({ ...state, provider: "mayi" }, key);
+    const token = signConnectState({ ...state, provider: "notaprovider" }, key);
     expect(verifyConnectState(token, key, state.exp - 1000)).toBeNull();
   });
 });
@@ -281,5 +288,218 @@ describe("Google-unchanged regression (issue #163 acceptance criterion 2)", () =
     expect(codeChallengeS256(verifier)).toBe(
       createHash("sha256").update(verifier).digest("base64url"),
     );
+  });
+});
+
+/* ───────────────────────────── issue #167 additions ───────────────────────────── */
+
+/** Captures every token-endpoint body a test's fetch sees, replying with `reply`. */
+function capturingFetch(reply: object) {
+  const bodies: URLSearchParams[] = [];
+  const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    bodies.push(new URLSearchParams(String(init?.body ?? "")));
+    return new Response(JSON.stringify(reply), { status: 200 });
+  }) as typeof fetch;
+  return { bodies, fetchImpl };
+}
+
+describe("public clients (issue #167)", () => {
+  const grantReply = { access_token: "at", refresh_token: "rt", expires_in: 3599 };
+
+  it("omits client_secret from the code exchange when the config has none (PKCE is the proof)", async () => {
+    const { bodies, fetchImpl } = capturingFetch(grantReply);
+    await exchangeCode(
+      {
+        provider: MAYI,
+        config: { clientId: "pub_client" },
+        code: "code_1",
+        redirectUri: "https://e/connections/mayi/callback",
+        codeVerifier: generateCodeVerifier(),
+      },
+      fetchImpl,
+    );
+    expect(bodies[0].get("client_id")).toBe("pub_client");
+    expect(bodies[0].has("client_secret")).toBe(false);
+  });
+
+  it("still sends client_secret for a confidential client (google regression)", async () => {
+    const { bodies, fetchImpl } = capturingFetch(grantReply);
+    await exchangeCode(
+      {
+        provider: getProvider("google")!,
+        config: { clientId: "c", clientSecret: "s" },
+        code: "code_1",
+        redirectUri: "https://e/google/callback",
+      },
+      fetchImpl,
+    );
+    expect(bodies[0].get("client_secret")).toBe("s");
+  });
+
+  it("omits client_secret from the refresh for a public client and sends it for a confidential one", async () => {
+    const { bodies, fetchImpl } = capturingFetch({ access_token: "at", expires_in: 3599 });
+    await refreshAccessToken(
+      { provider: MAYI, config: { clientId: "pub_client" }, refreshToken: "rt" },
+      fetchImpl,
+    );
+    await refreshAccessToken(
+      {
+        provider: getProvider("google")!,
+        config: { clientId: "c", clientSecret: "s" },
+        refreshToken: "rt",
+      },
+      fetchImpl,
+    );
+    expect(bodies[0].get("client_id")).toBe("pub_client");
+    expect(bodies[0].has("client_secret")).toBe(false);
+    expect(bodies[1].get("client_secret")).toBe("s");
+  });
+});
+
+describe("rotating refresh grants (issue #167)", () => {
+  it("returns the rotated refresh_token when the refresh response carries one", async () => {
+    const { fetchImpl } = capturingFetch({
+      access_token: "at_new",
+      refresh_token: "rt_rotated",
+      expires_in: 3600,
+    });
+    const out = await refreshAccessToken(
+      { provider: MAYI, config: { clientId: "c" }, refreshToken: "rt_old" },
+      fetchImpl,
+    );
+    expect(out).toEqual({
+      accessToken: "at_new",
+      expiresIn: 3600,
+      refreshToken: "rt_rotated",
+    });
+  });
+
+  it("leaves refreshToken undefined when the response has none (google shape, unchanged)", async () => {
+    const { fetchImpl } = capturingFetch({ access_token: "at", expires_in: 3599 });
+    const out = await refreshAccessToken(
+      {
+        provider: getProvider("google")!,
+        config: { clientId: "c", clientSecret: "s" },
+        refreshToken: "rt",
+      },
+      fetchImpl,
+    );
+    expect(out).toEqual({ accessToken: "at", expiresIn: 3599 });
+    expect("refreshToken" in out).toBe(false);
+  });
+});
+
+describe("registerOAuthClient (RFC 7591, issue #167)", () => {
+  const REG: ProviderDefinition = {
+    ...MAYI,
+    clientRegistration: {
+      endpoint: "https://auth.mayi.example/oauth/register",
+      approvalCallbackPath: "/eve/v1/mayi/approval-resolved",
+    },
+  };
+
+  it("POSTs the RFC 7591 JSON body and returns the minted client_id", async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return new Response(JSON.stringify({ client_id: "reg_client_1" }), {
+        status: 201,
+      });
+    }) as typeof fetch;
+    const out = await registerOAuthClient(
+      {
+        provider: REG,
+        clientName: "Eden — proj / agent",
+        redirectUris: ["https://eden.example/connections/mayi/callback"],
+        approvalCallbackUris: [
+          "https://eden.example/e/env_1/eve/v1/mayi/approval-resolved",
+        ],
+      },
+      fetchImpl,
+    );
+    expect(out).toEqual({ clientId: "reg_client_1" });
+    expect(calls[0].url).toBe(REG.clientRegistration!.endpoint);
+    expect(calls[0].body).toEqual({
+      client_name: "Eden — proj / agent",
+      redirect_uris: ["https://eden.example/connections/mayi/callback"],
+      approval_callback_uris: [
+        "https://eden.example/e/env_1/eve/v1/mayi/approval-resolved",
+      ],
+    });
+  });
+
+  it("omits approval_callback_uris entirely when there are none", async () => {
+    const calls: { body: Record<string, unknown> }[] = [];
+    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body)) });
+      return new Response(JSON.stringify({ client_id: "reg_client_2" }), {
+        status: 201,
+      });
+    }) as typeof fetch;
+    await registerOAuthClient(
+      { provider: REG, clientName: "Eden — p / a", redirectUris: ["https://e/cb"] },
+      fetchImpl,
+    );
+    expect("approval_callback_uris" in calls[0].body).toBe(false);
+  });
+
+  it("throws a readable error carrying the provider's rejection", async () => {
+    const fetchImpl = (async () =>
+      new Response('{"error":"invalid_client_metadata"}', {
+        status: 400,
+      })) as typeof fetch;
+    await expect(
+      registerOAuthClient(
+        { provider: REG, clientName: "n", redirectUris: ["https://e/cb"] },
+        fetchImpl,
+      ),
+    ).rejects.toThrow(
+      /May I\? rejected the OAuth client registration \(HTTP 400\).*invalid_client_metadata/,
+    );
+  });
+
+  it("throws when the response is missing a client_id", async () => {
+    const fetchImpl = (async () =>
+      new Response("{}", { status: 201 })) as typeof fetch;
+    await expect(
+      registerOAuthClient(
+        { provider: REG, clientName: "n", redirectUris: ["https://e/cb"] },
+        fetchImpl,
+      ),
+    ).rejects.toThrow(/missing a client_id/);
+  });
+
+  it("refuses a provider that declares no clientRegistration", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    await expect(
+      registerOAuthClient(
+        { provider: MAYI, clientName: "n", redirectUris: ["https://e/cb"] },
+        fetchImpl,
+      ),
+    ).rejects.toThrow(/does not support dynamic client registration/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("connect-state clientId (issue #167)", () => {
+  it("round-trips a registered client id through the signed state", () => {
+    const key = randomBytes(32);
+    const token = signConnectState({ ...state, clientId: "reg_client_1" }, key);
+    expect(verifyConnectState(token, key, state.exp - 1000)?.clientId).toBe(
+      "reg_client_1",
+    );
+  });
+
+  it("rejects an empty or non-string clientId; a state without one stays valid", () => {
+    const key = randomBytes(32);
+    const empty = signConnectState({ ...state, clientId: "" }, key);
+    expect(verifyConnectState(empty, key, state.exp - 1000)).toBeNull();
+    const bad = signConnectState(
+      { ...state, clientId: 42 } as unknown as ConnectState,
+      key,
+    );
+    expect(verifyConnectState(bad, key, state.exp - 1000)).toBeNull();
+    const plain = signConnectState(state, key);
+    expect(verifyConnectState(plain, key, state.exp - 1000)).toEqual(state);
   });
 });

@@ -23,6 +23,7 @@ import {
   drainDeployment,
 } from "~/deploy/drain.server";
 import { envIngressUrl } from "~/lib/ingress";
+import { verifyDelegationToken } from "~/team/token.server";
 import type { DeployTarget, SecretsProvider } from "~/seams/types";
 import { fakeDeployTarget, fakeSecrets } from "../fakes/infra";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
@@ -1455,6 +1456,17 @@ describe("shared Discord app env injection (issue #32)", () => {
 });
 
 describe("Google connection env injection (issue #30)", () => {
+  // Deploys that broker an access-token-broker provider (the real mayi entry, issue #167) mint
+  // a delegation token, which is HMAC-keyed by the secrets key.
+  const OLD_KEY = process.env.EDEN_SECRETS_KEY;
+  beforeEach(() => {
+    process.env.EDEN_SECRETS_KEY = "a".repeat(64);
+  });
+  afterEach(() => {
+    if (OLD_KEY === undefined) delete process.env.EDEN_SECRETS_KEY;
+    else process.env.EDEN_SECRETS_KEY = OLD_KEY;
+  });
+
   it("leaves a self-hoster's manually-set GOOGLE_OAUTH_* untouched when there's no grant to broker", async () => {
     const deployedEnvs: Record<string, string>[] = [];
     const release = await createRelease(
@@ -1558,6 +1570,75 @@ describe("Google connection env injection (issue #30)", () => {
     expect(env.MAYI_OAUTH_CLIENT_ID).toBe("m_client");
     expect(env.MAYI_OAUTH_CLIENT_SECRET).toBe("m_secret");
     expect(env.MAYI_OAUTH_REFRESH_TOKEN).toBe("m_token");
+  });
+
+  it("injects broker coordinates (EDEN_API_URL + delegation token) for an access-token-broker provider (issue #167)", async () => {
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "d4".repeat(20) },
+      store,
+    );
+    const dep = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        // User secrets trying to shadow the Eden-owned broker coordinates and the provider's
+        // static deploy constant.
+        secrets: fakeSecrets({
+          OPENROUTER_API_KEY: "k",
+          EDEN_API_URL: "https://evil.example",
+          MAYI_CALLBACK_STATE_KEY_ID: "user_kid",
+        }),
+        // Brokered delivery (real mayi entry): scopes + deployEnv constants, no OAuth trio.
+        connectionGrantEnv: async () => ({
+          MAYI_OAUTH_SCOPES: "approval:create approval:read approval:cancel",
+          MAYI_CALLBACK_STATE_KEY_ID: "k1",
+        }),
+      },
+    );
+    const env = deployedEnvs[0];
+    expect(env.MAYI_CALLBACK_STATE_KEY_ID).toBe("k1");
+    expect(env.MAYI_OAUTH_SCOPES).toBe("approval:create approval:read approval:cancel");
+    // The refresh token NEVER ships for brokered providers.
+    expect(env).not.toHaveProperty("MAYI_OAUTH_REFRESH_TOKEN");
+    expect(env).not.toHaveProperty("MAYI_OAUTH_CLIENT_ID");
+    // Broker coordinates are Eden-owned: the user-set EDEN_API_URL is replaced, and the
+    // delegation token identifies THIS deployment (same auth story as the Discord send proxy).
+    expect(env.EDEN_API_URL).toMatch(/^http:\/\/host\.docker\.internal:/);
+    expect(verifyDelegationToken(env.EDEN_TEAM_TOKEN)).toBe(dep.id);
+  });
+
+  it("does not inject broker coordinates for refresh-token providers (google regression, issue #167)", async () => {
+    const deployedEnvs: Record<string, string>[] = [];
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "d5".repeat(20) },
+      store,
+    );
+    await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({
+          health: { status: "live" },
+          deployedEnvs,
+        }),
+        secrets: fakeSecrets({ OPENROUTER_API_KEY: "k" }),
+        connectionGrantEnv: async () => ({
+          GOOGLE_OAUTH_CLIENT_ID: "g_client",
+          GOOGLE_OAUTH_CLIENT_SECRET: "g_secret",
+          GOOGLE_OAUTH_REFRESH_TOKEN: "g_token",
+          GOOGLE_OAUTH_SCOPES: "s",
+        }),
+      },
+    );
+    const env = deployedEnvs[0];
+    expect(env.GOOGLE_OAUTH_REFRESH_TOKEN).toBe("g_token");
+    expect(env).not.toHaveProperty("EDEN_API_URL");
+    expect(env).not.toHaveProperty("EDEN_TEAM_TOKEN");
   });
 });
 

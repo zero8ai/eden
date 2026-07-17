@@ -124,6 +124,53 @@ describe("connectionRowState (issue #30)", () => {
       ).toBe("inactive");
     }
   });
+
+  it("is needs-reconnect when a covered grant's per-grant client no longer covers every environment (issue #167)", () => {
+    // An environment created AFTER the grant: the immutable registered client can't know its
+    // callback URL, so the card must ask for one reconnect (fresh registration).
+    expect(
+      connectionRowState({
+        hasGrant: true,
+        grantStatus: "active",
+        requiredScopes: SHEETS,
+        grantScopes: `${SHEETS} openid email`,
+        staleClientCoverage: true,
+      }),
+    ).toBe("needs-reconnect");
+  });
+
+  it("lets under-scoped win over stale client coverage — one reconnect fixes both (issue #167)", () => {
+    expect(
+      connectionRowState({
+        hasGrant: true,
+        grantStatus: "active",
+        requiredScopes: SHEETS,
+        grantScopes: IDENTITY,
+        staleClientCoverage: true,
+      }),
+    ).toBe("under-scoped");
+  });
+
+  it("keeps inactive winning over stale client coverage, and false coverage means connected (issue #167)", () => {
+    expect(
+      connectionRowState({
+        hasGrant: true,
+        grantStatus: "expired",
+        requiredScopes: SHEETS,
+        grantScopes: `${SHEETS} openid email`,
+        staleClientCoverage: true,
+      }),
+    ).toBe("inactive");
+    expect(
+      connectionRowState({
+        hasGrant: true,
+        grantStatus: "active",
+        requiredScopes: SHEETS,
+        grantScopes: `${SHEETS} openid email`,
+        staleClientCoverage: false,
+      }),
+    ).toBe("connected");
+  });
 });
 
 const state: GoogleConnectState = {

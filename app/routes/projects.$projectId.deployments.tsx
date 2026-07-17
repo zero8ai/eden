@@ -613,15 +613,28 @@ export const loader = (args: LoaderFunctionArgs) =>
           // the grant's stored scopes.
           const requiredScopeStr = req && req.length > 0 ? req.join(" ") : null;
           // Registry + operator config are per provider (issue #163): an unregistered provider
-          // renders inert, an unconfigured one renders without a connect action.
+          // renders inert, an unconfigured one renders without a connect action. Providers with
+          // dynamic client registration (issue #167) need no operator client — Connect registers
+          // one per grant — so they count as configured.
           const def = getProvider(provider);
+          // Stale callback coverage (issue #167): a per-grant registered client is IMMUTABLE with
+          // exact-match callback URIs, so an environment created AFTER the grant was made can't
+          // receive callbacks — a reconnect registers a fresh client covering the new set.
+          // `createdAt` is refreshed on reconnect (grants.server.ts) and untouched by rotation.
+          const staleClientCoverage =
+            def?.clientRegistration !== undefined &&
+            grant?.clientId != null &&
+            envRows.some((env) => env.createdAt > grant.createdAt);
           return {
             id: grant?.id ?? `provider:${provider}`,
             provider,
             label:
               def?.label ?? provider.charAt(0).toUpperCase() + provider.slice(1),
             registered: def !== null,
-            configured: def ? getProviderOAuthConfig(def) !== null : false,
+            configured: def
+              ? def.clientRegistration !== undefined ||
+                getProviderOAuthConfig(def) !== null
+              : false,
             accountEmail: grant?.accountEmail ?? null,
             scopes: grant?.scopes ?? "",
             status: grant?.status ?? null,
@@ -631,6 +644,7 @@ export const loader = (args: LoaderFunctionArgs) =>
               grantStatus: grant?.status ?? null,
               requiredScopes: requiredScopeStr,
               grantScopes: grant?.scopes ?? "",
+              staleClientCoverage,
             }),
             scopeGroups: providerScopeGroups.get(provider) ?? null,
           };
@@ -1367,6 +1381,8 @@ function ConnectionsCard({
                       <Badge variant="warning">{c.status}</Badge>
                     ) : c.state === "under-scoped" ? (
                       <Badge variant="warning">missing permissions</Badge>
+                    ) : c.state === "needs-reconnect" ? (
+                      <Badge variant="warning">reconnect needed</Badge>
                     ) : (
                       <Badge variant="success">connected</Badge>
                     )}
@@ -1376,11 +1392,13 @@ function ConnectionsCard({
                       ? "Not connected"
                       : c.state === "under-scoped"
                         ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — missing permissions this connector needs.`
-                        : c.state === "connected"
-                          ? c.accountEmail
-                            ? `Connected as ${c.accountEmail}`
-                            : "Connected"
-                          : (c.accountEmail ?? "connected account")}
+                        : c.state === "needs-reconnect"
+                          ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — an environment was added after this connection was made; reconnect so its callbacks are registered.`
+                          : c.state === "connected"
+                            ? c.accountEmail
+                              ? `Connected as ${c.accountEmail}`
+                              : "Connected"
+                            : (c.accountEmail ?? "connected account")}
                   </span>
                 </div>
                 {!c.registered ? (

@@ -24,6 +24,7 @@ import {
   connectStateKey,
   generateCodeVerifier,
   missingScopes,
+  registerOAuthClient,
   signConnectState,
   verifyConnectState,
   type TokenGrant,
@@ -39,10 +40,10 @@ import {
   type ProviderDefinition,
 } from "./providers.server";
 import { redeployAfterConnect } from "./redeploy.server";
-import { listAgents } from "~/db/queries.server";
+import { listAgentEnvironments, listAgents } from "~/db/queries.server";
 import { listDrafts } from "~/drafts/drafts.server";
 import { getAgentSource } from "~/github/cached.server";
-import { publicOrigin } from "~/lib/ingress";
+import { envIngressUrl, publicOrigin } from "~/lib/ingress";
 import { safeReturnTo } from "~/lib/signed-state.server";
 import { overlayLock, requiredScopesByProvider } from "~/marketplace/lock";
 import { requireProject, requireRepo } from "~/project/guard.server";
@@ -58,6 +59,8 @@ export interface ConnectionFlowData {
 export interface ConnectFlowDeps {
   /** Operator client config for the provider, or null when unconfigured. */
   getConfig: (provider: ProviderDefinition) => OAuthClientConfig | null;
+  /** Dynamic client registration (issue #167); defaults to the real RFC 7591 POST. */
+  registerClient?: typeof registerOAuthClient;
 }
 
 export interface CallbackFlowDeps extends ConnectFlowDeps {
@@ -136,8 +139,11 @@ export function connectionConnectLoader(
       if (!agent) throw data("Unknown agent", { status: 404 });
       const backUrl = returnTo;
 
+      // Registration providers (issue #167) mint their client per grant below — no operator
+      // client env exists for them, so the unconfigured guard applies only to shared-client
+      // providers.
       const config = deps.getConfig(provider);
-      if (!config) {
+      if (!config && !provider.clientRegistration) {
         return {
           error:
             `This Eden installation has no ${provider.label} OAuth client configured. An operator must set ` +
@@ -195,6 +201,57 @@ export function connectionConnectLoader(
         };
       }
 
+      const redirectUri = `${publicOrigin(args.request)}${providerRedirectPath(provider)}`;
+
+      // Per-grant dynamic client registration (issue #167, RFC 7591-shaped): providers whose
+      // clients are immutable with exact-match callback URIs can't share one operator client
+      // across environments, so Connect registers a FRESH client covering the exact instance
+      // callback URL of every environment the agent currently has (environment rows exist from
+      // project creation, so their ids are stable here). The minted client_id rides inside the
+      // HMAC-signed state and is persisted on the grant by the callback. Adding an environment
+      // LATER invalidates coverage — the Connections card flips to needs-reconnect and the
+      // reconnect registers a fresh client (same UX as a scope change, issue #165).
+      let registeredClientId: string | undefined;
+      if (provider.clientRegistration) {
+        // Instance callbacks must be publicly reachable — prefer the operator's EDEN_PUBLIC_ORIGIN
+        // (the same origin EVE_PUBLIC_ORIGIN injection uses) over the request-derived origin.
+        const callbackBase =
+          process.env.EDEN_PUBLIC_ORIGIN?.trim() || publicOrigin(args.request);
+        const callbackPath = provider.clientRegistration.approvalCallbackPath;
+        const environments = callbackPath
+          ? await listAgentEnvironments(agent.id)
+          : [];
+        try {
+          const registered = await (deps.registerClient ?? registerOAuthClient)({
+            provider,
+            clientName: `Eden — ${project.name ?? project.id} / ${agent.name}`,
+            redirectUris: [redirectUri],
+            approvalCallbackUris: environments.map((env) =>
+              envIngressUrl(callbackBase, env.id, callbackPath),
+            ),
+          });
+          registeredClientId = registered.clientId;
+        } catch (error) {
+          return {
+            error:
+              `${(error as Error).message} ${provider.label} requires every callback URL to be ` +
+              "public HTTPS, so this Eden installation needs a publicly reachable " +
+              "EDEN_PUBLIC_ORIGIN (a local-dev host can't receive approval callbacks).",
+            backUrl,
+            providerLabel: provider.label,
+          };
+        }
+      }
+      const clientId = registeredClientId ?? config?.clientId;
+      if (!clientId) {
+        // Unreachable by construction (config or registration produced one), kept for safety.
+        return {
+          error: `No ${provider.label} OAuth client is available for this connection.`,
+          backUrl,
+          providerLabel: provider.label,
+        };
+      }
+
       const expiresAt = Date.now() + CONNECT_STATE_TTL_MS;
       const nonce = await createOAuthStateNonce({
         userId: auth.user.id,
@@ -216,13 +273,13 @@ export function connectionConnectLoader(
           returnTo,
           exp: expiresAt,
           ...(codeVerifier ? { codeVerifier } : {}),
+          ...(registeredClientId ? { clientId: registeredClientId } : {}),
         },
         connectStateKey(),
       );
-      const redirectUri = `${publicOrigin(args.request)}${providerRedirectPath(provider)}`;
       throw redirect(
         authorizeUrl(provider, {
-          clientId: config.clientId,
+          clientId,
           redirectUri,
           state,
           scopes,
@@ -386,7 +443,12 @@ export function connectionCallbackLoader(
       // First pass BEFORE the exchange: refuse an obviously stale flow without minting tokens.
       if (await selectionStale()) return staleSelectionFail();
 
-      const config = deps.getConfig(provider);
+      // Per-grant registered client (issue #167): the exchange must run against the SAME client
+      // the authorize URL named — the signed state carries it. Operator-client providers resolve
+      // config exactly as before.
+      const config = state.clientId
+        ? { clientId: state.clientId }
+        : deps.getConfig(provider);
       if (!config) {
         return fail(
           `This Eden installation no longer has a ${label} OAuth client configured — ask an ` +
@@ -442,6 +504,9 @@ export function connectionCallbackLoader(
         accountEmail,
         scopes: grant.scope || state.scopes,
         refreshToken: grant.refreshToken,
+        // The per-grant registered client (issue #167) — every later refresh uses it. Null for
+        // operator-client providers (no behavior change).
+        clientId: state.clientId ?? null,
         createdBy: auth.user.id,
       });
 

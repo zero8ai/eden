@@ -46,35 +46,46 @@ export function missingScopes(requested: string, granted: string): string[] {
 }
 
 /**
- * The four states a Deployment-tab Connections row can be in (issue #30). The card is now the ONE
+ * The states a Deployment-tab Connections row can be in (issue #30). The card is now the ONE
  * place a connector's OAuth account is connected/reconnected — installs no longer gate on it — so a
  * row exists for every provider the lock REQUIRES, even before any grant.
  *  - "not-connected": no grant yet → primary Connect button (requests the lock-required scopes).
  *  - "connected": active grant that covers the required scopes → subtle Reconnect link.
  *  - "under-scoped": active grant missing required scopes (would 403 at runtime) → primary Reconnect.
+ *  - "needs-reconnect": active, covered grant whose per-grant OAuth client no longer covers every
+ *    environment (issue #167 — a provider with immutable exact-match callback URIs can't have an
+ *    environment added after Connect; Reconnect registers a fresh client) → primary Reconnect.
  *  - "inactive": grant expired/revoked → status badge + Reconnect.
  */
 export type ConnectionRowState =
-  "not-connected" | "connected" | "under-scoped" | "inactive";
+  "not-connected" | "connected" | "under-scoped" | "needs-reconnect" | "inactive";
 
 /**
  * Derive a Connections-card row's state from its lock-required scopes and current grant (issue #30).
  * Pure so the route computes it in the loader and ships a plain string to the client — deployments.tsx
  * is a route with client code, so the server-only scope comparison stays out of the render path. A
  * null/absent `requiredScopes` (old locks with no snapshot) is treated as covered.
+ *
+ * `staleClientCoverage` (issue #167): the loader sets it for a provider with per-grant client
+ * registration when an environment was created AFTER the grant — the grant's immutable OAuth
+ * client can't know the new environment's callback URL, so a reconnect (fresh registration) is
+ * needed. Under-scoped wins when both apply (one reconnect fixes both, and the permission gap is
+ * the more actionable message).
  */
 export function connectionRowState(input: {
   hasGrant: boolean;
   grantStatus: string | null;
   requiredScopes: string | null;
   grantScopes: string;
+  staleClientCoverage?: boolean;
 }): ConnectionRowState {
   if (!input.hasGrant) return "not-connected";
   if (input.grantStatus !== "active") return "inactive";
-  if (!input.requiredScopes) return "connected";
-  return missingScopes(input.requiredScopes, input.grantScopes).length === 0
-    ? "connected"
-    : "under-scoped";
+  const covered =
+    !input.requiredScopes ||
+    missingScopes(input.requiredScopes, input.grantScopes).length === 0;
+  if (!covered) return "under-scoped";
+  return input.staleClientCoverage ? "needs-reconnect" : "connected";
 }
 
 /* ─────────────────────────── state token (pure given key) ─────────────────────────── */
@@ -97,6 +108,12 @@ export interface ConnectState {
   exp: number;
   /** PKCE code_verifier, carried inside the HMAC-signed state (same trust model as nonce). */
   codeVerifier?: string;
+  /**
+   * Per-grant OAuth client id minted by dynamic registration at connect time (issue #167) —
+   * carried through the consent round-trip so the callback exchanges against the SAME client the
+   * authorize URL named, then persists it on the grant for every later refresh.
+   */
+  clientId?: string;
 }
 
 /** The HMAC key: the same tenant-wide key that seals secrets. */
@@ -142,6 +159,12 @@ export function verifyConnectState(
     (typeof parsed.codeVerifier !== "string" ||
       parsed.codeVerifier.length < 43 ||
       parsed.codeVerifier.length > 128)
+  ) {
+    return null;
+  }
+  if (
+    parsed.clientId !== undefined &&
+    (typeof parsed.clientId !== "string" || parsed.clientId.length === 0)
   ) {
     return null;
   }
@@ -247,9 +270,12 @@ export async function exchangeCode(
     grant_type: "authorization_code",
     code: input.code,
     client_id: input.config.clientId,
-    client_secret: input.config.clientSecret,
     redirect_uri: input.redirectUri,
   });
+  // Public clients (tokenEndpointAuth "none", issue #167) have no secret — PKCE is the proof.
+  if (input.config.clientSecret !== undefined) {
+    form.set("client_secret", input.config.clientSecret);
+  }
   if (input.codeVerifier) form.set("code_verifier", input.codeVerifier);
   const res = await fetchImpl(provider.tokenUrl, {
     method: "POST",
@@ -311,6 +337,58 @@ export async function fetchAccountEmail(
   }
 }
 
+/* ──────────────────── dynamic client registration (RFC 7591, network) ─────────────────── */
+
+/**
+ * Register a fresh OAuth client with a provider that declares `clientRegistration` (issue #167) —
+ * one client PER GRANT, minted at Connect time. RFC 7591-shaped POST; `approval_callback_uris`
+ * is the (mayi-shaped) extension carrying the exact instance callback URL of every environment
+ * the agent has (immutable, exact-match — a later environment needs a reconnect, which registers
+ * a fresh client). Throws a readable Error on any failure; registration endpoints validate
+ * callback URIs as public HTTPS, so the caller appends the local-dev remediation.
+ */
+export async function registerOAuthClient(
+  input: {
+    provider: ProviderDefinition;
+    clientName: string;
+    redirectUris: string[];
+    approvalCallbackUris?: string[];
+  },
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ clientId: string }> {
+  const { provider } = input;
+  const endpoint = provider.clientRegistration?.endpoint;
+  if (!endpoint) {
+    throw new Error(
+      `${provider.label} does not support dynamic client registration.`,
+    );
+  }
+  const res = await fetchImpl(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      client_name: input.clientName,
+      redirect_uris: input.redirectUris,
+      ...(input.approvalCallbackUris && input.approvalCallbackUris.length > 0
+        ? { approval_callback_uris: input.approvalCallbackUris }
+        : {}),
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `${provider.label} rejected the OAuth client registration (HTTP ${res.status})${body ? `: ${body}` : "."}`,
+    );
+  }
+  const body = (await res.json()) as { client_id?: string };
+  if (!body.client_id) {
+    throw new Error(
+      `${provider.label}'s client registration response is missing a client_id.`,
+    );
+  }
+  return { clientId: body.client_id };
+}
+
 /**
  * Exchange a refresh token for a fresh access token. Throws `InvalidGrantError` when the provider
  * reports `invalid_grant` (the refresh token is dead — revoked, expired, or Google's 7-day
@@ -318,6 +396,11 @@ export async function fetchAccountEmail(
  * plain Error on any other failure (transient, worth a retry). This is the same grant the shipped
  * connection file runs at runtime — kept here too so deploy can validate a grant before injecting
  * it.
+ *
+ * Rotating grants (issue #167): providers like mayi return a NEW `refresh_token` on every refresh
+ * and revoke the whole token family if the old one is reused. When the response carries one it is
+ * returned as `refreshToken` — every Eden-side caller MUST persist it back onto the grant before
+ * using the new access token. Google returns none; the field stays undefined and nothing changes.
  */
 export async function refreshAccessToken(
   input: {
@@ -326,17 +409,21 @@ export async function refreshAccessToken(
     refreshToken: string;
   },
   fetchImpl: typeof fetch = fetch,
-): Promise<{ accessToken: string; expiresIn: number }> {
+): Promise<{ accessToken: string; expiresIn: number; refreshToken?: string }> {
   const { provider } = input;
+  const form = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: input.refreshToken,
+    client_id: input.config.clientId,
+  });
+  // Public clients (tokenEndpointAuth "none", issue #167) have no secret to send.
+  if (input.config.clientSecret !== undefined) {
+    form.set("client_secret", input.config.clientSecret);
+  }
   const res = await fetchImpl(provider.tokenUrl, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: input.refreshToken,
-      client_id: input.config.clientId,
-      client_secret: input.config.clientSecret,
-    }).toString(),
+    body: form.toString(),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -352,11 +439,16 @@ export async function refreshAccessToken(
   const body = (await res.json()) as {
     access_token?: string;
     expires_in?: number;
+    refresh_token?: string;
   };
   if (!body.access_token) {
     throw new Error(
       `${provider.label}'s refresh response is missing an access_token.`,
     );
   }
-  return { accessToken: body.access_token, expiresIn: body.expires_in ?? 3599 };
+  return {
+    accessToken: body.access_token,
+    expiresIn: body.expires_in ?? 3599,
+    ...(body.refresh_token ? { refreshToken: body.refresh_token } : {}),
+  };
 }

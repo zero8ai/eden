@@ -27,6 +27,14 @@ export interface ConnectionGrant {
   accountEmail: string | null;
   scopes: string;
   status: GrantStatus;
+  /** Per-grant OAuth client from dynamic registration (issue #167); null = operator client. */
+  clientId: string | null;
+  /**
+   * When THIS grant was minted (a reconnect refreshes it — see `upsertGrant`). The Connections
+   * card compares it against environment creation times to detect stale per-grant client
+   * callback coverage (issue #167).
+   */
+  createdAt: Date;
 }
 
 export interface UpsertGrantInput {
@@ -38,6 +46,8 @@ export interface UpsertGrantInput {
   accountEmail: string | null;
   scopes: string;
   refreshToken: string;
+  /** Per-grant OAuth client from dynamic registration (issue #167). */
+  clientId?: string | null;
   createdBy?: string | null;
 }
 
@@ -55,6 +65,8 @@ function toGrant(row: typeof connectionGrants.$inferSelect): ConnectionGrant {
     accountEmail: row.accountEmail,
     scopes: row.scopes,
     status: row.status as GrantStatus,
+    clientId: row.clientId,
+    createdAt: row.createdAt,
   };
 }
 
@@ -62,6 +74,12 @@ function toGrant(row: typeof connectionGrants.$inferSelect): ConnectionGrant {
  * Create or refresh the grant for (project, agent, provider). Seals the refresh token and, on
  * conflict, re-activates the row (a reconnect flips an expired/revoked grant back to "active" and
  * replaces the token + metadata). Returns the display-safe grant.
+ *
+ * `createdAt` is refreshed on conflict too (issue #167): a reconnect mints a genuinely NEW grant
+ * — new token (family) and, for registration providers, a new OAuth client — so the column records
+ * when the CURRENT grant was made. Stale-callback-coverage detection compares environment creation
+ * times against it, and rotation persistence (`rotateGrantRefreshToken`) deliberately does NOT
+ * touch it (a rotation continues the same grant).
  */
 export async function upsertGrant(input: UpsertGrantInput): Promise<ConnectionGrant> {
   const sealed = seal(secretsKey(), input.refreshToken);
@@ -76,6 +94,7 @@ export async function upsertGrant(input: UpsertGrantInput): Promise<ConnectionGr
       accountEmail: input.accountEmail,
       scopes: input.scopes,
       status: "active",
+      clientId: input.clientId ?? null,
       refreshTokenCiphertext: sealed.ciphertext,
       refreshTokenIv: sealed.iv,
       refreshTokenAuthTag: sealed.authTag,
@@ -92,14 +111,51 @@ export async function upsertGrant(input: UpsertGrantInput): Promise<ConnectionGr
         accountEmail: input.accountEmail,
         scopes: input.scopes,
         status: "active",
+        clientId: input.clientId ?? null,
         refreshTokenCiphertext: sealed.ciphertext,
         refreshTokenIv: sealed.iv,
         refreshTokenAuthTag: sealed.authTag,
+        createdAt: new Date(),
         updatedAt: new Date(),
       },
     })
     .returning();
   return toGrant(row);
+}
+
+/**
+ * Persist a ROTATED refresh token onto its grant (issue #167) — providers like mayi return a new
+ * refresh token on every refresh and revoke the whole family on reuse, so the rotated token must
+ * replace the stored one before anything else uses it. When `expectedTokenVersion` is given (the
+ * `tokenVersion` from `openRefreshToken`), the write is compare-and-set against the token that
+ * was actually refreshed (the seal IV, as in `markGrantStatus`): if a concurrent reconnect
+ * replaced the grant meanwhile, the stale rotation is DROPPED (returns false) rather than
+ * clobbering the fresh grant. Does not touch `createdAt` — a rotation continues the same grant.
+ */
+export async function rotateGrantRefreshToken(
+  id: string,
+  refreshToken: string,
+  expectedTokenVersion?: string,
+): Promise<boolean> {
+  const sealed = seal(secretsKey(), refreshToken);
+  const rows = await db
+    .update(connectionGrants)
+    .set({
+      refreshTokenCiphertext: sealed.ciphertext,
+      refreshTokenIv: sealed.iv,
+      refreshTokenAuthTag: sealed.authTag,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(connectionGrants.id, id),
+        ...(expectedTokenVersion !== undefined
+          ? [eq(connectionGrants.refreshTokenIv, expectedTokenVersion)]
+          : []),
+      ),
+    )
+    .returning({ id: connectionGrants.id });
+  return rows.length > 0;
 }
 
 /** The grant for (project, agent, provider) with a null environment (Phase 1 scope). */

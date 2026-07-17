@@ -2,9 +2,10 @@
  * Deploy-side connection injection (issues #30, #163). Turns an agent's active OAuth grants into
  * the env the shipped eve connections need to self-refresh access tokens at runtime — per
  * registered provider, the operator client creds plus the sealed refresh token (unsealed here) as
- * `<PREFIX>_OAUTH_CLIENT_ID` / `<PREFIX>_OAUTH_CLIENT_SECRET` / `<PREFIX>_OAUTH_REFRESH_TOKEN`.
- * There is NO per-turn control-plane dependency: once these vars are in the container, eve's
- * `getToken` exchanges the refresh token for access tokens on its own.
+ * `<PREFIX>_OAUTH_CLIENT_ID` / `<PREFIX>_OAUTH_CLIENT_SECRET` / `<PREFIX>_OAUTH_REFRESH_TOKEN`,
+ * plus `<PREFIX>_OAUTH_SCOPES` — the grant's GRANTED scopes (issue #165) so agent code can read
+ * its actual permission level. There is NO per-turn control-plane dependency: once these vars are
+ * in the container, eve's `getToken` exchanges the refresh token for access tokens on its own.
  *
  * Each grant is VALIDATED once at deploy by attempting a refresh: a dead grant (invalid_grant) is
  * marked "expired" and the deploy fails honestly with a reconnect message, rather than shipping a
@@ -147,6 +148,10 @@ export async function connectionGrantEnv(
     env[`${def.envPrefix}_OAUTH_CLIENT_ID`] = config.clientId;
     env[`${def.envPrefix}_OAUTH_CLIENT_SECRET`] = config.clientSecret;
     env[`${def.envPrefix}_OAUTH_REFRESH_TOKEN`] = found.refreshToken;
+    // Agent-side permission visibility (issue #165): the scopes the provider actually GRANTED,
+    // space-joined exactly as stored on the grant row, so agent code can tell which permission
+    // level it holds (e.g. don't offer to send mail when only read was granted).
+    env[`${def.envPrefix}_OAUTH_SCOPES`] = found.grant.scopes;
   }
 
   return env;

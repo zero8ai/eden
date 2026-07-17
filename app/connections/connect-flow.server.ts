@@ -351,37 +351,40 @@ export function connectionCallbackLoader(
       // flow STARTED, and several unconsumed nonces can be valid at once — so a consent tab left
       // open across a Permissions edit + newer reconnect could, completed later, silently
       // re-broaden a just-narrowed grant (or clobber a widened one with an under-scoped token).
-      // Re-derive the requirement NOW and refuse a stale flow before the exchange mints tokens.
-      // Undefined = no auth snapshot for this provider (legacy lock / grant-fallback flows) —
-      // nothing to compare against, so the check is skipped exactly where the fallback applies.
-      const [source, drafts] = await Promise.all([
-        getAgentSource(project.repoInstallationId, {
-          owner: project.repoOwner,
-          repo: project.repoName,
-        }),
-        listDrafts(project.id),
-      ]);
-      const lock = overlayLock(
-        source.files["eden-lock.json"] ?? null,
-        drafts.map((draft) => ({ path: draft.path, content: draft.content })),
-      );
-      const requiredNow = requiredScopesByProvider(
-        lock,
-        agent.root === "agent" ? null : agent.name,
-      ).get(provider.id);
-      if (requiredNow !== undefined) {
+      // Re-derive the requirement from a FRESH lock read and refuse a stale flow. Undefined = no
+      // auth snapshot for this provider (legacy lock / grant-fallback flows) — nothing to compare
+      // against, so the check is skipped exactly where the fallback applies.
+      const selectionStale = async (): Promise<boolean> => {
+        const [source, drafts] = await Promise.all([
+          getAgentSource(project.repoInstallationId, {
+            owner: project.repoOwner,
+            repo: project.repoName,
+          }),
+          listDrafts(project.id),
+        ]);
+        const lock = overlayLock(
+          source.files["eden-lock.json"] ?? null,
+          drafts.map((draft) => ({ path: draft.path, content: draft.content })),
+        );
+        const requiredNow = requiredScopesByProvider(
+          lock,
+          agent.root === "agent" ? null : agent.name,
+        ).get(provider.id);
+        if (requiredNow === undefined) return false;
         const started = new Set(state.scopes.split(/\s+/).filter(Boolean));
-        const stale =
+        return (
           started.size !== requiredNow.length ||
-          requiredNow.some((s) => !started.has(s));
-        if (stale) {
-          return fail(
-            `The permissions selected for ${label} changed while this consent was in progress — ` +
-              "no connection was made. Start again from the agent's Deployment tab.",
-            backUrl,
-          );
-        }
-      }
+          requiredNow.some((s) => !started.has(s))
+        );
+      };
+      const staleSelectionFail = () =>
+        fail(
+          `The permissions selected for ${label} changed while this consent was in progress — ` +
+            "no connection was made. Start again from the agent's Deployment tab.",
+          backUrl,
+        );
+      // First pass BEFORE the exchange: refuse an obviously stale flow without minting tokens.
+      if (await selectionStale()) return staleSelectionFail();
 
       const config = deps.getConfig(provider);
       if (!config) {
@@ -422,6 +425,15 @@ export function connectionCallbackLoader(
         provider,
         grant.accessToken,
       );
+
+      // Second pass IMMEDIATELY before the write: the pre-exchange check reads the lock before
+      // the exchange + userinfo network round-trips, so a Permissions edit + newer reconnect
+      // could complete entirely inside that gap and this older flow — its exchange finishing
+      // last — would still overwrite the fresher grant. Re-checking here shrinks the remaining
+      // window to the upsert itself (no network calls inside it), which a full consent
+      // round-trip cannot fit into. The freshly minted token is simply discarded, exactly like
+      // the granular-consent refusal above.
+      if (await selectionStale()) return staleSelectionFail();
 
       await upsertGrant({
         projectId: project.id,

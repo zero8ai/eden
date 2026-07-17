@@ -299,6 +299,90 @@ describe("Google routes with Better Auth", () => {
     expect(mocks.upsertGrant).not.toHaveBeenCalled();
   });
 
+  it("refuses to store a grant when the selection narrows between exchange and write (TOCTOU)", async () => {
+    const { loader } = await import("~/routes/google.callback");
+    const { connectStateKey, signConnectState } =
+      await import("~/connections/google.server");
+    const SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+    const broadLock = JSON.stringify({
+      version: 1,
+      installs: [
+        {
+          id: "google-sheets",
+          type: "connection",
+          name: "Google Sheets",
+          version: "1.0.0",
+          hash: "hash",
+          registry: "fixture",
+          member: null,
+          files: [],
+          auth: [
+            {
+              provider: "google",
+              kind: "oauth2",
+              scopes: [SHEETS_SCOPE, SEND_SCOPE],
+            },
+          ],
+        },
+      ],
+    });
+    // The pre-exchange currency check sees the broad requirement (matching this flow's state),
+    // then a Permissions edit + newer reconnect narrows the lock while the exchange/userinfo
+    // round-trips are in flight — the pre-write re-check must catch it and store nothing.
+    mocks.getAgentSource
+      .mockResolvedValueOnce({
+        files: { "eden-lock.json": broadLock },
+        paths: [],
+      })
+      .mockResolvedValue({
+        files: { "eden-lock.json": effectiveLock() },
+        paths: [],
+      });
+    mocks.exchangeCode.mockResolvedValue({
+      accessToken: "access-token",
+      refreshToken: "broad-refresh-token",
+      expiresIn: 3_599,
+      scope: `${SHEETS_SCOPE} ${SEND_SCOPE} openid email`,
+    });
+    const state = signConnectState(
+      {
+        projectId: PROJECT.id,
+        agentId: AGENT.id,
+        userId: mocks.auth.user.id,
+        sessionId: mocks.auth.session.id,
+        nonce: "toctou-nonce",
+        provider: "google",
+        scopes: `${SHEETS_SCOPE} ${SEND_SCOPE}`,
+        returnTo: "/dashboard",
+        exp: Date.now() + 60_000,
+      },
+      connectStateKey(),
+    );
+
+    const staged = await loader(
+      routeArgs(
+        `https://eden.example.com/google/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+      ),
+    );
+    const cookie = (staged as Response).headers
+      .get("set-cookie")!
+      .split(";", 1)[0];
+    const result = await loader(
+      routeArgs("https://eden.example.com/google/callback", { cookie }),
+    );
+    expect(result).toMatchObject({
+      error: expect.stringContaining(
+        "changed while this consent was in progress",
+      ),
+      backUrl: "/dashboard",
+    });
+    // The exchange ran (the narrowing landed after it), but the broad token is discarded — the
+    // fresher narrow grant is never overwritten.
+    expect(mocks.exchangeCode).toHaveBeenCalledTimes(1);
+    expect(mocks.upsertGrant).not.toHaveBeenCalled();
+    expect(mocks.redeployAfterConnect).not.toHaveBeenCalled();
+  });
+
   it("rejects a callback initiated by another Better Auth session before exchange", async () => {
     const { loader } = await import("~/routes/google.callback");
     const { connectStateKey, signConnectState } =

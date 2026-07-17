@@ -30,6 +30,13 @@ export interface ConnectionGrant {
   /** Per-grant OAuth client from dynamic registration (issue #167); null = operator client. */
   clientId: string | null;
   /**
+   * Provider-side resource binding (issue #166): the resource capability calls target (Xero's
+   * tenant id). Null for non-capability providers and for capability grants not yet bound
+   * (multi-resource accounts pick one post-consent). `resourceName` is display-only.
+   */
+  resourceId: string | null;
+  resourceName: string | null;
+  /**
    * When THIS grant was minted (a reconnect refreshes it — see `upsertGrant`). The Connections
    * card compares it against environment creation times to detect stale per-grant client
    * callback coverage (issue #167).
@@ -48,6 +55,9 @@ export interface UpsertGrantInput {
   refreshToken: string;
   /** Per-grant OAuth client from dynamic registration (issue #167). */
   clientId?: string | null;
+  /** Provider-side resource binding (issue #166); null/absent = unbound. */
+  resourceId?: string | null;
+  resourceName?: string | null;
   createdBy?: string | null;
 }
 
@@ -66,6 +76,8 @@ function toGrant(row: typeof connectionGrants.$inferSelect): ConnectionGrant {
     scopes: row.scopes,
     status: row.status as GrantStatus,
     clientId: row.clientId,
+    resourceId: row.resourceId,
+    resourceName: row.resourceName,
     createdAt: row.createdAt,
   };
 }
@@ -95,6 +107,8 @@ export async function upsertGrant(input: UpsertGrantInput): Promise<ConnectionGr
       scopes: input.scopes,
       status: "active",
       clientId: input.clientId ?? null,
+      resourceId: input.resourceId ?? null,
+      resourceName: input.resourceName ?? null,
       refreshTokenCiphertext: sealed.ciphertext,
       refreshTokenIv: sealed.iv,
       refreshTokenAuthTag: sealed.authTag,
@@ -112,6 +126,8 @@ export async function upsertGrant(input: UpsertGrantInput): Promise<ConnectionGr
         scopes: input.scopes,
         status: "active",
         clientId: input.clientId ?? null,
+        resourceId: input.resourceId ?? null,
+        resourceName: input.resourceName ?? null,
         refreshTokenCiphertext: sealed.ciphertext,
         refreshTokenIv: sealed.iv,
         refreshTokenAuthTag: sealed.authTag,
@@ -156,6 +172,22 @@ export async function rotateGrantRefreshToken(
     )
     .returning({ id: connectionGrants.id });
   return rows.length > 0;
+}
+
+/**
+ * Bind (or re-bind) a grant's provider-side resource (issue #166) — the post-consent picker's
+ * write. Display metadata only from the token's point of view (the resource id is not a secret);
+ * the sealed token is untouched.
+ */
+export async function setGrantResource(
+  id: string,
+  resourceId: string,
+  resourceName: string | null,
+): Promise<void> {
+  await db
+    .update(connectionGrants)
+    .set({ resourceId, resourceName, updatedAt: new Date() })
+    .where(eq(connectionGrants.id, id));
 }
 
 /** The grant for (project, agent, provider) with a null environment (Phase 1 scope). */

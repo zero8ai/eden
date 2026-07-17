@@ -14,9 +14,18 @@
  *    only `<PREFIX>_OAUTH_SCOPES` plus the provider's static `deployEnv` constants; the broker
  *    coordinates (EDEN_API_URL / EDEN_TEAM_TOKEN) are deployment-scoped and injected by the
  *    controller.
+ *  - "capability" (issue #166): the instance gets NO `<PREFIX>_OAUTH_*` vars at all — suppressing
+ *    injection is precisely the point: Eden executes the provider's whitelisted operations itself
+ *    (`POST <EDEN_API_URL>/api/capabilities/...`). Deploy still VALIDATES the grant (one
+ *    rotation-safe liveness refresh, plus the capability's resource binding when it declares one)
+ *    so a dead Xero connection fails the deploy with the existing readable reconnect message
+ *    rather than failing at first call. The provider id joins the Eden-owned
+ *    `EDEN_CAPABILITY_PROVIDERS` marker (comma-joined), which tells the controller to inject the
+ *    EDEN_API_URL / EDEN_TEAM_TOKEN coordinates the per-operation tools ride on.
  *
- * Both paths also inject `<PREFIX>_OAUTH_SCOPES` — the grant's GRANTED scopes (issue #165) so
- * agent code can read its actual permission level.
+ * The first two deliveries also inject `<PREFIX>_OAUTH_SCOPES` — the grant's GRANTED scopes
+ * (issue #165) so agent code can read its actual permission level. Capability providers don't:
+ * the agent's permission surface is the operation-group enablement, checked per call in Eden.
  *
  * Each grant is VALIDATED once at deploy by attempting a refresh: a dead grant (invalid_grant) is
  * marked "expired" and the deploy fails honestly with a reconnect message, rather than shipping a
@@ -42,6 +51,7 @@
  * The persistence + config touchpoints are injectable (`ConnectionDeployDeps`) so the decision
  * logic is unit-testable with fakes; the default wiring hits Postgres + operator env.
  */
+import { getCapability } from "~/capabilities/registry.server";
 import type { SecretScope } from "~/seams/types";
 import {
   getProviderOAuthConfig,
@@ -82,6 +92,8 @@ export interface ConnectionDeployDeps {
       scopes: string;
       /** Per-grant OAuth client from dynamic registration (issue #167). */
       clientId?: string | null;
+      /** Capability resource binding (issue #166) — validated present when required. */
+      resourceId?: string | null;
     };
     refreshToken: string;
     /** Opaque fingerprint of THIS token, for compare-and-set status flips. */
@@ -220,11 +232,16 @@ export async function connectionGrantEnv(
           liveRefreshToken = refreshed.refreshToken;
         }
 
-        return { config, grantScopes: found.grant.scopes, liveRefreshToken };
+        return {
+          config,
+          grantScopes: found.grant.scopes,
+          liveRefreshToken,
+          resourceId: found.grant.resourceId ?? null,
+        };
       },
     );
     if (!validated) continue;
-    const { config, grantScopes, liveRefreshToken } = validated;
+    const { config, grantScopes, liveRefreshToken, resourceId } = validated;
 
     // Scope-coverage validation (issue #69): the grant is alive, but if its granted scopes don't
     // cover what the installed connectors require, the container would 403 at runtime. Fail the
@@ -240,6 +257,31 @@ export async function connectionGrantEnv(
       }
     }
 
+    if (def.credentialDelivery === "capability") {
+      // Capability delivery (issue #166): the container never sees ANY credential material — no
+      // `<PREFIX>_OAUTH_*` vars, not even scopes. The grant was still liveness-validated above
+      // (rotation persisted); one more requirement is the provider-side resource binding, without
+      // which every call would fail — fail the deploy honestly instead.
+      const capability = getCapability(def.id);
+      if (capability?.resource && !resourceId) {
+        throw new Error(
+          `The ${def.label} connection for this agent isn't bound to ${aOrAn(capability.resource.label)} ` +
+            `${capability.resource.label} yet — finish connecting it from the agent's Deployment tab ` +
+            "(pick one on the connect flow's picker page), then redeploy.",
+        );
+      }
+      for (const [key, value] of Object.entries(def.deployEnv ?? {})) {
+        env[key] = value;
+      }
+      // Eden-owned marker: which capability providers this deploy brokered. The controller reads
+      // it to inject the EDEN_API_URL / EDEN_TEAM_TOKEN coordinates; agent code can read it to
+      // know which capability tool families are live.
+      env.EDEN_CAPABILITY_PROVIDERS = [
+        ...(env.EDEN_CAPABILITY_PROVIDERS?.split(",").filter(Boolean) ?? []),
+        def.id,
+      ].join(",");
+      continue;
+    }
     if (def.credentialDelivery === "access-token-broker") {
       // Brokered delivery (issue #167): the refresh token (and any client credential) stays on
       // the control plane. Static provider constants (`deployEnv`) ride along; the broker
@@ -261,4 +303,9 @@ export async function connectionGrantEnv(
   }
 
   return env;
+}
+
+/** "a"/"an" for a resource label in the unbound-binding deploy error. */
+function aOrAn(noun: string): string {
+  return /^[aeiou]/i.test(noun) ? "an" : "a";
 }

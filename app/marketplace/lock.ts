@@ -121,6 +121,20 @@ const installEntrySchema = z.object({
           .optional(),
         /** The installer's current choice — subset of scopeGroups ids. Mutable config (#165). */
         selectedGroups: z.array(z.string().min(1)).optional(),
+        /**
+         * Operation-group ids this install OFFERS for the provider's capability (issue #166) —
+         * the template's `capability.groups`, snapshotted at install. Ids only: the labels/
+         * descriptions/risk live in Eden's capability registry (they're code, not data), unlike
+         * `scopeGroups` whose definitions are template-authored.
+         */
+        capabilityGroups: z.array(z.string().min(1)).min(1).optional(),
+        /**
+         * The installer's CURRENT capability-group choice (issue #166) — subset of
+         * `capabilityGroups`, written at install and mutable from the Deployment tab. Enforcement
+         * is PER CALL in Eden (`/api/capabilities/...`), so edits apply at the agent's next call —
+         * no reconnect, no redeploy. Absent (never written) reads as NOTHING enabled: fail closed.
+         */
+        selectedCapabilityGroups: z.array(z.string().min(1)).optional(),
       }),
     )
     .optional(),

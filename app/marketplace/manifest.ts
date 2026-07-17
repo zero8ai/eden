@@ -173,6 +173,20 @@ export const templateManifestSchema = z
         .optional(),
     })
     .optional(),
+  /**
+   * Brokered-capability enablement (issue #166) — ONLY valid alongside `auth` on a `connection`
+   * template (superRefine below). Where `auth.scopeGroups` selects what the PROVIDER's token can
+   * do, `capability.groups` names the operation groups (defined in Eden's capability registry,
+   * `app/capabilities/`) this template offers the installer; the selection is enforced PER CALL
+   * by Eden's capability route, so changing it later needs no reconnect. Group ids must exist in
+   * the provider's capability definition (validated by catalog CI + Eden's registry cross-check).
+   */
+  capability: z
+    .object({
+      /** Operation-group ids this template wants, in display order. */
+      groups: z.array(slug).min(1),
+    })
+    .optional(),
   /** Sandbox setup installed alongside this template, merged by Eden into the agent sandbox. */
   sandbox: sandboxSetupSchema.optional(),
   /** Suggested model, for agent-type templates. */
@@ -248,6 +262,36 @@ export const templateManifestSchema = z
         code: z.ZodIssueCode.custom,
         path: ["auth"],
         message: "auth must declare scopes, scopeGroups, or both",
+      });
+    }
+    // A capability block rides a connection's auth (issue #166): the operation whitelist consumes
+    // the SAME brokered grant, so a capability without an auth block has nothing to execute with.
+    if (m.capability && m.type !== "connection") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["capability"],
+        message: "capability is only valid on a connection template",
+      });
+    }
+    if (m.capability && !m.auth) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["capability"],
+        message: "capability requires an auth block (the grant its operations consume)",
+      });
+    }
+    // Capability group ids are the lock's selection keys too — duplicates are ambiguous.
+    if (m.capability) {
+      const seen = new Set<string>();
+      m.capability.groups.forEach((id, i) => {
+        if (seen.has(id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["capability", "groups", i],
+            message: `duplicate capability group id "${id}"`,
+          });
+        }
+        seen.add(id);
       });
     }
     // Scope-group ids are the lock's selection keys — duplicates would make a choice ambiguous.

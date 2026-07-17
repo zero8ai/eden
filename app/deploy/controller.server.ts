@@ -543,13 +543,16 @@ export async function deployRelease(
       for (const [key, value] of Object.entries(grantEnv)) {
         envVars[key] = value;
       }
-      // Broker coordinates (issue #167): an access-token-broker provider's instance fetches its
-      // tokens from the control plane, so it needs the base URL plus a deployment-scoped
-      // delegation token (the SAME auth story as the team relay and Discord send proxy — the
-      // token grants no team powers, authorization happens per surface). EDEN_API_URL is
-      // Eden-owned when injected (anti-shadowing); EDEN_TEAM_TOKEN was already stripped from
-      // user secrets by the team block above.
-      if (hasBrokeredProvider) {
+      // Broker coordinates (issues #167/#166): an access-token-broker provider's instance
+      // fetches its tokens from the control plane, and a capability provider's per-operation
+      // tools POST there (`/api/capabilities/...`) — both need the base URL plus a
+      // deployment-scoped delegation token (the SAME auth story as the team relay and Discord
+      // send proxy — the token grants no team powers, authorization happens per surface).
+      // Capability providers inject NO per-provider env at all, so their marker
+      // (EDEN_CAPABILITY_PROVIDERS, Eden-owned — grantEnv overwrites any user-set value) is the
+      // deploy's signal. EDEN_API_URL is Eden-owned when injected (anti-shadowing);
+      // EDEN_TEAM_TOKEN was already stripped from user secrets by the team block above.
+      if (hasBrokeredProvider || "EDEN_CAPABILITY_PROVIDERS" in grantEnv) {
         delete envVars.EDEN_API_URL;
         envVars.EDEN_API_URL =
           process.env.EDEN_TEAM_RELAY_URL ??

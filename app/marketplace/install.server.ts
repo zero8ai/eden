@@ -19,6 +19,8 @@
  */
 import semver from "semver";
 
+import { defaultCapabilityGroupIds } from "~/capabilities/definition.server";
+import { getCapability } from "~/capabilities/registry.server";
 import {
   ensureModelProviderDependencies,
   setModel,
@@ -83,16 +85,23 @@ type AuthSnapshotEntry = NonNullable<InstallEntry["auth"]>[number];
  * Scope groups (issue #165): a descriptor with `scopeGroups` also records the installer's
  * `selectedGroups` — the caller's explicit choice for that provider when one was posted, else the
  * template's `default`-flagged groups. Group-less descriptors snapshot byte-for-byte as before.
+ *
+ * Capability groups (issue #166): a descriptor with `capabilityGroups` records them (offered) plus
+ * `selectedCapabilityGroups` (chosen) — the posted choice when one exists, else the registry
+ * definition's `default`-flagged groups among the offered ids. ALWAYS written, so the enablement
+ * derivation never needs a default fallback (absent reads as nothing enabled — fail closed).
  */
 function authSnapshot(
   template: PlanContext["template"],
   authSelections?: Record<string, string[]>,
+  capabilitySelections?: Record<string, string[]>,
 ): AuthSnapshotEntry[] {
   const descriptors: Array<{
     provider: string;
     kind: "oauth2";
     scopes?: string[];
     scopeGroups?: NonNullable<AuthSnapshotEntry["scopeGroups"]>;
+    capabilityGroups?: string[];
   }> =
     template.auths && template.auths.length > 0
       ? template.auths.map((a) => ({
@@ -100,6 +109,9 @@ function authSnapshot(
           kind: a.kind,
           ...(a.scopes.length > 0 ? { scopes: a.scopes } : {}),
           ...(a.scopeGroups ? { scopeGroups: a.scopeGroups } : {}),
+          ...(a.capabilityGroups
+            ? { capabilityGroups: a.capabilityGroups }
+            : {}),
         }))
       : template.manifest.auth
         ? [
@@ -112,17 +124,33 @@ function authSnapshot(
               ...(template.manifest.auth.scopeGroups
                 ? { scopeGroups: template.manifest.auth.scopeGroups }
                 : {}),
+              ...(template.manifest.capability
+                ? { capabilityGroups: template.manifest.capability.groups }
+                : {}),
             },
           ]
         : [];
   return descriptors.map((d) => {
-    if (!d.scopeGroups) return d;
-    const chosen = authSelections?.[d.provider];
-    const selectedGroups = chosen
-      ? // Keep declaration order and drop unknown ids — the list is form-posted.
-        d.scopeGroups.map((g) => g.id).filter((id) => chosen.includes(id))
-      : d.scopeGroups.filter((g) => g.default).map((g) => g.id);
-    return { ...d, selectedGroups };
+    let entry: AuthSnapshotEntry = d;
+    if (d.scopeGroups) {
+      const chosen = authSelections?.[d.provider];
+      const selectedGroups = chosen
+        ? // Keep declaration order and drop unknown ids — the list is form-posted.
+          d.scopeGroups.map((g) => g.id).filter((id) => chosen.includes(id))
+        : d.scopeGroups.filter((g) => g.default).map((g) => g.id);
+      entry = { ...entry, selectedGroups };
+    }
+    if (d.capabilityGroups) {
+      const chosen = capabilitySelections?.[d.provider];
+      const definition = getCapability(d.provider);
+      const selectedCapabilityGroups = chosen
+        ? d.capabilityGroups.filter((id) => chosen.includes(id))
+        : definition
+          ? defaultCapabilityGroupIds(definition, d.capabilityGroups)
+          : [];
+      entry = { ...entry, selectedCapabilityGroups };
+    }
+    return entry;
   });
 }
 
@@ -238,6 +266,12 @@ export interface PlanContext {
    * template's `default`-flagged groups; ignored for group-less descriptors.
    */
   authSelections?: Record<string, string[]>;
+  /**
+   * The installer's capability-group choice per provider (issue #166): provider id → selected
+   * operation-group ids from the wizard's Operations step. A provider absent here falls back to
+   * the registry definition's `default`-flagged groups among the offered ids.
+   */
+  capabilitySelections?: Record<string, string[]>;
 }
 
 export interface InstallPlan {
@@ -567,9 +601,17 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     // (issue #30) — a grant row's stored scopes are only a record of what was granted, never the
     // request template. Prefer the resolved template's `auths` (parent + every included connector,
     // deduped by provider); fall back to a plain template's single `manifest.auth` descriptor.
-    // Scope groups (issue #165): the snapshot also records the installer's selection.
-    ...(authSnapshot(template, ctx.authSelections).length > 0
-      ? { auth: authSnapshot(template, ctx.authSelections) }
+    // Scope groups (issue #165) / capability groups (issue #166): the snapshot also records the
+    // installer's selections.
+    ...(authSnapshot(template, ctx.authSelections, ctx.capabilitySelections)
+      .length > 0
+      ? {
+          auth: authSnapshot(
+            template,
+            ctx.authSelections,
+            ctx.capabilitySelections,
+          ),
+        }
       : {}),
   };
   let baseLock = ctx.lock;

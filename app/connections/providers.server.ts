@@ -43,8 +43,12 @@ export interface ProviderDefinition {
    * (and revoke the whole family on reuse) can only have ONE writer, so Eden refreshes centrally
    * and the instance fetches short-lived access tokens from `POST <EDEN_API_URL>/api/connections/token`
    * (authenticated by its `EDEN_TEAM_TOKEN` delegation token).
+   * `"capability"` (issue #166) ships NOTHING — the instance never sees any credential material.
+   * Eden holds the grant and executes only the provider's whitelisted operations itself
+   * (`POST <EDEN_API_URL>/api/capabilities/:provider/:operation`, same delegation-token auth);
+   * the provider must have a capability definition registered in `app/capabilities/`.
    */
-  credentialDelivery?: "refresh-token" | "access-token-broker";
+  credentialDelivery?: "refresh-token" | "access-token-broker" | "capability";
   /**
    * RFC 7591-shaped dynamic client registration (issue #167). When present, the connect flow
    * registers ONE OAuth client PER GRANT at Connect time (no `EDEN_<PREFIX>_CLIENT_ID` operator
@@ -111,6 +115,23 @@ const PROVIDERS: Record<string, ProviderDefinition> = {
     // generated MAYI_CALLBACK_STATE_KEY (mayi's channel.ts: currentKey { kid, key }); a fixed
     // first id is correct, and a future rotation moves "k1" into MAYI_CALLBACK_STATE_PREVIOUS_KEYS.
     deployEnv: { MAYI_CALLBACK_STATE_KEY_ID: "k1" },
+  },
+  // Xero (issue #166) — the first CAPABILITY provider: money-adjacent, so the OAuth grant never
+  // leaves the control plane and the instance can only reach the whitelisted operations in
+  // app/capabilities/xero.server.ts. Xero ROTATES refresh tokens (single-use, family revocation
+  // on reuse, 60-day expiry), so every Eden-side refresh rides #167's rotation-safe serialized
+  // path. The scope set requested at consent is a fixed superset (see the catalog template) —
+  // the operation whitelist, not the token scope, is the enforcement plane. Operator env:
+  // EDEN_XERO_CLIENT_ID / EDEN_XERO_CLIENT_SECRET (an Eden-owned app at developer.xero.com with
+  // redirect `<origin>/connections/xero/callback`).
+  xero: {
+    id: "xero",
+    label: "Xero",
+    authorizeUrl: "https://login.xero.com/identity/connect/authorize",
+    tokenUrl: "https://identity.xero.com/connect/token",
+    pkce: true,
+    envPrefix: "XERO",
+    credentialDelivery: "capability",
   },
 };
 

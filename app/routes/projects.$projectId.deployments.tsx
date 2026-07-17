@@ -126,6 +126,11 @@ import {
 import { closePullRequest } from "~/github/write.server";
 import { getDiscordAppConfig } from "~/discord/config.server";
 import { listConnectionsForAgent } from "~/discord/connections.server";
+import {
+  capabilityChoicesByProvider,
+  setSelectedCapabilityGroups,
+} from "~/capabilities/enablement";
+import { getCapability } from "~/capabilities/registry.server";
 import { getProviderOAuthConfig } from "~/connections/config.server";
 import {
   connectionRowState,
@@ -294,6 +299,25 @@ interface DeploymentData {
      * groups for this provider (the permission surface isn't editable).
      */
     scopeGroups: ScopeGroupChoice[] | null;
+    /**
+     * Capability operation groups (issue #166) offered by the lock's snapshots, joined with the
+     * registry's labels/risk and the current selection — the row's Operations editor. Enforced
+     * PER CALL, so edits apply instantly (no reconnect, no redeploy). Null when the provider has
+     * no capability surface.
+     */
+    capabilityGroups: Array<{
+      id: string;
+      label: string;
+      description: string;
+      risk: "read" | "write";
+      selected: boolean;
+    }> | null;
+    /** Capability resource binding (issue #166) for display — "Connected to Acme Ltd". */
+    resourceName: string | null;
+    /** The capability's resource noun for copy, e.g. "organisation"; null when none declared. */
+    resourceLabel: string | null;
+    /** True when a capability grant still needs its resource picked (row links to the picker). */
+    needsResource: boolean;
   }>;
   /** Member/single view: GitHub App setup when the agent has the marketplace GitHub channel. */
   githubSetup: {
@@ -547,6 +571,11 @@ export const loader = (args: LoaderFunctionArgs) =>
       const requiredScopes = requiredScopesByProvider(lock, activeMember);
       // Selectable permission levels per provider (issue #165) — the Connections card's editor.
       const providerScopeGroups = scopeGroupsByProvider(lock, activeMember);
+      // Capability operation groups per provider (issue #166) — the Operations editor's rows.
+      const providerCapabilityChoices = capabilityChoicesByProvider(
+        lock,
+        activeMember,
+      );
       try {
         const [state, shared] = await Promise.all([
           agentRequiredSecretState({
@@ -628,6 +657,29 @@ export const loader = (args: LoaderFunctionArgs) =>
             def?.clientRegistration !== undefined &&
             grant?.clientId != null &&
             envRows.some((env) => env.createdAt > grant.createdAt);
+          // Capability surface (issue #166): the lock's offered groups joined with the
+          // registry's labels/risk. Ids the registry doesn't define render nothing (a stale
+          // template naming a removed group has no operation behind it anyway).
+          const capability = def ? getCapability(def.id) : null;
+          const choices = providerCapabilityChoices.get(provider);
+          const capabilityGroups =
+            capability && choices && choices.length > 0
+              ? choices.flatMap((choice) => {
+                  const group = capability.operationGroups.find(
+                    (g) => g.id === choice.id,
+                  );
+                  if (!group) return [];
+                  return [
+                    {
+                      id: choice.id,
+                      label: group.label,
+                      description: group.description,
+                      risk: group.risk,
+                      selected: choice.selected,
+                    },
+                  ];
+                })
+              : null;
           return {
             id: grant?.id ?? `provider:${provider}`,
             provider,
@@ -650,6 +702,13 @@ export const loader = (args: LoaderFunctionArgs) =>
               staleClientCoverage,
             }),
             scopeGroups: providerScopeGroups.get(provider) ?? null,
+            capabilityGroups: capabilityGroups?.length ? capabilityGroups : null,
+            resourceName: grant?.resourceName ?? null,
+            resourceLabel: capability?.resource?.label ?? null,
+            needsResource:
+              capability?.resource !== undefined &&
+              grant?.status === "active" &&
+              !grant.resourceId,
           };
         });
       } catch {
@@ -905,6 +964,47 @@ export async function action(args: ActionFunctionArgs) {
       throw redirect(`${back}?${query.toString()}`);
     }
 
+    // ── Capability operations (issue #166): rewrite the lock's capability-group selection ──
+    // Same lock-draft staging as connection-permissions, but the payoff is different: the
+    // capability route reads the DRAFT-OVERLAID lock per call, so the change is enforced at the
+    // agent's very next call — no reconnect, no redeploy (nothing is baked into a token).
+    if (intent === "capability-permissions") {
+      const provider = String(form.get("provider") ?? "");
+      const selected = form.getAll("group").map(String);
+      if (!provider) return { error: "Missing connection provider." };
+      // Action reads raw (never the cache) — a stale lock composed into a write could clobber
+      // a newer selection or install.
+      const [source, drafts] = await Promise.all([
+        fetchAgentSource(project.repoInstallationId, repo),
+        listDrafts(project.id),
+      ]);
+      const { active, isTeam } = await resolveSyncedAgentContext(
+        project.id,
+        agentFromParams(args.params),
+        source.paths,
+      );
+      requireActiveAgent(active, project.id);
+      const member = isTeam ? active.name : null;
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        drafts.map((d) => ({ path: d.path, content: d.content })),
+      );
+      const { lock: nextLock, changed } = setSelectedCapabilityGroups(
+        lock,
+        member,
+        provider,
+        selected,
+      );
+      if (!changed) return { ok: true as const };
+      await stageDraft({
+        projectId: project.id,
+        path: "eden-lock.json",
+        content: serializeLock(nextLock),
+        createdBy: auth.user.id,
+      });
+      throw redirect(`${back}?${new URLSearchParams({ operations: provider })}`);
+    }
+
     // ── Environment CRUD (team-level: create/rename/delete a NAME across the whole roster) ──
     if (intent === "env-create") {
       await createTeamEnvironment({
@@ -1101,6 +1201,14 @@ export default function Deployment({
     ? (loaderData.connections.find((c) => c.provider === permissionsEdited)
         ?.label ?? permissionsEdited)
     : null;
+  // Capability-operations edit outcome (issue #166): the capability-permissions action redirects
+  // back here with the provider. No "narrowed" variant — enforcement is per call in Eden, so both
+  // directions apply at the agent's next call.
+  const operationsEdited = params.get("operations");
+  const operationsLabel = operationsEdited
+    ? (loaderData.connections.find((c) => c.provider === operationsEdited)
+        ?.label ?? operationsEdited)
+    : null;
 
   // Progress: re-fetch faster while any deployment is pending/building. A slower
   // baseline poll runs regardless, so a deploy STARTED after this page loaded is
@@ -1239,6 +1347,18 @@ export default function Deployment({
             </AlertDescription>
           </Alert>
         ))}
+
+      {operationsEdited && (
+        <Alert className="mb-6">
+          <AlertTitle>{operationsLabel} operations updated</AlertTitle>
+          <AlertDescription>
+            The selection is staged to eden-lock.json and Eden enforces it on
+            every call, so it already applies — the agent&rsquo;s next call
+            sees the new list. Publish the staged change with your other edits
+            to make it permanent.
+          </AlertDescription>
+        </Alert>
+      )}
 
       {actionData?.error && (
         <Alert variant="destructive" className="mb-6">
@@ -1403,11 +1523,39 @@ function ConnectionsCard({
                               : "Connected"
                             : (c.accountEmail ?? "connected account")}
                   </span>
+                  {/* Capability resource binding (issue #166): which provider-side resource
+                      (e.g. Xero organisation) this connection's operations target. */}
+                  {c.resourceName && (
+                    <span className="text-xs text-muted-foreground">
+                      Connected to {c.resourceName}
+                    </span>
+                  )}
+                  {c.needsResource && (
+                    <span className="text-xs text-amber-600 dark:text-amber-400">
+                      Almost there — pick which {c.resourceLabel ?? "resource"}{" "}
+                      this agent works in.
+                    </span>
+                  )}
                 </div>
                 {!c.registered ? (
                   <span className="text-xs text-muted-foreground">
                     not supported by this Eden installation
                   </span>
+                ) : c.needsResource ? (
+                  // An unbound capability grant is unusable — finishing the binding is the
+                  // one action that matters, so it takes the primary slot over Reconnect.
+                  <Button asChild variant="default" size="sm">
+                    <Link
+                      to={
+                        `/connections/${encodeURIComponent(c.provider)}/resource` +
+                        `?project=${encodeURIComponent(projectId)}` +
+                        `&agent=${encodeURIComponent(agentName)}` +
+                        `&returnTo=${encodeURIComponent(returnTo)}`
+                      }
+                    >
+                      Choose {c.resourceLabel ?? "resource"}
+                    </Link>
+                  </Button>
                 ) : c.configured ? (
                   // A covered grant is done — only a subtle Reconnect link. Every other state is a
                   // to-do (connect, re-scope, or re-auth) and gets the primary button (issue #30).
@@ -1480,6 +1628,67 @@ function ConnectionsCard({
                         Adding permissions requires a reconnect; after removing
                         some, reconnect to re-issue the grant with only the
                         selected permissions.
+                      </span>
+                    </div>
+                  </Form>
+                </details>
+              )}
+              {/* Capability operations (issue #166): what Eden will EXECUTE for this agent.
+                  Enforced per call by the capability route (never baked into a token), so an
+                  edit applies at the agent's very next call — no reconnect, no redeploy. */}
+              {c.capabilityGroups && c.capabilityGroups.length > 0 && (
+                <details className="mt-2 border-t pt-2">
+                  <summary className="cursor-pointer text-xs text-muted-foreground">
+                    Operations:{" "}
+                    {c.capabilityGroups
+                      .filter((g) => g.selected)
+                      .map((g) => g.label)
+                      .join(", ") || "none enabled"}
+                  </summary>
+                  <Form method="post" className="mt-3 grid gap-2">
+                    <input
+                      type="hidden"
+                      name="intent"
+                      value="capability-permissions"
+                    />
+                    <input type="hidden" name="provider" value={c.provider} />
+                    {c.capabilityGroups.map((g) => (
+                      <Label
+                        key={g.id}
+                        className="flex items-start gap-2 text-sm font-normal"
+                      >
+                        <input
+                          type="checkbox"
+                          name="group"
+                          value={g.id}
+                          defaultChecked={g.selected}
+                          className="mt-0.5 size-4 accent-primary"
+                        />
+                        <span className="grid gap-0.5">
+                          <span className="flex items-center gap-2 font-medium">
+                            {g.label}
+                            {g.risk === "write" && (
+                              <Badge
+                                variant="outline"
+                                className="border-amber-500/50 text-amber-600 dark:text-amber-400"
+                              >
+                                write
+                              </Badge>
+                            )}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {g.description}
+                          </span>
+                        </span>
+                      </Label>
+                    ))}
+                    <div className="flex items-center gap-3">
+                      <Button type="submit" size="sm" variant="secondary">
+                        Update operations
+                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        Eden enforces this list on every call — changes apply
+                        at the agent&rsquo;s next call, no reconnect needed.
                       </span>
                     </div>
                   </Form>

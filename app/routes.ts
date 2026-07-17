@@ -176,6 +176,19 @@ export default [
   // Instance token broker (issue #167): instances of access-token-broker providers (rotating
   // refresh grants — mayi) fetch fresh access tokens here with their EDEN_TEAM_TOKEN.
   route("api/connections/token", "routes/api.connections.token.ts"),
+  // Brokered capabilities (issue #166): capability providers' whitelisted operations. Instances
+  // POST typed inputs with their EDEN_TEAM_TOKEN; Eden validates and executes with the
+  // control-plane-held credential — the grant never reaches the container.
+  route(
+    "api/capabilities/:provider/:operation",
+    "routes/api.capabilities.$provider.$operation.ts",
+  ),
+  // Post-consent resource picker (issue #166): a capability provider whose account spans several
+  // provider-side resources (Xero organisations) picks the one this connection targets.
+  route(
+    "connections/:provider/resource",
+    "routes/connections.$provider.resource.tsx",
+  ),
   route("api/ingest/runs", "routes/api.ingest.runs.tsx"),
   // Hosted MCP Streamable HTTP transport. Bearer API keys are verified per stateless request.
   route("api/mcp", "routes/api.mcp.ts"),

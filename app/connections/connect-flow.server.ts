@@ -15,6 +15,8 @@
 import { sessionLoader } from "~/auth/session.server";
 import { redirect, data, type LoaderFunctionArgs } from "react-router";
 
+import { getCapability } from "~/capabilities/registry.server";
+
 import type { OAuthClientConfig } from "./config.server";
 import type { OAuthCallbackPayload } from "./oauth-callback-staging.server";
 import {
@@ -78,6 +80,14 @@ export interface CallbackFlowDeps extends ConnectFlowDeps {
     provider: ProviderDefinition,
     accessToken: string,
   ) => Promise<string | null>;
+  /**
+   * Capability resource listing override (issue #166, tests). Defaults to the provider's
+   * capability definition (`resource.list` with the exchange's fresh access token).
+   */
+  listCapabilityResources?: (
+    providerId: string,
+    accessToken: string,
+  ) => Promise<Array<{ id: string; name: string }>>;
 }
 
 function unknownProviderError(providerId: string): string {
@@ -520,6 +530,52 @@ export function connectionCallbackLoader(
         grant.accessToken,
       );
 
+      // Capability resource binding (issue #166): providers whose capability declares a
+      // provider-side resource (Xero: the tenant/organisation) resolve it here, POST-consent,
+      // with the exchange's fresh access token. Exactly one listed resource binds silently; the
+      // previously bound resource is kept when still listed (a reconnect must not silently
+      // re-target); anything else stores the grant UNBOUND and sends the user to the picker —
+      // an unbound capability grant refuses every call and fails deploys with a readable message.
+      const capability =
+        provider.credentialDelivery === "capability"
+          ? getCapability(provider.id)
+          : null;
+      let resourceId: string | null = null;
+      let resourceName: string | null = null;
+      let needsResourcePicker = false;
+      if (capability?.resource) {
+        let resources: Array<{ id: string; name: string }>;
+        try {
+          resources = deps.listCapabilityResources
+            ? await deps.listCapabilityResources(provider.id, grant.accessToken)
+            : await capability.resource.list(grant.accessToken, fetch);
+        } catch (error) {
+          return fail((error as Error).message, backUrl);
+        }
+        if (resources.length === 0) {
+          return fail(
+            `The connected ${label} account has no ${capability.resource.label} Eden can use — ` +
+              `connect an account with access to the ${capability.resource.label} this agent should work in.`,
+            backUrl,
+          );
+        }
+        const existing = await findGrant({
+          projectId: project.id,
+          agentId: agent.id,
+          provider: provider.id,
+        });
+        const kept = existing?.resourceId
+          ? resources.find((r) => r.id === existing.resourceId)
+          : undefined;
+        const bound = resources.length === 1 ? resources[0] : kept;
+        if (bound) {
+          resourceId = bound.id;
+          resourceName = bound.name;
+        } else {
+          needsResourcePicker = true;
+        }
+      }
+
       // Second pass IMMEDIATELY before the write: the pre-exchange check reads the lock before
       // the exchange + userinfo network round-trips, so a Permissions edit + newer reconnect
       // could complete entirely inside that gap and this older flow — its exchange finishing
@@ -543,6 +599,10 @@ export function connectionCallbackLoader(
         // The per-grant registered client (issue #167) — every later refresh uses it. Null for
         // operator-client providers (no behavior change).
         clientId: state.clientId ?? null,
+        // The capability resource binding (issue #166); null for non-capability providers AND
+        // for the picker case (bound by /connections/:provider/resource before first use).
+        resourceId,
+        resourceName,
         createdBy: auth.user.id,
       });
 
@@ -557,6 +617,17 @@ export function connectionCallbackLoader(
           scopes: grant.scope || state.scopes,
         },
       });
+
+      // Several resources and no prior binding (issue #166): straight to the picker — the grant
+      // exists but is unusable until one is bound, so a redeploy now would fail its validation.
+      if (needsResourcePicker) {
+        const params = new URLSearchParams({
+          project: project.id,
+          agent: agent.name,
+          returnTo: backUrl,
+        });
+        throw redirect(`/connections/${provider.id}/resource?${params}`);
+      }
 
       // Auto-redeploy (issue #69): the grant only reaches the RUNNING container on the next deploy,
       // so the connect action itself redeploys every live environment (image reused, fresh grant

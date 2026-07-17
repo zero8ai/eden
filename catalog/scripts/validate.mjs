@@ -163,6 +163,38 @@ function validateManifest(where, m) {
       }
     }
   }
+  // capability (issue #166): operation-group enablement riding a connection's auth block. Group
+  // ids must exist in Eden's capability registry — that cross-check lives in Eden's unit tests
+  // (tests/unit/capabilities-catalog.test.ts), because this script deliberately has no dependency
+  // on Eden app code; the SHAPE is enforced here.
+  if (m.capability !== undefined) {
+    if (
+      !m.capability ||
+      typeof m.capability !== "object" ||
+      Array.isArray(m.capability)
+    ) {
+      fail(where, "capability must be an object { groups }");
+    } else {
+      if (m.type !== "connection") {
+        fail(where, "capability is only valid on a connection template");
+      }
+      if (m.auth === undefined) {
+        fail(where, "capability requires an auth block (the grant its operations consume)");
+      }
+      if (!Array.isArray(m.capability.groups) || m.capability.groups.length === 0) {
+        fail(where, "capability.groups must be a non-empty array");
+      } else {
+        const seen = new Set();
+        for (const id of m.capability.groups) {
+          if (!KEBAB.test(id ?? "")) {
+            fail(where, `capability group id "${id}" is not a kebab-case slug`);
+          }
+          if (seen.has(id)) fail(where, `duplicate capability group id "${id}"`);
+          seen.add(id);
+        }
+      }
+    }
+  }
   if (m.sandbox !== undefined) {
     if (
       !m.sandbox ||

@@ -39,11 +39,14 @@ const PROVIDERS: Record<string, ProviderDefinition> = {
     tokenUrl: "https://oauth2.googleapis.com/token",
     userinfoUrl: "https://openidconnect.googleapis.com/v1/userinfo",
     // access_type=offline + prompt=consent guarantee a refresh token even on re-consent (Google
-    // only returns one when explicitly asked).
+    // only returns one when explicitly asked). Deliberately NO include_granted_scopes: Eden
+    // always requests the full effective required set (never a delta), so incremental auth buys
+    // nothing — and with it set, Google folds previously granted scopes back into every new
+    // token, which would make narrowing a scope-group selection + reconnect (issue #165) unable
+    // to ever re-issue a narrower grant.
     authorizeParams: {
       access_type: "offline",
       prompt: "consent",
-      include_granted_scopes: "true",
     },
     identityScopes: ["openid", "email"],
     envPrefix: "GOOGLE",

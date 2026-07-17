@@ -128,7 +128,11 @@ forever, and every level doubles the catalog.
   selection stays editable on the agent's Deployment tab — widening asks for one reconnect,
   narrowing takes effect on reconnect. Overlapping groups are fine (gmail's `gmail.modify` ⊃
   `gmail.readonly`): the union is what's requested, so keep each group's meaning simple
-  rather than carving disjoint scope sets.
+  rather than carving disjoint scope sets. Group ids are **provider-level identities**: when
+  two composed templates (a bundle's includes) declare the same group id for the same
+  provider, they define ONE level — the checkbox keeps the first occurrence's
+  label/description, the scopes union, and `default` pre-ticks if either side says so. Reuse
+  an id (`read`, `send`) only when the levels genuinely coincide; otherwise pick distinct ids.
 
 At least one of the two must be present; declaring both means "always this baseline, plus
 whatever levels the installer picks". Write group `description`s as plain-words capability

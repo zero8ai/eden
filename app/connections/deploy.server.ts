@@ -51,8 +51,14 @@ export interface ConnectionDeployDeps {
   }) => Promise<{
     grant: { id: string; status: GrantStatus; scopes: string };
     refreshToken: string;
+    /** Opaque fingerprint of THIS token, for compare-and-set status flips. */
+    tokenVersion?: string;
   } | null>;
-  markGrantStatus: (id: string, status: GrantStatus) => Promise<void>;
+  markGrantStatus: (
+    id: string,
+    status: GrantStatus,
+    expectedTokenVersion?: string,
+  ) => Promise<void>;
   refreshAccessToken: (
     input: {
       provider: ProviderDefinition;
@@ -122,7 +128,9 @@ export async function connectionGrantEnv(
       );
     } catch (error) {
       if (error instanceof InvalidGrantError) {
-        await deps.markGrantStatus(found.grant.id, "expired");
+        // Compare-and-set against the token that was actually tested: a reconnect racing this
+        // deploy may already have rotated the row to a fresh valid token, which must stay active.
+        await deps.markGrantStatus(found.grant.id, "expired", found.tokenVersion);
         throw new Error(
           `The ${def.label} connection for this agent has expired — reconnect it from the agent's ` +
             "install page or Deployment tab, then redeploy.",

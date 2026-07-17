@@ -132,13 +132,29 @@ describe("connectionGrantEnv", () => {
         okFetch,
         deps({
           markGrantStatus,
+          // The expiry flip must be compare-and-set against the token that was TESTED — a
+          // reconnect racing the deploy rotates the token version, and the guarded update then
+          // no-ops instead of expiring the fresh valid token.
+          openRefreshToken: async () => ({
+            grant: {
+              id: "grant_1",
+              status: "active",
+              scopes: "https://www.googleapis.com/auth/spreadsheets",
+            },
+            refreshToken: "rt",
+            tokenVersion: "iv_of_tested_token",
+          }),
           refreshAccessToken: async () => {
             throw new InvalidGrantError("dead");
           },
         }),
       ),
     ).rejects.toThrow(/The Google connection for this agent has expired/);
-    expect(markGrantStatus).toHaveBeenCalledWith("grant_1", "expired");
+    expect(markGrantStatus).toHaveBeenCalledWith(
+      "grant_1",
+      "expired",
+      "iv_of_tested_token",
+    );
   });
 
   it("propagates a transient refresh failure without marking the grant", async () => {

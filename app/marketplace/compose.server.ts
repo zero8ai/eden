@@ -61,7 +61,11 @@ export interface ResolvedAuth {
   kind: "oauth2";
   /** Baseline scopes, always requested (empty when the template declares only groups — #165). */
   scopes: string[];
-  /** User-selectable permission levels (issue #165), deduped by id across composed templates. */
+  /**
+   * User-selectable permission levels (issue #165), merged by id across composed templates:
+   * same provider + same group id = one level whose scopes union (first occurrence keeps the
+   * label/description, `default` ORs).
+   */
   scopeGroups?: AuthScopeGroup[];
 }
 
@@ -222,17 +226,25 @@ async function resolve(
   const secrets = [...secretByName.values()];
 
   // ── auths: union by provider, includes-first then parent; scopes unioned per provider;
-  // scope groups (issue #165) deduped by id — the FIRST occurrence keeps its definition,
-  // mirroring the secrets rule (two composed connectors sharing a group id is authored intent
-  // to present one checkbox, not two) ──
+  // scope groups (issue #165) merged by id — two composed connectors sharing a group id for the
+  // SAME provider define one permission level, so their scopes UNION (dropping either side would
+  // silently 403 the other connector at runtime); the first occurrence keeps its label/
+  // description (the secrets rule) and `default` ORs across all. Groups are deep-copied on entry
+  // so the merge never mutates the source template's manifest ──
   const authByProvider = new Map<string, ResolvedAuth>();
+  const copyGroup = (g: AuthScopeGroup): AuthScopeGroup => ({
+    ...g,
+    scopes: [...g.scopes],
+  });
   const addAuth = (auth: ResolvedAuth) => {
     const existing = authByProvider.get(auth.provider);
     if (!existing) {
       authByProvider.set(auth.provider, {
         ...auth,
         scopes: [...auth.scopes],
-        ...(auth.scopeGroups ? { scopeGroups: [...auth.scopeGroups] } : {}),
+        ...(auth.scopeGroups
+          ? { scopeGroups: auth.scopeGroups.map(copyGroup) }
+          : {}),
       });
       return;
     }
@@ -241,7 +253,15 @@ async function resolve(
     }
     for (const group of auth.scopeGroups ?? []) {
       const groups = (existing.scopeGroups ??= []);
-      if (!groups.some((g) => g.id === group.id)) groups.push(group);
+      const dup = groups.find((g) => g.id === group.id);
+      if (!dup) {
+        groups.push(copyGroup(group));
+        continue;
+      }
+      for (const scope of group.scopes) {
+        if (!dup.scopes.includes(scope)) dup.scopes.push(scope);
+      }
+      if (group.default) dup.default = true;
     }
   };
   for (const child of resolvedIncludes) {

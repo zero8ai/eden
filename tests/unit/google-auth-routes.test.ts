@@ -199,6 +199,106 @@ describe("Google routes with Better Auth", () => {
     expect(mocks.requireProject).toHaveBeenCalledWith(mocks.auth, PROJECT.id);
   });
 
+  it("never falls back to the old grant's scopes when every permission is deselected (issue #165)", async () => {
+    // The install snapshots scope groups with an EXPLICITLY empty selection. Connect must not
+    // treat that like a legacy no-snapshot lock and re-request the old grant's broad scopes.
+    mocks.getAgentSource.mockResolvedValue({
+      files: {
+        "eden-lock.json": JSON.stringify({
+          version: 1,
+          installs: [
+            {
+              id: "gmail",
+              type: "connection",
+              name: "Gmail",
+              version: "1.0.0",
+              hash: "hash",
+              registry: "fixture",
+              member: null,
+              files: [],
+              auth: [
+                {
+                  provider: "google",
+                  kind: "oauth2",
+                  scopeGroups: [
+                    {
+                      id: "read",
+                      label: "Read mail",
+                      description: "Read messages.",
+                      scopes: [SHEETS_SCOPE],
+                      default: true,
+                    },
+                  ],
+                  selectedGroups: [],
+                },
+              ],
+            },
+          ],
+        }),
+      },
+      paths: [],
+    });
+    mocks.findGrant.mockResolvedValue({
+      scopes: `${SHEETS_SCOPE} https://mail.google.com/ openid email`,
+    });
+
+    const { loader } = await import("~/routes/google.connect");
+    const result = await loader(
+      routeArgs(
+        "https://eden.example.com/google/connect?project=projabcdefgh&agent=agent&returnTo=%2Fdashboard",
+      ),
+    );
+    expect(result).toMatchObject({
+      error: expect.stringContaining("deselected"),
+    });
+    expect(mocks.createOAuthStateNonce).not.toHaveBeenCalled();
+  });
+
+  it("refuses a stale callback whose permission selection changed mid-flight (issue #165)", async () => {
+    const { loader } = await import("~/routes/google.callback");
+    const { connectStateKey, signConnectState } =
+      await import("~/connections/google.server");
+    // Signed when the selection still included gmail.send — the lock has since been narrowed to
+    // spreadsheets only (effectiveLock()), so completing this older consent tab must not store
+    // the broader grant back over the narrowed requirement.
+    const state = signConnectState(
+      {
+        projectId: PROJECT.id,
+        agentId: AGENT.id,
+        userId: mocks.auth.user.id,
+        sessionId: mocks.auth.session.id,
+        nonce: "stale-nonce",
+        provider: "google",
+        scopes: `${SHEETS_SCOPE} https://www.googleapis.com/auth/gmail.send`,
+        returnTo: "/dashboard",
+        exp: Date.now() + 60_000,
+      },
+      connectStateKey(),
+    );
+
+    const staged = await loader(
+      routeArgs(
+        `https://eden.example.com/google/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+      ),
+    );
+    const cookie = (staged as Response).headers
+      .get("set-cookie")!
+      .split(";", 1)[0];
+    const result = await loader(
+      routeArgs("https://eden.example.com/google/callback", { cookie }),
+    );
+    expect(result).toMatchObject({
+      error: expect.stringContaining(
+        "changed while this consent was in progress",
+      ),
+      backUrl: "/dashboard",
+    });
+    // The nonce is consumed (this flow is dead either way), but no token is minted or stored.
+    expect(mocks.consumeOAuthStateNonce).toHaveBeenCalledTimes(1);
+    expect(mocks.exchangeCode).not.toHaveBeenCalled();
+    expect(mocks.upsertGrant).not.toHaveBeenCalled();
+  });
+
   it("rejects a callback initiated by another Better Auth session before exchange", async () => {
     const { loader } = await import("~/routes/google.callback");
     const { connectStateKey, signConnectState } =

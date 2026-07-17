@@ -135,26 +135,46 @@ export async function listGrantsForAgent(
   return rows.map(toGrant);
 }
 
-/** Flip a grant's status (e.g. deploy found the token dead → "expired"). */
+/**
+ * Flip a grant's status (e.g. deploy found the token dead → "expired"). When
+ * `expectedTokenVersion` is given (the `tokenVersion` returned by `openRefreshToken`), the flip
+ * is compare-and-set against the token that was actually tested: a concurrent reconnect rotates
+ * the sealed token (fresh random IV), so a deploy that found the OLD token dead must not expire
+ * the row after a NEW valid token landed on it.
+ */
 export async function markGrantStatus(
   id: string,
   status: GrantStatus,
+  expectedTokenVersion?: string,
 ): Promise<void> {
   await db
     .update(connectionGrants)
     .set({ status, updatedAt: new Date() })
-    .where(eq(connectionGrants.id, id));
+    .where(
+      and(
+        eq(connectionGrants.id, id),
+        ...(expectedTokenVersion !== undefined
+          ? [eq(connectionGrants.refreshTokenIv, expectedTokenVersion)]
+          : []),
+      ),
+    );
 }
 
 /**
  * Unseal a grant's refresh token. DEPLOY-SIDE ONLY — never call from a loader that renders to a
  * client. Takes the full row (via a fresh lookup) so the plaintext never rides on the display type.
+ * `tokenVersion` is an opaque per-seal fingerprint (the encryption IV — fresh random bytes on
+ * every upsert) for compare-and-set status flips via `markGrantStatus`.
  */
 export async function openRefreshToken(input: {
   projectId: string;
   agentId: string;
   provider: string;
-}): Promise<{ grant: ConnectionGrant; refreshToken: string } | null> {
+}): Promise<{
+  grant: ConnectionGrant;
+  refreshToken: string;
+  tokenVersion: string;
+} | null> {
   const [row] = await db
     .select()
     .from(connectionGrants)
@@ -173,5 +193,5 @@ export async function openRefreshToken(input: {
     iv: row.refreshTokenIv,
     authTag: row.refreshTokenAuthTag,
   });
-  return { grant: toGrant(row), refreshToken };
+  return { grant: toGrant(row), refreshToken, tokenVersion: row.refreshTokenIv };
 }

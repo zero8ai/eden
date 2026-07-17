@@ -174,15 +174,22 @@ export function connectionConnectLoader(
         lock,
         agent.root === "agent" ? null : agent.name,
       ).get(provider.id);
+      // The grant fallback exists ONLY for lock entries with no auth snapshot at all (undefined).
+      // A present-but-empty requirement is an EXPLICIT choice — every scope group deselected —
+      // and must never fall back to the old grant's scopes, which would re-request exactly the
+      // permissions the user just removed (issue #165).
       const scopes =
-        requiredScopes && requiredScopes.length > 0
+        requiredScopes !== undefined
           ? requiredScopes.join(" ")
           : (existingGrant?.scopes.trim() ?? "");
 
       if (!scopes) {
         return {
           error:
-            "No scopes were requested for this connection — nothing to authorize.",
+            requiredScopes !== undefined
+              ? "Every permission for this connection is deselected — nothing to authorize. " +
+                "Select at least one permission from the agent's Deployment tab, then connect."
+              : "No scopes were requested for this connection — nothing to authorize.",
           backUrl,
           providerLabel: provider.label,
         };
@@ -329,7 +336,7 @@ export function connectionCallbackLoader(
       }
 
       // Tenancy: the signed state names the project, but the SESSION must own it too.
-      const project = await requireProject(auth, state.projectId);
+      const project = requireRepo(await requireProject(auth, state.projectId));
       const backUrl = safeReturnTo(state.returnTo) ?? "/dashboard";
 
       const roster = (await listAgents(project.id)).filter(
@@ -338,6 +345,42 @@ export function connectionCallbackLoader(
       const agent = roster.find((a) => a.id === state.agentId);
       if (!agent) {
         return fail("This agent no longer exists in the project.", backUrl);
+      }
+
+      // Lock currency (issue #165): the signed state carries the scope set computed when this
+      // flow STARTED, and several unconsumed nonces can be valid at once — so a consent tab left
+      // open across a Permissions edit + newer reconnect could, completed later, silently
+      // re-broaden a just-narrowed grant (or clobber a widened one with an under-scoped token).
+      // Re-derive the requirement NOW and refuse a stale flow before the exchange mints tokens.
+      // Undefined = no auth snapshot for this provider (legacy lock / grant-fallback flows) —
+      // nothing to compare against, so the check is skipped exactly where the fallback applies.
+      const [source, drafts] = await Promise.all([
+        getAgentSource(project.repoInstallationId, {
+          owner: project.repoOwner,
+          repo: project.repoName,
+        }),
+        listDrafts(project.id),
+      ]);
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        drafts.map((draft) => ({ path: draft.path, content: draft.content })),
+      );
+      const requiredNow = requiredScopesByProvider(
+        lock,
+        agent.root === "agent" ? null : agent.name,
+      ).get(provider.id);
+      if (requiredNow !== undefined) {
+        const started = new Set(state.scopes.split(/\s+/).filter(Boolean));
+        const stale =
+          started.size !== requiredNow.length ||
+          requiredNow.some((s) => !started.has(s));
+        if (stale) {
+          return fail(
+            `The permissions selected for ${label} changed while this consent was in progress — ` +
+              "no connection was made. Start again from the agent's Deployment tab.",
+            backUrl,
+          );
+        }
       }
 
       const config = deps.getConfig(provider);

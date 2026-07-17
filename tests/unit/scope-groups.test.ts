@@ -444,7 +444,8 @@ describe("resolveTemplate — scope groups propagate through composition (issue 
     expect(resolved.auths[0].scopeGroups).toEqual(GROUPS);
   });
 
-  it("dedupes groups by id across two composed connectors (first occurrence wins)", async () => {
+  it("merges same-id groups across two composed connectors: scopes union, first label wins", async () => {
+    const METADATA = "https://www.googleapis.com/auth/gmail.metadata";
     const otherMail: CatalogTemplate = {
       manifest: {
         id: "gmail-triage",
@@ -458,7 +459,13 @@ describe("resolveTemplate — scope groups propagate through composition (issue 
           provider: "google",
           kind: "oauth2",
           scopeGroups: [
-            { ...GROUPS[0], label: "Read (triage)" },
+            {
+              id: "read",
+              label: "Read (triage)",
+              description: "Read message metadata.",
+              scopes: [METADATA],
+            },
+            { ...GROUPS[2], default: true }, // "send", default here but not on gmail's
             {
               id: "archive",
               label: "Archive",
@@ -495,7 +502,16 @@ describe("resolveTemplate — scope groups propagate through composition (issue 
       "send",
       "archive",
     ]);
-    // First occurrence (the gmail template's definition) wins the duplicate "read".
-    expect(groups.find((g) => g.id === "read")!.label).toBe("Read mail");
+    const read = groups.find((g) => g.id === "read")!;
+    // First occurrence (the gmail template's definition) keeps the label/description…
+    expect(read.label).toBe("Read mail");
+    // …but the second connector's scopes are NOT dropped: one level, scopes unioned —
+    // discarding them would silently 403 the triage connector at runtime.
+    expect(read.scopes).toEqual([READ, METADATA]);
+    // `default` ORs across occurrences (either template pre-ticking the level pre-ticks it).
+    expect(groups.find((g) => g.id === "send")!.default).toBe(true);
+    // The merge never mutates the shared source template definitions.
+    expect(GROUPS[0].scopes).toEqual([READ]);
+    expect(GROUPS[2].default).toBeUndefined();
   });
 });

@@ -113,8 +113,10 @@ import {
   discardDrafts,
   findOrphanedDrafts,
   listDrafts,
+  stageDraft,
 } from "~/drafts/drafts.server";
 import { getAgentSource, getOpenChanges } from "~/github/cached.server";
+import { fetchAgentSource } from "~/github/repo.server";
 import {
   findStoredAppCredentialConflict,
   listAppCredentialRows,
@@ -147,7 +149,14 @@ import {
 import { contextPath } from "~/lib/paths";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { cn } from "~/lib/utils";
-import { overlayLock, requiredScopesByProvider } from "~/marketplace/lock";
+import {
+  overlayLock,
+  requiredScopesByProvider,
+  scopeGroupsByProvider,
+  serializeLock,
+  setSelectedGroups,
+  type ScopeGroupChoice,
+} from "~/marketplace/lock";
 import {
   agentRequiredSecretState,
   cleanupOrphanedPendingSecrets,
@@ -279,6 +288,12 @@ interface DeploymentData {
     requiredScopes: string | null;
     /** Loader-computed row state — the server-only scope comparison stays out of the render path. */
     state: ConnectionRowState;
+    /**
+     * Selectable permission levels (issue #165) from the lock's scope-group snapshots, with their
+     * current selection — drives the row's Permissions editor. Null when no install declares
+     * groups for this provider (the permission surface isn't editable).
+     */
+    scopeGroups: ScopeGroupChoice[] | null;
   }>;
   /** Member/single view: GitHub App setup when the agent has the marketplace GitHub channel. */
   githubSetup: {
@@ -530,6 +545,8 @@ export const loader = (args: LoaderFunctionArgs) =>
       // lockSecretsForMember's mapping so the required-scope union covers the right installs.
       const activeMember = isTeam ? active.name : null;
       const requiredScopes = requiredScopesByProvider(lock, activeMember);
+      // Selectable permission levels per provider (issue #165) — the Connections card's editor.
+      const providerScopeGroups = scopeGroupsByProvider(lock, activeMember);
       try {
         const [state, shared] = await Promise.all([
           agentRequiredSecretState({
@@ -615,6 +632,7 @@ export const loader = (args: LoaderFunctionArgs) =>
               requiredScopes: requiredScopeStr,
               grantScopes: grant?.scopes ?? "",
             }),
+            scopeGroups: providerScopeGroups.get(provider) ?? null,
           };
         });
       } catch {
@@ -819,6 +837,57 @@ export async function action(args: ActionFunctionArgs) {
       return { ok: true as const, taskId: task.id };
     }
 
+    // ── Connection permissions (issue #165): rewrite the lock's scope-group selection ──
+    // The selection is CONFIG living in eden-lock.json, so editing it stages a draft of the lock
+    // (published/merged with the pipeline like any install). Widening flips the Connections row
+    // to needs-reconnect via the existing scope-coverage state; narrowing keeps the row connected
+    // but the redirect carries a hint to reconnect for a freshly narrowed grant.
+    if (intent === "connection-permissions") {
+      const provider = String(form.get("provider") ?? "");
+      const selected = form.getAll("group").map(String);
+      if (!provider) return { error: "Missing connection provider." };
+      // Action reads raw (never the cache) — a stale lock composed into a write could clobber
+      // a newer selection or install.
+      const [source, drafts] = await Promise.all([
+        fetchAgentSource(project.repoInstallationId, repo),
+        listDrafts(project.id),
+      ]);
+      const { active, isTeam } = await resolveSyncedAgentContext(
+        project.id,
+        agentFromParams(args.params),
+        source.paths,
+      );
+      requireActiveAgent(active, project.id);
+      const member = isTeam ? active.name : null;
+      const lock = overlayLock(
+        source.files["eden-lock.json"] ?? null,
+        drafts.map((d) => ({ path: d.path, content: d.content })),
+      );
+      const before = requiredScopesByProvider(lock, member).get(provider) ?? [];
+      const { lock: nextLock, changed } = setSelectedGroups(
+        lock,
+        member,
+        provider,
+        selected,
+      );
+      if (!changed) return { ok: true as const };
+      await stageDraft({
+        projectId: project.id,
+        path: "eden-lock.json",
+        content: serializeLock(nextLock),
+        createdBy: auth.user.id,
+      });
+      const after =
+        requiredScopesByProvider(nextLock, member).get(provider) ?? [];
+      const beforeSet = new Set(before);
+      const afterSet = new Set(after);
+      const widened = after.some((s) => !beforeSet.has(s));
+      const narrowed = !widened && before.some((s) => !afterSet.has(s));
+      const query = new URLSearchParams({ permissions: provider });
+      if (narrowed) query.set("narrowed", "1");
+      throw redirect(`${back}?${query.toString()}`);
+    }
+
     // ── Environment CRUD (team-level: create/rename/delete a NAME across the whole roster) ──
     if (intent === "env-create") {
       await createTeamEnvironment({
@@ -1007,6 +1076,14 @@ export default function Deployment({
     ? (loaderData.connections.find((c) => c.provider === connected)?.label ??
       connected)
     : connected;
+  // Permission-selection edit outcome (issue #165): the connection-permissions action redirects
+  // back here with the provider and, when the selection only shrank, a `narrowed` flag.
+  const permissionsEdited = params.get("permissions");
+  const permissionsNarrowed = params.get("narrowed") === "1";
+  const permissionsLabel = permissionsEdited
+    ? (loaderData.connections.find((c) => c.provider === permissionsEdited)
+        ?.label ?? permissionsEdited)
+    : null;
 
   // Progress: re-fetch faster while any deployment is pending/building. A slower
   // baseline poll runs regardless, so a deploy STARTED after this page loaded is
@@ -1119,6 +1196,29 @@ export default function Deployment({
             <AlertDescription>
               The connection is saved. Deploy the current version to start
               using it.
+            </AlertDescription>
+          </Alert>
+        ))}
+
+      {permissionsEdited &&
+        (permissionsNarrowed ? (
+          <Alert className="mb-6">
+            <AlertTitle>{permissionsLabel} permissions reduced</AlertTitle>
+            <AlertDescription>
+              The selection is staged to eden-lock.json — publish it with your
+              other changes. The existing grant still covers the smaller set,
+              so nothing breaks; reconnect from the Connections card to
+              re-issue the grant with only the selected permissions.
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <Alert className="mb-6">
+            <AlertTitle>{permissionsLabel} permissions updated</AlertTitle>
+            <AlertDescription>
+              The selection is staged to eden-lock.json — publish it with your
+              other changes. If permissions were added, the connection needs a
+              reconnect (see the Connections card below) before it covers the
+              new set.
             </AlertDescription>
           </Alert>
         ))}
@@ -1256,62 +1356,113 @@ function ConnectionsCard({
             `&agent=${encodeURIComponent(agentName)}` +
             `&returnTo=${encodeURIComponent(returnTo)}`;
           return (
-            <div
-              key={c.id}
-              className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
-            >
-              <div className="grid gap-0.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium">{c.label}</span>
-                  {c.state === "not-connected" ? (
-                    <Badge variant="outline">not connected</Badge>
-                  ) : c.state === "inactive" ? (
-                    <Badge variant="warning">{c.status}</Badge>
-                  ) : c.state === "under-scoped" ? (
-                    <Badge variant="warning">missing permissions</Badge>
-                  ) : (
-                    <Badge variant="success">connected</Badge>
-                  )}
+            <div key={c.id} className="rounded-lg border px-3 py-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="grid gap-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{c.label}</span>
+                    {c.state === "not-connected" ? (
+                      <Badge variant="outline">not connected</Badge>
+                    ) : c.state === "inactive" ? (
+                      <Badge variant="warning">{c.status}</Badge>
+                    ) : c.state === "under-scoped" ? (
+                      <Badge variant="warning">missing permissions</Badge>
+                    ) : (
+                      <Badge variant="success">connected</Badge>
+                    )}
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {c.state === "not-connected"
+                      ? "Not connected"
+                      : c.state === "under-scoped"
+                        ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — missing permissions this connector needs.`
+                        : c.state === "connected"
+                          ? c.accountEmail
+                            ? `Connected as ${c.accountEmail}`
+                            : "Connected"
+                          : (c.accountEmail ?? "connected account")}
+                  </span>
                 </div>
-                <span className="text-xs text-muted-foreground">
-                  {c.state === "not-connected"
-                    ? "Not connected"
-                    : c.state === "under-scoped"
-                      ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — missing permissions this connector needs.`
-                      : c.state === "connected"
-                        ? c.accountEmail
-                          ? `Connected as ${c.accountEmail}`
-                          : "Connected"
-                        : (c.accountEmail ?? "connected account")}
-                </span>
-              </div>
-              {!c.registered ? (
-                <span className="text-xs text-muted-foreground">
-                  not supported by this Eden installation
-                </span>
-              ) : c.configured ? (
-                // A covered grant is done — only a subtle Reconnect link. Every other state is a
-                // to-do (connect, re-scope, or re-auth) and gets the primary button (issue #30).
-                c.state === "connected" ? (
-                  <Link
-                    to={connectUrl}
-                    className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-                  >
-                    Reconnect
-                  </Link>
-                ) : (
-                  <Button asChild variant="default" size="sm">
-                    <Link to={connectUrl}>
-                      {c.state === "not-connected"
-                        ? `Connect ${c.label}`
-                        : "Reconnect"}
+                {!c.registered ? (
+                  <span className="text-xs text-muted-foreground">
+                    not supported by this Eden installation
+                  </span>
+                ) : c.configured ? (
+                  // A covered grant is done — only a subtle Reconnect link. Every other state is a
+                  // to-do (connect, re-scope, or re-auth) and gets the primary button (issue #30).
+                  c.state === "connected" ? (
+                    <Link
+                      to={connectUrl}
+                      className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                    >
+                      Reconnect
                     </Link>
-                  </Button>
-                )
-              ) : (
-                <span className="text-xs text-muted-foreground">
-                  operator config missing
-                </span>
+                  ) : (
+                    <Button asChild variant="default" size="sm">
+                      <Link to={connectUrl}>
+                        {c.state === "not-connected"
+                          ? `Connect ${c.label}`
+                          : "Reconnect"}
+                      </Link>
+                    </Button>
+                  )
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    operator config missing
+                  </span>
+                )}
+              </div>
+              {/* Permission levels (issue #165): show the current selection; editing rewrites
+                  `selectedGroups` in the lock. Widening flips the row to needs-reconnect via the
+                  scope-coverage state; narrowing keeps it connected with a reconnect hint. */}
+              {c.scopeGroups && c.scopeGroups.length > 0 && (
+                <details className="mt-2 border-t pt-2">
+                  <summary className="cursor-pointer text-xs text-muted-foreground">
+                    Permissions:{" "}
+                    {c.scopeGroups
+                      .filter((g) => g.selected)
+                      .map((g) => g.label)
+                      .join(", ") || "none selected"}
+                  </summary>
+                  <Form method="post" className="mt-3 grid gap-2">
+                    <input
+                      type="hidden"
+                      name="intent"
+                      value="connection-permissions"
+                    />
+                    <input type="hidden" name="provider" value={c.provider} />
+                    {c.scopeGroups.map((g) => (
+                      <Label
+                        key={g.id}
+                        className="flex items-start gap-2 text-sm font-normal"
+                      >
+                        <input
+                          type="checkbox"
+                          name="group"
+                          value={g.id}
+                          defaultChecked={g.selected}
+                          className="mt-0.5 size-4 accent-primary"
+                        />
+                        <span className="grid gap-0.5">
+                          <span className="font-medium">{g.label}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {g.description}
+                          </span>
+                        </span>
+                      </Label>
+                    ))}
+                    <div className="flex items-center gap-3">
+                      <Button type="submit" size="sm" variant="secondary">
+                        Update permissions
+                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        Adding permissions requires a reconnect; after removing
+                        some, reconnect to re-issue the grant with only the
+                        selected permissions.
+                      </span>
+                    </div>
+                  </Form>
+                </details>
               )}
             </div>
           );

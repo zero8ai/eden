@@ -13,7 +13,7 @@
  * standalone repo, and agent → subagent of an existing agent.
  */
 import { getSessionAuth, sessionLoader } from "~/auth/session.server";
-import { Boxes, Download, KeyRound, Layers } from "lucide-react";
+import { Boxes, Download, KeyRound, Layers, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import {
   Form,
@@ -67,7 +67,12 @@ import {
   type DependencyDecision,
   type InstallTarget,
 } from "~/marketplace/install.server";
-import { overlayLock } from "~/marketplace/lock";
+import {
+  findInstall,
+  overlayLock,
+  selectedGroupIds,
+  type EdenLock,
+} from "~/marketplace/lock";
 import {
   resolveTemplate,
   type ResolvedInclude,
@@ -86,6 +91,7 @@ import { decodeKey, fingerprint, seal } from "~/seams/oss/secretbox";
 import {
   TEMPLATE_TYPES,
   isTemplateSlug,
+  type AuthScopeGroup,
   type TemplateManifest,
   type TemplateType,
 } from "~/marketplace/manifest";
@@ -158,6 +164,45 @@ interface PreviewData {
   isUpdate: boolean;
   /** Templates bundled by reference (composition) — rendered as a "Bundled from the catalog" card. */
   includes: ResolvedInclude[];
+  /**
+   * Selectable permission levels per provider (issue #165) — rendered as the Permissions card
+   * (checkbox list, defaults pre-ticked); the selection lands in the lock's auth snapshot.
+   */
+  authGroups: Array<{ provider: string; scopeGroups: AuthScopeGroup[] }>;
+}
+
+/**
+ * The providers with selectable permission levels on a resolved template (issue #165). On an
+ * UPDATE, the existing install's stored selection wins over the template defaults as the
+ * pre-ticked state (`default` doubles as "pre-ticked" for the wizard's checkboxes) — updating a
+ * template must never silently re-scope a connection the installer already narrowed or widened.
+ */
+function templateAuthGroups(
+  template: {
+    manifest: TemplateManifest;
+    auths: Array<{ provider: string; scopeGroups?: AuthScopeGroup[] }>;
+  },
+  lock: EdenLock,
+  member: string | null,
+): PreviewData["authGroups"] {
+  const existing = findInstall(lock, template.manifest.id, member);
+  return template.auths.flatMap((a) => {
+    if (!a.scopeGroups || a.scopeGroups.length === 0) return [];
+    const stored = existing?.auth?.find(
+      (e) => e.provider === a.provider && e.scopeGroups,
+    );
+    if (!stored) return [{ provider: a.provider, scopeGroups: a.scopeGroups }];
+    const selected = new Set(selectedGroupIds(stored));
+    return [
+      {
+        provider: a.provider,
+        scopeGroups: a.scopeGroups.map((g) => ({
+          ...g,
+          default: selected.has(g.id),
+        })),
+      },
+    ];
+  });
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -289,6 +334,8 @@ export const loader = (args: LoaderFunctionArgs) =>
           secrets: plan.secrets,
           isUpdate: plan.isUpdate,
           includes: template.includes,
+          // A new member has no existing install — the template defaults pre-tick.
+          authGroups: templateAuthGroups(template, lock, newMemberName),
         };
         return base;
       }
@@ -343,6 +390,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         secrets: plan.secrets,
         isUpdate: plan.isUpdate,
         includes: template.includes,
+        authGroups: templateAuthGroups(
+          template,
+          lock,
+          resolved.target.memberName,
+        ),
       };
       return base;
     },
@@ -429,6 +481,32 @@ export async function action(args: ActionFunctionArgs) {
           : await readAgentFile(project.repoInstallationId, repo, pkgPath);
     }
 
+    // Scope-group selection (issue #165): the Permissions card posts one `scopegroupsfor` marker
+    // per provider it rendered plus a `scopegroup:<provider>` value per ticked box, so "none
+    // ticked" is distinguishable from "no card rendered" (→ template defaults). Ids are validated
+    // against the template's own groups inside the planner — the form is browser-controlled.
+    const authSelections: Record<string, string[]> = {};
+    for (const provider of form.getAll("scopegroupsfor").map(String)) {
+      authSelections[provider] = form
+        .getAll(`scopegroup:${provider}`)
+        .map(String);
+    }
+    // Providers the form posted nothing for keep an existing install's stored selection (an
+    // update must never silently re-scope to the template defaults); first installs fall back
+    // to the defaults inside the planner.
+    const existingInstall = findInstall(
+      lock,
+      template.manifest.id,
+      target.kind === "new-member" ? target.name : target.memberName,
+    );
+    for (const a of template.auths) {
+      if (!a.scopeGroups?.length || a.provider in authSelections) continue;
+      const stored = existingInstall?.auth?.find(
+        (e) => e.provider === a.provider && e.scopeGroups,
+      );
+      if (stored) authSelections[a.provider] = selectedGroupIds(stored);
+    }
+
     // Re-plan server-side; NEVER trust the preview. A conflict stages nothing.
     const plan = planInstall({
       template,
@@ -441,6 +519,7 @@ export async function action(args: ActionFunctionArgs) {
       model: workspaceModel.model,
       effort: workspaceModel.effort,
       target,
+      authSelections,
     });
     if (plan.conflicts.length > 0) {
       return {
@@ -966,6 +1045,64 @@ export default function InstallWizard({
               />
             ) : (
               <input type="hidden" name="member" value={selectedMember ?? ""} />
+            )}
+
+            {/* Issue #165: selectable permission levels (scope groups) — the checkbox selection
+                lands in the lock's auth snapshot and drives what the OAuth consent requests. */}
+            {preview.authGroups.length > 0 && (
+              <Card className="mb-6">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <ShieldCheck
+                      className={`size-4 ${accentText.emerald}`}
+                      aria-hidden
+                    />
+                    Permissions
+                  </CardTitle>
+                  <CardDescription>
+                    Choose what this connection may do. The account is
+                    authorized later from the agent&rsquo;s Deployment tab, and
+                    the selection can be changed there too (adding permissions
+                    asks for a reconnect).
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {preview.authGroups.map((auth) => (
+                    <div key={auth.provider} className="grid gap-2">
+                      <input
+                        type="hidden"
+                        name="scopegroupsfor"
+                        value={auth.provider}
+                      />
+                      {preview.authGroups.length > 1 && (
+                        <Label className="text-xs uppercase text-muted-foreground">
+                          {auth.provider}
+                        </Label>
+                      )}
+                      {auth.scopeGroups.map((g) => (
+                        <Label
+                          key={g.id}
+                          className="flex items-start gap-2 text-sm font-normal"
+                        >
+                          <input
+                            type="checkbox"
+                            name={`scopegroup:${auth.provider}`}
+                            value={g.id}
+                            defaultChecked={g.default ?? false}
+                            className="mt-0.5 size-4 accent-primary"
+                          />
+                          <span className="grid gap-0.5">
+                            <span className="font-medium">{g.label}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {g.description}
+                            </span>
+                          </span>
+                        </Label>
+                      ))}
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
             )}
 
             {/* Issue #47: gate on userSecrets, not preview.secrets — a template whose secrets are

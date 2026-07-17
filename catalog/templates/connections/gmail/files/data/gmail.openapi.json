@@ -1,0 +1,600 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Gmail API",
+    "description": "Vendored, trimmed OpenAPI 3.0.3 spec for the Gmail v1 API. Reads, searches, labels, and sends mail for the connected account. Use userId 'me' everywhere — it means the account whose OAuth grant is injected. Which operations are permitted depends on the permission level granted at connect time: reading needs gmail.readonly (or gmail.modify), label changes need gmail.modify, sending needs gmail.send — a call outside the granted level fails with HTTP 403. Authorization is handled by the caller (a bearer OAuth2 access token); no auth is declared in this spec.",
+    "version": "v1"
+  },
+  "servers": [
+    {
+      "url": "https://gmail.googleapis.com",
+      "description": "Gmail API production endpoint"
+    }
+  ],
+  "paths": {
+    "/gmail/v1/users/{userId}/profile": {
+      "get": {
+        "operationId": "get_profile",
+        "summary": "Get the connected mailbox's profile",
+        "description": "Returns the connected account's email address and mailbox counters. Cheap way to discover which mailbox this connection acts as. Requires read access (gmail.readonly or gmail.modify).",
+        "parameters": [
+          { "$ref": "#/components/parameters/userId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "The mailbox profile.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Profile" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gmail/v1/users/{userId}/messages": {
+      "get": {
+        "operationId": "messages_list",
+        "summary": "List / search messages",
+        "description": "Lists message ids matching a Gmail search query (same syntax as the Gmail search box, e.g. 'from:billing@acme.com has:attachment newer_than:7d'). Returns ids only — fetch each message with messages_get. Requires read access (gmail.readonly or gmail.modify).",
+        "parameters": [
+          { "$ref": "#/components/parameters/userId" },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Gmail search query, e.g. 'from:someone@example.com subject:invoice is:unread'. Omit to list everything.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "labelIds",
+            "in": "query",
+            "required": false,
+            "description": "Only return messages with ALL of these label ids (e.g. 'INBOX', 'UNREAD', or a user label id from labels_list). Repeat the parameter for multiple labels.",
+            "schema": { "type": "array", "items": { "type": "string" } },
+            "explode": true
+          },
+          {
+            "name": "maxResults",
+            "in": "query",
+            "required": false,
+            "description": "Maximum messages to return per page (default 100, max 500).",
+            "schema": { "type": "integer", "format": "int32" }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "description": "Page token from a previous messages_list response.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "includeSpamTrash",
+            "in": "query",
+            "required": false,
+            "description": "Include messages from SPAM and TRASH (default false).",
+            "schema": { "type": "boolean" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching message ids.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ListMessagesResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gmail/v1/users/{userId}/messages/{id}": {
+      "get": {
+        "operationId": "messages_get",
+        "summary": "Read one message",
+        "description": "Returns a message. format=metadata (with metadataHeaders=From,To,Subject,Date) is the cheap way to triage; format=full returns the MIME tree whose text parts carry base64url-encoded content in body.data; attachments larger than a few KB carry an attachmentId instead — fetch the bytes with messages_attachments_get. Requires read access (gmail.readonly or gmail.modify).",
+        "parameters": [
+          { "$ref": "#/components/parameters/userId" },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The message id (from messages_list).",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "How much of the message to return: minimal (ids + labels only), metadata (headers, no body), full (parsed MIME tree, default), raw (entire RFC 2822 message, base64url in the 'raw' field).",
+            "schema": {
+              "type": "string",
+              "enum": ["minimal", "metadata", "full", "raw"]
+            }
+          },
+          {
+            "name": "metadataHeaders",
+            "in": "query",
+            "required": false,
+            "description": "With format=metadata: only include these headers, e.g. 'From', 'To', 'Subject', 'Date'. Repeat for multiple.",
+            "schema": { "type": "array", "items": { "type": "string" } },
+            "explode": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The message.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Message" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gmail/v1/users/{userId}/messages/{messageId}/attachments/{id}": {
+      "get": {
+        "operationId": "messages_attachments_get",
+        "summary": "Download a message attachment",
+        "description": "Returns an attachment's bytes as base64url in the 'data' field. Get the attachmentId from the message's MIME part (messages_get with format=full). Requires read access (gmail.readonly or gmail.modify).",
+        "parameters": [
+          { "$ref": "#/components/parameters/userId" },
+          {
+            "name": "messageId",
+            "in": "path",
+            "required": true,
+            "description": "The id of the message containing the attachment.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The attachment id from the message part's body.attachmentId.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The attachment body.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MessagePartBody" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gmail/v1/users/{userId}/messages/{id}/modify": {
+      "post": {
+        "operationId": "messages_modify",
+        "summary": "Add or remove labels on a message",
+        "description": "Adds and/or removes label ids on a message — this is how mail is marked read (remove 'UNREAD'), archived (remove 'INBOX'), or filed under a user label (add its id from labels_list). Requires the 'Manage labels' permission (gmail.modify).",
+        "parameters": [
+          { "$ref": "#/components/parameters/userId" },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The message id to modify.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ModifyMessageRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The modified message (minimal form).",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Message" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gmail/v1/users/{userId}/messages/send": {
+      "post": {
+        "operationId": "messages_send",
+        "summary": "Send a message",
+        "description": "Sends an email as the connected account. The body's 'raw' field is a complete RFC 2822 message (headers + blank line + body), base64url-encoded — e.g. base64url('To: a@b.com\\r\\nSubject: Hi\\r\\nContent-Type: text/plain; charset=utf-8\\r\\n\\r\\nHello'). Set threadId to reply within an existing thread (also keep the Subject and add In-Reply-To/References headers for correct threading). Requires the 'Send mail' permission (gmail.send).",
+        "parameters": [
+          { "$ref": "#/components/parameters/userId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SendMessageRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The sent message (id, threadId, labelIds).",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Message" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gmail/v1/users/{userId}/threads": {
+      "get": {
+        "operationId": "threads_list",
+        "summary": "List / search threads",
+        "description": "Lists thread ids matching a Gmail search query — same query syntax as messages_list, but grouped by conversation. Requires read access (gmail.readonly or gmail.modify).",
+        "parameters": [
+          { "$ref": "#/components/parameters/userId" },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Gmail search query, e.g. 'from:billing@acme.com newer_than:30d'.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "labelIds",
+            "in": "query",
+            "required": false,
+            "description": "Only return threads with ALL of these label ids.",
+            "schema": { "type": "array", "items": { "type": "string" } },
+            "explode": true
+          },
+          {
+            "name": "maxResults",
+            "in": "query",
+            "required": false,
+            "description": "Maximum threads to return per page (default 100, max 500).",
+            "schema": { "type": "integer", "format": "int32" }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "description": "Page token from a previous threads_list response.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching thread ids.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ListThreadsResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gmail/v1/users/{userId}/threads/{id}": {
+      "get": {
+        "operationId": "threads_get",
+        "summary": "Read a whole thread",
+        "description": "Returns a conversation with all its messages, oldest first. Use format=metadata for a cheap overview of who said what when. Requires read access (gmail.readonly or gmail.modify).",
+        "parameters": [
+          { "$ref": "#/components/parameters/userId" },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The thread id (from threads_list or a message's threadId).",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "How much of each message to return: minimal, metadata, or full (default).",
+            "schema": {
+              "type": "string",
+              "enum": ["minimal", "metadata", "full"]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The thread with its messages.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Thread" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gmail/v1/users/{userId}/labels": {
+      "get": {
+        "operationId": "labels_list",
+        "summary": "List labels",
+        "description": "Lists all labels in the mailbox — system labels (INBOX, UNREAD, STARRED, SENT, TRASH, SPAM) and user labels with their ids, which messages_modify and the labelIds filters take. Requires read access (gmail.readonly or gmail.modify).",
+        "parameters": [
+          { "$ref": "#/components/parameters/userId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "All labels in the mailbox.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ListLabelsResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "userId": {
+        "name": "userId",
+        "in": "path",
+        "required": true,
+        "description": "The mailbox to act on. Always pass 'me' — the account whose OAuth grant this connection carries.",
+        "schema": { "type": "string" }
+      }
+    },
+    "schemas": {
+      "Profile": {
+        "type": "object",
+        "description": "The connected mailbox's profile.",
+        "properties": {
+          "emailAddress": {
+            "type": "string",
+            "description": "The connected account's email address."
+          },
+          "messagesTotal": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total number of messages in the mailbox."
+          },
+          "threadsTotal": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total number of threads in the mailbox."
+          },
+          "historyId": {
+            "type": "string",
+            "description": "The mailbox's current history id."
+          }
+        }
+      },
+      "ListMessagesResponse": {
+        "type": "object",
+        "description": "A page of message ids.",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "description": "Matching messages — id and threadId only; fetch details with messages_get.",
+            "items": { "$ref": "#/components/schemas/MessageRef" }
+          },
+          "nextPageToken": {
+            "type": "string",
+            "description": "Token for the next page, absent on the last page."
+          },
+          "resultSizeEstimate": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Estimated total number of results."
+          }
+        }
+      },
+      "MessageRef": {
+        "type": "object",
+        "description": "A message reference (id + thread).",
+        "properties": {
+          "id": { "type": "string", "description": "The message id." },
+          "threadId": {
+            "type": "string",
+            "description": "The id of the thread the message belongs to."
+          }
+        }
+      },
+      "Message": {
+        "type": "object",
+        "description": "An email message.",
+        "properties": {
+          "id": { "type": "string", "description": "The message id." },
+          "threadId": {
+            "type": "string",
+            "description": "The id of the thread the message belongs to."
+          },
+          "labelIds": {
+            "type": "array",
+            "description": "Label ids applied to this message (e.g. INBOX, UNREAD).",
+            "items": { "type": "string" }
+          },
+          "snippet": {
+            "type": "string",
+            "description": "A short plain-text preview of the message."
+          },
+          "internalDate": {
+            "type": "string",
+            "description": "Epoch ms timestamp Gmail received the message, as a string."
+          },
+          "payload": { "$ref": "#/components/schemas/MessagePart" },
+          "sizeEstimate": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Estimated size in bytes."
+          },
+          "raw": {
+            "type": "string",
+            "description": "With format=raw: the entire RFC 2822 message, base64url-encoded."
+          }
+        }
+      },
+      "MessagePart": {
+        "type": "object",
+        "description": "One MIME part of a message. multipart/* parts nest children under 'parts'; leaf text parts carry base64url content in body.data; attachment parts carry body.attachmentId instead.",
+        "properties": {
+          "partId": { "type": "string", "description": "The part's id within the message." },
+          "mimeType": {
+            "type": "string",
+            "description": "The part's MIME type, e.g. 'text/plain', 'text/html', 'multipart/alternative', 'application/pdf'."
+          },
+          "filename": {
+            "type": "string",
+            "description": "The attachment filename; empty for non-attachment parts."
+          },
+          "headers": {
+            "type": "array",
+            "description": "The part's headers (for the top-level payload: From, To, Subject, Date, …).",
+            "items": { "$ref": "#/components/schemas/MessagePartHeader" }
+          },
+          "body": { "$ref": "#/components/schemas/MessagePartBody" },
+          "parts": {
+            "type": "array",
+            "description": "Child parts, for multipart/* MIME types.",
+            "items": { "$ref": "#/components/schemas/MessagePart" }
+          }
+        }
+      },
+      "MessagePartHeader": {
+        "type": "object",
+        "description": "One message/part header.",
+        "properties": {
+          "name": { "type": "string", "description": "Header name, e.g. 'Subject'." },
+          "value": { "type": "string", "description": "Header value." }
+        }
+      },
+      "MessagePartBody": {
+        "type": "object",
+        "description": "The body of a MIME part.",
+        "properties": {
+          "attachmentId": {
+            "type": "string",
+            "description": "Present when the body is stored as a separate attachment — fetch it with messages_attachments_get."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Body size in bytes."
+          },
+          "data": {
+            "type": "string",
+            "description": "The body bytes, base64url-encoded. Absent when attachmentId is set."
+          }
+        }
+      },
+      "ModifyMessageRequest": {
+        "type": "object",
+        "description": "Labels to add and/or remove.",
+        "properties": {
+          "addLabelIds": {
+            "type": "array",
+            "description": "Label ids to add (e.g. a user label id, or 'STARRED').",
+            "items": { "type": "string" }
+          },
+          "removeLabelIds": {
+            "type": "array",
+            "description": "Label ids to remove (e.g. 'UNREAD' to mark read, 'INBOX' to archive).",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "SendMessageRequest": {
+        "type": "object",
+        "description": "The message to send.",
+        "required": ["raw"],
+        "properties": {
+          "raw": {
+            "type": "string",
+            "description": "The complete RFC 2822 message (headers, blank line, body), base64url-encoded."
+          },
+          "threadId": {
+            "type": "string",
+            "description": "Send as a reply within this existing thread (pair with In-Reply-To/References headers and the same Subject)."
+          }
+        }
+      },
+      "ListThreadsResponse": {
+        "type": "object",
+        "description": "A page of thread ids.",
+        "properties": {
+          "threads": {
+            "type": "array",
+            "description": "Matching threads — id and snippet only; fetch details with threads_get.",
+            "items": { "$ref": "#/components/schemas/ThreadRef" }
+          },
+          "nextPageToken": {
+            "type": "string",
+            "description": "Token for the next page, absent on the last page."
+          },
+          "resultSizeEstimate": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Estimated total number of results."
+          }
+        }
+      },
+      "ThreadRef": {
+        "type": "object",
+        "description": "A thread reference.",
+        "properties": {
+          "id": { "type": "string", "description": "The thread id." },
+          "snippet": {
+            "type": "string",
+            "description": "A short preview of the latest message."
+          },
+          "historyId": {
+            "type": "string",
+            "description": "The thread's last history id."
+          }
+        }
+      },
+      "Thread": {
+        "type": "object",
+        "description": "A conversation with its messages.",
+        "properties": {
+          "id": { "type": "string", "description": "The thread id." },
+          "messages": {
+            "type": "array",
+            "description": "The thread's messages, oldest first.",
+            "items": { "$ref": "#/components/schemas/Message" }
+          }
+        }
+      },
+      "Label": {
+        "type": "object",
+        "description": "A Gmail label.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The label id — what messages_modify and labelIds filters take."
+          },
+          "name": { "type": "string", "description": "The display name." },
+          "type": {
+            "type": "string",
+            "description": "'system' (INBOX, UNREAD, …) or 'user'.",
+            "enum": ["system", "user"]
+          }
+        }
+      },
+      "ListLabelsResponse": {
+        "type": "object",
+        "description": "All labels in the mailbox.",
+        "properties": {
+          "labels": {
+            "type": "array",
+            "description": "The mailbox's labels.",
+            "items": { "$ref": "#/components/schemas/Label" }
+          }
+        }
+      }
+    }
+  }
+}

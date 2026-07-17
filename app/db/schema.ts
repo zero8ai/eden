@@ -180,6 +180,15 @@ export const connectionGrants = pgTable(
      * exchange and every later refresh use the grant's own client when set.
      */
     clientId: text("client_id"),
+    /**
+     * Provider-side resource binding (issue #166): the resource a capability provider's calls
+     * target — Xero's tenant id, sent as `xero-tenant-id` on every API call. Bound by the
+     * connect callback (auto when the account has exactly one resource, else via the post-consent
+     * picker). Null for providers whose capability declares no resource, and for all
+     * non-capability providers. `resourceName` is display-only ("Connected to Acme Ltd").
+     */
+    resourceId: text("resource_id"),
+    resourceName: text("resource_name"),
     /** Sealed OAuth refresh token (AES-256-GCM, same secretbox as secret_values). */
     refreshTokenCiphertext: text("refresh_token_ciphertext").notNull(),
     refreshTokenIv: text("refresh_token_iv").notNull(),
@@ -195,6 +204,46 @@ export const connectionGrants = pgTable(
       .on(t.projectId, t.agentId, t.environmentId, t.provider)
       .nullsNotDistinct(),
   ],
+);
+
+/**
+ * Capability-call audit log (issue #166). One row per capability request that passed delegation
+ * auth — allowed, refused, or errored — so every whitelisted operation an agent reaches through
+ * `POST /api/capabilities/:provider/:operation` is queryable forever. `inputSummary` is the
+ * OPERATION-DEFINED redacted digest (e.g. `{ contact, total, currency }` for a bill), never the
+ * raw payload and never attachment bytes. Agent/deployment FKs `set null` so the audit trail
+ * survives roster and deployment cleanup. Append-only; no UI yet (queryable by design).
+ */
+export const capabilityCalls = pgTable(
+  "capability_calls",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    agentId: varchar("agent_id", { length: 12 }).references(() => agents.id, {
+      onDelete: "set null",
+    }),
+    deploymentId: varchar("deployment_id", { length: 12 }).references(
+      () => deployments.id,
+      { onDelete: "set null" },
+    ),
+    provider: varchar("provider", { length: 32 }).notNull(),
+    operation: text("operation").notNull(),
+    /** The operation's group, or null when the request named an unknown operation. */
+    groupId: text("group_id"),
+    /**
+     * "ok" | "refused" | "error" | "pending" — "pending" is the write-ahead state inserted
+     * BEFORE the vendor operation runs (a mutation can never exist without a queryable row);
+     * a row stuck on it means the control plane died mid-execution.
+     */
+    outcome: varchar("outcome", { length: 16 }).notNull(),
+    /** Refusal/error text returned to the caller; null for "ok". */
+    error: text("error"),
+    /** Operation-defined redacted input digest — never the raw payload. */
+    inputSummary: jsonb("input_summary")
+      .$type<Record<string, unknown>>()
+      .default(sql`'{}'::jsonb`),
+    createdAt: createdAt(),
+  },
+  (t) => [index("capability_calls_agent_created_idx").on(t.agentId, t.createdAt)],
 );
 
 /**

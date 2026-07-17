@@ -580,6 +580,9 @@ describe("Google routes with Better Auth", () => {
       refreshToken: "refresh-token",
       // Google never registers per-grant clients (issue #167 acceptance criterion 3).
       clientId: null,
+      // ...and declares no capability, so no resource binding (issue #166).
+      resourceId: null,
+      resourceName: null,
       createdBy: mocks.auth.user.id,
     });
     expect(mocks.auditRecord).toHaveBeenCalledWith(

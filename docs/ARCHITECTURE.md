@@ -378,6 +378,20 @@ lives.
 - **Egress control** on instances/sandboxes to limit data exfiltration and SSRF.
 - **Spend/abuse** → per-tenant token + compute caps and kill-switches at the gateway.
 - **Secrets** encrypted at rest, injected at boot, never in repo or logs; assistant sees names only.
+- **Brokered capabilities** (issue #166) — for high-risk systems (money, destructive writes) the
+  vendor credential never enters the data plane at all. A connection provider marked
+  `credentialDelivery: "capability"` (Xero first) keeps its OAuth grant control-plane-side; the
+  instance's thin tools POST typed inputs to `POST /api/capabilities/:provider/:operation` with
+  their deployment's delegation token (the same instance-facing auth as the team relay and the
+  Discord send proxy), and the control plane enforces a fixed, code-defined operation whitelist
+  (`app/capabilities/`) with server-side invariants (e.g. bills are always DRAFT), executes the
+  one blessed call itself, and audit-logs every request (`capability_calls`, redacted input
+  digests). Which operation groups are enabled is installer-chosen and enforced **per call**, so
+  revoking a permission cuts the agent off at its next call — no reconnect, no redeploy. Use a
+  capability when a leaked credential would be catastrophic or the vendor API's blast radius far
+  exceeds what the agent needs; use an ordinary connector (`refresh-token` or
+  `access-token-broker` delivery) when the token's own scopes bound the risk acceptably. The
+  Discord send proxy (issue #32) is this pattern's hardcoded ancestor.
 
 ---
 

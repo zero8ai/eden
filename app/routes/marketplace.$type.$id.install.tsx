@@ -53,6 +53,8 @@ import {
   ensureWorkspace,
   resolveActiveWorkspace,
 } from "~/auth/workspace.server";
+import { selectedCapabilityGroupIds } from "~/capabilities/enablement";
+import { getCapability } from "~/capabilities/registry.server";
 import type { Agent } from "~/data/ports";
 import { stageDeletions, stageDraft, listDrafts } from "~/drafts/drafts.server";
 import { ZOD_PACKAGE, ZOD_VERSION } from "~/eve/agentModule";
@@ -169,6 +171,21 @@ interface PreviewData {
    * (checkbox list, defaults pre-ticked); the selection lands in the lock's auth snapshot.
    */
   authGroups: Array<{ provider: string; scopeGroups: AuthScopeGroup[] }>;
+  /**
+   * Selectable capability operation groups per provider (issue #166) — the Operations card.
+   * Labels/descriptions/risk joined from Eden's capability registry; the selection lands in the
+   * lock's `selectedCapabilityGroups` and is enforced per call (changeable later, instantly).
+   */
+  capabilityGroups: Array<{
+    provider: string;
+    groups: Array<{
+      id: string;
+      label: string;
+      description: string;
+      risk: "read" | "write";
+      default: boolean;
+    }>;
+  }>;
 }
 
 /**
@@ -202,6 +219,49 @@ function templateAuthGroups(
         })),
       },
     ];
+  });
+}
+
+/**
+ * The providers with selectable capability operation groups on a resolved template (issue #166),
+ * with labels/risk joined from the registry. On an UPDATE the stored selection wins as the
+ * pre-ticked state, mirroring `templateAuthGroups`. Groups the registry doesn't know are dropped
+ * (nothing selectable to render); an unknown provider renders nothing.
+ */
+function templateCapabilityGroups(
+  template: {
+    manifest: TemplateManifest;
+    auths: Array<{ provider: string; capabilityGroups?: string[] }>;
+  },
+  lock: EdenLock,
+  member: string | null,
+): PreviewData["capabilityGroups"] {
+  const existing = findInstall(lock, template.manifest.id, member);
+  return template.auths.flatMap((a) => {
+    const offered = a.capabilityGroups ?? [];
+    if (offered.length === 0) return [];
+    const definition = getCapability(a.provider);
+    if (!definition) return [];
+    const stored = existing?.auth?.find(
+      (e) => e.provider === a.provider && e.capabilityGroups,
+    );
+    const selected = stored
+      ? new Set(selectedCapabilityGroupIds(stored))
+      : null;
+    const groups = offered.flatMap((id) => {
+      const group = definition.operationGroups.find((g) => g.id === id);
+      if (!group) return [];
+      return [
+        {
+          id,
+          label: group.label,
+          description: group.description,
+          risk: group.risk,
+          default: selected ? selected.has(id) : (group.default ?? false),
+        },
+      ];
+    });
+    return groups.length > 0 ? [{ provider: a.provider, groups }] : [];
   });
 }
 
@@ -336,6 +396,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           includes: template.includes,
           // A new member has no existing install — the template defaults pre-tick.
           authGroups: templateAuthGroups(template, lock, newMemberName),
+          capabilityGroups: templateCapabilityGroups(template, lock, newMemberName),
         };
         return base;
       }
@@ -391,6 +452,11 @@ export const loader = (args: LoaderFunctionArgs) =>
         isUpdate: plan.isUpdate,
         includes: template.includes,
         authGroups: templateAuthGroups(
+          template,
+          lock,
+          resolved.target.memberName,
+        ),
+        capabilityGroups: templateCapabilityGroups(
           template,
           lock,
           resolved.target.memberName,
@@ -507,6 +573,28 @@ export async function action(args: ActionFunctionArgs) {
       if (stored) authSelections[a.provider] = selectedGroupIds(stored);
     }
 
+    // Capability-group selection (issue #166): same marker convention as scope groups —
+    // one `capgroupsfor` per rendered provider plus a `capgroup:<provider>` per ticked box.
+    // Unposted providers keep an existing install's stored selection; first installs fall
+    // back to the registry defaults inside the planner.
+    const capabilitySelections: Record<string, string[]> = {};
+    for (const provider of form.getAll("capgroupsfor").map(String)) {
+      capabilitySelections[provider] = form
+        .getAll(`capgroup:${provider}`)
+        .map(String);
+    }
+    for (const a of template.auths) {
+      if (!a.capabilityGroups?.length || a.provider in capabilitySelections) {
+        continue;
+      }
+      const stored = existingInstall?.auth?.find(
+        (e) => e.provider === a.provider && e.capabilityGroups,
+      );
+      if (stored) {
+        capabilitySelections[a.provider] = selectedCapabilityGroupIds(stored);
+      }
+    }
+
     // Re-plan server-side; NEVER trust the preview. A conflict stages nothing.
     const plan = planInstall({
       template,
@@ -520,6 +608,7 @@ export async function action(args: ActionFunctionArgs) {
       effort: workspaceModel.effort,
       target,
       authSelections,
+      capabilitySelections,
     });
     if (plan.conflicts.length > 0) {
       return {
@@ -1093,6 +1182,75 @@ export default function InstallWizard({
                           />
                           <span className="grid gap-0.5">
                             <span className="font-medium">{g.label}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {g.description}
+                            </span>
+                          </span>
+                        </Label>
+                      ))}
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Issue #166: capability operation groups — what the control plane will EXECUTE for
+                this agent. Enforced per call by Eden (not baked into a token), so the selection
+                can be changed later from the Deployment tab with instant effect. */}
+            {preview.capabilityGroups.length > 0 && (
+              <Card className="mb-6">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <ShieldCheck
+                      className={`size-4 ${accentText.emerald}`}
+                      aria-hidden
+                    />
+                    Operations
+                  </CardTitle>
+                  <CardDescription>
+                    Choose which operations Eden may perform for this agent.
+                    Eden holds the credential and enforces this list on every
+                    call — you can change it any time from the agent&rsquo;s
+                    Deployment tab, with instant effect.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {preview.capabilityGroups.map((cap) => (
+                    <div key={cap.provider} className="grid gap-2">
+                      <input
+                        type="hidden"
+                        name="capgroupsfor"
+                        value={cap.provider}
+                      />
+                      {preview.capabilityGroups.length > 1 && (
+                        <Label className="text-xs uppercase text-muted-foreground">
+                          {cap.provider}
+                        </Label>
+                      )}
+                      {cap.groups.map((g) => (
+                        <Label
+                          key={g.id}
+                          className="flex items-start gap-2 text-sm font-normal"
+                        >
+                          <input
+                            type="checkbox"
+                            name={`capgroup:${cap.provider}`}
+                            value={g.id}
+                            defaultChecked={g.default}
+                            className="mt-0.5 size-4 accent-primary"
+                          />
+                          <span className="grid gap-0.5">
+                            <span className="flex items-center gap-2 font-medium">
+                              {g.label}
+                              {g.risk === "write" && (
+                                <Badge
+                                  variant="outline"
+                                  className="border-amber-500/50 text-amber-600 dark:text-amber-400"
+                                >
+                                  write
+                                </Badge>
+                              )}
+                            </span>
                             <span className="text-xs text-muted-foreground">
                               {g.description}
                             </span>

@@ -67,6 +67,12 @@ export interface ResolvedAuth {
    * label/description, `default` ORs).
    */
   scopeGroups?: AuthScopeGroup[];
+  /**
+   * Capability operation-group ids offered by the composed templates (issue #166), unioned per
+   * provider in first-occurrence order. Ids only — the definitions live in Eden's capability
+   * registry, not in templates.
+   */
+  capabilityGroups?: string[];
 }
 
 /** A template with every include flattened into it — what the planner installs. */
@@ -245,6 +251,9 @@ async function resolve(
         ...(auth.scopeGroups
           ? { scopeGroups: auth.scopeGroups.map(copyGroup) }
           : {}),
+        ...(auth.capabilityGroups
+          ? { capabilityGroups: [...auth.capabilityGroups] }
+          : {}),
       });
       return;
     }
@@ -263,6 +272,12 @@ async function resolve(
       }
       if (group.default) dup.default = true;
     }
+    // Capability groups (issue #166): ids union in first-occurrence order — two composed
+    // connectors offering a group means one offering (the registry defines it once).
+    for (const id of auth.capabilityGroups ?? []) {
+      const groups = (existing.capabilityGroups ??= []);
+      if (!groups.includes(id)) groups.push(id);
+    }
   };
   for (const child of resolvedIncludes) {
     for (const a of child.auths) addAuth(a);
@@ -275,6 +290,11 @@ async function resolve(
       scopes: manifest.auth.scopes ?? [],
       ...(manifest.auth.scopeGroups
         ? { scopeGroups: manifest.auth.scopeGroups }
+        : {}),
+      // The capability block rides the same provider's descriptor (issue #166; the schema
+      // guarantees capability only appears alongside auth).
+      ...(manifest.capability
+        ? { capabilityGroups: manifest.capability.groups }
         : {}),
     });
   }
@@ -294,8 +314,10 @@ async function resolve(
   setOrDelete(resolvedManifest, "dependencies", deps, Object.keys(deps).length > 0);
   setOrDelete(resolvedManifest, "secrets", secrets, secrets.length > 0);
   setOrDelete(resolvedManifest, "sandbox", sandbox, sandbox !== undefined);
-  // `auth` is an install-wizard concern surfaced via `auths` below — never a materialized field.
+  // `auth` (and its `capability` rider, issue #166) is an install-wizard concern surfaced via
+  // `auths` below — never a materialized field.
   delete resolvedManifest.auth;
+  delete resolvedManifest.capability;
 
   return {
     manifest: resolvedManifest,

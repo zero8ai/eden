@@ -53,8 +53,9 @@ sudo ufw enable
 
 Containers call back to the host over the docker bridge (`host.docker.internal` →
 `172.17.0.1`): agent and assistant instances dial Eden's callback API on `3000` (run
-ingestion, the team relay and Discord send proxy, and the connection token broker for
-brokered OAuth providers like May I? — issue #167) and Postgres
+ingestion, the team relay and Discord send proxy, the connection token broker for
+brokered OAuth providers like May I? — issue #167 — and the brokered-capability route for
+capability providers like Xero — issue #166) and Postgres
 on `5442`. ufw's default deny drops that traffic too — the failure is silent (connect
 timeouts inside containers; for the assistant, `eden_*` tools failing and conversation
 checkouts never appearing). Allow both ports on the bridge interface only; this exposes

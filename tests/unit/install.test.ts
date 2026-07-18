@@ -657,6 +657,7 @@ describe("planInstall — conflicts", () => {
     expect(plan.conflicts).toEqual([
       "agents/pm/agent/tools/cloudflare-deploy.ts",
     ]);
+    expect(plan.canKeepExistingFiles).toBe(true);
   });
 
   it("flags a target path occupied by a staged (non-deletion) draft", () => {
@@ -673,6 +674,7 @@ describe("planInstall — conflicts", () => {
     expect(plan.conflicts).toEqual([
       "agents/pm/agent/tools/cloudflare-deploy.ts",
     ]);
+    expect(plan.canKeepExistingFiles).toBe(true);
   });
 
   it("does NOT flag a path with only a staged deletion draft", () => {
@@ -695,6 +697,90 @@ describe("planInstall — conflicts", () => {
     );
     expect(plan.conflicts).toEqual([]);
     expect(plan.writes.some((w) => w.path === "eden-lock.json")).toBe(true);
+  });
+
+  it("registers around an existing code-authored connection without owning or rewriting it", () => {
+    const path = "agents/pm/agent/connections/google-sheets.ts";
+    const plan = planInstall(
+      memberCtx({
+        template: sheetsConnTpl,
+        repoPaths: [path],
+        keepExistingFiles: true,
+      }),
+    );
+
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.preservedFiles).toEqual([path]);
+    expect(plan.writes.some((write) => write.path === path)).toBe(false);
+
+    const lock = parseLock(
+      JSON.parse(plan.writes.find((w) => w.path === "eden-lock.json")!.content),
+    );
+    const entry = findInstall(lock, "google-sheets", "pm")!;
+    expect(entry.files).toEqual([]);
+    expect(entry.auth).toEqual([
+      {
+        provider: "google",
+        kind: "oauth2",
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+      },
+    ]);
+    expect(
+      planUninstall({
+        lock,
+        id: "google-sheets",
+        memberName: "pm",
+        repoPaths: [path],
+      }).deletions,
+    ).toEqual([]);
+  });
+
+  it("keeps occupied files but still installs missing template files", () => {
+    const existingPath = "agents/pm/agent/instructions.md";
+    const missingPath = "agents/pm/agent/agent.ts";
+    const plan = planInstall(
+      memberCtx({
+        template: {
+          ...agentTpl,
+          manifest: {
+            ...agentTpl.manifest,
+            files: ["instructions.md", "agent.ts"],
+          },
+        },
+        repoPaths: [existingPath],
+        keepExistingFiles: true,
+      }),
+    );
+
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.preservedFiles).toEqual([existingPath]);
+    expect(plan.writes.some((write) => write.path === existingPath)).toBe(
+      false,
+    );
+    expect(plan.writes.some((write) => write.path === missingPath)).toBe(true);
+    const lock = parseLock(
+      JSON.parse(plan.writes.find((w) => w.path === "eden-lock.json")!.content),
+    );
+    expect(findInstall(lock, agentTpl.manifest.id, "pm")!.files).toEqual([
+      missingPath,
+    ]);
+  });
+
+  it("does not let keep-existing bypass a malformed package.json", () => {
+    const path = "agents/pm/agent/tools/cloudflare-deploy.ts";
+    const plan = planInstall(
+      memberCtx({
+        repoPaths: [path],
+        packageJson: "{ not json",
+        keepExistingFiles: true,
+      }),
+    );
+
+    expect(plan.preservedFiles).toEqual([path]);
+    expect(plan.conflicts).toEqual([
+      "agents/pm/package.json is not valid JSON — fix it before installing.",
+    ]);
+    expect(plan.canKeepExistingFiles).toBe(false);
   });
 });
 
@@ -954,10 +1040,13 @@ describe("planInstall — resolved (composed) templates", () => {
       packageJson: null,
       lock: upsertInstall(emptyLock(), agentEntry),
       target: { kind: "member", memberName: "x", root: "agents/x/agent" },
+      keepExistingFiles: true,
     });
     // A DIFFERENT lock entry owns the path, so this is a blocking conflict, not an update.
     expect(plan.isUpdate).toBe(false);
     expect(plan.conflicts).toEqual(["agents/x/agent/channels/discord.ts"]);
+    expect(plan.canKeepExistingFiles).toBe(false);
+    expect(plan.preservedFiles).toEqual([]);
   });
 });
 

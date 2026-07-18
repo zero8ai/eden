@@ -272,6 +272,14 @@ export interface PlanContext {
    * the registry definition's `default`-flagged groups among the offered ids.
    */
   capabilitySelections?: Record<string, string[]>;
+  /**
+   * Register a template around code that already occupies one or more of its target paths.
+   * Occupied, unowned files are preserved byte-for-byte and deliberately omitted from the lock's
+   * owned `files` list, so a later uninstall cannot delete hand-authored code. Missing files and
+   * dependency merges are still staged normally. Only member installs support this escape hatch;
+   * new-member validation and non-file conflicts remain blocking.
+   */
+  keepExistingFiles?: boolean;
 }
 
 export interface InstallPlan {
@@ -281,6 +289,10 @@ export interface InstallPlan {
   deletions: string[];
   /** BLOCKING: a target path already exists and isn't ours (or an invalid new-member name). */
   conflicts: string[];
+  /** True when every blocker is an occupied template path that can be preserved during register. */
+  canKeepExistingFiles: boolean;
+  /** Occupied custom files preserved by a keep-existing plan; these are never lock-owned. */
+  preservedFiles: string[];
   /** Non-blocking: e.g. a dependency range disagreement the reviewer should eyeball. */
   warnings: string[];
   /** True when this (id, member) was already installed — an overwrite, not a first install. */
@@ -544,8 +556,19 @@ export function planInstall(ctx: PlanContext): InstallPlan {
       `Absorbs the existing "${e.name}" v${e.version} install — its files are now managed by ${manifest.name}.`,
     );
   }
+  const recognizedOwners = new Set<InstallEntry>(absorbed);
+  if (existing) recognizedOwners.add(existing);
+  const ownedByOtherInstall = new Set<string>();
+  for (const entry of ctx.lock.installs) {
+    if (recognizedOwners.has(entry)) continue;
+    for (const path of entry.files) ownedByOtherInstall.add(path);
+  }
 
   const draftAt = new Map(ctx.drafts.map((d) => [d.path, d.content]));
+  const nonFileConflictCount = conflicts.length;
+  const occupiedTemplatePaths: string[] = [];
+  const preservableTemplatePaths: string[] = [];
+  const preservedFiles: string[] = [];
   // A new member's generated package.json is a CREATE (not a merge like an existing member's),
   // so an orphan file already at that path — a half-deleted member — must block, not be clobbered.
   const createPaths = fileWrites.map((w) => w.path);
@@ -556,7 +579,29 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     if (owned.has(path)) continue; // ours already — overwrite is fine (update)
     const occupiedInRepo = ctx.repoPaths.includes(path);
     const occupiedByDraft = draftAt.has(path) && draftAt.get(path) !== null;
-    if (occupiedInRepo || occupiedByDraft) conflicts.push(path);
+    if (!occupiedInRepo && !occupiedByDraft) continue;
+    occupiedTemplatePaths.push(path);
+    const canPreservePath =
+      target.kind === "member" && !ownedByOtherInstall.has(path);
+    if (canPreservePath) preservableTemplatePaths.push(path);
+    if (ctx.keepExistingFiles && canPreservePath) {
+      preservedFiles.push(path);
+    } else {
+      conflicts.push(path);
+    }
+  }
+
+  // Preserve means preserve: remove the catalog write and do not claim ownership in the lock.
+  // The lock still snapshots auth/secrets/capabilities, which is the registration Eden needs to
+  // surface the code-authored connection on Deployment and provision it at deploy time.
+  const preservedFileSet = new Set(preservedFiles);
+  if (preservedFiles.length > 0) {
+    for (let i = writes.length - 1; i >= 0; i -= 1) {
+      if (preservedFileSet.has(writes[i].path)) writes.splice(i, 1);
+    }
+    warnings.push(
+      `${preservedFiles.length} existing file${preservedFiles.length === 1 ? " was" : "s were"} kept unchanged and left unmanaged by this install.`,
+    );
   }
 
   const deletions = [
@@ -578,7 +623,9 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     hash: template.hash ?? templateContentHash(template),
     registry: ctx.registry,
     member,
-    files: [...newPaths].filter((p) => !MERGED_FILES.has(p)).sort(),
+    files: [...newPaths]
+      .filter((p) => !MERGED_FILES.has(p) && !preservedFileSet.has(p))
+      .sort(),
     ...(manifest.dependencies ? { dependencies: manifest.dependencies } : {}),
     // Record composition provenance so Settings/uninstall can see what a parent bundled.
     ...(template.includes && template.includes.length > 0
@@ -638,6 +685,12 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     writes,
     deletions,
     conflicts,
+    canKeepExistingFiles:
+      target.kind === "member" &&
+      occupiedTemplatePaths.length > 0 &&
+      preservableTemplatePaths.length === occupiedTemplatePaths.length &&
+      nonFileConflictCount === 0,
+    preservedFiles,
     warnings,
     isUpdate,
     secrets: (manifest.secrets ?? []).map((s) => ({

@@ -21,7 +21,12 @@ export default defineTool({
     "merges dependencies and sandbox bootstrap setup, provisions supplied or shared secrets, " +
     "and snapshots auth/capability selections. Conflicts stage nothing. For an agent template, " +
     "member is the new team-member name; otherwise it is an existing member name. secretValues " +
-    "are write-only and are never returned.",
+    "are write-only and are never returned. The result's secrets.required lists only secrets the " +
+    "human must supply; secrets.provisioned are set or minted by Eden automatically — never ask " +
+    "the user for those. This stages a pending change-set reviewed on Eden's Deployment tab: the " +
+    "installed files will NOT appear in your git checkout until the human publishes and merges " +
+    "it, so their absence right after a successful install is expected — do not re-create them by " +
+    "hand or treat the absence as a failed install.",
   inputSchema: z.object({
     type: templateType,
     id: z.string().describe("The template id returned by eden_catalog."),
@@ -46,7 +51,7 @@ export default defineTool({
       .record(z.string(), z.string())
       .optional()
       .describe(
-        "Optional manifest secret values. Existing shared secrets attach automatically when no value is supplied; all other omitted secrets remain required for later setup.",
+        "Optional manifest secret values for secrets the user must supply. Existing shared secrets attach automatically when no value is supplied; other omitted user secrets remain required for later setup. Do NOT pass provisioned/generated secrets — Eden sets those itself.",
       ),
   }),
   async execute(input) {

@@ -43,7 +43,13 @@ import { decodeKey, fingerprint, seal } from "~/seams/oss/secretbox";
 import type { CatalogSource, SecretsProvider } from "~/seams/types";
 
 interface SecretChangeSet {
+  /** Secrets the human must still supply (excludes Eden-handled ones). */
   required: string[];
+  /**
+   * Secrets Eden sets or mints itself (manifest `provisioned`/`generated`) — never requested from
+   * the user. Reported separately from `required` so the assistant doesn't ask for them.
+   */
+  provisioned: string[];
   set: string[];
   attached: string[];
   skipped: string[];
@@ -424,12 +430,22 @@ export async function installMarketplaceTemplate(
       authSelections,
       capabilitySelections,
     });
+    // Issue #47/#163: provisioned secrets are set by a guided Eden flow and generated ones are
+    // minted by Eden at first deploy — the user never supplies either, so they are reported apart
+    // from `required` (the wizard filters them out of its user-facing list the same way).
+    const requiredSecrets = plan.secrets
+      .filter((secret) => !secret.provisioned && !secret.generated)
+      .map((secret) => secret.name);
+    const provisionedSecrets = plan.secrets
+      .filter((secret) => secret.provisioned || secret.generated)
+      .map((secret) => secret.name);
     const changeSet = {
       writes: plan.writes.map((write) => write.path),
       deletions: plan.deletions,
       warnings: plan.warnings,
       secrets: {
-        required: plan.secrets.map((secret) => secret.name),
+        required: requiredSecrets,
+        provisioned: provisionedSecrets,
         set: [],
         attached: [],
         skipped: [],
@@ -438,7 +454,7 @@ export async function installMarketplaceTemplate(
     if (plan.conflicts.length > 0) {
       return {
         ok: false,
-        error: `Can't install because ${plan.conflicts.length} path(s) conflict with existing files.`,
+        error: `Can't install because ${plan.conflicts.length} conflict(s) block this install.`,
         conflicts: plan.conflicts,
         ...changeSet,
       };
@@ -494,13 +510,18 @@ export async function installMarketplaceTemplate(
       conflicts: [],
       ...changeSet,
       secrets: {
-        required: plan.secrets.map((secret) => secret.name),
+        required: requiredSecrets,
+        provisioned: provisionedSecrets,
         set: secretOps.filter((op) => op.kind === "set").map((op) => op.name),
         attached: secretOps
           .filter((op) => op.kind === "attach")
           .map((op) => op.name),
+        // Provisioned/generated secrets also plan as `skip` ops; they are reported under
+        // `provisioned`, so keep them out of `skipped` to avoid listing them twice.
         skipped: secretOps
-          .filter((op) => op.kind === "skip")
+          .filter(
+            (op) => op.kind === "skip" && !provisionedSecrets.includes(op.name),
+          )
           .map((op) => op.name),
       },
     };

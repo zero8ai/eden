@@ -64,25 +64,52 @@ const bundle: CatalogTemplate = {
   files: {},
 };
 
-function harness(options?: { occupied?: boolean }) {
+const agent: CatalogTemplate = {
+  manifest: {
+    id: "example-agent",
+    type: "agent",
+    name: "Example Agent",
+    description: "A ready-made teammate.",
+    version: "1.0.0",
+    eve: ">=0.22.0",
+    files: ["agent.ts"],
+  },
+  files: { "agent.ts": 'export default defineAgent({ model: "anthropic/x" });\n' },
+};
+
+function harness(options?: {
+  occupied?: boolean;
+  team?: boolean;
+  model?: string | null;
+}) {
   const store = makeFakeStore();
   const project = store.seedProject({
     id: "project",
     orgId: "org",
-    layout: "single",
+    layout: options?.team ? "team" : "single",
     repoOwner: "acme",
     repoName: "agents",
     repoInstallationId: "installation",
   }) as AuthoringProject;
-  store.seedAgent({
-    id: "member",
-    projectId: project.id,
-    name: "agent",
-    root: "agent",
-  });
+  if (options?.team) {
+    store.seedAgent({
+      id: "member",
+      projectId: project.id,
+      name: "pm",
+      root: "agents/pm/agent",
+    });
+  } else {
+    store.seedAgent({
+      id: "member",
+      projectId: project.id,
+      name: "agent",
+      root: "agent",
+    });
+  }
   const templates = new Map([
     ["bundle/example-bundle", bundle],
     ["connection/example-api", connection],
+    ["agent/example-agent", agent],
   ]);
   const catalog: CatalogSource = {
     name: "test",
@@ -98,11 +125,13 @@ function harness(options?: { occupied?: boolean }) {
     store,
     catalog,
     fetchSource: async () => ({
-      paths: [
-        "agent/agent.ts",
-        "package.json",
-        ...(options?.occupied ? ["agent/tools/example-api.ts"] : []),
-      ],
+      paths: options?.team
+        ? ["agents/pm/agent/agent.ts", "agents/pm/package.json"]
+        : [
+            "agent/agent.ts",
+            "package.json",
+            ...(options?.occupied ? ["agent/tools/example-api.ts"] : []),
+          ],
       files: {},
       ref: "main",
       truncated: false,
@@ -119,7 +148,10 @@ function harness(options?: { occupied?: boolean }) {
     stageWrite: stageDraft,
     stageDeletes: stageDeletions,
     sharedSecretNames: async () => ["EXAMPLE_TOKEN"],
-    workspaceModel: async () => ({ model: null, effort: null }),
+    workspaceModel: async () => ({
+      model: options?.model ?? null,
+      effort: null,
+    }),
     credentialConflict: async () => null,
     applySecretOps: async ({ ops }) => {
       appliedOps = ops;
@@ -224,6 +256,94 @@ describe("assistant marketplace install", () => {
     const lockDraft = drafts.find((draft) => draft.path === "eden-lock.json");
     const lock = parseLock(JSON.parse(lockDraft?.content ?? "null"));
     expect(lock.installs[0].auth?.[0].selectedGroups).toEqual(["write"]);
+  });
+
+  it("plans a set op carrying the manifest sandbox flag when a value is supplied", async () => {
+    const { project, store, deps, appliedOps } = harness();
+    const result = await installMarketplaceTemplate(
+      project,
+      {
+        type: "connection",
+        id: "example-api",
+        member: "agent",
+        secretValues: { EXAMPLE_TOKEN: "s3cr3t" },
+      },
+      deps,
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      secrets: { required: ["EXAMPLE_TOKEN"], set: ["EXAMPLE_TOKEN"] },
+    });
+    expect(appliedOps()).toEqual([
+      { kind: "set", name: "EXAMPLE_TOKEN", value: "s3cr3t", sandbox: true },
+    ]);
+    const drafts = await listDrafts(project.id, store);
+    expect(drafts.some((draft) => draft.path === "eden-lock.json")).toBe(true);
+  });
+
+  it("stages nothing when the GitHub-App credential guard rejects the install", async () => {
+    const { project, store, deps } = harness();
+    const result = await installMarketplaceTemplate(
+      project,
+      { type: "connection", id: "example-api", member: "agent" },
+      { ...deps, credentialConflict: async () => "Another agent uses this App." },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "Another agent uses this App.",
+    });
+    expect(await listDrafts(project.id, store)).toEqual([]);
+  });
+
+  it("refuses an agent template in a single-agent repo", async () => {
+    const { project, deps } = harness();
+    await expect(
+      installMarketplaceTemplate(
+        project,
+        { type: "agent", id: "example-agent", member: "deployer" },
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("single-agent repo"),
+    });
+  });
+
+  it("refuses an agent template when no workspace default model is set", async () => {
+    const { project, deps } = harness({ team: true, model: null });
+    await expect(
+      installMarketplaceTemplate(
+        project,
+        { type: "agent", id: "example-agent", member: "deployer" },
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("workspace default model"),
+    });
+  });
+
+  it("blocks an agent template whose new-member name collides with the roster", async () => {
+    const { project, store, deps } = harness({
+      team: true,
+      model: "anthropic/x",
+    });
+    const result = await installMarketplaceTemplate(
+      project,
+      { type: "agent", id: "example-agent", member: "pm" },
+      deps,
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("block this install"),
+      conflicts: expect.arrayContaining([
+        expect.stringContaining('agent named "pm"'),
+      ]),
+    });
+    expect(await listDrafts(project.id, store)).toEqual([]);
   });
 
   it("rejects types outside the complete marketplace type set", async () => {

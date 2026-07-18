@@ -120,7 +120,7 @@ const PROJECT = {
 };
 const AGENT = { id: "agntabcdefgh", name: "books", root: "roster/books", kind: "member" };
 const XERO_SCOPES =
-  "offline_access accounting.transactions accounting.contacts accounting.settings.read accounting.attachments";
+  "offline_access accounting.invoices accounting.contacts accounting.settings.read accounting.attachments";
 const TENANT_A = { id: "tenant-a", name: "Acme Ltd" };
 const TENANT_B = { id: "tenant-b", name: "Beta Pty" };
 

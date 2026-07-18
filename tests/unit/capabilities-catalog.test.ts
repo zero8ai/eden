@@ -103,7 +103,7 @@ describe("the xero template's tool files", () => {
   it("requests the fixed consent superset — the whitelist, not the token scope, is the enforcement plane", () => {
     expect(template.manifest.auth?.scopes).toEqual([
       "offline_access",
-      "accounting.transactions",
+      "accounting.invoices",
       "accounting.contacts",
       "accounting.settings.read",
       "accounting.attachments",

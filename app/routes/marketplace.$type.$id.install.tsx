@@ -154,6 +154,9 @@ interface PreviewData {
   files: string[];
   deletions: string[];
   conflicts: string[];
+  canKeepExistingFiles: boolean;
+  /** Occupied custom paths a register-and-keep would preserve byte-for-byte (issue #177). */
+  preservedFiles: string[];
   warnings: string[];
   deps: DependencyDecision[];
   secrets: Array<{
@@ -386,6 +389,8 @@ export const loader = (args: LoaderFunctionArgs) =>
             .map((w) => w.path),
           deletions: plan.deletions,
           conflicts: plan.conflicts,
+          canKeepExistingFiles: plan.canKeepExistingFiles,
+          preservedFiles: plan.preservedFiles,
           warnings: plan.warnings,
           deps: describeDependencies(
             { eve: "latest", [ZOD_PACKAGE]: ZOD_VERSION },
@@ -396,7 +401,11 @@ export const loader = (args: LoaderFunctionArgs) =>
           includes: template.includes,
           // A new member has no existing install — the template defaults pre-tick.
           authGroups: templateAuthGroups(template, lock, newMemberName),
-          capabilityGroups: templateCapabilityGroups(template, lock, newMemberName),
+          capabilityGroups: templateCapabilityGroups(
+            template,
+            lock,
+            newMemberName,
+          ),
         };
         return base;
       }
@@ -422,7 +431,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           ? pkgDraft.content
           : await readAgentFile(project.repoInstallationId, repo, pkgPath);
 
-      const plan = planInstall({
+      const planArgs = {
         template,
         registry,
         repoPaths: source.paths,
@@ -430,7 +439,15 @@ export const loader = (args: LoaderFunctionArgs) =>
         packageJson,
         lock,
         target: resolved.target,
-      });
+      };
+      let plan = planInstall(planArgs);
+      // The user resolves occupied template paths by clicking "Register and keep existing files",
+      // which re-plans server-side WITH keepExistingFiles. Preview THAT plan (issue #177) so the
+      // approved change-set matches: preserved paths are spliced out of the "+" files list and the
+      // "kept unchanged / left unmanaged" note surfaces, instead of listing them as writes.
+      if (plan.canKeepExistingFiles) {
+        plan = planInstall({ ...planArgs, keepExistingFiles: true });
+      }
       let currentDeps: Record<string, string> | null = null;
       try {
         currentDeps = packageJson
@@ -446,6 +463,8 @@ export const loader = (args: LoaderFunctionArgs) =>
           .map((w) => w.path),
         deletions: plan.deletions,
         conflicts: plan.conflicts,
+        canKeepExistingFiles: plan.canKeepExistingFiles,
+        preservedFiles: plan.preservedFiles,
         warnings: plan.warnings,
         deps: describeDependencies(currentDeps, template.manifest.dependencies),
         secrets: plan.secrets,
@@ -595,7 +614,8 @@ export async function action(args: ActionFunctionArgs) {
       }
     }
 
-    // Re-plan server-side; NEVER trust the preview. A conflict stages nothing.
+    // Re-plan server-side; NEVER trust the preview. Non-file conflicts stage nothing; an explicit
+    // keep-existing submission may preserve occupied template paths and register around them.
     const plan = planInstall({
       template,
       registry,
@@ -609,6 +629,8 @@ export async function action(args: ActionFunctionArgs) {
       target,
       authSelections,
       capabilitySelections,
+      keepExistingFiles:
+        String(form.get("conflictResolution") ?? "") === "keep-existing",
     });
     if (plan.conflicts.length > 0) {
       return {
@@ -800,6 +822,12 @@ export default function InstallWizard({
     !!selectedProjectId &&
     targetChosen &&
     !hasConflicts &&
+    !singleAgentInvalid &&
+    !missingModelDefault;
+  const canRegisterExisting =
+    !!selectedProjectId &&
+    targetChosen &&
+    !!preview?.canKeepExistingFiles &&
     !singleAgentInvalid &&
     !missingModelDefault;
 
@@ -1023,11 +1051,29 @@ export default function InstallWizard({
                   <AlertTitle>Blocked by conflicts</AlertTitle>
                   <AlertDescription>
                     <p className="mb-2">
-                      These target files already exist and aren&rsquo;t from
-                      this template. Resolve them before installing:
+                      These target files already exist and can’t be preserved
+                      automatically. Resolve them before installing:
                     </p>
                     <ul className="space-y-1 font-mono text-xs">
                       {preview.conflicts.map((c) => (
+                        <li key={c}>{c}</li>
+                      ))}
+                    </ul>
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {preview.preservedFiles.length > 0 && (
+                <Alert>
+                  <AlertTitle>Existing code detected</AlertTitle>
+                  <AlertDescription>
+                    <p className="mb-2">
+                      These template paths already contain code. Registering
+                      keeps them byte-for-byte and leaves them unmanaged (a
+                      later uninstall won’t delete them):
+                    </p>
+                    <ul className="space-y-1 font-mono text-xs">
+                      {preview.preservedFiles.map((c) => (
                         <li key={c}>{c}</li>
                       ))}
                     </ul>
@@ -1311,12 +1357,24 @@ export default function InstallWizard({
             )}
 
             <div className="flex items-center gap-3">
-              <Button type="submit" disabled={!canSubmit}>
-                Stage install
-              </Button>
+              {preview.canKeepExistingFiles ? (
+                <Button
+                  type="submit"
+                  name="conflictResolution"
+                  value="keep-existing"
+                  disabled={!canRegisterExisting}
+                >
+                  Register and keep existing files
+                </Button>
+              ) : (
+                <Button type="submit" disabled={!canSubmit}>
+                  Stage install
+                </Button>
+              )}
               <span className="text-sm text-muted-foreground">
-                Stages a change-set — review and publish it on the Deployment
-                tab.
+                {preview.canKeepExistingFiles
+                  ? "Preserves your code and stages the lock, missing files, and dependencies. Preserved files stay unmanaged."
+                  : "Stages a change-set — review and publish it on the Deployment tab."}
               </span>
             </div>
           </Form>

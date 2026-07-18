@@ -1,0 +1,24 @@
+{
+  "id": "agentmail",
+  "type": "connection",
+  "name": "AgentMail",
+  "description": "Read and label mail in an AgentMail inbox (agentmail.to) with a user-supplied API key — no OAuth. Ships four tools: list the account's inboxes, list/search messages by date range, labels (e.g. unread), sender, or subject, read a full message including attachment downloads (invoice PDFs are the point), and add/remove labels. Read + label only by design: nothing shipped here can send, delete, or provision mail — the billing-inbox rule, enforced by omission.",
+  "version": "0.1.0",
+  "eve": ">=0.1.0",
+  "files": [
+    "tools/agentmail-list-inboxes.ts",
+    "tools/agentmail-list-messages.ts",
+    "tools/agentmail-get-message.ts",
+    "tools/agentmail-update-labels.ts"
+  ],
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "secrets": [
+    {
+      "name": "AGENTMAIL_API_KEY",
+      "description": "AgentMail API key (Bearer token for api.agentmail.to). Created in the AgentMail console."
+    }
+  ],
+  "setup": "**Get the API key:** in the [AgentMail Console](https://console.agentmail.to), create an API key from the dashboard and copy it (it's shown once). Enter it in the install wizard, or skip and add it later on the agent's secrets as `AGENTMAIL_API_KEY` — either way it lands in the deployed instance's environment, where the tools read it.\n\n**Pick the inbox:** still in the console, create or pick the inbox this agent reads (e.g. `billing@agentmail.to`, or an address on a domain you've verified under Domains). The tools take the inbox id or email address as an input; `agentmail-list-inboxes` enumerates what's on the account, so the agent can discover it itself.\n\n**Custom-domain mail (ops step, outside Eden):** to receive mail for an address like `billing@your-domain.com` without verifying the domain in AgentMail, forward it with Cloudflare Email Routing: Cloudflare dashboard → your zone → **Email → Email Routing** → create the address `billing@your-domain.com` with the AgentMail inbox address as the destination, and confirm the one-time verification email Cloudflare sends there (it arrives in the AgentMail inbox). Inbound mail for the custom address then lands in the AgentMail inbox. Replies can't come *from* the custom address over a plain forward — fine: this connection never sends.\n\n**Scope:** read + label only. The tools can list and read mail and change labels; sending, deleting, and inbox provisioning do not exist here. For defense in depth you can also restrict the API key itself in the AgentMail console (key permissions: scope it to the billing inbox and read/label operations), so even a leaked key can't send.\n\n**Free tier:** 3 inboxes / 3,000 emails per month — plenty for a billing inbox."
+}

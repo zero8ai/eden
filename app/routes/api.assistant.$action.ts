@@ -8,12 +8,16 @@
  *
  * Under the coding-agent model the write/read/list/dependency/scaffold/run-checks actions are gone
  * (the model edits a real git checkout with bash; the control plane mirrors it to a PR). What's left
- * is read-only KNOWLEDGE (`project-context`, `catalog`, the boot `bundle`) plus `read-token` — the
- * narrowed, single-repo `contents:read` installation token the sidecar uses to clone/fetch. The
- * read token is scoped to one repo and is NEVER a write credential; the `edna_` token never leaves
- * the instance.
+ * is control-plane KNOWLEDGE (`project-context`, `catalog`, the boot `bundle`), marketplace
+ * `install`, plus `read-token` — the narrowed, single-repo `contents:read` installation token the
+ * sidecar uses to clone/fetch. The read token is scoped to one repo and is NEVER a write
+ * credential; the `edna_` token never leaves the instance.
  */
-import { data, type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
+import {
+  data,
+  type ActionFunctionArgs,
+  type LoaderFunctionArgs,
+} from "react-router";
 
 import {
   assembleBundle,
@@ -23,6 +27,7 @@ import {
   resolveAssistantContext,
   type AuthoringDeps,
 } from "~/assistant/authoring.server";
+import { installMarketplaceTemplate } from "~/assistant/install.server";
 import { bearerToken, verifyAssistantToken } from "~/assistant/token.server";
 import { mintNarrowedReadToken } from "~/github/client.server";
 
@@ -50,7 +55,10 @@ export async function action({ request, params }: ActionFunctionArgs) {
   const ctx = await authenticate(request, deps);
   if (!ctx) throw data({ error: "Invalid assistant token" }, { status: 401 });
 
-  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const body = (await request.json().catch(() => ({}))) as Record<
+    string,
+    unknown
+  >;
   const str = (v: unknown) => (typeof v === "string" ? v : "");
   const { project } = ctx;
 
@@ -60,10 +68,16 @@ export async function action({ request, params }: ActionFunctionArgs) {
     case "catalog":
       return Response.json(
         await catalogOp(
-          { op: str(body.op), type: str(body.type) || undefined, id: str(body.id) || undefined },
+          {
+            op: str(body.op),
+            type: str(body.type) || undefined,
+            id: str(body.id) || undefined,
+          },
           deps,
         ),
       );
+    case "install":
+      return Response.json(await installMarketplaceTemplate(project, body));
     case "read-token": {
       // A short-lived installation token narrowed to THIS repo, contents:read only — the sidecar's
       // credential to clone/fetch the conversation checkout. Never a write credential; the sidecar
@@ -89,6 +103,9 @@ export async function action({ request, params }: ActionFunctionArgs) {
       }
     }
     default:
-      throw data({ error: `Unknown action "${params.action}"` }, { status: 404 });
+      throw data(
+        { error: `Unknown action "${params.action}"` },
+        { status: 404 },
+      );
   }
 }

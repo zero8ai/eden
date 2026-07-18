@@ -41,6 +41,14 @@
       "hash": "530407920c180a7a1c92ed8f4ca32d89f8b475af"
     },
     {
+      "id": "agentmail",
+      "type": "connection",
+      "name": "AgentMail",
+      "version": "0.1.0",
+      "description": "Read and label mail in an AgentMail inbox (agentmail.to) with a user-supplied API key — no OAuth. Ships four tools: list the account's inboxes, list/search messages by date range, labels (e.g. unread), sender, or subject, read a full message including attachment downloads (invoice PDFs are the point), and add/remove labels. Read + label only by design: nothing shipped here can send, delete, or provision mail — the billing-inbox rule, enforced by omission.",
+      "hash": "18634c152c783cf2af51107f45ef46fab0407966"
+    },
+    {
       "id": "gmail",
       "type": "connection",
       "name": "Gmail",

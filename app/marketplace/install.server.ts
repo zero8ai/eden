@@ -569,6 +569,11 @@ export function planInstall(ctx: PlanContext): InstallPlan {
   const occupiedTemplatePaths: string[] = [];
   const preservableTemplatePaths: string[] = [];
   const preservedFiles: string[] = [];
+  // Paths this install PREVIOUSLY preserved (issue #177): a later repair/update re-plans WITHOUT
+  // `keepExistingFiles`, so without this the very files the register step promised to leave alone
+  // would read as foreign and block forever. Auto-preserving only these known paths keeps the
+  // guard intact for genuine new local edits (an occupied, unowned, never-preserved path).
+  const previouslyPreserved = new Set(existing?.preservedFiles ?? []);
   // A new member's generated package.json is a CREATE (not a merge like an existing member's),
   // so an orphan file already at that path — a half-deleted member — must block, not be clobbered.
   const createPaths = fileWrites.map((w) => w.path);
@@ -584,7 +589,7 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     const canPreservePath =
       target.kind === "member" && !ownedByOtherInstall.has(path);
     if (canPreservePath) preservableTemplatePaths.push(path);
-    if (ctx.keepExistingFiles && canPreservePath) {
+    if ((ctx.keepExistingFiles || previouslyPreserved.has(path)) && canPreservePath) {
       preservedFiles.push(path);
     } else {
       conflicts.push(path);
@@ -626,6 +631,11 @@ export function planInstall(ctx: PlanContext): InstallPlan {
     files: [...newPaths]
       .filter((p) => !MERGED_FILES.has(p) && !preservedFileSet.has(p))
       .sort(),
+    // Record the deliberately-preserved paths (issue #177) so the Settings drift check treats
+    // them as present and a later repair/update auto-preserves them instead of blocking.
+    ...(preservedFiles.length > 0
+      ? { preservedFiles: [...preservedFiles].sort() }
+      : {}),
     ...(manifest.dependencies ? { dependencies: manifest.dependencies } : {}),
     // Record composition provenance so Settings/uninstall can see what a parent bundled.
     ...(template.includes && template.includes.length > 0
@@ -670,9 +680,29 @@ export function planInstall(ctx: PlanContext): InstallPlan {
   });
   const nextSandboxEntries = sandboxEntries(nextLock, member);
   const previousSandboxEntries = sandboxEntries(ctx.lock, member);
-  if (nextSandboxEntries.length > 0 || previousSandboxEntries.length > 0) {
+  // The managed sandbox module is generated, never lock-owned, so a normal install overwrites it
+  // freely. But register mode's no-overwrite promise must also cover a HAND-AUTHORED
+  // `sandbox/sandbox.ts`: when Eden wasn't already managing one (no prior sandbox install) and a
+  // file occupies that path, it is the customer's — keep it byte-for-byte and skip the managed
+  // write, at the cost of not wiring this install's sandbox bootstrap.
+  const sbModulePath = sandboxModulePath(rootForMember(member));
+  const sandboxModuleOccupied =
+    ctx.repoPaths.includes(sbModulePath) ||
+    (draftAt.has(sbModulePath) && draftAt.get(sbModulePath) !== null);
+  const preserveSandboxModule =
+    ctx.keepExistingFiles &&
+    sandboxModuleOccupied &&
+    previousSandboxEntries.length === 0 &&
+    !ownedByOtherInstall.has(sbModulePath);
+  if (preserveSandboxModule) {
+    if (nextSandboxEntries.length > 0) {
+      warnings.push(
+        `Kept your existing \`${sbModulePath}\` unchanged — the sandbox bootstrap for this install was not wired in.`,
+      );
+    }
+  } else if (nextSandboxEntries.length > 0 || previousSandboxEntries.length > 0) {
     writes.push({
-      path: sandboxModulePath(rootForMember(member)),
+      path: sbModulePath,
       content: renderManagedSandboxModule(
         rootForMember(member),
         nextLock,

@@ -782,6 +782,101 @@ describe("planInstall — conflicts", () => {
     ]);
     expect(plan.canKeepExistingFiles).toBe(false);
   });
+
+  it("preserves a draft-occupied (not repo-occupied) path in keep-existing mode", () => {
+    const path = "agents/pm/agent/tools/cloudflare-deploy.ts";
+    const plan = planInstall(
+      memberCtx({
+        drafts: [{ path, content: "mine\n" }],
+        keepExistingFiles: true,
+      }),
+    );
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.preservedFiles).toEqual([path]);
+    expect(plan.writes.some((w) => w.path === path)).toBe(false);
+  });
+
+  it("keeps a hand-authored sandbox module in keep-existing mode instead of overwriting it", () => {
+    const sandboxPath = "agents/pm/agent/sandbox/sandbox.ts";
+    const plan = planInstall(
+      memberCtx({
+        template: browserSkillTpl,
+        // Only the managed sandbox module pre-exists; the skill file is genuinely new.
+        repoPaths: [sandboxPath],
+        keepExistingFiles: true,
+      }),
+    );
+    // The hand-authored module Eden never managed must not be clobbered…
+    expect(plan.writes.some((w) => w.path === sandboxPath)).toBe(false);
+    // …and the missing skill file still stages.
+    expect(
+      plan.writes.some((w) => w.path === "agents/pm/agent/skills/agent-browser.md"),
+    ).toBe(true);
+    expect(
+      plan.warnings.some((w) => w.includes(sandboxPath) && w.includes("bootstrap")),
+    ).toBe(true);
+  });
+
+  it("still blocks a new-member orphan package.json even with keepExistingFiles", () => {
+    const plan = planInstall({
+      template: agentTpl,
+      registry: REGISTRY,
+      // A half-deleted member left its package.json behind; a fresh member CREATE must not clobber it.
+      repoPaths: ["agents/ghost/package.json"],
+      drafts: [],
+      packageJson: null,
+      lock: emptyLock(),
+      rosterNames: [],
+      model: "anthropic/claude-sonnet-5",
+      target: { kind: "new-member", name: "ghost" },
+      keepExistingFiles: true,
+    });
+    expect(plan.conflicts).toEqual(["agents/ghost/package.json"]);
+    // A new-member target can never register-around occupied paths.
+    expect(plan.canKeepExistingFiles).toBe(false);
+    expect(plan.preservedFiles).toEqual([]);
+  });
+
+  it("auto-preserves recorded paths on a later repair/update without keepExistingFiles", () => {
+    const path = "agents/pm/agent/connections/google-sheets.ts";
+    // First: register around the existing file, producing a lock entry that records the path.
+    const registered = planInstall(
+      memberCtx({
+        template: sheetsConnTpl,
+        repoPaths: [path],
+        keepExistingFiles: true,
+      }),
+    );
+    const lock = parseLock(
+      JSON.parse(
+        registered.writes.find((w) => w.path === "eden-lock.json")!.content,
+      ),
+    );
+    expect(findInstall(lock, "google-sheets", "pm")!.preservedFiles).toEqual([
+      path,
+    ]);
+
+    // Then: a Settings repair/update re-plans WITHOUT keepExistingFiles — the recorded path must
+    // still be preserved (not resurface as a blocking conflict), so the update never hard-fails.
+    const repaired = planInstall(
+      memberCtx({
+        template: sheetsConnTpl,
+        repoPaths: [path],
+        lock,
+      }),
+    );
+    expect(repaired.conflicts).toEqual([]);
+    expect(repaired.preservedFiles).toEqual([path]);
+    expect(repaired.writes.some((w) => w.path === path)).toBe(false);
+    const nextLock = parseLock(
+      JSON.parse(
+        repaired.writes.find((w) => w.path === "eden-lock.json")!.content,
+      ),
+    );
+    expect(findInstall(nextLock, "google-sheets", "pm")!.preservedFiles).toEqual([
+      path,
+    ]);
+  });
 });
 
 describe("planInstall — update mode", () => {

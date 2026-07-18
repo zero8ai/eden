@@ -276,7 +276,12 @@ function buildInstalls(
     const expectedFiles = new Set(
       (template?.manifest.files ?? []).map((file) => `${root}/${file}`),
     );
-    const installedFiles = new Set(entry.files);
+    // Deliberately-preserved paths (issue #177) aren't lock-owned but DO exist on disk — count
+    // them as present so a registered install isn't flagged as permanently drifted / needing repair.
+    const installedFiles = new Set([
+      ...entry.files,
+      ...(entry.preservedFiles ?? []),
+    ]);
     const missingFiles =
       expectedFiles.size > 0 &&
       [...expectedFiles].some((file) => !installedFiles.has(file));

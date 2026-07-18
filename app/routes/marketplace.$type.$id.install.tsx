@@ -155,6 +155,8 @@ interface PreviewData {
   deletions: string[];
   conflicts: string[];
   canKeepExistingFiles: boolean;
+  /** Occupied custom paths a register-and-keep would preserve byte-for-byte (issue #177). */
+  preservedFiles: string[];
   warnings: string[];
   deps: DependencyDecision[];
   secrets: Array<{
@@ -388,6 +390,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           deletions: plan.deletions,
           conflicts: plan.conflicts,
           canKeepExistingFiles: plan.canKeepExistingFiles,
+          preservedFiles: plan.preservedFiles,
           warnings: plan.warnings,
           deps: describeDependencies(
             { eve: "latest", [ZOD_PACKAGE]: ZOD_VERSION },
@@ -428,7 +431,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           ? pkgDraft.content
           : await readAgentFile(project.repoInstallationId, repo, pkgPath);
 
-      const plan = planInstall({
+      const planArgs = {
         template,
         registry,
         repoPaths: source.paths,
@@ -436,7 +439,15 @@ export const loader = (args: LoaderFunctionArgs) =>
         packageJson,
         lock,
         target: resolved.target,
-      });
+      };
+      let plan = planInstall(planArgs);
+      // The user resolves occupied template paths by clicking "Register and keep existing files",
+      // which re-plans server-side WITH keepExistingFiles. Preview THAT plan (issue #177) so the
+      // approved change-set matches: preserved paths are spliced out of the "+" files list and the
+      // "kept unchanged / left unmanaged" note surfaces, instead of listing them as writes.
+      if (plan.canKeepExistingFiles) {
+        plan = planInstall({ ...planArgs, keepExistingFiles: true });
+      }
       let currentDeps: Record<string, string> | null = null;
       try {
         currentDeps = packageJson
@@ -453,6 +464,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         deletions: plan.deletions,
         conflicts: plan.conflicts,
         canKeepExistingFiles: plan.canKeepExistingFiles,
+        preservedFiles: plan.preservedFiles,
         warnings: plan.warnings,
         deps: describeDependencies(currentDeps, template.manifest.dependencies),
         secrets: plan.secrets,
@@ -1035,24 +1047,33 @@ export default function InstallWizard({
             </CardHeader>
             <CardContent className="space-y-5">
               {preview.conflicts.length > 0 && (
-                <Alert
-                  variant={
-                    preview.canKeepExistingFiles ? "default" : "destructive"
-                  }
-                >
-                  <AlertTitle>
-                    {preview.canKeepExistingFiles
-                      ? "Existing code detected"
-                      : "Blocked by conflicts"}
-                  </AlertTitle>
+                <Alert variant="destructive">
+                  <AlertTitle>Blocked by conflicts</AlertTitle>
                   <AlertDescription>
                     <p className="mb-2">
-                      {preview.canKeepExistingFiles
-                        ? "These template paths already contain code. You can register the template without overwriting them:"
-                        : "These target files already exist and can’t be preserved automatically. Resolve them before installing:"}
+                      These target files already exist and can’t be preserved
+                      automatically. Resolve them before installing:
                     </p>
                     <ul className="space-y-1 font-mono text-xs">
                       {preview.conflicts.map((c) => (
+                        <li key={c}>{c}</li>
+                      ))}
+                    </ul>
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {preview.preservedFiles.length > 0 && (
+                <Alert>
+                  <AlertTitle>Existing code detected</AlertTitle>
+                  <AlertDescription>
+                    <p className="mb-2">
+                      These template paths already contain code. Registering
+                      keeps them byte-for-byte and leaves them unmanaged (a
+                      later uninstall won’t delete them):
+                    </p>
+                    <ul className="space-y-1 font-mono text-xs">
+                      {preview.preservedFiles.map((c) => (
                         <li key={c}>{c}</li>
                       ))}
                     </ul>

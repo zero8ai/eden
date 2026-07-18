@@ -94,19 +94,21 @@ const PROVIDERS: Record<string, ProviderDefinition> = {
   // per use with family-reuse revocation (so the instance never holds one — access-token broker),
   // clients are register-once/immutable with exact-match approval callback URIs (so one client is
   // registered PER GRANT, covering every environment's callback URL at Connect time). No userinfo
-  // endpoint — the card shows "Connected" without an account email. Hosted origin is mayi.sh;
-  // self-hosted mayi origins are deferred until a consumer exists (issue #167 open question).
+  // endpoint — the card shows "Connected" without an account email. Hosted OAuth origin is
+  // app.mayi.sh (mayi.sh is the marketing site — its /api/oauth/* 404/405; the authoritative
+  // endpoints come from https://app.mayi.sh/.well-known/oauth-authorization-server). Self-hosted
+  // mayi origins are deferred until a consumer exists (issue #167 open question).
   mayi: {
     id: "mayi",
     label: "May I?",
-    authorizeUrl: "https://mayi.sh/api/oauth/authorize",
-    tokenUrl: "https://mayi.sh/api/oauth/token",
+    authorizeUrl: "https://app.mayi.sh/api/oauth/authorize",
+    tokenUrl: "https://app.mayi.sh/api/oauth/token",
     pkce: true,
     envPrefix: "MAYI",
     tokenEndpointAuth: "none",
     credentialDelivery: "access-token-broker",
     clientRegistration: {
-      endpoint: "https://mayi.sh/api/oauth/register",
+      endpoint: "https://app.mayi.sh/api/oauth/register",
       // The @mayiapp/eve adapter registers exactly this route on the instance and builds its
       // callback URL as <EVE_PUBLIC_ORIGIN>/eve/v1/mayi/approval-resolved.
       approvalCallbackPath: "/eve/v1/mayi/approval-resolved",

@@ -534,3 +534,17 @@ describe("connect-state environmentIds (issue #167)", () => {
     expect(verifyConnectState(plain, key, state.exp - 1000)).toEqual(state);
   });
 });
+
+describe("mayi provider OAuth endpoints (issue #167)", () => {
+  // Regression guard: the OAuth server is app.mayi.sh — mayi.sh is the marketing site and its
+  // /api/oauth/* return 404/405, so a mayi.sh endpoint fails Connect with a 405 at registration.
+  // Authoritative source: https://app.mayi.sh/.well-known/oauth-authorization-server.
+  it("targets app.mayi.sh, not the marketing host", () => {
+    const mayi = getProvider("mayi")!;
+    expect(mayi.authorizeUrl).toBe("https://app.mayi.sh/api/oauth/authorize");
+    expect(mayi.tokenUrl).toBe("https://app.mayi.sh/api/oauth/token");
+    expect(mayi.clientRegistration?.endpoint).toBe(
+      "https://app.mayi.sh/api/oauth/register",
+    );
+  });
+});

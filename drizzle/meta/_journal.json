@@ -85,6 +85,13 @@
       "when": 1784261397506,
       "tag": "0011_large_flatman",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784379054073,
+      "tag": "0012_lazy_spot",
+      "breakpoints": true
     }
   ]
 }

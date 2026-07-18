@@ -1,14 +1,17 @@
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { organization } from "better-auth/plugins";
+import { emailOTP, organization } from "better-auth/plugins";
 
 import { db } from "~/db/client.server";
 import * as schema from "~/db/auth-schema";
 import { sendOrganizationInvitation } from "~/email/send-organization-invitation.server";
 import { sendEmailVerification } from "~/email/send-email-verification.server";
 import { sendPasswordResetEmail } from "~/email/send-password-reset.server";
+import { sendPortalOtpEmail } from "~/email/send-portal-otp.server";
 import { assertProductionAuthEnvironment } from "~/lib/auth-env.server";
+import { shouldSendPortalOtp } from "~/portal/policy";
+import { findLivePortalForEmail } from "~/portal/portals.server";
 
 assertProductionAuthEnvironment();
 
@@ -31,6 +34,12 @@ export const auth = betterAuth({
   onAPIError:
     process.env.NODE_ENV === "production" ? { throw: true } : undefined,
   database: drizzleAdapter(db, { provider: "pg", schema }),
+  // Long-lived sessions (issue #180): portal guests sign in with a one-time code and have no
+  // password to re-enter, so a short session would mean constant OTP round-trips. 30 days,
+  // rolling — applies to all users (Better Auth sessions are not per-plugin).
+  session: {
+    expiresIn: 60 * 60 * 24 * 30,
+  },
   advanced: {
     // The supported production topology puts Eden directly behind nginx, which overwrites
     // X-Real-IP with the TCP peer address. Reading that single trusted value keeps Better Auth's
@@ -87,6 +96,37 @@ export const auth = betterAuth({
     },
   },
   plugins: [
+    // Agent Portals guest sign-in (issue #180): a 6-digit emailed code, no password, no org.
+    // The grant check lives INSIDE this send callback, so even direct calls to the generic
+    // /api/auth/email-otp endpoints can't spam arbitrary mailboxes or mint guest users for
+    // ungranted emails — no code ever leaves, so verification can never succeed. Skipping is
+    // silent on purpose: the endpoint answers uniformly (anti-enumeration).
+    emailOTP({
+      otpLength: 6,
+      expiresIn: 10 * 60,
+      allowedAttempts: 3,
+      async sendVerificationOTP({ email, otp, type }) {
+        const portal = await findLivePortalForEmail(email);
+        if (!shouldSendPortalOtp({ type, hasLiveGrant: portal !== null })) {
+          return;
+        }
+        try {
+          await sendPortalOtpEmail({
+            userEmail: email,
+            portalName: portal!.portalName,
+            otp,
+          });
+        } catch (error) {
+          // Never log the error object: provider errors can include the code-bearing HTML body.
+          console.error(
+            `Could not send a portal sign-in code (${(error as Error)?.name ?? "Error"}).`,
+          );
+          throw new APIError("INTERNAL_SERVER_ERROR", {
+            message: "Could not send the sign-in code.",
+          });
+        }
+      },
+    }),
     organization({
       // Better Auth ships POST /api/auth/organization/delete enabled by default; Eden's tables
       // cascade from organization.id, so one owner-session call would erase an entire tenant

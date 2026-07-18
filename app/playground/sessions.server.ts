@@ -1,4 +1,4 @@
-import { and, desc, eq, max, min, ne } from "drizzle-orm";
+import { and, desc, eq, isNull, max, min, ne } from "drizzle-orm";
 
 import { inputRequestsOf, type RawEveEvent } from "~/agent/talk.server";
 import { normalizeTurnError } from "~/chat/stream-error";
@@ -41,10 +41,23 @@ export function summarizePlaygroundSession(
   };
 }
 
+/**
+ * Portal discriminator for the scope-guarded queries (issue #180). Portal guest conversations
+ * share this table but must never mix with a builder's own playground/assistant lists — so the
+ * scope ALWAYS constrains `portalId`: to IS NULL for the app surfaces (the default) or to one
+ * specific portal for the portal surface.
+ */
+function portalScope(portalId?: string | null) {
+  return portalId
+    ? eq(playgroundSessions.portalId, portalId)
+    : isNull(playgroundSessions.portalId);
+}
+
 export async function listPlaygroundSessions(input: {
   projectId: string;
   agentId: string;
   userId: string;
+  portalId?: string | null;
 }): Promise<PlaygroundSession[]> {
   return db
     .select()
@@ -54,6 +67,7 @@ export async function listPlaygroundSessions(input: {
         eq(playgroundSessions.projectId, input.projectId),
         eq(playgroundSessions.agentId, input.agentId),
         eq(playgroundSessions.createdBy, input.userId),
+        portalScope(input.portalId),
       ),
     )
     .orderBy(
@@ -67,6 +81,7 @@ export async function getPlaygroundSession(input: {
   projectId: string;
   agentId: string;
   userId: string;
+  portalId?: string | null;
 }): Promise<PlaygroundSession | null> {
   const [row] = await db
     .select()
@@ -77,10 +92,25 @@ export async function getPlaygroundSession(input: {
         eq(playgroundSessions.projectId, input.projectId),
         eq(playgroundSessions.agentId, input.agentId),
         eq(playgroundSessions.createdBy, input.userId),
+        portalScope(input.portalId),
       ),
     )
     .limit(1);
   return row ?? null;
+}
+
+/** Every conversation of one portal across guests — the builder-side transcript list. */
+export async function listPortalSessions(
+  portalId: string,
+): Promise<PlaygroundSession[]> {
+  return db
+    .select()
+    .from(playgroundSessions)
+    .where(eq(playgroundSessions.portalId, portalId))
+    .orderBy(
+      desc(playgroundSessions.updatedAt),
+      desc(playgroundSessions.createdAt),
+    );
 }
 
 export async function createPlaygroundSession(input: {
@@ -94,6 +124,7 @@ export async function createPlaygroundSession(input: {
   title?: string | null;
   modelId?: string | null;
   effort?: ReasoningEffort | null;
+  portalId?: string | null;
 }): Promise<PlaygroundSession> {
   const [row] = await db
     .insert(playgroundSessions)
@@ -101,6 +132,7 @@ export async function createPlaygroundSession(input: {
       projectId: input.projectId,
       agentId: input.agentId,
       createdBy: input.userId,
+      portalId: input.portalId ?? null,
       environmentId: input.environmentId ?? null,
       worldKey: input.environmentId ?? null,
       lastDeploymentId: input.deploymentId ?? null,
@@ -136,6 +168,8 @@ export async function setPlaygroundSessionModel(input: {
         eq(playgroundSessions.projectId, input.projectId),
         eq(playgroundSessions.agentId, input.agentId),
         eq(playgroundSessions.createdBy, input.userId),
+        // Portal conversations pin their model on the portal config — never per-session.
+        portalScope(null),
       ),
     )
     .returning({ id: playgroundSessions.id });

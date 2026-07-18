@@ -15,7 +15,7 @@ const AGENTMAIL_API_URL = "https://api.agentmail.to/v0";
 const responseSchema = z
   .object({
     message_id: z.string(),
-    labels: z.array(z.string()),
+    labels: z.array(z.string()).nullish(),
   })
   .passthrough();
 
@@ -113,7 +113,7 @@ export default defineTool({
       return {
         ok: true,
         messageId: parsed.data.message_id,
-        labels: parsed.data.labels,
+        labels: parsed.data.labels ?? [],
       };
     } catch (err) {
       return { ok: false, error: `AgentMail request failed: ${errorMessage(err)}` };

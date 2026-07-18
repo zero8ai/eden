@@ -25,14 +25,16 @@ const attachmentSchema = z
   })
   .passthrough();
 
+// Only message_id is hard-required: one atypical message (a draft with no recipients, say)
+// must not fail the whole call — everything else degrades to undefined.
 const messageSchema = z
   .object({
     message_id: z.string(),
-    thread_id: z.string(),
-    labels: z.array(z.string()),
-    timestamp: z.string(),
-    from: z.string(),
-    to: z.array(z.string()),
+    thread_id: z.string().nullish(),
+    labels: z.array(z.string()).nullish(),
+    timestamp: z.string().nullish(),
+    from: z.string().nullish(),
+    to: z.array(z.string()).nullish(),
     cc: z.array(z.string()).nullish(),
     subject: z.string().nullish(),
     text: z.string().nullish(),
@@ -120,10 +122,12 @@ export default defineTool({
       .number()
       .int()
       .min(1024)
-      .max(20971520)
+      .max(4194304)
       .optional()
       .describe(
-        "Largest attachment to inline as base64, in bytes. Defaults to 5 MiB; hard cap 20 MiB.",
+        "Largest attachment to inline as base64, in bytes. Defaults to 256 KiB — inline " +
+          "content lands in model context, so prefer the downloadUrl for anything bigger. " +
+          "Hard cap 4 MiB.",
       ),
   }),
   async execute(input) {
@@ -174,13 +178,13 @@ export default defineTool({
       const result: Record<string, unknown> = {
         ok: true,
         messageId: message.message_id,
-        threadId: message.thread_id,
-        timestamp: message.timestamp,
-        from: message.from,
-        to: message.to,
+        threadId: message.thread_id ?? undefined,
+        timestamp: message.timestamp ?? undefined,
+        from: message.from ?? undefined,
+        to: message.to ?? undefined,
         cc: message.cc ?? undefined,
         subject: message.subject ?? undefined,
-        labels: message.labels,
+        labels: message.labels ?? undefined,
         text: message.text ? truncate(message.text, maxBodyChars) : undefined,
         extractedText: message.extracted_text
           ? truncate(message.extracted_text, maxBodyChars)
@@ -205,16 +209,19 @@ export default defineTool({
         };
       }
 
+      const maxBytes = input.maxAttachmentBytes ?? 256 * 1024;
       const attachmentResponse = await fetch(`${messageUrl}/attachments/${encodeURIComponent(input.attachmentId)}`, { headers });
       const contentType = attachmentResponse.headers.get("content-type") ?? "";
 
       // The documented response is JSON metadata with a presigned download_url; some deployments
-      // stream the raw file instead. Handle both.
+      // stream the raw file instead. Handle both — but never buffer the bytes until we know the
+      // caller asked for inline content AND the declared size is under the cap.
       let downloadUrl: string | undefined;
       let expiresAt: string | undefined;
       let filename = known.filename;
       let mimeType = known.contentType;
-      let bytes: ArrayBuffer | null = null;
+      let declaredSize = known.size;
+      let streamed = false;
 
       if (contentType.includes("json")) {
         const attachmentBody: unknown = await attachmentResponse.json().catch(() => null);
@@ -238,6 +245,7 @@ export default defineTool({
         expiresAt = parsedAttachment.data.expires_at;
         filename = parsedAttachment.data.filename ?? filename;
         mimeType = parsedAttachment.data.content_type ?? mimeType;
+        declaredSize = parsedAttachment.data.size ?? known.size;
       } else {
         if (!attachmentResponse.ok) {
           return {
@@ -246,7 +254,7 @@ export default defineTool({
             error: `Attachment download failed with HTTP ${attachmentResponse.status}.`,
           };
         }
-        bytes = await attachmentResponse.arrayBuffer();
+        streamed = true;
         mimeType = contentType || mimeType;
       }
 
@@ -264,14 +272,35 @@ export default defineTool({
             attachmentId: input.attachmentId,
             filename,
             contentType: mimeType,
-            size: known.size,
+            size: declaredSize,
             downloadUrl,
             expiresAt,
           },
         };
       }
 
-      if (!bytes && downloadUrl) {
+      // Pre-check the declared size before pulling any bytes into memory.
+      if (declaredSize > maxBytes) {
+        return {
+          ok: false,
+          error:
+            `Attachment is ${declaredSize} bytes, over the ${maxBytes}-byte inline cap. ` +
+            "Fetch the downloadUrl directly (e.g. curl in the sandbox) or raise maxAttachmentBytes.",
+          attachment: {
+            attachmentId: input.attachmentId,
+            filename,
+            contentType: mimeType,
+            size: declaredSize,
+            downloadUrl,
+            expiresAt,
+          },
+        };
+      }
+
+      let bytes: ArrayBuffer | null = null;
+      if (streamed) {
+        bytes = await attachmentResponse.arrayBuffer();
+      } else if (downloadUrl) {
         const downloadResponse = await fetch(downloadUrl);
         if (!downloadResponse.ok) {
           return {
@@ -286,7 +315,7 @@ export default defineTool({
         return { ok: false, error: "No attachment bytes available to return." };
       }
 
-      const maxBytes = input.maxAttachmentBytes ?? 5 * 1024 * 1024;
+      // The declared size can lie — re-check the real byte count after buffering.
       if (bytes.byteLength > maxBytes) {
         return {
           ok: false,

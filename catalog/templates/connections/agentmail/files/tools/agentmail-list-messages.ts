@@ -19,14 +19,16 @@ const attachmentSchema = z
   })
   .passthrough();
 
+// Only message_id is hard-required: one atypical message must not fail the whole page —
+// everything else degrades to undefined.
 const messageItemSchema = z
   .object({
     message_id: z.string(),
-    thread_id: z.string(),
-    labels: z.array(z.string()),
-    timestamp: z.string(),
-    from: z.string(),
-    to: z.array(z.string()),
+    thread_id: z.string().nullish(),
+    labels: z.array(z.string()).nullish(),
+    timestamp: z.string().nullish(),
+    from: z.string().nullish(),
+    to: z.array(z.string()).nullish(),
     subject: z.string().nullish(),
     preview: z.string().nullish(),
     attachments: z.array(attachmentSchema).nullish(),
@@ -41,16 +43,23 @@ const responseSchema = z
   })
   .passthrough();
 
-/** Accepts an ISO 8601 datetime, or a bare date (treated as start-of-day UTC). */
+/**
+ * Accepts an ISO 8601 date or datetime. A time component must carry an offset (Z or ±hh:mm) —
+ * offset-less datetimes are ambiguous and rejected. Bare dates are expanded by the caller.
+ */
 const dateFilter = z
   .string()
   .regex(
-    /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/,
-    "must be an ISO 8601 date or datetime",
+    /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2}))?$/,
+    "must be an ISO 8601 date, or a datetime with an offset (e.g. 2026-07-18T10:30:00Z)",
   );
 
-function toIsoDatetime(value: string): string {
-  return value.length === 10 ? `${value}T00:00:00Z` : value;
+/** A bare date means the whole day UTC: start-of-day for `after`, end-of-day for `before`. */
+function toIsoDatetime(value: string, boundary: "start" | "end"): string {
+  if (value.length > 10) return value;
+  return boundary === "start"
+    ? `${value}T00:00:00Z`
+    : `${value}T23:59:59.999Z`;
 }
 
 function errorMessage(err: unknown): string {
@@ -105,10 +114,16 @@ export default defineTool({
       ),
     after: dateFilter
       .optional()
-      .describe("Only messages at or after this ISO 8601 date/datetime."),
+      .describe(
+        "Only messages at or after this ISO 8601 date/datetime. A bare date means from the " +
+          "start of that day UTC.",
+      ),
     before: dateFilter
       .optional()
-      .describe("Only messages at or before this ISO 8601 date/datetime."),
+      .describe(
+        "Only messages at or before this ISO 8601 date/datetime. A bare date includes that " +
+          "whole day, through 23:59:59.999 UTC.",
+      ),
     from: z
       .string()
       .min(1)
@@ -147,8 +162,8 @@ export default defineTool({
       params.set("limit", String(input.limit ?? 25));
       if (input.pageToken) params.set("page_token", input.pageToken);
       for (const label of input.labels ?? []) params.append("labels", label);
-      if (input.after) params.set("after", toIsoDatetime(input.after));
-      if (input.before) params.set("before", toIsoDatetime(input.before));
+      if (input.after) params.set("after", toIsoDatetime(input.after, "start"));
+      if (input.before) params.set("before", toIsoDatetime(input.before, "end"));
       if (input.from) params.append("from", input.from);
       if (input.to) params.append("to", input.to);
       if (input.subject) params.append("subject", input.subject);
@@ -182,13 +197,13 @@ export default defineTool({
         nextPageToken: parsed.data.next_page_token ?? undefined,
         messages: parsed.data.messages.map((message) => ({
           messageId: message.message_id,
-          threadId: message.thread_id,
-          timestamp: message.timestamp,
-          from: message.from,
-          to: message.to,
+          threadId: message.thread_id ?? undefined,
+          timestamp: message.timestamp ?? undefined,
+          from: message.from ?? undefined,
+          to: message.to ?? undefined,
           subject: message.subject ?? undefined,
           preview: message.preview ?? undefined,
-          labels: message.labels,
+          labels: message.labels ?? [],
           attachments: (message.attachments ?? []).map((attachment) => ({
             attachmentId: attachment.attachment_id,
             filename: attachment.filename ?? undefined,

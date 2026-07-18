@@ -56,9 +56,17 @@ export function missingScopes(requested: string, granted: string): string[] {
  *    environment (issue #167 — a provider with immutable exact-match callback URIs can't have an
  *    environment added after Connect; Reconnect registers a fresh client) → primary Reconnect.
  *  - "inactive": grant expired/revoked → status badge + Reconnect.
+ *  - "disabled": every permission group explicitly deselected (issue #173) — deploys skip this
+ *    provider's injection and connect/reconnect refuses (nothing to authorize), but a stored
+ *    grant is NOT revoked. The row must say so honestly instead of rendering "connected".
  */
 export type ConnectionRowState =
-  "not-connected" | "connected" | "under-scoped" | "needs-reconnect" | "inactive";
+  | "not-connected"
+  | "connected"
+  | "under-scoped"
+  | "needs-reconnect"
+  | "inactive"
+  | "disabled";
 
 /**
  * Derive a Connections-card row's state from its lock-required scopes and current grant (issue #30).
@@ -71,6 +79,11 @@ export type ConnectionRowState =
  * client can't know the new environment's callback URL, so a reconnect (fresh registration) is
  * needed. Under-scoped wins when both apply (one reconnect fixes both, and the permission gap is
  * the more actionable message).
+ *
+ * `permissionsDisabled` (issue #173): the loader sets it when the lock's required scope set for
+ * this provider is present but EMPTY — every permission group deliberately deselected. It wins
+ * over every other state (grant or not): deploys skip injection and connect/reconnect refuses,
+ * so any other rendering ("connected", a Connect button) would misstate what's live.
  */
 export function connectionRowState(input: {
   hasGrant: boolean;
@@ -78,7 +91,9 @@ export function connectionRowState(input: {
   requiredScopes: string | null;
   grantScopes: string;
   staleClientCoverage?: boolean;
+  permissionsDisabled?: boolean;
 }): ConnectionRowState {
+  if (input.permissionsDisabled) return "disabled";
   if (!input.hasGrant) return "not-connected";
   if (input.grantStatus !== "active") return "inactive";
   const covered =

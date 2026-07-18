@@ -321,6 +321,42 @@ function main() {
     }
   }
 
+  // ── Scope-group identity: same provider + same group id ⇒ same scopes (issues #165, #173) ──
+  // Group ids are provider-level identities (README.md): composing two connectors for the same
+  // provider merges same-id groups into ONE permission level whose scopes UNION. Divergent scope
+  // sets under one id would make that checkbox silently authorize both sets (ticking "Read mail"
+  // also granting calendar read), so authors must either genuinely share a level (identical
+  // scopes) or namespace their ids (gmail-read / calendar-read). Checked catalog-wide: any two
+  // templates are composable by a future bundle.
+  const groupIdentity = new Map(); // `${provider} ${groupId}` -> { where, scopes: string[] }
+  for (const t of templates) {
+    const auth = t.manifest.auth;
+    if (!auth?.provider || !Array.isArray(auth.scopeGroups)) continue;
+    const where = `templates/${t.type}s/${t.id}`;
+    for (const g of auth.scopeGroups) {
+      if (!g || !Array.isArray(g.scopes)) continue; // shape errors already reported above
+      const key = `${auth.provider} ${g.id}`;
+      const scopes = [...new Set(g.scopes)].sort();
+      const first = groupIdentity.get(key);
+      if (!first) {
+        groupIdentity.set(key, { where, scopes });
+        continue;
+      }
+      const same =
+        first.scopes.length === scopes.length &&
+        first.scopes.every((s, i) => s === scopes[i]);
+      if (!same) {
+        fail(
+          where,
+          `scope group "${g.id}" for provider "${auth.provider}" is also declared by ` +
+            `${first.where} with different scopes — group ids are provider-level identities ` +
+            `(composing them unions the scopes into one checkbox), so use identical scopes or ` +
+            `namespace the ids (e.g. "gmail-read" / "calendar-read")`,
+        );
+      }
+    }
+  }
+
   // ── Composition: references exist, no cycles, and no duplicate RESOLVED file paths ──
   // Mirrors app/marketplace/compose.server.ts's union rule: a template's flattened file set is
   // every include's files (transitively, includes-first) plus its own; a path shipped twice — by

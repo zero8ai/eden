@@ -150,6 +150,7 @@ export async function connectionGrantEnv(
   // Union of "has a grant row" and "the lock requires it" — a lock-required provider with a dead
   // or missing grant must still be considered (its coverage/liveness failures surface elsewhere),
   // and a granted provider the lock no longer names keeps injecting (grants are the authority).
+  // The one exception is a provider whose requirement is present but EMPTY — see the skip below.
   const grants = await deps.listGrantsForAgent(agentId);
   const providerIds = [
     ...new Set([
@@ -164,6 +165,17 @@ export async function connectionGrantEnv(
     // doesn't know) → skip silently; the Connections card handles the messaging.
     const def = getProvider(id);
     if (!def) continue;
+    // Present-but-EMPTY requirement (issue #173): every permission group for this provider was
+    // explicitly deselected — distinguishable from the legacy no-auth-snapshot case (absent from
+    // the map), which keeps the grant-authority fallback below. Injecting the stored grant here
+    // would silently retain access the user just revoked in the Permissions UI, so the provider
+    // is skipped entirely — no injection, and no liveness validation either (nothing ships that
+    // could use the token). The grant row itself stays put: revocation is out of scope, and the
+    // Connections card renders the retained-grant state honestly.
+    const requiredForProvider = requiredScopes?.get(id);
+    if (requiredForProvider !== undefined && requiredForProvider.length === 0) {
+      continue;
+    }
     // Registration providers (issue #167) carry their client on the GRANT, so a missing operator
     // config only skips providers whose refresh would need the shared client.
     const operatorConfig = deps.getConfig(def);

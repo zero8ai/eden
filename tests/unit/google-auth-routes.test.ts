@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   createOAuthStateNonce: vi.fn(),
   exchangeCode: vi.fn(),
   fetchAccountEmail: vi.fn(),
+  fetchAgentSource: vi.fn(),
   findGrant: vi.fn(),
   getAgentSource: vi.fn(),
   getGoogleOAuthConfig: vi.fn(),
@@ -64,6 +65,10 @@ vi.mock("~/db/queries.server", () => ({ listAgents: mocks.listAgents }));
 vi.mock("~/drafts/drafts.server", () => ({ listDrafts: mocks.listDrafts }));
 vi.mock("~/github/cached.server", () => ({
   getAgentSource: mocks.getAgentSource,
+}));
+// The callback's lock-currency guard reads RAW (issue #173) — the connect loader keeps the cache.
+vi.mock("~/github/repo.server", () => ({
+  fetchAgentSource: mocks.fetchAgentSource,
 }));
 vi.mock("~/lib/ingress", () => ({
   publicOrigin: () => "https://eden.example.com",
@@ -134,6 +139,10 @@ describe("Google routes with Better Auth", () => {
     mocks.fetchAccountEmail.mockReset().mockResolvedValue("google@example.com");
     mocks.findGrant.mockReset().mockResolvedValue(null);
     mocks.getAgentSource.mockReset().mockResolvedValue({
+      files: { "eden-lock.json": effectiveLock() },
+      paths: [],
+    });
+    mocks.fetchAgentSource.mockReset().mockResolvedValue({
       files: { "eden-lock.json": effectiveLock() },
       paths: [],
     });
@@ -328,8 +337,9 @@ describe("Google routes with Better Auth", () => {
     });
     // The pre-exchange currency check sees the broad requirement (matching this flow's state),
     // then a Permissions edit + newer reconnect narrows the lock while the exchange/userinfo
-    // round-trips are in flight — the pre-write re-check must catch it and store nothing.
-    mocks.getAgentSource
+    // round-trips are in flight — the pre-write re-check must catch it and store nothing. Both
+    // checks read RAW (issue #173), so the sequence rides the repo.server mock.
+    mocks.fetchAgentSource
       .mockResolvedValueOnce({
         files: { "eden-lock.json": broadLock },
         paths: [],
@@ -597,5 +607,56 @@ describe("Google routes with Better Auth", () => {
       agentId: AGENT.id,
       createdBy: mocks.auth.user.id,
     });
+  });
+
+  it("the callback's lock-currency checks read RAW, never the SWR cache (issue #173)", async () => {
+    // The cache's invalidation is process-local: with >1 control-plane replica, a Permissions
+    // edit through replica A leaves replica B's cached lock stale, and a broad consent callback
+    // landing on B would pass both staleness checks against it — exactly the overwrite the guard
+    // exists to prevent. Pin that BOTH checks hit the raw read and the cache is never consulted.
+    const { loader } = await import("~/routes/google.callback");
+    const { connectStateKey, signConnectState } =
+      await import("~/connections/google.server");
+    const state = signConnectState(
+      {
+        projectId: PROJECT.id,
+        agentId: AGENT.id,
+        userId: mocks.auth.user.id,
+        sessionId: mocks.auth.session.id,
+        nonce: "raw-read-nonce",
+        provider: "google",
+        scopes: SHEETS_SCOPE,
+        returnTo: "/dashboard",
+        exp: Date.now() + 60_000,
+      },
+      connectStateKey(),
+    );
+    mocks.exchangeCode.mockResolvedValue({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+      expiresIn: 3_599,
+      scope: `${SHEETS_SCOPE} openid email`,
+    });
+
+    const staged = await loader(
+      routeArgs(
+        `https://eden.example.com/google/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+      ),
+    );
+    const cookie = (staged as Response).headers
+      .get("set-cookie")!
+      .split(";", 1)[0];
+    try {
+      await loader(
+        routeArgs("https://eden.example.com/google/callback", { cookie }),
+      );
+    } catch (error) {
+      if (!(error instanceof Response)) throw error;
+    }
+
+    // One raw read per staleness pass (pre-exchange + pre-write); the cache untouched.
+    expect(mocks.fetchAgentSource).toHaveBeenCalledTimes(2);
+    expect(mocks.getAgentSource).not.toHaveBeenCalled();
+    expect(mocks.upsertGrant).toHaveBeenCalled();
   });
 });

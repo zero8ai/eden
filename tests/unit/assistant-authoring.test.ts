@@ -129,6 +129,9 @@ describe("assistant authoring: catalog", () => {
     expect(await catalogOp({ op: "template" }, deps)).toMatchObject({
       ok: false,
     });
+    expect(
+      await catalogOp({ op: "template", type: "connection", id: "../x" }, deps),
+    ).toMatchObject({ ok: false });
     expect(await catalogOp({ op: "bogus" }, deps)).toMatchObject({ ok: false });
   });
 });

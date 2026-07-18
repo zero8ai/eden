@@ -5,15 +5,23 @@ import { edenCall } from "../lib/edenApi";
 
 export default defineTool({
   description:
-    "Search Eden's marketplace catalog and fetch a template's files so you can install it by " +
-    'staging drafts. op "index" returns the browse index (all templates: id, type, name, ' +
+    "Browse Eden's marketplace catalog and inspect a template before installing it with " +
+    'eden_install. op "index" returns the browse index (all templates: id, type, name, ' +
     'description); op "template" returns one template\'s manifest + every file body (pass its ' +
-    "type and id). To install, read the template's files and write them with write_file / " +
-    "add_dependency.",
+    "type and id). Never hand-copy these files to install a marketplace capability: copying " +
+    "skips eden-lock.json, composition, dependency and secret handling, and sandbox bootstrap.",
   inputSchema: z.object({
     op: z.enum(["index", "template"]),
     type: z
-      .enum(["agent", "skill", "tool"])
+      .enum([
+        "tool",
+        "skill",
+        "subagent",
+        "channel",
+        "connection",
+        "bundle",
+        "agent",
+      ])
       .optional()
       .describe('Required for op "template".'),
     id: z.string().optional().describe('Required for op "template".'),

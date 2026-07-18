@@ -68,9 +68,9 @@
       "id": "mayi",
       "type": "connection",
       "name": "May I?",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Human approvals for agent actions via May I? (mayi.sh). Install it, click Connect on the agent's Deployment tab (Eden registers the OAuth client automatically — no operator app to create), and gated tools park until a human approves in the May I? app, then resume with a signed receipt. Scheduled work that may need an approval must use the handler form of an eve schedule and hand the run to the channel with receive(mayi, ...) — task-mode schedules can't park for a human.",
-      "hash": "b791833ad8a03d8c085545a128bfed9714926183"
+      "hash": "4a362c125f9252e38534dd644e47404551591f9c"
     },
     {
       "id": "xero",

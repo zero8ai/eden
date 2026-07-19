@@ -7,11 +7,12 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { getDraft } from "~/drafts/drafts.server";
+import { getDraft, listDrafts, stageDraft } from "~/drafts/drafts.server";
 import { hasDynamicModel, readModel } from "~/eve/agentModule";
 import {
   stageModelChange,
   stageModelSwitchingUpgrade,
+  stageSubagentModelWiring,
   type StageModelDeps,
 } from "~/models/stage-model.server";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
@@ -200,5 +201,101 @@ describe("stageModelSwitchingUpgrade", () => {
       error: expect.stringContaining("Settings"),
     });
     expect(await getDraft(PROJECT.id, "agent/agent.ts", store)).toBeNull();
+  });
+});
+
+describe("stageSubagentModelWiring", () => {
+  /** A subagent pinning a bare gateway-bound literal — the shape the wiring exists to fix. */
+  const BARE_SUBAGENT = `import { defineAgent } from "eve";
+export default defineAgent({
+  description: "Read-only invoice airlock.",
+  model: "anthropic/claude-sonnet-5",
+});
+`;
+
+  it("stages a dynamic-wrapper rewrite for a gateway-bound repo subagent", async () => {
+    const path = "agent/subagents/reader/agent.ts";
+    const { wired } = await stageSubagentModelWiring(
+      {
+        project: PROJECT,
+        memberRoot: "agent",
+        candidatePaths: [path, "agent/agent.ts", "agent/instructions.md"],
+        createdBy: "user_1",
+      },
+      store,
+      fakeDeps({ [path]: BARE_SUBAGENT }),
+    );
+
+    expect(wired).toEqual([path]);
+    const draft = await getDraft(PROJECT.id, path, store);
+    expect(hasDynamicModel(draft?.content)).toBe(true);
+    expect(readModel(draft!.content!)).toBe("anthropic/claude-sonnet-5");
+  });
+
+  it("wires a subagent that exists only as a staged draft (not yet in the repo)", async () => {
+    const path = "agent/subagents/reader/agent.ts";
+    await stageDraft(
+      { projectId: PROJECT.id, path, content: BARE_SUBAGENT },
+      store,
+    );
+
+    const { wired } = await stageSubagentModelWiring(
+      {
+        project: PROJECT,
+        // The repo has never seen the subagent — only the draft knows the path.
+        memberRoot: "agent",
+        candidatePaths: ["agent/agent.ts"],
+        createdBy: "user_1",
+      },
+      store,
+      fakeDeps({}),
+    );
+
+    expect(wired).toEqual([path]);
+    const draft = await getDraft(PROJECT.id, path, store);
+    expect(hasDynamicModel(draft?.content)).toBe(true);
+    expect(readModel(draft!.content!)).toBe("anthropic/claude-sonnet-5");
+  });
+
+  it("never un-deletes a subagent staged for deletion", async () => {
+    const path = "agent/subagents/reader/agent.ts";
+    await stageDraft({ projectId: PROJECT.id, path, content: null }, store);
+
+    const { wired } = await stageSubagentModelWiring(
+      {
+        project: PROJECT,
+        memberRoot: "agent",
+        // The path is still in the repo (with the bad model) — the deletion must win anyway.
+        candidatePaths: [path],
+        createdBy: null,
+      },
+      store,
+      fakeDeps({ [path]: BARE_SUBAGENT }),
+    );
+
+    expect(wired).toEqual([]);
+    const draft = await getDraft(PROJECT.id, path, store);
+    expect(draft?.content).toBeNull(); // still a deletion draft
+  });
+
+  it("is a no-op for already-wired subagents and other members' paths", async () => {
+    const otherMembers = "agents/other/agent/subagents/reader/agent.ts";
+    const { wired } = await stageSubagentModelWiring(
+      {
+        project: PROJECT,
+        memberRoot: "agent",
+        candidatePaths: ["agent/subagents/writer/agent.ts", otherMembers],
+        createdBy: null,
+      },
+      store,
+      fakeDeps({
+        // Already routed through a provider call — nothing to fix.
+        "agent/subagents/writer/agent.ts": STATIC_AGENT_TS,
+        [otherMembers]: BARE_SUBAGENT,
+      }),
+    );
+
+    expect(wired).toEqual([]);
+    expect(await listDrafts(PROJECT.id, store)).toEqual([]);
   });
 });

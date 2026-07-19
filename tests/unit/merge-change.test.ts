@@ -29,6 +29,7 @@ function makeDeps(over: Partial<MergeChangeDeps> = {}): MergeChangeDeps {
     checkBuild: vi.fn().mockResolvedValue({ ok: true }),
     listPullRequestFilePaths: vi.fn().mockResolvedValue(["agent/agent.ts"]),
     mergePullRequest: vi.fn().mockResolvedValue({ mergeSha: "sha123" }),
+    readAgentFile: vi.fn().mockResolvedValue(null),
     fetchAgentSource: vi.fn().mockResolvedValue({ paths: ["agent/agent.ts"] }),
     detectAgentRoots: vi.fn().mockReturnValue([]),
     syncProjectAgents: vi.fn().mockResolvedValue(undefined),

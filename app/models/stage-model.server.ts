@@ -22,6 +22,10 @@ import {
 import type { ReasoningEffort } from "~/models/reasoning";
 import { packageJsonPathForRoot } from "~/marketplace/install.server";
 import { findWorkspaceModel } from "~/models/union.server";
+import {
+  isSubagentAgentPath,
+  wireSubagentModels,
+} from "~/models/subagent-wiring";
 import { getRuntime } from "~/seams/index.server";
 
 export interface StageModelInput {
@@ -139,6 +143,72 @@ async function stageModelChangeInternal(
       : Promise.resolve(),
   ]);
   return { ok: true };
+}
+
+/**
+ * Auto-wire a member's subagents (issue: subagents ship bare gateway-bound models). For each
+ * `<memberRoot>/subagents/<name>/agent.ts` whose model is a bare literal that eve would route to
+ * the unprovisioned model gateway, re-stage it through the same dynamic wrapper the member gets so
+ * it resolves through the workspace's connected providers instead. Only `agent.ts` is staged —
+ * subagents share the member's `package.json`, which already carries the provider deps once the
+ * member is wired. `candidatePaths` is the member's known repo paths (the caller already holds the
+ * source); staged DRAFT paths under the member are considered too, so a subagent that exists only
+ * as a draft (created in the editor, blocked by the publish gate, never committed) is wired by the
+ * same model save instead of dead-ending. Non-subagent paths and paths outside `memberRoot` are
+ * ignored. Idempotent: a subagent that's already wired stages nothing.
+ */
+export async function stageSubagentModelWiring(
+  input: {
+    project: StageModelInput["project"];
+    /** The member's agent root, e.g. "agents/bookkeeping/agent". */
+    memberRoot: string;
+    /** Repo paths the caller already loaded (e.g. `source.paths`). */
+    candidatePaths: string[];
+    createdBy: string | null;
+  },
+  store: DataStore = getRuntime().data,
+  deps?: FileViewDeps,
+): Promise<{ wired: string[] }> {
+  const prefix = `${input.memberRoot}/subagents/`;
+  const drafts = await store.drafts.listByProject(input.project.id);
+  // A deletion draft's view falls back to the REPO content, so wiring such a path would stage new
+  // content on top of the deletion — silently un-deleting the subagent. Leave those alone.
+  const deletions = new Set(
+    drafts.filter((d) => d.content === null).map((d) => d.path),
+  );
+  const subagentPaths = [
+    ...new Set(
+      [...input.candidatePaths, ...drafts.map((d) => d.path)].filter(
+        (p) =>
+          p.startsWith(prefix) && isSubagentAgentPath(p) && !deletions.has(p),
+      ),
+    ),
+  ];
+  if (subagentPaths.length === 0) return { wired: [] };
+
+  const files: Record<string, string | null> = {};
+  await Promise.all(
+    subagentPaths.map(async (path) => {
+      const view = await resolveFileView(input.project, path, store, deps);
+      files[path] = view.content;
+    }),
+  );
+
+  const changed = wireSubagentModels(files);
+  await Promise.all(
+    changed.map((c) =>
+      stageDraft(
+        {
+          projectId: input.project.id,
+          path: c.path,
+          content: c.content,
+          createdBy: input.createdBy,
+        },
+        store,
+      ),
+    ),
+  );
+  return { wired: changed.map((c) => c.path) };
 }
 
 /**

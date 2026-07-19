@@ -20,7 +20,7 @@ import type { DataStore } from "~/data/ports";
 import { ensureReleasesForCommit } from "~/deploy/controller.server";
 import { detectAgentRoots, hasTeamLayout } from "~/eve/parse";
 import { syncProjectAgents } from "~/db/queries.server";
-import { fetchAgentSource } from "~/github/repo.server";
+import { fetchAgentSource, readAgentFile } from "~/github/repo.server";
 import { listPullRequestFilePaths, mergePullRequest } from "~/github/write.server";
 import { invalidateRepoSource, warmAgentSource } from "~/github/cached.server";
 import {
@@ -48,6 +48,7 @@ export interface MergeChangeDeps {
   checkBuild?: (req: BuildCheckRequest) => Promise<BuildCheckResult>;
   listPullRequestFilePaths: typeof listPullRequestFilePaths;
   mergePullRequest: typeof mergePullRequest;
+  readAgentFile: typeof readAgentFile;
   fetchAgentSource: typeof fetchAgentSource;
   detectAgentRoots: typeof detectAgentRoots;
   syncProjectAgents: typeof syncProjectAgents;
@@ -62,6 +63,7 @@ function defaultDeps(): MergeChangeDeps {
     checkBuild: getRuntime().deployTarget.checkBuild,
     listPullRequestFilePaths,
     mergePullRequest,
+    readAgentFile,
     fetchAgentSource,
     detectAgentRoots,
     syncProjectAgents,
@@ -96,14 +98,17 @@ export async function runMergeChange(
       repo,
       pullNumber,
     );
+    const installationId = project.repoInstallationId;
     const gate = await runConversationMergeGate({
       projectId: project.id,
       repo,
       ref: branch!,
-      installationId: project.repoInstallationId,
+      installationId,
       teamLayout: project.layout === "team",
       paths,
       checkBuild: deps.checkBuild,
+      readFile: (path) =>
+        deps.readAgentFile(installationId, { ...repo, ref: branch! }, path),
       onStage: (stage) => updateTaskStage(taskId, stage, store),
     });
     if (!gate.ok) {

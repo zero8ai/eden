@@ -199,6 +199,34 @@ describe("publishDrafts", () => {
     expect(checkBuild).toHaveBeenCalledOnce();
   });
 
+  it("blocks a selection that introduces a gateway-bound subagent model (before the build)", async () => {
+    await stageDraft(
+      {
+        projectId: PROJECT.id,
+        path: "agent/subagents/reader/agent.ts",
+        content: `import { defineAgent } from "eve";\nexport default defineAgent({ description: "Reader.", model: "anthropic/claude-sonnet-5" });\n`,
+      },
+      store,
+    );
+    const propose = vi.fn().mockResolvedValue(proposed);
+    const checkBuild = vi.fn().mockResolvedValue({ ok: true });
+    await expect(
+      publishDrafts(
+        { project: PROJECT, paths: ["agent/subagents/reader/agent.ts"] },
+        store,
+        propose,
+        checkBuild,
+      ),
+    ).rejects.toThrow(/anthropic\/claude-sonnet-5/);
+    // Blocked before the build gate and before any change is proposed.
+    expect(checkBuild).not.toHaveBeenCalled();
+    expect(propose).not.toHaveBeenCalled();
+    // Drafts stay staged so the user can fix and republish.
+    expect(
+      await getDraft(PROJECT.id, "agent/subagents/reader/agent.ts", store),
+    ).not.toBeNull();
+  });
+
   it("keeps drafts staged when the propose call fails", async () => {
     await stageDraft(
       { projectId: PROJECT.id, path: "agent/a.md", content: "A" },
@@ -409,6 +437,43 @@ describe("publish gate (build check)", () => {
     expect(propose.mock.calls[0][2].files).toEqual([
       { path: "package.json", content: checkedPackage.content },
     ]);
+  });
+
+  it("adds the member's package overlay when a provider-routed subagent is published alone", async () => {
+    // A wired subagent module compiles in its member's build and imports the provider package —
+    // without the member package.json overlay the build gate would fail on the missing dependency.
+    await stageDraft(
+      {
+        projectId: PROJECT.id,
+        path: "agent/subagents/reader/agent.ts",
+        content: `import { createOpenAICompatible } from "@ai-sdk/openai-compatible";\nimport { defineAgent } from "eve";\nconst openrouter = createOpenAICompatible({ name: "openrouter", baseURL: "https://openrouter.ai/api/v1", apiKey: process.env.OPENROUTER_API_KEY ?? "" });\nexport default defineAgent({ description: "Reader.", model: openrouter.chatModel("z-ai/glm-5.2") });\n`,
+      },
+      store,
+    );
+    readAgentFileMock.mockImplementation(async (_inst, _repo, path) =>
+      path === "package.json"
+        ? JSON.stringify({ dependencies: { eve: "^0.22.0" } }, null, 2) + "\n"
+        : null,
+    );
+    const check = vi.fn().mockResolvedValue({ ok: true });
+    const propose = vi.fn().mockResolvedValue(proposed);
+
+    await publishDrafts(
+      { project: PROJECT, paths: ["agent/subagents/reader/agent.ts"] },
+      store,
+      propose,
+      check,
+    );
+
+    const overlay = check.mock.calls[0][0].overlay as {
+      path: string;
+      content: string | null;
+    }[];
+    const pkg = overlay.find((f) => f.path === "package.json");
+    expect(pkg).toBeDefined();
+    expect(
+      JSON.parse(pkg!.content!).dependencies["@ai-sdk/openai-compatible"],
+    ).toBe("^3.0.7");
   });
 
   it("stages the stale package-lock.json for deletion when a dependency rewrite changes package.json", async () => {

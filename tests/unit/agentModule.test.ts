@@ -367,6 +367,11 @@ export default defineAgent({
     });
     expect(readReasoningEffort(low)).toBe("low");
     expect(low.match(/function edenReasoningModel/g)).toHaveLength(1);
+    // `ai`'s LanguageModel union includes bare id strings, which eve's model slot rejects — the
+    // generated signature must exclude them or `tsc --noEmit` fails in the publish gate.
+    expect(low).toContain(
+      "function edenReasoningModel(model: Exclude<LanguageModel, string>",
+    );
     expect(
       setModel(low, "openai/abcdefghijkl/gpt-5.2", { effort: "low" }),
     ).toBe(low);

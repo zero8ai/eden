@@ -52,7 +52,10 @@ import { hasDynamicModel, readReasoningEffort } from "~/eve/agentModule";
 import { buildAgentConfig } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
 import { contextPath } from "~/lib/paths";
-import { stageModelSwitchingUpgrade } from "~/models/stage-model.server";
+import {
+  stageModelSwitchingUpgrade,
+  stageSubagentModelWiring,
+} from "~/models/stage-model.server";
 import { findWorkspaceModel } from "~/models/union.server";
 import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import {
@@ -339,11 +342,30 @@ export async function action(args: ActionFunctionArgs) {
   // the per-conversation directive, so the selector would silently no-op. Staged only: the
   // user still publishes + deploys the change to activate it.
   if (String(form.get("intent")) === "enable-model-switching") {
-    return stageModelSwitchingUpgrade({
+    const result = await stageModelSwitchingUpgrade({
       project,
       root: active.root,
       createdBy: auth.user.id,
     });
+    if (!result.ok) return result;
+    // Route the member's subagents through the same wrapper (a bare gateway-bound subagent model
+    // otherwise fails at runtime / blocks the publish gate). Best-effort — never fail the member's
+    // upgrade over a subagent read hiccup.
+    try {
+      const source = await getAgentSource(project.repoInstallationId, {
+        owner: project.repoOwner,
+        repo: project.repoName,
+      });
+      await stageSubagentModelWiring({
+        project,
+        memberRoot: active.root,
+        candidatePaths: source.paths,
+        createdBy: auth.user.id,
+      });
+    } catch {
+      // ignore — the publish gate remains the backstop
+    }
+    return result;
   }
   return { ok: true as const };
 }

@@ -241,6 +241,22 @@ export function readModel(source: string): string | null {
   return m ? m[3] : null;
 }
 
+/**
+ * The bare model literal in `source` that eve would resolve through the Vercel AI Gateway — a
+ * plain `model: 'provider/id'` with NO Eden wiring: not the `defineDynamic` wrapper, not a
+ * provider `.chatModel(...)` call. Eden never provisions that gateway (it wires OpenRouter and the
+ * workspace's connected providers), so such a model fails at runtime with "missing AI Gateway
+ * credentials". Returns the literal id, or null when the model is already Eden-routed OR absent
+ * (an absent `model:` inherits the parent agent's model, which is fine). Subagents are the usual
+ * offenders: Eden's model tooling only wires the member root's `agent.ts`, so a hand- or
+ * assistant-authored subagent can carry a bare literal that silently routes to the gateway.
+ */
+export function bareGatewayModel(source: string): string | null {
+  if (MODEL_DYNAMIC.test(source) || MODEL_CALL.test(source)) return null;
+  const literal = source.match(MODEL_LITERAL);
+  return literal ? literal[3] : null;
+}
+
 /** Read Eden's explicit fallback reasoning effort, or null for provider default. */
 export function readReasoningEffort(
   source: string,

@@ -96,7 +96,10 @@ import {
   type ResolvedTemplate,
 } from "~/marketplace/compose.server";
 import type { TemplateType } from "~/marketplace/manifest";
-import { stageModelChange } from "~/models/stage-model.server";
+import {
+  stageModelChange,
+  stageSubagentModelWiring,
+} from "~/models/stage-model.server";
 import { ownsWorkspaceModelReference } from "~/models/union.server";
 import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
 import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
@@ -588,7 +591,22 @@ export async function action(args: ActionFunctionArgs) {
         effort,
         createdBy: auth.user.id,
       });
-      return result.ok ? { ok: true as const } : { error: result.error };
+      if (!result.ok) return { error: result.error };
+      // Same wiring for the member's subagents so a bare gateway-bound subagent model gets routed
+      // through the connected providers too (they'd otherwise fail at runtime, and the publish
+      // gate would block). Best-effort: a subagent read hiccup must not fail the member's save.
+      try {
+        const source = await getAgentSource(project.repoInstallationId, repo);
+        await stageSubagentModelWiring({
+          project,
+          memberRoot: active.root,
+          candidatePaths: source.paths,
+          createdBy: auth.user.id,
+        });
+      } catch {
+        // ignore — the publish gate remains the backstop
+      }
+      return { ok: true as const };
     }
 
     // ── Marketplace installs: update / uninstall stage reviewable repo changes ──

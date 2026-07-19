@@ -4,7 +4,7 @@
  * Values are always connection-qualified. There is intentionally no free-text escape hatch:
  * saving an unconnected model would leave deployments without the credential that can run it.
  */
-import { Check, Plug, TriangleAlert } from "lucide-react";
+import { Check, Gauge, Plug, TriangleAlert } from "lucide-react";
 import * as React from "react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useFetcher } from "react-router";
@@ -50,12 +50,21 @@ export function ModelSelection({
   disabled,
   placeholder,
   triggerClassName,
+  effortTriggerClassName,
+  compact = false,
   onCommit,
 }: ModelSelectionValue & {
   busy: boolean;
   disabled?: boolean;
   placeholder?: string;
   triggerClassName?: string;
+  /** Override for the reasoning-effort trigger (compact toolbars vs. settings forms). */
+  effortTriggerClassName?: string;
+  /**
+   * Toolbar layout: model + effort sit inline as equal-height pills with no field label,
+   * for the composer's control row. Default (false) is the labelled, form-style stack.
+   */
+  compact?: boolean;
   onCommit: (model: string, effort: ReasoningEffort | null) => void;
 }) {
   const fetcher = useFetcher<ModelsApiResponse>();
@@ -68,50 +77,74 @@ export function ModelSelection({
   const supported = selected?.supportedEfforts;
   const effectiveEffort = effort && supported?.includes(effort) ? effort : null;
 
+  const modelSelect = (
+    <ModelSelect
+      value={model}
+      busy={busy}
+      disabled={disabled}
+      placeholder={placeholder}
+      triggerClassName={triggerClassName}
+      onCommit={(nextModel) => {
+        const next = fetcher.data?.models.find(
+          (entry) => entry.id === nextModel,
+        );
+        const nextEffort =
+          effort && next?.supportedEfforts?.includes(effort) ? effort : null;
+        onCommit(nextModel, nextEffort);
+      }}
+    />
+  );
+
+  const hasEffort = supported && supported.length > 0;
+  const effortSelect = hasEffort ? (
+    <Select
+      value={effectiveEffort ?? "provider-default"}
+      disabled={busy || disabled}
+      onValueChange={(value) =>
+        onCommit(
+          model ?? "",
+          value === "provider-default" ? null : (value as ReasoningEffort),
+        )
+      }
+    >
+      <SelectTrigger
+        className={cn(compact ? "gap-1.5" : "w-full", effortTriggerClassName)}
+        aria-label="Reasoning effort"
+      >
+        {compact && (
+          <Gauge className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        )}
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="provider-default">
+          {compact ? "Default effort" : "Provider default"}
+        </SelectItem>
+        {supported.map((level) => (
+          <SelectItem key={level} value={level}>
+            {level}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  ) : null;
+
+  if (compact) {
+    return (
+      <div className="flex items-center gap-2">
+        {modelSelect}
+        {effortSelect}
+      </div>
+    );
+  }
+
   return (
     <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
-      <ModelSelect
-        value={model}
-        busy={busy}
-        disabled={disabled}
-        placeholder={placeholder}
-        triggerClassName={triggerClassName}
-        onCommit={(nextModel) => {
-          const next = fetcher.data?.models.find(
-            (entry) => entry.id === nextModel,
-          );
-          const nextEffort =
-            effort && next?.supportedEfforts?.includes(effort) ? effort : null;
-          onCommit(nextModel, nextEffort);
-        }}
-      />
-      {supported && supported.length > 0 && (
+      {modelSelect}
+      {effortSelect && (
         <label className="grid min-w-40 gap-1 text-xs text-muted-foreground">
           <span>Reasoning effort</span>
-          <Select
-            value={effectiveEffort ?? "provider-default"}
-            disabled={busy || disabled}
-            onValueChange={(value) =>
-              onCommit(
-                model ?? "",
-                value === "provider-default"
-                  ? null
-                  : (value as ReasoningEffort),
-              )
-            }
-          >
-            <SelectTrigger className="w-full" aria-label="Reasoning effort">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="provider-default">Provider default</SelectItem>
-              {supported.map((level) => (
-                <SelectItem key={level} value={level}>
-                  {level}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {effortSelect}
         </label>
       )}
     </div>

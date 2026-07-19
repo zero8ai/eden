@@ -54,6 +54,7 @@ const sessionContext = createContext<SessionState | null>(null);
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const SIGNED_OR_BEARER_ENDPOINTS = new Set([
+  "/api/connections/token",
   "/api/discord/interactions",
   "/api/discord/send",
   "/api/gateway/v1/chat/completions",
@@ -70,6 +71,9 @@ function isBetterAuthEndpoint(pathname: string): boolean {
 function isMachineEndpoint(pathname: string): boolean {
   return (
     pathname.startsWith("/api/assistant/") ||
+    // Brokered-capability calls (issue #166): the agent's tools POST per-operation subpaths
+    // (/api/capabilities/<provider>/<operation>) authenticated by their EDEN_TEAM_TOKEN bearer.
+    pathname.startsWith("/api/capabilities/") ||
     SIGNED_OR_BEARER_ENDPOINTS.has(pathname)
   );
 }

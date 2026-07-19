@@ -86,7 +86,7 @@ describe("assistant template authoring guidance", () => {
       expect(installTool).toContain(`"${type}"`);
     }
     expect(installTool).toContain('edenCall("install"');
-    expect(version.trim()).toBe("0.2.0");
+    expect(version.trim()).toBe("0.2.1");
   });
 
   it("passes the normalized assistant effort into the eve agent runtime", async () => {

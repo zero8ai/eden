@@ -14,7 +14,9 @@ import {
   stageModelSwitchingUpgrade,
   stageSubagentModelWiring,
   type StageModelDeps,
+  type SubagentWiringDeps,
 } from "~/models/stage-model.server";
+import type { WorkspaceModelCatalog } from "~/models/union.server";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
 
 const PROJECT = {
@@ -45,9 +47,28 @@ const PKG =
   JSON.stringify({ dependencies: { eve: "^0.20.0", zod: "^4.4.3" } }, null, 2) +
   "\n";
 
-/** Repo reads and the catalog lookup, keyed by path — no GitHub, no network. */
-function fakeDeps(files: Record<string, string>): StageModelDeps {
+/**
+ * Repo reads and the catalog lookups, keyed by path — no GitHub, no network. The default
+ * workspace catalog marks OpenRouter's listing unavailable, so the subagent wiring fails open to
+ * the alias (the bare-literal wiring) unless a test supplies a concrete catalog.
+ */
+function fakeDeps(
+  files: Record<string, string>,
+  catalog?: WorkspaceModelCatalog,
+): StageModelDeps & SubagentWiringDeps {
   return {
+    loadCatalog: async () =>
+      catalog ?? {
+        models: [],
+        unavailable: [
+          {
+            connectionId: "abcdefghijkl",
+            provider: "openrouter",
+            connectionLabel: "OpenRouter",
+            message: "The provider catalog is unavailable.",
+          },
+        ],
+      },
     readFile: async (_installationId, _repo, path) => files[path] ?? null,
     findOpenChange: async () => null,
     lookupModel: async (_orgId, model) =>
@@ -213,9 +234,32 @@ export default defineAgent({
 });
 `;
 
+  /** A workspace whose only active connection is Anthropic and carries the subagent's model. */
+  const ANTHROPIC_ONLY_CATALOG: WorkspaceModelCatalog = {
+    models: [
+      {
+        id: "anthropic/mnopqrstuvwx/claude-sonnet-5",
+        name: "Claude Sonnet 5",
+        description: null,
+        contextWindow: 200_000,
+        maxOutputTokens: null,
+        tags: [],
+        inputPerMTok: null,
+        outputPerMTok: null,
+        providers: ["anthropic"],
+        provider: "anthropic",
+        providerName: "Anthropic",
+        connectionId: "mnopqrstuvwx",
+        connectionLabel: "Anthropic",
+        upstreamModelId: "claude-sonnet-5",
+      },
+    ],
+    unavailable: [],
+  };
+
   it("stages a dynamic-wrapper rewrite for a gateway-bound repo subagent", async () => {
     const path = "agent/subagents/reader/agent.ts";
-    const { wired } = await stageSubagentModelWiring(
+    const { wired, unresolved } = await stageSubagentModelWiring(
       {
         project: PROJECT,
         memberRoot: "agent",
@@ -227,8 +271,81 @@ export default defineAgent({
     );
 
     expect(wired).toEqual([path]);
+    expect(unresolved).toEqual([]);
     const draft = await getDraft(PROJECT.id, path, store);
     expect(hasDynamicModel(draft?.content)).toBe(true);
+    expect(readModel(draft!.content!)).toBe("anthropic/claude-sonnet-5");
+  });
+
+  it("qualifies the bare id against the workspace catalog (runs on the exact connection)", async () => {
+    const path = "agent/subagents/reader/agent.ts";
+    const { wired, unresolved } = await stageSubagentModelWiring(
+      {
+        project: PROJECT,
+        memberRoot: "agent",
+        candidatePaths: [path],
+        createdBy: "user_1",
+      },
+      store,
+      fakeDeps({ [path]: BARE_SUBAGENT }, ANTHROPIC_ONLY_CATALOG),
+    );
+
+    expect(wired).toEqual([path]);
+    expect(unresolved).toEqual([]);
+    const draft = await getDraft(PROJECT.id, path, store);
+    expect(hasDynamicModel(draft?.content)).toBe(true);
+    // The qualified ref resolves through the Anthropic connection's own credential — not the
+    // OpenRouter alias, which doesn't exist on an Anthropic-only workspace.
+    expect(readModel(draft!.content!)).toBe(
+      "anthropic/mnopqrstuvwx/claude-sonnet-5",
+    );
+    expect(draft!.content!).toContain("modelContextWindowTokens: 200000");
+  });
+
+  it("stages nothing and reports the subagent when no active connection offers its model", async () => {
+    const path = "agent/subagents/reader/agent.ts";
+    const { wired, unresolved } = await stageSubagentModelWiring(
+      {
+        project: PROJECT,
+        memberRoot: "agent",
+        candidatePaths: [path],
+        createdBy: "user_1",
+      },
+      store,
+      fakeDeps({ [path]: BARE_SUBAGENT }, { models: [], unavailable: [] }),
+    );
+
+    expect(wired).toEqual([]);
+    expect(unresolved).toEqual([
+      { path, model: "anthropic/claude-sonnet-5", reason: "no-connection" },
+    ]);
+    // Left bare on purpose — the publish gate keeps blocking it, and the caller surfaces the
+    // save-time hint instead of a runtime credential failure.
+    expect(await getDraft(PROJECT.id, path, store)).toBeNull();
+  });
+
+  it("falls open to the alias wiring when the catalog loader fails", async () => {
+    const path = "agent/subagents/reader/agent.ts";
+    const deps = {
+      ...fakeDeps({ [path]: BARE_SUBAGENT }),
+      loadCatalog: async () => {
+        throw new Error("catalog outage");
+      },
+    };
+    const { wired, unresolved } = await stageSubagentModelWiring(
+      {
+        project: PROJECT,
+        memberRoot: "agent",
+        candidatePaths: [path],
+        createdBy: "user_1",
+      },
+      store,
+      deps,
+    );
+
+    expect(wired).toEqual([path]);
+    expect(unresolved).toEqual([]);
+    const draft = await getDraft(PROJECT.id, path, store);
     expect(readModel(draft!.content!)).toBe("anthropic/claude-sonnet-5");
   });
 

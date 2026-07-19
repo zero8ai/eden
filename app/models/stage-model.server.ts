@@ -21,10 +21,17 @@ import {
 } from "~/eve/agentModule";
 import type { ReasoningEffort } from "~/models/reasoning";
 import { packageJsonPathForRoot } from "~/marketplace/install.server";
-import { findWorkspaceModel } from "~/models/union.server";
 import {
+  findWorkspaceModel,
+  listWorkspaceModelCatalog,
+} from "~/models/union.server";
+import {
+  findGatewayBoundSubagents,
   isSubagentAgentPath,
+  resolveBareSubagentModel,
   wireSubagentModels,
+  type BareSubagentModelResolution,
+  type UnresolvedSubagentModel,
 } from "~/models/subagent-wiring";
 import { getRuntime } from "~/seams/index.server";
 
@@ -145,6 +152,12 @@ async function stageModelChangeInternal(
   return { ok: true };
 }
 
+/** GitHub reads plus the workspace-catalog loader that qualifies bare subagent ids. */
+export interface SubagentWiringDeps extends FileViewDeps {
+  /** Injected in tests; defaults to the real workspace catalog. */
+  loadCatalog?: typeof listWorkspaceModelCatalog;
+}
+
 /**
  * Auto-wire a member's subagents (issue: subagents ship bare gateway-bound models). For each
  * `<memberRoot>/subagents/<name>/agent.ts` whose model is a bare literal that eve would route to
@@ -156,6 +169,13 @@ async function stageModelChangeInternal(
  * as a draft (created in the editor, blocked by the publish gate, never committed) is wired by the
  * same model save instead of dead-ending. Non-subagent paths and paths outside `memberRoot` are
  * ignored. Idempotent: a subagent that's already wired stages nothing.
+ *
+ * Each bare id is qualified against the workspace catalog (issue #198): mapped unambiguously to
+ * an active connection it becomes a `provider/connectionId/id` ref that `edenModel` runs on that
+ * exact connection's credential — instead of the generic OpenRouter alias, which doesn't exist on
+ * an Anthropic/OpenAI/Codex-only workspace. A model no active connection can run is left
+ * un-wired and reported in `unresolved` so the caller surfaces a save-time hint (the publish gate
+ * keeps blocking it). A catalog outage falls open to the pre-qualification alias wiring.
  */
 export async function stageSubagentModelWiring(
   input: {
@@ -167,8 +187,8 @@ export async function stageSubagentModelWiring(
     createdBy: string | null;
   },
   store: DataStore = getRuntime().data,
-  deps?: FileViewDeps,
-): Promise<{ wired: string[] }> {
+  deps?: SubagentWiringDeps,
+): Promise<{ wired: string[]; unresolved: UnresolvedSubagentModel[] }> {
   const prefix = `${input.memberRoot}/subagents/`;
   const drafts = await store.drafts.listByProject(input.project.id);
   // A deletion draft's view falls back to the REPO content, so wiring such a path would stage new
@@ -184,7 +204,7 @@ export async function stageSubagentModelWiring(
       ),
     ),
   ];
-  if (subagentPaths.length === 0) return { wired: [] };
+  if (subagentPaths.length === 0) return { wired: [], unresolved: [] };
 
   const files: Record<string, string | null> = {};
   await Promise.all(
@@ -193,8 +213,29 @@ export async function stageSubagentModelWiring(
       files[path] = view.content;
     }),
   );
+  if (findGatewayBoundSubagents(files).length === 0) {
+    return { wired: [], unresolved: [] };
+  }
 
-  const changed = wireSubagentModels(files);
+  // Provider catalogs are only worth fetching once an offender exists (above). A load failure
+  // must not strand the save: fall open to the alias wiring — exactly the pre-#198 behavior.
+  let resolve: ((model: string) => BareSubagentModelResolution) | undefined;
+  try {
+    const catalog = await (deps?.loadCatalog ?? listWorkspaceModelCatalog)(
+      input.project.orgId,
+    );
+    const openRouterCatalogUnavailable = catalog.unavailable.some(
+      (u) => u.provider === "openrouter",
+    );
+    resolve = (model) =>
+      resolveBareSubagentModel(model, catalog.models, {
+        openRouterCatalogUnavailable,
+      });
+  } catch {
+    resolve = undefined;
+  }
+
+  const { changed, unresolved } = wireSubagentModels(files, resolve);
   await Promise.all(
     changed.map((c) =>
       stageDraft(
@@ -208,7 +249,7 @@ export async function stageSubagentModelWiring(
       ),
     ),
   );
-  return { wired: changed.map((c) => c.path) };
+  return { wired: changed.map((c) => c.path), unresolved };
 }
 
 /**

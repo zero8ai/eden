@@ -100,6 +100,7 @@ import {
   stageModelChange,
   stageSubagentModelWiring,
 } from "~/models/stage-model.server";
+import { unresolvedSubagentModelError } from "~/models/subagent-wiring";
 import { ownsWorkspaceModelReference } from "~/models/union.server";
 import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
 import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
@@ -595,14 +596,22 @@ export async function action(args: ActionFunctionArgs) {
       // Same wiring for the member's subagents so a bare gateway-bound subagent model gets routed
       // through the connected providers too (they'd otherwise fail at runtime, and the publish
       // gate would block). Best-effort: a subagent read hiccup must not fail the member's save.
+      // A subagent model NO active connection can run is reported as a save-time warning — the
+      // actionable moment; the alternative is a runtime credential failure after deploy.
       try {
         const source = await getAgentSource(project.repoInstallationId, repo);
-        await stageSubagentModelWiring({
+        const wiring = await stageSubagentModelWiring({
           project,
           memberRoot: active.root,
           candidatePaths: source.paths,
           createdBy: auth.user.id,
         });
+        if (wiring.unresolved.length > 0) {
+          return {
+            ok: true as const,
+            warning: unresolvedSubagentModelError(wiring.unresolved),
+          };
+        }
       } catch {
         // ignore — the publish gate remains the backstop
       }
@@ -1228,7 +1237,11 @@ function ModelSection({
     modelStaged,
     activeAgent,
   } = loaderData;
-  const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
+  const fetcher = useFetcher<{
+    ok?: boolean;
+    error?: string;
+    warning?: string;
+  }>();
   const modelBadges = useMemo(
     () => (
       <>
@@ -1278,7 +1291,12 @@ function ModelSection({
       {fetcher.data?.error && (
         <p className="mt-2 text-sm text-destructive">{fetcher.data.error}</p>
       )}
-      {fetcher.data?.ok && (
+      {fetcher.data?.warning && (
+        <p className="mt-2 whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
+          {fetcher.data.warning}
+        </p>
+      )}
+      {fetcher.data?.ok && !fetcher.data.warning && (
         <p className="mt-2 text-sm text-muted-foreground">
           Staged — ship or publish it from the Deployment tab.
         </p>

@@ -19,6 +19,7 @@ import {
   readReasoningEffort,
   setModel,
 } from "~/eve/agentModule";
+import type { ModelCatalogEntry } from "~/models/catalog.server";
 
 /** A subagent entrypoint: `.../subagents/<name>/agent.ts`, at any member-root depth. */
 const SUBAGENT_AGENT_PATH = /(^|\/)subagents\/[^/]+\/agent\.ts$/;
@@ -52,26 +53,150 @@ export function findGatewayBoundSubagents(
 }
 
 /**
- * Rewrite each gateway-bound subagent `agent.ts` so its CURRENT model routes through the same
- * Eden dynamic wrapper the member gets (`setModel` preserves the chosen model, context window, and
- * effort — it only changes how the model is resolved). Returns only the files that changed.
+ * How a subagent's bare model literal maps onto the workspace's provider connections. `edenModel`
+ * resolves a QUALIFIED `provider/connectionId/id` ref with that exact connection's credential, but
+ * a bare id falls to the generic OpenRouter alias — which only exists when the org has an active
+ * OpenRouter connection. Qualifying at wire time is what makes a subagent runnable on
+ * Anthropic/OpenAI/Codex-only workspaces.
+ */
+export type BareSubagentModelResolution =
+  /** Exactly one active connection carries the model — write the qualified ref. */
+  | { kind: "qualified"; model: string; contextWindowTokens: number | null }
+  /** Keep the bare literal: the workspace's OpenRouter alias credential runs it. */
+  | { kind: "alias" }
+  /** No active connection can run it (or Eden can't pick one) — leave it for the save-time hint. */
+  | { kind: "unresolvable"; reason: "ambiguous" | "no-connection" };
+
+/** A catalog entry as the resolver consumes it (the qualified workspace-catalog shape). */
+type QualifiedCatalogEntry = Pick<
+  ModelCatalogEntry,
+  "id" | "provider" | "upstreamModelId" | "contextWindow"
+>;
+
+/**
+ * Resolve a subagent's bare model id against the workspace catalog. A bare id is gateway/
+ * OpenRouter-shaped (`creator/model`, e.g. `anthropic/claude-sonnet-5`); a workspace entry matches
+ * when it IS that id on an OpenRouter connection, or when the creator segment names the entry's
+ * provider and the tail is its upstream id (`anthropic/claude-sonnet-5` ↔ an Anthropic
+ * connection's `claude-sonnet-5`; Codex models surface under the `openai/` creator).
+ *
+ * Exactly one matching connection → qualified ref. Several → the sole OpenRouter match wins when
+ * there is one (a bare id already routes to OpenRouter today, so that preserves the routing while
+ * pinning the exact connection credential); otherwise the id is ambiguous. No match → nothing can
+ * run it, unless OpenRouter's catalog couldn't be listed (`openRouterCatalogUnavailable`) — then
+ * fail open to the alias rather than block on a provider outage.
+ */
+export function resolveBareSubagentModel(
+  model: string,
+  catalog: QualifiedCatalogEntry[],
+  options: { openRouterCatalogUnavailable: boolean },
+): BareSubagentModelResolution {
+  const matches = new Map<string, QualifiedCatalogEntry>();
+  for (const entry of catalog) {
+    if (!entry.provider || !entry.upstreamModelId) continue;
+    const creator = entry.provider === "codex" ? "openai" : entry.provider;
+    const matched =
+      entry.provider === "openrouter"
+        ? entry.upstreamModelId === model
+        : model === `${creator}/${entry.upstreamModelId}`;
+    if (matched) matches.set(entry.id, entry);
+  }
+  const qualified = (entry: QualifiedCatalogEntry) =>
+    ({
+      kind: "qualified",
+      model: entry.id,
+      contextWindowTokens: entry.contextWindow ?? null,
+    }) as const;
+  const all = [...matches.values()];
+  if (all.length === 1) return qualified(all[0]!);
+  if (all.length > 1) {
+    const openRouter = all.filter((e) => e.provider === "openrouter");
+    if (openRouter.length === 1) return qualified(openRouter[0]!);
+    // Several OpenRouter connections carry it: the alias (input-order default credential) already
+    // runs the bare id — keep the status quo rather than guess a connection.
+    if (openRouter.length > 1) return { kind: "alias" };
+    return { kind: "unresolvable", reason: "ambiguous" };
+  }
+  if (options.openRouterCatalogUnavailable) return { kind: "alias" };
+  return { kind: "unresolvable", reason: "no-connection" };
+}
+
+/** A subagent left un-wired because its model resolves to no runnable connection. */
+export interface UnresolvedSubagentModel {
+  path: string;
+  model: string;
+  reason: "ambiguous" | "no-connection";
+}
+
+export interface WireSubagentModelsResult {
+  changed: { path: string; content: string }[];
+  unresolved: UnresolvedSubagentModel[];
+}
+
+/**
+ * Rewrite each gateway-bound subagent `agent.ts` so its model routes through the same Eden
+ * dynamic wrapper the member gets. `resolve` (built from the workspace catalog) qualifies the
+ * bare id against an active connection: a qualified ref runs on that exact connection's
+ * credential; an `alias` resolution (or no resolver) keeps the bare literal, which runs on the
+ * OpenRouter alias; an `unresolvable` model is left untouched and reported so the caller can
+ * surface a save-time hint instead of silently wiring a ref that can't run.
  */
 export function wireSubagentModels(
   files: Record<string, string | null | undefined>,
-): { path: string; content: string }[] {
+  resolve?: (model: string) => BareSubagentModelResolution,
+): WireSubagentModelsResult {
   const changed: { path: string; content: string }[] = [];
+  const unresolved: UnresolvedSubagentModel[] = [];
   for (const { path, model } of findGatewayBoundSubagents(files)) {
     // A template literal with interpolation (`model: \`x/${v}\``) can't be rewritten statically —
     // setModel would freeze the interpolation into a literal string. Leave it for the gate.
     if (model.includes("${")) continue;
+    const resolution = resolve?.(model) ?? { kind: "alias" as const };
+    if (resolution.kind === "unresolvable") {
+      unresolved.push({ path, model, reason: resolution.reason });
+      continue;
+    }
     const source = files[path]!;
-    const next = setModel(source, model, {
-      contextWindowTokens: readModelContextWindow(source),
+    const target = resolution.kind === "qualified" ? resolution.model : model;
+    const contextWindowTokens =
+      (resolution.kind === "qualified"
+        ? resolution.contextWindowTokens
+        : null) ?? readModelContextWindow(source);
+    const next = setModel(source, target, {
+      contextWindowTokens,
       effort: readReasoningEffort(source),
     });
     if (next !== source) changed.push({ path, content: next });
   }
-  return changed;
+  return { changed, unresolved };
+}
+
+/**
+ * Save-time hint for subagents the auto-wire had to leave alone. Actionable at the moment the
+ * member's model is saved — the alternative is a runtime credential failure (or a publish-gate
+ * block whose generic wording doesn't say WHY re-saving didn't fix the subagent).
+ */
+export function unresolvedSubagentModelError(
+  unresolved: UnresolvedSubagentModel[],
+): string {
+  const lines = unresolved
+    .map(
+      (u) =>
+        `- \`${u.path}\` → \`model: "${u.model}"\` ${
+          u.reason === "ambiguous"
+            ? "(several connections offer this model — Eden can't pick one)"
+            : "(no active provider connection offers this model)"
+        }`,
+    )
+    .join("\n");
+  const one = unresolved.length === 1;
+  return (
+    `${unresolved.length} subagent model${one ? "" : "s"} couldn't be routed through this ` +
+    `workspace's provider connections:\n\n${lines}\n\n` +
+    `Connect a provider that offers ${one ? "the" : "each"} model (or an OpenRouter connection), ` +
+    `then re-save the agent's model in Settings → Model — or edit the subagent's \`model:\` line. ` +
+    `Publishing stays blocked until ${one ? "it is" : "they are"} routed.`
+  );
 }
 
 /**
@@ -91,7 +216,7 @@ export function gatewayBoundSubagentError(
     `Eden doesn't provision, so ${one ? "it" : "they"} would fail at runtime with ` +
     `"missing AI Gateway credentials":\n\n${lines}\n\n` +
     `Re-save the agent's model in Settings → Model (Eden re-wires its subagents through your ` +
-    `connected providers), or remove the \`model:\` line so the subagent inherits the parent ` +
-    `agent, then try again.`
+    `connected providers — connect a provider that offers the model first if none does), or ` +
+    `remove the \`model:\` line so the subagent inherits the parent agent, then try again.`
   );
 }

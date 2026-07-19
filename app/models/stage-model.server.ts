@@ -1,9 +1,15 @@
 /**
  * Model staging shared by Settings' "Model" section and the Playground's "Enable model
- * switching": rewrite the member's `agent.ts` through `setModel` (the chosen model becomes the
- * `defineDynamic` fallback, so the agent honors the playground's per-conversation directive)
- * and keep its `package.json` provider/eve dependencies compatible — both staged as drafts on
- * the normal change-set rails, nothing touches git until the user publishes.
+ * switching". Two module generations exist:
+ *
+ *  - **Workspace-resolver modules** (`model: edenAgentModel('<name>')` from the generated
+ *    `eden-model.ts`): the file carries no model at all — it resolves the org's configured
+ *    model at runtime. A model save writes the org's per-agent override map (Eden DB) and
+ *    touches NOTHING in the repo: no drafts, no publish, no redeploy.
+ *  - **Legacy dynamic-wrapper modules**: rewrite the member's `agent.ts` through `setModel`
+ *    (the chosen model becomes the `defineDynamic` fallback, so the agent honors the
+ *    playground's per-conversation directive) and keep its `package.json` provider/eve
+ *    dependencies compatible — both staged as drafts on the normal change-set rails.
  */
 import type { DataStore } from "~/data/ports";
 import {
@@ -13,26 +19,18 @@ import {
 } from "~/drafts/drafts.server";
 import {
   ensureModelProviderDependencies,
+  orgResolverAgentName,
   readModel,
   readModelContextWindow,
   readReasoningEffort,
   scaffoldAgentModule,
   setModel,
+  usesOrgModelResolver,
 } from "~/eve/agentModule";
 import type { ReasoningEffort } from "~/models/reasoning";
 import { packageJsonPathForRoot } from "~/marketplace/install.server";
-import {
-  findWorkspaceModel,
-  listWorkspaceModelCatalog,
-} from "~/models/union.server";
-import {
-  findGatewayBoundSubagents,
-  isSubagentAgentPath,
-  resolveBareSubagentModel,
-  wireSubagentModels,
-  type BareSubagentModelResolution,
-  type UnresolvedSubagentModel,
-} from "~/models/subagent-wiring";
+import { setAgentModelOverride } from "~/models/agent-model-config.server";
+import { findWorkspaceModel } from "~/models/union.server";
 import { getRuntime } from "~/seams/index.server";
 
 export interface StageModelInput {
@@ -54,17 +52,24 @@ export interface StageModelInput {
   createdBy: string | null;
 }
 
-export type StageModelResult = { ok: true } | { ok: false; error: string };
+export type StageModelResult =
+  /** "applied": written to org config, live on the agent's next step. "staged": drafted for publish. */
+  | { ok: true; mode: "staged" | "applied" }
+  | { ok: false; error: string };
 
-/** GitHub reads + the model-catalog lookup, injected so unit tests run with zero I/O. */
+/** GitHub reads + the model-catalog lookup + the override writer, injected for zero-I/O tests. */
 export interface StageModelDeps extends FileViewDeps {
   lookupModel: typeof findWorkspaceModel;
+  /** Injected in tests; defaults to the real org override map. */
+  setOverride?: typeof setAgentModelOverride;
 }
 
 /**
- * Stage the model change for one member: `agent.ts` (dynamic wrapper, `model` as the fallback)
- * plus `package.json` when its dependencies need the OpenRouter provider / eve bump. Re-running
- * with the same model re-stages identical content (draft upsert — idempotent).
+ * Apply the model change for one member. A workspace-resolver module records the choice in the
+ * org's per-agent override map (the running agent picks it up on its next step). A legacy module
+ * stages `agent.ts` (dynamic wrapper, `model` as the fallback) plus `package.json` when its
+ * dependencies need the OpenRouter provider / eve bump. Re-running with the same model is
+ * idempotent on both paths.
  */
 export async function stageModelChange(
   input: StageModelInput,
@@ -105,6 +110,27 @@ async function stageModelChangeInternal(
     modelInfo?.contextWindow ?? input.fallbackContextWindowTokens;
   const path = `${input.root}/agent.ts`;
   const view = await resolveFileView(input.project, path, store, deps);
+
+  // Workspace-resolver module: the model choice is org configuration, not repo content. Write
+  // the override keyed by the name the module resolves itself (and its subagents) by.
+  if (view.content && usesOrgModelResolver(view.content)) {
+    const agentName = orgResolverAgentName(view.content);
+    if (!agentName) {
+      return {
+        ok: false,
+        error:
+          "This agent resolves its model from the workspace configuration, but its " +
+          "edenAgentModel(...) call has no readable agent name — fix agent.ts first.",
+      };
+    }
+    await (deps?.setOverride ?? setAgentModelOverride)(
+      input.project.orgId,
+      agentName,
+      { model: input.model, effort: input.effort ?? null },
+    );
+    return { ok: true, mode: "applied" };
+  }
+
   const next = view.content
     ? setModel(view.content, input.model, {
         contextWindowTokens,
@@ -149,114 +175,15 @@ async function stageModelChangeInternal(
         )
       : Promise.resolve(),
   ]);
-  return { ok: true };
-}
-
-/** GitHub reads plus the workspace-catalog loader that qualifies bare subagent ids. */
-export interface SubagentWiringDeps extends FileViewDeps {
-  /** Injected in tests; defaults to the real workspace catalog. */
-  loadCatalog?: typeof listWorkspaceModelCatalog;
-}
-
-/**
- * Auto-wire a member's subagents (issue: subagents ship bare gateway-bound models). For each
- * `<memberRoot>/subagents/<name>/agent.ts` whose model is a bare literal that eve would route to
- * the unprovisioned model gateway, re-stage it through the same dynamic wrapper the member gets so
- * it resolves through the workspace's connected providers instead. Only `agent.ts` is staged —
- * subagents share the member's `package.json`, which already carries the provider deps once the
- * member is wired. `candidatePaths` is the member's known repo paths (the caller already holds the
- * source); staged DRAFT paths under the member are considered too, so a subagent that exists only
- * as a draft (created in the editor, blocked by the publish gate, never committed) is wired by the
- * same model save instead of dead-ending. Non-subagent paths and paths outside `memberRoot` are
- * ignored. Idempotent: a subagent that's already wired stages nothing.
- *
- * Each bare id is qualified against the workspace catalog (issue #198): mapped unambiguously to
- * an active connection it becomes a `provider/connectionId/id` ref that `edenModel` runs on that
- * exact connection's credential — instead of the generic OpenRouter alias, which doesn't exist on
- * an Anthropic/OpenAI/Codex-only workspace. A model no active connection can run is left
- * un-wired and reported in `unresolved` so the caller surfaces a save-time hint (the publish gate
- * keeps blocking it). A catalog outage falls open to the pre-qualification alias wiring.
- */
-export async function stageSubagentModelWiring(
-  input: {
-    project: StageModelInput["project"];
-    /** The member's agent root, e.g. "agents/bookkeeping/agent". */
-    memberRoot: string;
-    /** Repo paths the caller already loaded (e.g. `source.paths`). */
-    candidatePaths: string[];
-    createdBy: string | null;
-  },
-  store: DataStore = getRuntime().data,
-  deps?: SubagentWiringDeps,
-): Promise<{ wired: string[]; unresolved: UnresolvedSubagentModel[] }> {
-  const prefix = `${input.memberRoot}/subagents/`;
-  const drafts = await store.drafts.listByProject(input.project.id);
-  // A deletion draft's view falls back to the REPO content, so wiring such a path would stage new
-  // content on top of the deletion — silently un-deleting the subagent. Leave those alone.
-  const deletions = new Set(
-    drafts.filter((d) => d.content === null).map((d) => d.path),
-  );
-  const subagentPaths = [
-    ...new Set(
-      [...input.candidatePaths, ...drafts.map((d) => d.path)].filter(
-        (p) =>
-          p.startsWith(prefix) && isSubagentAgentPath(p) && !deletions.has(p),
-      ),
-    ),
-  ];
-  if (subagentPaths.length === 0) return { wired: [], unresolved: [] };
-
-  const files: Record<string, string | null> = {};
-  await Promise.all(
-    subagentPaths.map(async (path) => {
-      const view = await resolveFileView(input.project, path, store, deps);
-      files[path] = view.content;
-    }),
-  );
-  if (findGatewayBoundSubagents(files).length === 0) {
-    return { wired: [], unresolved: [] };
-  }
-
-  // Provider catalogs are only worth fetching once an offender exists (above). A load failure
-  // must not strand the save: fall open to the alias wiring — exactly the pre-#198 behavior.
-  let resolve: ((model: string) => BareSubagentModelResolution) | undefined;
-  try {
-    const catalog = await (deps?.loadCatalog ?? listWorkspaceModelCatalog)(
-      input.project.orgId,
-    );
-    const openRouterCatalogUnavailable = catalog.unavailable.some(
-      (u) => u.provider === "openrouter",
-    );
-    resolve = (model) =>
-      resolveBareSubagentModel(model, catalog.models, {
-        openRouterCatalogUnavailable,
-      });
-  } catch {
-    resolve = undefined;
-  }
-
-  const { changed, unresolved } = wireSubagentModels(files, resolve);
-  await Promise.all(
-    changed.map((c) =>
-      stageDraft(
-        {
-          projectId: input.project.id,
-          path: c.path,
-          content: c.content,
-          createdBy: input.createdBy,
-        },
-        store,
-      ),
-    ),
-  );
-  return { wired: changed.map((c) => c.path), unresolved };
+  return { ok: true, mode: "staged" };
 }
 
 /**
  * Make a member playground-switchable WITHOUT changing its model: re-stage the CURRENT model
  * through the dynamic wrapper. This is the Playground's "Enable model switching" — the fix for
  * agents whose deployed `agent.ts` predates the wrapper (e.g. imported from the catalog) and
- * therefore ignores the per-conversation directive.
+ * therefore ignores the per-conversation directive. A workspace-resolver module is already
+ * dynamic (the generated `eden-model.ts` honors the directive), so it needs no staging.
  */
 export async function stageModelSwitchingUpgrade(
   input: Omit<StageModelInput, "model">,
@@ -269,6 +196,7 @@ export async function stageModelSwitchingUpgrade(
     store,
     deps,
   );
+  if (usesOrgModelResolver(view.content)) return { ok: true, mode: "applied" };
   const current = view.content ? readModel(view.content) : null;
   if (!view.content || !current) {
     return {

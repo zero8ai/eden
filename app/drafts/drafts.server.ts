@@ -22,10 +22,6 @@ import {
   type ProposedChange,
 } from "~/github/write.server";
 import { newId } from "~/lib/id";
-import {
-  findGatewayBoundSubagents,
-  gatewayBoundSubagentError,
-} from "~/models/subagent-wiring";
 import { isAssistantConfigPath } from "~/project/guard.server";
 import { getRuntime } from "~/seams/index.server";
 import type { BuildCheckRequest, BuildCheckResult } from "~/seams/types";
@@ -459,16 +455,6 @@ export async function publishDrafts(
     files: selected.map((d) => ({ path: d.path, content: d.content })),
   });
 
-  // Subagent model gate: a subagent `agent.ts` in the selection that pins a bare model literal
-  // resolves through the model gateway Eden doesn't provision — it compiles fine but dies at
-  // runtime ("missing AI Gateway credentials"). Block it here (like the orphan gate) so the bad
-  // wiring never reaches a change request; the fix routes it through the member's dynamic wrapper.
-  const gatewayBoundSubagents = findGatewayBoundSubagents(
-    Object.fromEntries(files.map((f) => [f.path, f.content])),
-  );
-  if (gatewayBoundSubagents.length > 0) {
-    throw new Error(gatewayBoundSubagentError(gatewayBoundSubagents));
-  }
   // The built-in assistant's config (.eden/assistant/** markdown + JSON) is not part of any eve
   // build, so a changeset of ONLY those files has nothing to compile — skip the gate. Any member
   // file in the selection still triggers the normal build check.

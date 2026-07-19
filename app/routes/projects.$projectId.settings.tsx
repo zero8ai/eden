@@ -96,11 +96,7 @@ import {
   type ResolvedTemplate,
 } from "~/marketplace/compose.server";
 import type { TemplateType } from "~/marketplace/manifest";
-import {
-  stageModelChange,
-  stageSubagentModelWiring,
-} from "~/models/stage-model.server";
-import { unresolvedSubagentModelError } from "~/models/subagent-wiring";
+import { stageModelChange } from "~/models/stage-model.server";
 import { ownsWorkspaceModelReference } from "~/models/union.server";
 import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
 import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
@@ -593,29 +589,7 @@ export async function action(args: ActionFunctionArgs) {
         createdBy: auth.user.id,
       });
       if (!result.ok) return { error: result.error };
-      // Same wiring for the member's subagents so a bare gateway-bound subagent model gets routed
-      // through the connected providers too (they'd otherwise fail at runtime, and the publish
-      // gate would block). Best-effort: a subagent read hiccup must not fail the member's save.
-      // A subagent model NO active connection can run is reported as a save-time warning — the
-      // actionable moment; the alternative is a runtime credential failure after deploy.
-      try {
-        const source = await getAgentSource(project.repoInstallationId, repo);
-        const wiring = await stageSubagentModelWiring({
-          project,
-          memberRoot: active.root,
-          candidatePaths: source.paths,
-          createdBy: auth.user.id,
-        });
-        if (wiring.unresolved.length > 0) {
-          return {
-            ok: true as const,
-            warning: unresolvedSubagentModelError(wiring.unresolved),
-          };
-        }
-      } catch {
-        // ignore — the publish gate remains the backstop
-      }
-      return { ok: true as const };
+      return { ok: true as const, mode: result.mode };
     }
 
     // ── Marketplace installs: update / uninstall stage reviewable repo changes ──
@@ -1240,7 +1214,7 @@ function ModelSection({
   const fetcher = useFetcher<{
     ok?: boolean;
     error?: string;
-    warning?: string;
+    mode?: "staged" | "applied";
   }>();
   const modelBadges = useMemo(
     () => (
@@ -1291,14 +1265,11 @@ function ModelSection({
       {fetcher.data?.error && (
         <p className="mt-2 text-sm text-destructive">{fetcher.data.error}</p>
       )}
-      {fetcher.data?.warning && (
-        <p className="mt-2 whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
-          {fetcher.data.warning}
-        </p>
-      )}
-      {fetcher.data?.ok && !fetcher.data.warning && (
+      {fetcher.data?.ok && (
         <p className="mt-2 text-sm text-muted-foreground">
-          Staged — ship or publish it from the Deployment tab.
+          {fetcher.data.mode === "applied"
+            ? "Saved — the agent picks this up on its next step, no redeploy needed."
+            : "Staged — ship or publish it from the Deployment tab."}
         </p>
       )}
     </section>

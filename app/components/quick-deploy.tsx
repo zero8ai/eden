@@ -17,8 +17,10 @@
  * revalidates the fetcher after actions, keeping the breakdown honest as drafts stage and publish.
  * A SEPARATE POST fetcher runs the ship, so its "Deploying…" state is independent of the data
  * fetch. On success the POST action redirects to the scope's Overview, where the ShipProgress
- * banner takes over (and this dialog unmounts); on error it returns { error }, which we show inside
- * the dialog and keep the dialog OPEN so the user can retry or cancel.
+ * banner takes over — but since AgentNav lives in the project layout that redirect lands back on,
+ * the dialog does NOT unmount; it watches the fetcher and closes itself when a ship finishes
+ * cleanly (see shouldCloseAfterShip). On error it returns { error }, which we show inside the
+ * dialog and keep the dialog OPEN so the user can retry or cancel.
  *
  * The dialog is transparent about scope: in staged mode a file breakdown grouped by owning member
  * (+ a "shared — affects everyone" block); in HEAD mode a "branch @ short-sha" summary (there is no
@@ -26,8 +28,10 @@
  * so no member is left on an older version) and a team-level environment picker.
  */
 import { Rocket } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useFetcher } from "react-router";
+
+import { shouldCloseAfterShip } from "~/deploy/quick-deploy";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -135,7 +139,36 @@ function QuickDeployDialog({
   const [open, setOpen] = useState(false);
   const ship = useFetcher<{ error?: string }>();
   const deploying = ship.state !== "idle";
-  const error = ship.data?.error;
+  // Stale-error gate: fetcher data survives across open/close, so without this a reopened dialog
+  // would resurrect the previous attempt's error. Set on reopen, cleared on the next submit; also
+  // hide the old error while a retry is in flight.
+  const [errorStale, setErrorStale] = useState(false);
+  const error = deploying || errorStale ? undefined : ship.data?.error;
+
+  // The success path redirects to the scope's Overview — but AgentNav (and this dialog) lives in
+  // the project layout that redirect lands back on, so the component never unmounts and the dialog
+  // would otherwise stay open forever over the ShipProgress banner. Watch the fetcher instead:
+  // in-flight → idle with no error payload means the action redirected — close ourselves.
+  const wasDeploying = useRef(false);
+  useEffect(() => {
+    const close = shouldCloseAfterShip({
+      wasDeploying: wasDeploying.current,
+      deploying,
+      error: ship.data?.error,
+    });
+    wasDeploying.current = deploying;
+    if (close) setOpen(false);
+  }, [deploying, ship.data]);
+
+  const handleOpenChange = (next: boolean) => {
+    // While a ship is in flight the dialog is the only "Deploying…" indicator — refuse dismissal
+    // (Esc / overlay click), matching the disabled Cancel button, so the deploy never runs
+    // invisibly in the background.
+    if (!next && deploying) return;
+    // Reopening after a failed attempt: that error belongs to the previous session.
+    if (next) setErrorStale(true);
+    setOpen(next);
+  };
 
   // HEAD mode when there is no staged change-set but a reachable branch head (issue #101).
   const headMode = data.draftCount === 0 && !!data.headBranch;
@@ -151,6 +184,7 @@ function QuickDeployDialog({
   const count = data.draftCount;
 
   const submit = () => {
+    setErrorStale(false);
     const source = headMode ? "head" : "staged";
     ship.submit(
       agent ? { env, agent, source } : { env, source },
@@ -159,7 +193,7 @@ function QuickDeployDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button size="sm">
           <Rocket className="h-4 w-4" aria-hidden />

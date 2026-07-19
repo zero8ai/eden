@@ -6,7 +6,7 @@
       "name": "Engineer",
       "version": "0.6.1",
       "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-      "hash": "4fa48780f46d1989c3daf46efd53c8bcec201b7f"
+      "hash": "e15f38a65b6461fd6c6f74c32eb604e0f534dddc"
     },
     {
       "id": "github-bundle",

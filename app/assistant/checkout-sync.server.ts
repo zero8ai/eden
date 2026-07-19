@@ -39,9 +39,13 @@ interface RepoCtx {
   defaultBranch: string;
 }
 
-async function repoCtx(projectId: string, store: DataStore): Promise<RepoCtx | null> {
+async function repoCtx(
+  projectId: string,
+  store: DataStore,
+): Promise<RepoCtx | null> {
   const project = await store.projects.findById(projectId);
-  if (!project?.repoInstallationId || !project.repoOwner || !project.repoName) return null;
+  if (!project?.repoInstallationId || !project.repoOwner || !project.repoName)
+    return null;
   return {
     installationId: project.repoInstallationId,
     owner: project.repoOwner,
@@ -66,7 +70,9 @@ async function auxBase(deploymentId: string): Promise<AuxBase> {
 
 // ── Checkout link row ──────────────────────────────────────────────────────────
 
-export async function getCheckoutRow(conversationId: string): Promise<AssistantCheckout | null> {
+export async function getCheckoutRow(
+  conversationId: string,
+): Promise<AssistantCheckout | null> {
   const [row] = await db
     .select()
     .from(assistantCheckouts)
@@ -133,9 +139,20 @@ export async function ensureConversationCheckout(input: {
   deploymentId: string;
 }): Promise<EnsureResult> {
   const aux = await auxBase(input.deploymentId);
-  if (!aux.supported) return { ok: false, unsupported: true, note: null, reason: "no sidecar endpoint" };
+  if (!aux.supported)
+    return {
+      ok: false,
+      unsupported: true,
+      note: null,
+      reason: "no sidecar endpoint",
+    };
   const base = aux.base;
-  if (!base) return { ok: false, note: null, reason: "couldn't resolve the sidecar endpoint" };
+  if (!base)
+    return {
+      ok: false,
+      note: null,
+      reason: "couldn't resolve the sidecar endpoint",
+    };
   try {
     const res = await fetch(`${base}/ensure`, {
       method: "POST",
@@ -143,11 +160,19 @@ export async function ensureConversationCheckout(input: {
       body: JSON.stringify({ conversationId: input.conversationId }),
       signal: AbortSignal.timeout(300_000),
     });
-    const body = (await res.json().catch(() => null)) as
-      | { ok?: boolean; error?: string; advanced?: number; baseBranch?: string; checkoutPath?: string }
-      | null;
+    const body = (await res.json().catch(() => null)) as {
+      ok?: boolean;
+      error?: string;
+      advanced?: number;
+      baseBranch?: string;
+      checkoutPath?: string;
+    } | null;
     if (!res.ok || !body?.ok) {
-      return { ok: false, note: null, reason: body?.error ?? `ensure ${res.status}` };
+      return {
+        ok: false,
+        note: null,
+        reason: body?.error ?? `ensure ${res.status}`,
+      };
     }
     const advanced = body.advanced ?? 0;
     const note =
@@ -156,7 +181,11 @@ export async function ensureConversationCheckout(input: {
         : null;
     return { ok: true, note };
   } catch (error) {
-    return { ok: false, note: null, reason: error instanceof Error ? error.message : String(error) };
+    return {
+      ok: false,
+      note: null,
+      reason: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -164,9 +193,48 @@ export async function ensureConversationCheckout(input: {
 
 export interface SyncResult {
   synced: boolean;
+  /**
+   * "synced" — the checkout was mirrored to its PR. "noop" — legitimately nothing to do (no
+   * edits, unchanged tree, checkouts unsupported). "failed" — the checkout could not be read or
+   * mirrored: the model's edits (if any) did NOT reach GitHub, which callers must surface — a
+   * swallowed failure here is exactly how "the assistant said it made changes but the Changes tab
+   * is empty" happens.
+   */
+  kind: "synced" | "noop" | "failed";
   reason?: string;
   prNumber?: number | null;
   warnings?: string[];
+}
+
+/**
+ * Persist a sync failure onto the checkout link row as a warning. Two consumers: the next turn's
+ * messagePrefix reads it (so the model knows its last edits never landed and can say so), and the
+ * turn stream's `sync` event surfaces it to the user immediately. Preserves the row's PR/hash
+ * state; the next successful sync clears it. Best-effort — never throws.
+ */
+export async function recordSyncFailure(input: {
+  conversationId: string;
+  projectId: string;
+  baseBranch?: string | null;
+  reason: string;
+}): Promise<void> {
+  try {
+    const row = await getCheckoutRow(input.conversationId);
+    await upsertCheckoutRow({
+      conversationId: input.conversationId,
+      projectId: input.projectId,
+      branch: conversationBranch(input.conversationId),
+      baseBranch: input.baseBranch ?? row?.baseBranch ?? "main",
+      prNumber: row?.prNumber ?? null,
+      prDraft: row?.prDraft ?? false,
+      lastSyncedHash: row?.lastSyncedHash ?? "",
+      warnings: [
+        `The previous turn's auto-sync failed (${input.reason}). Edits in this conversation's checkout are safe on disk but have NOT reached the pull request yet — they'll be picked up after your next turn completes.`,
+      ],
+    });
+  } catch (e) {
+    console.error("[assistant-sync] couldn't record sync failure", e);
+  }
 }
 
 /**
@@ -183,10 +251,33 @@ export async function syncConversationCheckout(input: {
 }): Promise<SyncResult> {
   const store = input.store ?? getRuntime().data;
   const ctx = await repoCtx(input.projectId, store);
-  if (!ctx) return { synced: false, reason: "project has no connected repo" };
+  if (!ctx)
+    return {
+      synced: false,
+      kind: "noop",
+      reason: "project has no connected repo",
+    };
 
-  const { base } = await auxBase(input.deploymentId);
-  if (!base) return { synced: false, reason: "no sidecar endpoint" };
+  const failed = async (reason: string): Promise<SyncResult> => {
+    await recordSyncFailure({
+      conversationId: input.conversationId,
+      projectId: input.projectId,
+      baseBranch: ctx.defaultBranch,
+      reason,
+    });
+    return { synced: false, kind: "failed", reason };
+  };
+
+  const aux = await auxBase(input.deploymentId);
+  if (!aux.supported)
+    return {
+      synced: false,
+      kind: "noop",
+      reason: "checkouts unsupported on this deploy target",
+    };
+  if (!aux.base)
+    return failed("couldn't resolve the checkout sidecar endpoint");
+  const base = aux.base;
 
   let tree: (TreeState & { missing?: boolean }) | null = null;
   try {
@@ -195,14 +286,15 @@ export async function syncConversationCheckout(input: {
       { signal: AbortSignal.timeout(120_000) },
     );
     const body = (await res.json().catch(() => null)) as
-      | (TreeState & { ok?: boolean; missing?: boolean })
-      | null;
-    if (!res.ok || !body?.ok) return { synced: false, reason: `tree ${res.status}` };
+      (TreeState & { ok?: boolean; missing?: boolean }) | null;
+    if (!res.ok || !body?.ok)
+      return failed(`sidecar tree read returned ${res.status}`);
     tree = body;
   } catch (error) {
-    return { synced: false, reason: error instanceof Error ? error.message : String(error) };
+    return failed(error instanceof Error ? error.message : String(error));
   }
-  if (tree.missing || !tree.baseSha) return { synced: false, reason: "checkout missing" };
+  if (tree.missing || !tree.baseSha)
+    return failed("checkout missing on the instance");
 
   const plan = planCommit(tree);
   const row = await getCheckoutRow(input.conversationId);
@@ -226,35 +318,51 @@ export async function syncConversationCheckout(input: {
         warnings,
       });
     }
-    return { synced: false, reason: "no committable changes", warnings: warnings.length > 0 ? warnings : undefined };
+    return {
+      synced: false,
+      kind: "noop",
+      reason: "no committable changes",
+      warnings: warnings.length > 0 ? warnings : undefined,
+    };
   }
   // Unchanged since the last mirror → skip.
   if (row?.lastSyncedHash === plan.hash) {
-    return { synced: false, reason: "unchanged", prNumber: row?.prNumber ?? null };
+    return {
+      synced: false,
+      kind: "noop",
+      reason: "unchanged",
+      prNumber: row?.prNumber ?? null,
+    };
   }
-
-  await mirrorSnapshot(ctx, branch, tree.baseSha, plan, input.conversationId);
 
   let prNumber = row?.prNumber ?? null;
   let prDraft = row?.prDraft ?? false;
-  if (!prNumber && plan.files.length > 0) {
-    const opened = await openPullRequest(
-      ctx.installationId,
-      { owner: ctx.owner, repo: ctx.repo },
-      {
-        base: ctx.defaultBranch,
-        branch,
-        title: prTitle(input.title, input.conversationId),
-        body: prBody(input.title, warnings),
-        draft: false,
-      },
+  try {
+    await mirrorSnapshot(ctx, branch, tree.baseSha, plan, input.conversationId);
+
+    if (!prNumber && plan.files.length > 0) {
+      const opened = await openPullRequest(
+        ctx.installationId,
+        { owner: ctx.owner, repo: ctx.repo },
+        {
+          base: ctx.defaultBranch,
+          branch,
+          title: prTitle(input.title, input.conversationId),
+          body: prBody(input.title, warnings),
+          draft: false,
+        },
+      );
+      prNumber = opened.pullRequestNumber;
+      prDraft = opened.draft;
+    } else if (prNumber && !sameWarnings(row?.warnings ?? null, warnings)) {
+      // The PR already exists but this sync's notes differ (a new stripped path, or a previous
+      // warning cleared) — keep the PR body honest.
+      await updatePullRequestBody(ctx, prNumber, prBody(input.title, warnings));
+    }
+  } catch (error) {
+    return failed(
+      `mirroring to GitHub failed: ${error instanceof Error ? error.message : String(error)}`,
     );
-    prNumber = opened.pullRequestNumber;
-    prDraft = opened.draft;
-  } else if (prNumber && !sameWarnings(row?.warnings ?? null, warnings)) {
-    // The PR already exists but this sync's notes differ (a new stripped path, or a previous
-    // warning cleared) — keep the PR body honest.
-    await updatePullRequestBody(ctx, prNumber, prBody(input.title, warnings));
   }
 
   await upsertCheckoutRow({
@@ -268,7 +376,12 @@ export async function syncConversationCheckout(input: {
     warnings,
   });
 
-  return { synced: true, prNumber, warnings: warnings.length > 0 ? warnings : undefined };
+  return {
+    synced: true,
+    kind: "synced",
+    prNumber,
+    warnings: warnings.length > 0 ? warnings : undefined,
+  };
 }
 
 function sameWarnings(a: string[] | null, b: string[]): boolean {
@@ -277,7 +390,11 @@ function sameWarnings(a: string[] | null, b: string[]): boolean {
 }
 
 /** Rewrite a conversation PR's body (warnings changed after the PR was opened). Best-effort. */
-async function updatePullRequestBody(ctx: RepoCtx, pullNumber: number, body: string): Promise<void> {
+async function updatePullRequestBody(
+  ctx: RepoCtx,
+  pullNumber: number,
+  body: string,
+): Promise<void> {
   try {
     const octokit = await getInstallationOctokit(ctx.installationId);
     await octokit.rest.pulls.update({
@@ -313,7 +430,9 @@ async function mirrorSnapshot(
 ): Promise<string> {
   const octokit = await getInstallationOctokit(ctx.installationId);
   const { owner, repo } = ctx;
-  const writes = plan.files.filter((f): f is PlanFile & { content: string } => f.content !== null);
+  const writes = plan.files.filter(
+    (f): f is PlanFile & { content: string } => f.content !== null,
+  );
   const deletes = plan.files.filter((f) => f.content === null);
   const [blobs, baseCommit] = await Promise.all([
     Promise.all(
@@ -378,9 +497,15 @@ async function mirrorSnapshot(
   return commit.data.sha;
 }
 
-function prTitle(title: string | null | undefined, conversationId: string): string {
+function prTitle(
+  title: string | null | undefined,
+  conversationId: string,
+): string {
   const clean = (title ?? "").replace(/\s+/g, " ").trim();
-  return `Assistant: ${clean || `conversation ${conversationId}`}`.slice(0, 120);
+  return `Assistant: ${clean || `conversation ${conversationId}`}`.slice(
+    0,
+    120,
+  );
 }
 
 function prBody(title: string | null | undefined, warnings: string[]): string {
@@ -390,16 +515,23 @@ function prBody(title: string | null | undefined, warnings: string[]): string {
     "This PR auto-updates after each assistant turn; review and merge it on the Changes tab when you're happy.",
   ];
   if (title) lines.push("", `Conversation: ${title}`);
-  if (warnings.length > 0) lines.push("", "**Notes:**", ...warnings.map((w) => `- ${w}`));
+  if (warnings.length > 0)
+    lines.push("", "**Notes:**", ...warnings.map((w) => `- ${w}`));
   return lines.join("\n");
 }
 
 /** Drop the checkout link row for a branch (called when its PR merges or is discarded). */
-export async function discardConversationCheckoutByBranch(branch: string): Promise<void> {
-  await db.delete(assistantCheckouts).where(eq(assistantCheckouts.branch, branch));
+export async function discardConversationCheckoutByBranch(
+  branch: string,
+): Promise<void> {
+  await db
+    .delete(assistantCheckouts)
+    .where(eq(assistantCheckouts.branch, branch));
 }
 
 /** Whether a branch is an assistant conversation branch (so callers can gate conv-only behaviour). */
-export function isConversationBranch(branch: string | undefined | null): boolean {
+export function isConversationBranch(
+  branch: string | undefined | null,
+): boolean {
   return !!branch && branch.startsWith("eden/conv-");
 }

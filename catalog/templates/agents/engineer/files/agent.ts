@@ -1,6 +1,7 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { wrapLanguageModel } from "ai";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { defineAgent, defineDynamic } from "eve";
 
@@ -82,29 +83,41 @@ function edenModel(id: string) {
     connectionId.toUpperCase() +
     "_API_KEY";
   const apiKey = process.env[envName];
+  // `eve build` evaluates this module INSIDE `docker build`, where Eden deliberately injects no
+  // connection credentials (they reach only the running container's env). A missing key must not
+  // throw here — that would fail every publish-gate and deploy image build. Construct the model
+  // with a placeholder and raise the same error on the first actual request instead.
+  const key = apiKey ?? "eden-missing-credential";
+  const model =
+    provider === "anthropic"
+      ? createAnthropic({ name: "anthropic/" + connectionId, apiKey: key }).chat(
+          upstreamModelId,
+        )
+      : provider === "openai"
+        ? createOpenAI({ name: "openai/" + connectionId, apiKey: key }).responses(
+            upstreamModelId,
+          )
+        : createOpenAICompatible({
+            name: "openrouter/" + connectionId,
+            baseURL: "https://openrouter.ai/api/v1",
+            apiKey: key,
+          }).chatModel(upstreamModelId);
   if (!apiKey) {
-    throw new Error(
-      "No credential was deployed for the selected " +
-        provider +
-        " connection.",
-    );
+    return wrapLanguageModel({
+      model,
+      middleware: {
+        specificationVersion: "v4",
+        transformParams: async () => {
+          throw new Error(
+            "No credential was deployed for the selected " +
+              provider +
+              " connection.",
+          );
+        },
+      },
+    });
   }
-  if (provider === "anthropic") {
-    return createAnthropic({
-      name: "anthropic/" + connectionId,
-      apiKey,
-    }).chat(upstreamModelId);
-  }
-  if (provider === "openai") {
-    return createOpenAI({ name: "openai/" + connectionId, apiKey }).responses(
-      upstreamModelId,
-    );
-  }
-  return createOpenAICompatible({
-    name: "openrouter/" + connectionId,
-    baseURL: "https://openrouter.ai/api/v1",
-    apiKey,
-  }).chatModel(upstreamModelId);
+  return model;
 }
 
 export default defineAgent({

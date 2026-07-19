@@ -148,20 +148,33 @@ function edenModel(id: string, effort?: 'none' | 'minimal' | 'low' | 'medium' | 
   const envName =
     'EDEN_PROVIDER_' + provider.toUpperCase() + '_' + connectionId.toUpperCase() + '_API_KEY';
   const apiKey = process.env[envName];
+  // \`eve build\` evaluates this module INSIDE \`docker build\`, where Eden deliberately injects no
+  // connection credentials (they reach only the running container's env). A missing key must not
+  // throw here — that would fail every publish-gate and deploy image build. Construct the model
+  // with a placeholder and raise the same error on the first actual request instead.
+  const key = apiKey ?? 'eden-missing-credential';
+  const model =
+    provider === 'anthropic'
+      ? createAnthropic({ name: 'anthropic/' + connectionId, apiKey: key }).chat(upstreamModelId)
+      : provider === 'openai'
+        ? createOpenAI({ name: 'openai/' + connectionId, apiKey: key }).responses(upstreamModelId)
+        : createOpenAICompatible({
+            name: 'openrouter/' + connectionId,
+            baseURL: 'https://openrouter.ai/api/v1',
+            apiKey: key,
+          }).chatModel(upstreamModelId);
   if (!apiKey) {
-    throw new Error('No credential was deployed for the selected ' + provider + ' connection.');
+    return wrapLanguageModel({
+      model,
+      middleware: {
+        specificationVersion: 'v4',
+        transformParams: async () => {
+          throw new Error('No credential was deployed for the selected ' + provider + ' connection.');
+        },
+      },
+    });
   }
-  if (provider === 'anthropic') {
-    return edenReasoningModel(createAnthropic({ name: 'anthropic/' + connectionId, apiKey }).chat(upstreamModelId), effort);
-  }
-  if (provider === 'openai') {
-    return edenReasoningModel(createOpenAI({ name: 'openai/' + connectionId, apiKey }).responses(upstreamModelId), effort);
-  }
-  return edenReasoningModel(createOpenAICompatible({
-    name: 'openrouter/' + connectionId,
-    baseURL: 'https://openrouter.ai/api/v1',
-    apiKey,
-  }).chatModel(upstreamModelId), effort);
+  return edenReasoningModel(model, effort);
 }
 function edenReasoningModel(model: LanguageModel, effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh') {
   if (!effort) return model;

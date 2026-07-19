@@ -23,13 +23,13 @@
  */
 import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import {
+  Cable,
   FileStack,
   GitPullRequest,
   History,
   MessageSquare,
   Rocket,
   Server,
-  Webhook,
   type LucideIcon,
 } from "lucide-react";
 import { useRef, useState } from "react";
@@ -1437,14 +1437,10 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
           settingsAction: loaderData.guardSettingsAction,
         }}
       />
-      <GitHubSetupHelp
+      <ChannelsCard
+        discord={loaderData.discordSetup}
+        github={loaderData.githubSetup}
         envs={envs}
-        setup={loaderData.githubSetup}
-        projectId={loaderData.project.id}
-        agentName={activeAgent}
-      />
-      <DiscordSetupHelp
-        setup={loaderData.discordSetup}
         projectId={loaderData.project.id}
         agentName={activeAgent}
       />
@@ -1463,7 +1459,9 @@ function MemberPipeline({ loaderData }: { loaderData: LoaderData }) {
  * lock REQUIRES, even before any grant. Each row routes to /connections/<provider>/connect
  * (returnTo = this Deployment tab) and, per its loader-derived state, offers Connect (no grant), a
  * subtle Reconnect (covered), or a primary Reconnect (under-scoped / expired / revoked). A provider
- * this installation's registry doesn't know renders inert. Visual language mirrors the Discord card.
+ * this installation's registry doesn't know renders inert. Each row is symmetric: the badge alone
+ * carries the state; the detail line under it says WHO the grant is (account · resource) plus the
+ * state's follow-up — it never restates "connected". The Channels card shares this language.
  */
 function ConnectionsCard({
   connections,
@@ -1480,7 +1478,10 @@ function ConnectionsCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Connections</CardTitle>
+        <div className="flex items-center gap-2">
+          <CardGlyph icon={Cable} accent="violet" />
+          <CardTitle className="text-base">Connections</CardTitle>
+        </div>
         <CardDescription>
           Accounts this agent is authorized to act on. Connect a new one, or
           reconnect if a grant expires, is revoked, or is missing permissions.
@@ -1496,6 +1497,27 @@ function ConnectionsCard({
             `?project=${encodeURIComponent(projectId)}` +
             `&agent=${encodeURIComponent(agentName)}` +
             `&returnTo=${encodeURIComponent(returnTo)}`;
+          // The symmetric detail line: identity (account · resource) — state follow-up. The badge
+          // above already says the state, so the line never repeats "connected".
+          const detail = (() => {
+            if (c.state === "not-connected") return "No account connected yet.";
+            if (c.state === "disabled" && c.status === null)
+              return "Every permission is deselected — select at least one below, then connect.";
+            const identity =
+              [c.accountEmail, c.resourceName].filter(Boolean).join(" · ") ||
+              "Connected account";
+            const note =
+              c.state === "under-scoped"
+                ? "missing permissions this connector needs; reconnect to grant them."
+                : c.state === "needs-reconnect"
+                  ? "an environment was added after this connection was made; reconnect so its callbacks are registered."
+                  : c.state === "inactive"
+                    ? "reconnect to restore access."
+                    : c.state === "disabled"
+                      ? "every permission is deselected, so new deploys won't include this connection. The stored grant is not revoked; reselect permissions below to re-enable it."
+                      : null;
+            return note ? `${identity} — ${note}` : identity;
+          })();
           return (
             <div key={c.id} className="rounded-lg border px-3 py-2">
               <div className="flex items-center justify-between gap-3">
@@ -1516,30 +1538,11 @@ function ConnectionsCard({
                       <Badge variant="success">connected</Badge>
                     )}
                   </div>
+                  {/* The resource binding (issue #166) rides the same line as the account —
+                      "email · Acme Ltd" — instead of a second "Connected to …" line. */}
                   <span className="text-xs text-muted-foreground">
-                    {c.state === "not-connected"
-                      ? "Not connected"
-                      : c.state === "under-scoped"
-                        ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — missing permissions this connector needs.`
-                        : c.state === "needs-reconnect"
-                          ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — an environment was added after this connection was made; reconnect so its callbacks are registered.`
-                          : c.state === "disabled"
-                            ? c.status
-                              ? `${c.accountEmail ? `Connected as ${c.accountEmail}` : "Connected"} — every permission is deselected, so new deploys won't include this connection. The stored grant is not revoked; reselect permissions below to re-enable it.`
-                              : "Every permission is deselected — select at least one below, then connect."
-                            : c.state === "connected"
-                              ? c.accountEmail
-                                ? `Connected as ${c.accountEmail}`
-                                : "Connected"
-                              : (c.accountEmail ?? "connected account")}
+                    {detail}
                   </span>
-                  {/* Capability resource binding (issue #166): which provider-side resource
-                      (e.g. Xero organisation) this connection's operations target. */}
-                  {c.resourceName && (
-                    <span className="text-xs text-muted-foreground">
-                      Connected to {c.resourceName}
-                    </span>
-                  )}
                   {c.needsResource && (
                     <span className="text-xs text-amber-600 dark:text-amber-400">
                       Almost there — pick which {c.resourceLabel ?? "resource"}{" "}
@@ -2950,13 +2953,69 @@ function EnvironmentsCard({
 }
 
 /**
- * Discord channel setup (issue #32): one-click connect through Eden's shared Discord app. The
- * user clicks Connect Discord, approves one authorization screen, and Eden registers a
- * `/<agent-name>` slash command and routes interactions automatically — no portal, no secrets.
- * Hidden entirely when the operator hasn't configured the shared app (EDEN_DISCORD_*): a card
- * whose only content is "this isn't available" is noise.
+ * Channels — where this agent listens and answers, one card with one row per channel, sharing the
+ * Connections card's visual language (name + state badge, a muted detail line, the one action that
+ * matters in the right slot). Discord (issue #32) connects through Eden's shared app; GitHub
+ * (issue #26) through the agent's OWN GitHub App via the Manifest flow. A Discord row without the
+ * operator's shared app (EDEN_DISCORD_*) is hidden — a row whose only content is "this isn't
+ * available" is noise.
  */
-function DiscordSetupHelp({
+function ChannelsCard({
+  discord,
+  github,
+  envs,
+  projectId,
+  agentName,
+}: {
+  discord: LoaderData["discordSetup"];
+  github: LoaderData["githubSetup"];
+  envs: EnvState[];
+  projectId: string;
+  agentName: string;
+}) {
+  const showDiscord = discord.enabled && discord.configured;
+  const showGithub = github.enabled;
+  if (!showDiscord && !showGithub) return null;
+
+  return (
+    <Card className="mb-6 mt-6">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <CardGlyph icon={MessageSquare} accent="brand" />
+          <CardTitle className="text-base">Channels</CardTitle>
+        </div>
+        <CardDescription>
+          Where this agent listens and answers. Connect a channel, then add
+          more servers or accounts to it any time.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {showDiscord && (
+          <DiscordChannelRow
+            setup={discord}
+            projectId={projectId}
+            agentName={agentName}
+          />
+        )}
+        {showGithub && (
+          <GitHubChannelRow
+            setup={github}
+            envs={envs}
+            projectId={projectId}
+            agentName={agentName}
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The Discord channel row (issue #32): one-click connect through Eden's shared Discord app — one
+ * authorization screen, then Eden registers a `/<agent-name>` slash command and routes
+ * interactions automatically; no portal, no secrets. Connected servers list under the row.
+ */
+function DiscordChannelRow({
   setup,
   projectId,
   agentName,
@@ -2965,182 +3024,185 @@ function DiscordSetupHelp({
   projectId: string;
   agentName: string;
 }) {
-  if (!setup.enabled || !setup.configured) return null;
-
   const connectUrl = `/discord/connect?project=${encodeURIComponent(projectId)}&agent=${encodeURIComponent(agentName)}`;
   const connections = setup.connections ?? [];
+  const connected = connections.length > 0;
+  const plural = connections.length === 1 ? "" : "s";
 
   return (
-    <Card className="mb-6 mt-6">
-      <CardHeader className="pb-3">
-        <div className="flex items-center gap-2">
-          <CardGlyph icon={MessageSquare} accent="brand" />
-          <CardTitle className="text-base">Discord</CardTitle>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3 text-sm">
-          <p>
-            Connect this agent to a Discord server — it answers there as the{" "}
-            <code>/{agentName}</code> slash command.
-          </p>
-          {connections.length > 0 && (
-            <ul className="space-y-1 rounded-lg border px-3 py-2">
-              {connections.map((c) => (
-                <li
-                  key={c.id}
-                  className="flex flex-wrap items-baseline gap-x-2"
-                >
-                  <span className="font-medium">
-                    {c.guildName ?? `Server ${c.guildId}`}
-                  </span>
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                    /{c.commandName}
-                  </code>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <Button
-              asChild
-              size="sm"
-              variant={connections.length ? "outline" : "default"}
-            >
-              <Link to={connectUrl}>
-                {connections.length
-                  ? "Connect another server"
-                  : "Connect Discord"}
-              </Link>
-            </Button>
+    <div className="rounded-lg border px-3 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="grid gap-0.5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">Discord</span>
+            {connected ? (
+              <Badge variant="success">connected</Badge>
+            ) : (
+              <Badge variant="outline">not connected</Badge>
+            )}
           </div>
+          <span className="text-xs text-muted-foreground">
+            {connected
+              ? `Connected to ${connections.length} server${plural} — answers there as a slash command.`
+              : `Answers as the /${agentName} slash command in any server you connect.`}
+          </span>
         </div>
-      </CardContent>
-    </Card>
+        {connected ? (
+          // A connected channel is done — only a subtle add-another link, mirroring the
+          // Connections card's covered-grant Reconnect.
+          <Link
+            to={connectUrl}
+            className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            Connect another server
+          </Link>
+        ) : (
+          <Button asChild variant="default" size="sm">
+            <Link to={connectUrl}>Connect Discord</Link>
+          </Button>
+        )}
+      </div>
+      {connected && (
+        <ul className="mt-2 space-y-1 border-t pt-2 text-sm">
+          {connections.map((c) => (
+            <li key={c.id} className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-medium">
+                {c.guildName ?? `Server ${c.guildId}`}
+              </span>
+              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                /{c.commandName}
+              </code>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
 /**
- * GitHub channel setup (issue #26): the agent listens through its OWN GitHub App. Connect runs
- * the Manifest flow — Eden registers the App, stores its secrets (including the webhook URL),
- * and sends the user to GitHub to pick the repositories it watches.
+ * The GitHub channel row (issue #26): the agent listens through its OWN GitHub App. Connect runs
+ * the Manifest flow — Eden registers the App, stores its secrets (including the webhook URL), and
+ * sends the user to GitHub to pick the repositories it watches. Installations list under the row.
  */
-function GitHubSetupHelp({
-  envs,
+function GitHubChannelRow({
   setup,
+  envs,
   projectId,
   agentName,
 }: {
-  envs: EnvState[];
   setup: LoaderData["githubSetup"];
+  envs: EnvState[];
   projectId: string;
   agentName: string;
 }) {
-  if (!setup.enabled) return null;
-
-  const createUrl = (envId?: string) =>
-    `/github/apps/new?project=${encodeURIComponent(projectId)}&agent=${encodeURIComponent(agentName)}${
-      envId ? `&env=${encodeURIComponent(envId)}` : ""
-    }`;
+  const createUrl = `/github/apps/new?project=${encodeURIComponent(projectId)}&agent=${encodeURIComponent(agentName)}${
+    envs[0]?.env.id ? `&env=${encodeURIComponent(envs[0].env.id)}` : ""
+  }`;
+  const installUrl = setup.appSlug
+    ? `https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`
+    : null;
+  const connected = setup.appSlug !== null;
+  const installs = setup.installations;
+  // Same identity — note shape as the Connections rows: WHO the channel is (@slug), then the
+  // state's follow-up.
+  const detail = !connected
+    ? "Answers @mentions in issues and pull requests on the repositories you install it on."
+    : installs === null
+      ? `@${setup.appSlug} — couldn't reach GitHub to list where it's installed.`
+      : installs.length === 0
+        ? `@${setup.appSlug} — not installed on any account yet, so it can't see any repositories.`
+        : `@${setup.appSlug} — answers @mentions on the repositories it's installed on.`;
 
   return (
-    <Card className="mb-6 mt-6">
-      <CardHeader className="pb-3">
-        <div className="flex items-center gap-2">
-          <CardGlyph icon={Webhook} accent="brand" />
-          <CardTitle className="text-base">GitHub</CardTitle>
+    <div className="rounded-lg border px-3 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="grid gap-0.5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">GitHub</span>
+            {connected ? (
+              <Badge variant="success">connected</Badge>
+            ) : (
+              <Badge variant="outline">not connected</Badge>
+            )}
+          </div>
+          <span className="text-xs text-muted-foreground">{detail}</span>
         </div>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3 text-sm">
-          <p>
-            Connect this agent to GitHub — it answers <code>@mentions</code> in
-            issues and pull requests on the repositories you install it on.
-          </p>
-          {setup.appSlug && (
-            <div className="space-y-2">
-              <p className="font-medium">
-                Connected as <code>@{setup.appSlug}</code>
-              </p>
-              {setup.installations === null ? (
-                <p className="text-muted-foreground">
-                  Couldn&rsquo;t reach GitHub to list where it&rsquo;s installed
-                  —{" "}
+        {!connected ? (
+          <Button asChild variant="default" size="sm">
+            <Link to={createUrl}>Connect GitHub</Link>
+          </Button>
+        ) : installUrl && installs !== null && installs.length === 0 ? (
+          // An App installed nowhere sees nothing — installing is the one action that matters,
+          // so it takes the primary slot over Reconnect.
+          <Button asChild variant="default" size="sm">
+            <a href={installUrl} target="_blank" rel="noreferrer">
+              Install the App
+            </a>
+          </Button>
+        ) : (
+          <Link
+            to={createUrl}
+            className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            Reconnect
+          </Link>
+        )}
+      </div>
+      {connected && installUrl && installs === null && (
+        <p className="mt-2 border-t pt-2 text-xs text-muted-foreground">
+          <a
+            href={installUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2"
+          >
+            Manage installations on GitHub
+          </a>
+        </p>
+      )}
+      {connected && installUrl && installs !== null && installs.length > 0 && (
+        <div className="mt-2 border-t pt-2">
+          <ul className="space-y-1 text-sm">
+            {installs.map((inst) => (
+              <li
+                key={`${inst.accountType}:${inst.account}`}
+                className="flex flex-wrap items-baseline gap-x-2"
+              >
+                <span className="font-medium">{inst.account}</span>
+                <span className="text-xs text-muted-foreground">
+                  {inst.accountType === "Organization"
+                    ? "organization"
+                    : "personal account"}
+                  {" · "}
+                  {inst.repositorySelection === "all"
+                    ? "all repositories"
+                    : "selected repositories"}
+                </span>
+                {inst.htmlUrl && (
                   <a
-                    href={`https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`}
+                    href={inst.htmlUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="underline underline-offset-2"
+                    className="text-xs underline underline-offset-2"
                   >
-                    manage installations on GitHub
+                    change repositories
                   </a>
-                  .
-                </p>
-              ) : setup.installations.length === 0 ? (
-                <p className="text-muted-foreground">
-                  Not installed on any account yet — it can&rsquo;t see any
-                  repositories until it is.
-                </p>
-              ) : (
-                <ul className="space-y-1 rounded-lg border px-3 py-2">
-                  {setup.installations.map((inst) => (
-                    <li
-                      key={`${inst.accountType}:${inst.account}`}
-                      className="flex flex-wrap items-baseline gap-x-2"
-                    >
-                      <span className="font-medium">{inst.account}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {inst.accountType === "Organization"
-                          ? "organization"
-                          : "personal account"}
-                        {" · "}
-                        {inst.repositorySelection === "all"
-                          ? "all repositories"
-                          : "selected repositories"}
-                      </span>
-                      {inst.htmlUrl && (
-                        <a
-                          href={inst.htmlUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-xs underline underline-offset-2"
-                        >
-                          change repositories
-                        </a>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2">
-            {setup.appSlug && setup.installations !== null && (
-              <Button asChild size="sm">
-                <a
-                  href={`https://github.com/apps/${encodeURIComponent(setup.appSlug)}/installations/new`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {setup.installations.length === 0
-                    ? "Install the App"
-                    : "Add another account or organization"}
-                </a>
-              </Button>
-            )}
-            <Button
-              asChild
-              size="sm"
-              variant={setup.appSlug ? "outline" : "default"}
-            >
-              <Link to={createUrl(envs[0]?.env.id)}>
-                {setup.appSlug ? "Reconnect GitHub" : "Connect GitHub"}
-              </Link>
-            </Button>
-          </div>
+                )}
+              </li>
+            ))}
+          </ul>
+          <a
+            href={installUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-2 inline-block text-xs underline underline-offset-2"
+          >
+            Add another account or organization
+          </a>
         </div>
-      </CardContent>
-    </Card>
+      )}
+    </div>
   );
 }
 

@@ -28,6 +28,7 @@ import {
   CodexUpstreamError,
   createChunkTranslator,
   SseParser,
+  wantsStreaming,
   type ChatCompletionsBody,
 } from "~/gateway/codex-translate";
 import { bearerToken, verifyGatewayToken } from "~/gateway/token.server";
@@ -114,7 +115,7 @@ export async function action({ request }: ActionFunctionArgs) {
     );
   }
 
-  const wantsStream = body.stream !== false;
+  const wantsStream = wantsStreaming(body);
   const model = body.model as string;
 
   if (!wantsStream) {

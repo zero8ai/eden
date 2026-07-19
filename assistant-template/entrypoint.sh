@@ -15,9 +15,18 @@ if [ -f .eden-assistant-env ]; then
   export EDEN_ASSISTANT_EFFORT
 fi
 
-if [ -f .eden-user-layer ]; then
-  echo "[assistant] recompiling with the user config layer…"
+# `eve build` EVALUATES agent.ts and freezes its resolved model into the compiled artifact. The
+# image is compiled inside `docker build`, where EDEN_ASSISTANT_MODEL is never set, so the image's
+# artifact runs the build-safe default (z-ai/glm-5.2) — NOT the configured model. Rebuild whenever
+# the model/effort this container should run differs from what the current artifact was compiled
+# with (recorded in .eden-built-model), or when a user config layer arrived. The marker persists on
+# the container filesystem, so restarts with an unchanged selection keep the fast path.
+WANT_MODEL="${EDEN_ASSISTANT_MODEL:-}|${EDEN_ASSISTANT_EFFORT:-}"
+HAVE_MODEL="$(cat .eden-built-model 2>/dev/null || true)"
+if [ -f .eden-user-layer ] || [ "$WANT_MODEL" != "$HAVE_MODEL" ]; then
+  echo "[assistant] recompiling (user config layer present or model selection changed)…"
   node_modules/.bin/eve build
+  printf '%s' "$WANT_MODEL" > .eden-built-model
 fi
 
 # Checkout sidecar: owns the per-conversation git

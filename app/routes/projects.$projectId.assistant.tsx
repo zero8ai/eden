@@ -25,6 +25,7 @@ import {
   ensureAssistantInstance,
   peekAssistantInstance,
 } from "~/assistant/instance.server";
+import { getCheckoutRow } from "~/assistant/checkout-sync.server";
 import { hasActiveTurn, TURN_IDLE_TIMEOUT_MS } from "~/chat/turn-stream.server";
 import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import {
@@ -97,6 +98,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       let currentSessionOwnerLive: boolean | null = null;
       let currentSessionContinuationBlocked = false;
       let sessions: ReturnType<typeof summarizePlaygroundSession>[] = [];
+      let syncWarnings: string[] = [];
 
       if (snapshot.agentId) {
         const rows = await listPlaygroundSessions({
@@ -179,6 +181,12 @@ export const loader = (args: LoaderFunctionArgs) =>
           entries = await loadPlaygroundEntriesFromCache(currentSession);
           currentSessionId = currentSession.id;
           currentSessionStatus = currentSession.status;
+          // Last sync's policy notes / failure — shown as a banner so a sync problem is visible
+          // even after a reload (the live `sync` stream event is gone by then).
+          const checkout = await getCheckoutRow(currentSession.id).catch(
+            () => null,
+          );
+          syncWarnings = checkout?.warnings ?? [];
         }
         sessions = rows.map((session) =>
           summarizePlaygroundSession(
@@ -199,6 +207,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         currentSessionContinuationBlocked,
         entries,
         historyError,
+        syncWarnings,
         isTeam,
         roster: roster.map((a) => ({ name: a.name })),
       };
@@ -252,6 +261,12 @@ interface LiveTurn {
   errorDetail: string | null;
   errorRetryable: boolean;
   done: boolean;
+  /** Post-turn checkout sync outcome — arrives after `done`, absent for pure-Q&A turns. */
+  sync: {
+    synced: boolean;
+    prNumber: number | null;
+    error: string | null;
+  } | null;
 }
 
 export default function Assistant({ loaderData }: Route.ComponentProps) {
@@ -267,6 +282,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
     currentSessionContinuationBlocked,
     entries,
     historyError,
+    syncWarnings,
     isTeam,
     roster,
   } = loaderData;
@@ -387,6 +403,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         errorDetail: null,
         errorRetryable: false,
         done: false,
+        sync: null,
       });
       const apply = (evt: StreamEvent) =>
         setLive((prev) => (prev ? reduceLive(prev, evt) : prev));
@@ -558,6 +575,12 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
             <AlertDescription>{sendError}</AlertDescription>
           </Alert>
         )}
+        {syncWarnings.map((warning) => (
+          <Alert key={warning} className="mb-4">
+            <AlertTitle>Last sync note</AlertTitle>
+            <AlertDescription>{warning}</AlertDescription>
+          </Alert>
+        ))}
       </>
     ),
     [
@@ -566,6 +589,7 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
       historyError,
       provisioning,
       sendError,
+      syncWarnings,
     ],
   );
 
@@ -757,6 +781,12 @@ type StreamEvent =
   | { type: "step"; step: ChatStep }
   | { type: "input"; requests: ChatInputRequest[] }
   | {
+      type: "sync";
+      synced: boolean;
+      prNumber: number | null;
+      error: string | null;
+    }
+  | {
       type: "done";
       ok: boolean;
       playgroundSessionId?: string;
@@ -798,6 +828,15 @@ function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
         ...prev,
         inputRequests: [...prev.inputRequests, ...evt.requests],
         activity: null,
+      };
+    case "sync":
+      return {
+        ...prev,
+        sync: {
+          synced: evt.synced,
+          prNumber: evt.prNumber,
+          error: evt.error,
+        },
       };
     case "done":
       return {
@@ -920,6 +959,20 @@ function LiveBubble({
         idPrefix="live"
         activity={live.done ? null : live.activity}
       />
+      {live.sync &&
+        (live.sync.error ? (
+          <p className="text-xs text-destructive">
+            Eden couldn&apos;t sync this turn&apos;s changes to the pull request
+            ({live.sync.error}). They&apos;re safe in the conversation checkout
+            and will sync after the next turn.
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Changes synced
+            {live.sync.prNumber ? ` to PR #${live.sync.prNumber}` : ""} — review
+            them on the Changes tab.
+          </p>
+        ))}
     </div>
   );
 }
@@ -938,44 +991,56 @@ function AgentEntry({
   busy?: boolean;
   running?: boolean;
 }) {
+  // A still-running turn rebuilt from the event cache (e.g. after navigating away and back
+  // mid-turn) has steps but no reply text yet. Rendering the "(empty reply)" fallback there
+  // reads as a broken message — suppress the bubble and let the steps card carry the
+  // "Still working…" state, matching how LiveBubble renders the same moment.
+  const awaitingReply =
+    running &&
+    !entry.error &&
+    !entry.structured &&
+    !entry.text &&
+    !entry.inputRequests?.length;
   return (
     <div className="space-y-2">
-      <AssistantBubble>
-        {entry.version && (
-          <span className="mb-1.5 flex items-center gap-1.5">
-            <Badge variant="secondary" className="text-xs">
-              {entry.version}
-            </Badge>
-            {entry.modelId && (
-              <span className="font-mono text-xs text-muted-foreground">
-                {entry.modelId}
-              </span>
-            )}
-          </span>
-        )}
-        {entry.error ? (
-          <TurnError
-            message={entry.error}
-            detail={entry.errorDetail}
-            retryable={entry.errorRetryable}
-            onRetry={onRetry}
-            busy={busy}
-          />
-        ) : entry.structured ? (
-          <pre className="overflow-x-auto rounded-lg bg-muted/50 p-3 font-mono text-xs">
-            {entry.text}
-          </pre>
-        ) : entry.text || !entry.inputRequests?.length ? (
-          <MarkdownText text={entry.text || "(empty reply)"} />
-        ) : null}
-        {entry.inputRequests && (
-          <InputRequestsBlock
-            requests={entry.inputRequests}
-            onAnswer={onAnswer}
-            busy={busy}
-          />
-        )}
-      </AssistantBubble>
+      {!awaitingReply && (
+        <AssistantBubble>
+          {entry.version && (
+            <span className="mb-1.5 flex items-center gap-1.5">
+              <Badge variant="secondary" className="text-xs">
+                {entry.version}
+              </Badge>
+              {entry.modelId && (
+                <span className="font-mono text-xs text-muted-foreground">
+                  {entry.modelId}
+                </span>
+              )}
+            </span>
+          )}
+          {entry.error ? (
+            <TurnError
+              message={entry.error}
+              detail={entry.errorDetail}
+              retryable={entry.errorRetryable}
+              onRetry={onRetry}
+              busy={busy}
+            />
+          ) : entry.structured ? (
+            <pre className="overflow-x-auto rounded-lg bg-muted/50 p-3 font-mono text-xs">
+              {entry.text}
+            </pre>
+          ) : entry.text || !entry.inputRequests?.length ? (
+            <MarkdownText text={entry.text || "(empty reply)"} />
+          ) : null}
+          {entry.inputRequests && (
+            <InputRequestsBlock
+              requests={entry.inputRequests}
+              onAnswer={onAnswer}
+              busy={busy}
+            />
+          )}
+        </AssistantBubble>
+      )}
       <StepsCard
         steps={entry.steps ?? []}
         idPrefix={entry.id}

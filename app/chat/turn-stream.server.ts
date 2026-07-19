@@ -28,7 +28,10 @@ import {
   type PlaygroundSession,
 } from "~/playground/sessions.server";
 import type { RawEveEvent } from "~/agent/talk.server";
-import { syncConversationCheckout } from "~/assistant/checkout-sync.server";
+import {
+  recordSyncFailure,
+  syncConversationCheckout,
+} from "~/assistant/checkout-sync.server";
 
 /** Eve turns can run for hours; fail only after this much silence on the event stream. */
 export const TURN_IDLE_TIMEOUT_MS = 5 * 60_000;
@@ -94,9 +97,18 @@ export function streamTurnResponse(input: {
    */
   messagePrefix?: string | null;
 }): Response {
-  const { projectId, target, session: activeSession, message, channel, title } = input;
+  const {
+    projectId,
+    target,
+    session: activeSession,
+    message,
+    channel,
+    title,
+  } = input;
   // What eve actually receives (prefixed with system context); recording/display use plain `message`.
-  const sentMessage = input.messagePrefix ? `${input.messagePrefix}\n\n${message}` : message;
+  const sentMessage = input.messagePrefix
+    ? `${input.messagePrefix}\n\n${message}`
+    : message;
   const tag = `[${channel}]`;
   const startedAt = new Date();
   const encoder = new TextEncoder();
@@ -166,11 +178,18 @@ export function streamTurnResponse(input: {
 
         const queueProgressSave = (force = false) => {
           if (!sessionId) return;
-          const nextStreamIndex = Math.max(streamIndex, activeSession.streamIndex);
+          const nextStreamIndex = Math.max(
+            streamIndex,
+            activeSession.streamIndex,
+          );
           const now = Date.now();
           const sessionChanged = sessionId !== savedSessionId;
           const advanced = nextStreamIndex > savedStreamIndex;
-          if (!force && !sessionChanged && (!advanced || now - lastProgressSavedAt < 1_000)) {
+          if (
+            !force &&
+            !sessionChanged &&
+            (!advanced || now - lastProgressSavedAt < 1_000)
+          ) {
             return;
           }
           const externalSessionId = sessionId;
@@ -195,7 +214,9 @@ export function streamTurnResponse(input: {
                 continuationToken: nextContinuationToken,
                 streamIndex: Math.min(nextStreamIndex, persistedEventIndex),
                 title,
-              }).catch((e) => console.error(`${tag} persist session progress failed`, e)),
+              }).catch((e) =>
+                console.error(`${tag} persist session progress failed`, e),
+              ),
             );
         };
 
@@ -223,7 +244,10 @@ export function streamTurnResponse(input: {
                 sessionId = event.sessionId;
                 continuationToken = event.continuationToken;
                 streamIndex = event.streamIndex;
-                pendingEvents.push({ streamIndex: event.streamIndex, ...event.rawEvent });
+                pendingEvents.push({
+                  streamIndex: event.streamIndex,
+                  ...event.rawEvent,
+                });
                 queueProgressSave();
                 break;
               case "turn":
@@ -241,7 +265,9 @@ export function streamTurnResponse(input: {
                     channel,
                   })
                     .then(() => undefined)
-                    .catch((e) => console.error(`${tag} recordTurnStart failed`, e));
+                    .catch((e) =>
+                      console.error(`${tag} recordTurnStart failed`, e),
+                    );
                 }
                 break;
               case "model":
@@ -251,7 +277,11 @@ export function streamTurnResponse(input: {
                 send({ type: "thinking" });
                 break;
               case "action":
-                send({ type: "action", toolName: event.toolName, summary: event.summary ?? null });
+                send({
+                  type: "action",
+                  toolName: event.toolName,
+                  summary: event.summary ?? null,
+                });
                 break;
               case "text":
                 send({ type: "text", text: event.text });
@@ -341,8 +371,10 @@ export function streamTurnResponse(input: {
               await savePlaygroundSessionCursor({
                 id: activeSession.id,
                 target,
-                externalSessionId: settled.sessionId ?? activeSession.externalSessionId,
-                continuationToken: settled.continuationToken ?? activeSession.continuationToken,
+                externalSessionId:
+                  settled.sessionId ?? activeSession.externalSessionId,
+                continuationToken:
+                  settled.continuationToken ?? activeSession.continuationToken,
                 // Capped at what's durably cached (see the invariant above): if the final event
                 // batch never landed, leaving the cursor behind means the missing events are
                 // re-read from Eve later (the next turn's drain, or the loader's reconcile for a
@@ -364,7 +396,10 @@ export function streamTurnResponse(input: {
                   projectId,
                   deploymentId: target.deploymentId,
                   releaseId: target.releaseId,
-                  externalRunId: externalRunId(settled.sessionId, settled.turnId),
+                  externalRunId: externalRunId(
+                    settled.sessionId,
+                    settled.turnId,
+                  ),
                   externalSessionId: settled.sessionId,
                   result: settled,
                   userMessage: message,
@@ -379,16 +414,49 @@ export function streamTurnResponse(input: {
             // Assistant coding-agent sync: after the turn settles, mirror the
             // conversation's checkout to its PR. Runs regardless of turn success — a failed turn may
             // still have edited files; the sync hashes the tree and no-ops when nothing changed.
+            // The outcome is emitted to a still-attached client (`sync` event) and failures are
+            // recorded on the checkout row — a swallowed failure here left users staring at an
+            // empty Changes tab while the model reported success.
             if (channel === "assistant" && target.deploymentId) {
               try {
-                await syncConversationCheckout({
+                const sync = await syncConversationCheckout({
                   projectId,
                   conversationId: activeSession.id,
                   deploymentId: target.deploymentId,
                   title: activeSession.title,
                 });
+                if (sync.kind === "synced") {
+                  send({
+                    type: "sync",
+                    synced: true,
+                    prNumber: sync.prNumber ?? null,
+                    error: null,
+                  });
+                } else if (sync.kind === "failed") {
+                  console.error(
+                    `${tag} assistant checkout sync failed: ${sync.reason}`,
+                  );
+                  send({
+                    type: "sync",
+                    synced: false,
+                    prNumber: null,
+                    error: sync.reason ?? "the checkout sync failed",
+                  });
+                }
               } catch (e) {
                 console.error(`${tag} assistant checkout sync failed`, e);
+                await recordSyncFailure({
+                  conversationId: activeSession.id,
+                  projectId,
+                  reason: e instanceof Error ? e.message : String(e),
+                });
+                send({
+                  type: "sync",
+                  synced: false,
+                  prNumber: null,
+                  error:
+                    e instanceof Error ? e.message : "the checkout sync failed",
+                });
               }
             }
           }

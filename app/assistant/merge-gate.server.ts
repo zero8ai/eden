@@ -12,11 +12,6 @@
  * an opaque "Could not resolve an eve agent root" error. The roots are now recomputed SERVER-side
  * from the PR's changed files, and a team repo's shared/root files map to no build at all.
  */
-import {
-  findGatewayBoundSubagents,
-  gatewayBoundSubagentError,
-  isSubagentAgentPath,
-} from "~/models/subagent-wiring";
 import type { BuildCheckRequest, BuildCheckResult } from "~/seams/types";
 
 /**
@@ -62,37 +57,12 @@ export async function runConversationMergeGate(input: {
   paths: string[];
   checkBuild: (req: BuildCheckRequest) => Promise<BuildCheckResult>;
   /**
-   * Read one changed file's content at the branch ref (server-injected repo reader). When present,
-   * the gate runs the subagent-model check below; absent (older callers) skips it — fail-open, the
-   * publish gate still catches it. Kept out of the module's imports so it stays types-only.
-   */
-  readFile?: (path: string) => Promise<string | null>;
-  /**
    * Progress callback (issue #142): invoked before each root's build check with a human stage
    * label, so a queued merge can stream "Checking the build for … (i/n)…" into the workspace
    * task indicator. Absent for callers that don't render progress.
    */
   onStage?: (stage: string) => void | Promise<void>;
 }): Promise<MergeGateResult> {
-  // Subagent model gate (mirrors the publish gate in drafts.server.ts): a subagent `agent.ts` in
-  // the change that pins a bare model literal compiles fine but dies at runtime routing to the
-  // unprovisioned gateway. Catch it before the (slower) build loop so the assistant path can't
-  // merge it. Fail-open when no reader was injected — the publish gate remains the backstop.
-  if (input.readFile) {
-    const subagentPaths = input.paths.filter(isSubagentAgentPath);
-    if (subagentPaths.length > 0) {
-      const entries = await Promise.all(
-        subagentPaths.map(
-          async (p) => [p, await input.readFile!(p)] as const,
-        ),
-      );
-      const offenders = findGatewayBoundSubagents(Object.fromEntries(entries));
-      if (offenders.length > 0) {
-        return { ok: false, error: gatewayBoundSubagentError(offenders) };
-      }
-    }
-  }
-
   const roots = inferMergeBuildRoots(input.paths, input.teamLayout);
   for (const [i, agentRoot] of roots.entries()) {
     await input.onStage?.(

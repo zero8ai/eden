@@ -52,11 +52,7 @@ import { hasDynamicModel, readReasoningEffort } from "~/eve/agentModule";
 import { buildAgentConfig } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
 import { contextPath } from "~/lib/paths";
-import {
-  stageModelSwitchingUpgrade,
-  stageSubagentModelWiring,
-} from "~/models/stage-model.server";
-import { unresolvedSubagentModelError } from "~/models/subagent-wiring";
+import { stageModelSwitchingUpgrade } from "~/models/stage-model.server";
 import { findWorkspaceModel } from "~/models/union.server";
 import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import {
@@ -348,31 +344,6 @@ export async function action(args: ActionFunctionArgs) {
       root: active.root,
       createdBy: auth.user.id,
     });
-    if (!result.ok) return result;
-    // Route the member's subagents through the same wrapper (a bare gateway-bound subagent model
-    // otherwise fails at runtime / blocks the publish gate). Best-effort — never fail the member's
-    // upgrade over a subagent read hiccup. A subagent model no active connection can run is
-    // surfaced as a warning now instead of a runtime credential failure later.
-    try {
-      const source = await getAgentSource(project.repoInstallationId, {
-        owner: project.repoOwner,
-        repo: project.repoName,
-      });
-      const wiring = await stageSubagentModelWiring({
-        project,
-        memberRoot: active.root,
-        candidatePaths: source.paths,
-        createdBy: auth.user.id,
-      });
-      if (wiring.unresolved.length > 0) {
-        return {
-          ok: true as const,
-          warning: unresolvedSubagentModelError(wiring.unresolved),
-        };
-      }
-    } catch {
-      // ignore — the publish gate remains the backstop
-    }
     return result;
   }
   return { ok: true as const };
@@ -515,14 +486,6 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     "ok" in enableFetcher.data &&
     enableFetcher.data.ok === false
       ? enableFetcher.data.error
-      : null;
-  // Staged, but some subagent model couldn't be routed to an active connection — say so now,
-  // while the user can still act on it, instead of at runtime.
-  const enableWarning =
-    enableFetcher.data &&
-    "warning" in enableFetcher.data &&
-    typeof enableFetcher.data.warning === "string"
-      ? enableFetcher.data.warning
       : null;
 
   const sessionPicker = useMemo(() => {
@@ -1076,11 +1039,6 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
                     </EnableSwitchingForm>
                     {enableError && (
                       <span className="text-destructive">{enableError}</span>
-                    )}
-                    {enableWarning && (
-                      <span className="whitespace-pre-wrap text-amber-700 dark:text-amber-400">
-                        {enableWarning}
-                      </span>
                     )}
                   </span>
                 )}

@@ -25,9 +25,12 @@ import {
   OPENROUTER_PROVIDER_VERSION,
   ZOD_PACKAGE,
   ZOD_VERSION,
-  scaffoldAgentModule,
 } from "~/eve/agentModule";
-import type { ReasoningEffort } from "~/models/reasoning";
+import {
+  orgModelModulePath,
+  orgModelModuleSource,
+  scaffoldOrgModelAgentModule,
+} from "~/eve/org-model-module";
 import { DEFAULT_SANDBOX_MODULE, sandboxPath } from "~/eve/templates";
 import { commitFiles, type FileChange } from "./write.server";
 import { getInstallationOctokit } from "./client.server";
@@ -40,9 +43,6 @@ export interface CreateRepoInput {
   name: string;
   private?: boolean;
   description?: string;
-  /** Connected, provider-qualified workspace model used by a new single agent. */
-  model?: string;
-  effort?: ReasoningEffort | null;
   /** Repo layout: one agent at the root, or a team monorepo. Defaults to "single". */
   layout?: RepoLayout;
   /**
@@ -61,7 +61,7 @@ export interface CreatedRepo {
 const GITIGNORE =
   ".eve/\n.output/\n.workflow-data/\nnode_modules/\n.env\n.env.*\n";
 
-/** Dependencies required by the provider-qualified router emitted by `scaffoldAgentModule`. */
+/** Dependencies required by the provider router in the generated `eden-model.ts`. */
 function modelProviderDependencies(): Record<string, string> {
   return {
     [ANTHROPIC_PROVIDER_PACKAGE]: ANTHROPIC_PROVIDER_VERSION,
@@ -73,13 +73,13 @@ function modelProviderDependencies(): Record<string, string> {
   };
 }
 
-/** The files every eve agent directory starts with, under `root` (e.g. "agent"). */
-function agentDirFiles(
-  root: string,
-  displayName: string,
-  model: string,
-  effort?: ReasoningEffort | null,
-): FileChange[] {
+/**
+ * The files every eve agent directory starts with, under `root` (e.g. "agent"). No model is
+ * baked anywhere: `agent.ts` resolves through the generated `eden-model.ts`, so the agent runs
+ * the workspace's configured model from day one (an explicit per-agent override wins when set,
+ * and a workspace with nothing configured gets a readable "set a model in Org settings" error).
+ */
+function agentDirFiles(root: string, displayName: string): FileChange[] {
   return [
     {
       path: `${root}/instructions.md`,
@@ -87,8 +87,9 @@ function agentDirFiles(
     },
     {
       path: `${root}/agent.ts`,
-      content: scaffoldAgentModule(model, { effort }),
+      content: scaffoldOrgModelAgentModule(displayName),
     },
+    { path: orgModelModulePath(root), content: orgModelModuleSource() },
     // The Eden default sandbox: identical to eve's framework default until a secret is
     // exposed (the EDEN_SANDBOX_ENV convention — see ~/eve/templates), but present from day
     // one so "make X available in my sandbox" is an edit, not a new concept.
@@ -101,14 +102,9 @@ function packageJson(fields: Record<string, unknown>): string {
 }
 
 /** A fresh single-agent eve skeleton: `agent/` at the repo root. */
-function singleAgentFiles(
-  name: string,
-  model: string,
-  agentName: string,
-  effort?: ReasoningEffort | null,
-): FileChange[] {
+function singleAgentFiles(name: string, agentName: string): FileChange[] {
   return [
-    ...agentDirFiles("agent", agentName, model, effort),
+    ...agentDirFiles("agent", agentName),
     {
       path: "package.json",
       content: packageJson({
@@ -131,14 +127,10 @@ function singleAgentFiles(
  * The files for ONE team member: a complete eve project under `agents/<member>/`. Used by
  * the team scaffold and by the add-member flow (which lands them as a change-set).
  */
-export function memberScaffold(
-  member: string,
-  model: string,
-  effort?: ReasoningEffort | null,
-): FileChange[] {
+export function memberScaffold(member: string): FileChange[] {
   const memberDir = `agents/${member}`;
   return [
-    ...agentDirFiles(`${memberDir}/agent`, member, model, effort),
+    ...agentDirFiles(`${memberDir}/agent`, member),
     {
       path: `${memberDir}/package.json`,
       content: packageJson({
@@ -226,11 +218,6 @@ export async function createEveRepo(
 ): Promise<CreatedRepo> {
   const octokit = await getInstallationOctokit(installationId);
   const layout = input.layout ?? "single";
-  if (layout === "single" && !input.model) {
-    throw new Error(
-      "A connected, provider-qualified model is required to scaffold an agent repository.",
-    );
-  }
 
   let created;
   try {
@@ -290,12 +277,7 @@ export async function createEveRepo(
   const files =
     layout === "team"
       ? teamFiles(input.name)
-      : singleAgentFiles(
-          input.name,
-          input.model!,
-          input.agentName || input.name,
-          input.effort,
-        );
+      : singleAgentFiles(input.name, input.agentName || input.name);
   await commitFiles(
     octokit,
     { owner: input.owner, repo: input.name },

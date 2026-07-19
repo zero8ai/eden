@@ -1012,6 +1012,33 @@ export const workspaceSettings = pgTable("workspace_settings", {
 });
 
 /**
+ * Per-agent model overrides — the workspace's explicit exceptions to the default model.
+ *
+ * An agent whose `agent.ts` resolves through the generated `eden-model.ts`
+ * (`model: edenAgentModel('<agent-name>')`) asks Eden at runtime which model to run. The
+ * answer is this map's entry for the agent's name when one exists, else the workspace default
+ * (`workspace_settings.assistant_model`). Subagents resolve with their PARENT's name, so they
+ * always run the parent's model. Removing a row falls the agent back to the workspace default
+ * — no repo change, no redeploy, the running agent picks it up on its next step.
+ */
+export const agentModelOverrides = pgTable(
+  "agent_model_overrides",
+  {
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** The eve agent name (`edenAgentModel('<name>')` argument), not an Eden row id. */
+    agentName: text("agent_name").notNull(),
+    /** Connection-qualified model ref, e.g. `anthropic/<connectionId>/<model>`. */
+    model: text("model").notNull(),
+    /** Explicit provider-agnostic reasoning effort; null delegates to the provider default. */
+    effort: text("effort"),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.agentName] })],
+);
+
+/**
  * Connectable model providers (issue #28). API-key providers (OpenRouter, Anthropic, and OpenAI
  * Platform) keep a sealed key; Codex keeps its device-code OAuth token pair. A workspace may hold
  * several connections, including multiple accounts for one provider, each with a human label.

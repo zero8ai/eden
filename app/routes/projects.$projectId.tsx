@@ -73,11 +73,7 @@ import { contextPath } from "~/lib/paths";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { RelativeTime } from "~/components/localized-values";
 import { cn } from "~/lib/utils";
-import {
-  getWorkspaceAssistantModel,
-  getWorkspaceAssistantSelection,
-} from "~/org/workspace.server";
-import { ownsWorkspaceModelReference } from "~/models/union.server";
+import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -447,23 +443,13 @@ export async function action(args: ActionFunctionArgs) {
       if (roster.some((a) => a.name === name)) {
         return { error: `An agent named "${name}" already exists.` };
       }
-      const selection = await getWorkspaceAssistantSelection(
-        project.orgId,
-      ).catch(() => ({ model: null, effort: null }));
-      let model = selection.model;
-      if (model && !(await ownsWorkspaceModelReference(project.orgId, model))) {
-        model = null;
-      }
-      if (!model) {
-        return {
-          error:
-            "Choose a connected workspace default model in Org settings before adding an agent.",
-        };
-      }
+      // No model is baked into the scaffold: the member resolves the workspace's configured
+      // model (or its own override) from Eden at runtime, so it follows Org settings from
+      // day one and model changes never touch the repo.
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
         branch: `eden/add-member-${name}`,
-        files: memberScaffold(name, model, selection.effort),
+        files: memberScaffold(name),
         title: `Add agent: ${name}`,
         body:
           `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, a ` +

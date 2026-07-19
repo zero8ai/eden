@@ -174,6 +174,55 @@ describe("filterModels", () => {
   it("returns nothing when no id or name matches", () => {
     expect(filterModels(catalog, "nomatch")).toEqual([]);
   });
+
+  it("ranks connection-level matches above slug look-alikes from other providers", () => {
+    // OpenRouter's catalog carries codex-slug models, and catalog order is connection order —
+    // so a "codex" query used to put OpenRouter's look-alikes at the top (and under the
+    // keyboard's Enter) while the actual Codex-subscription rows sat below.
+    const qualified = (
+      id: string,
+      name: string,
+      providerName: string,
+      connectionLabel: string,
+      upstreamModelId: string,
+    ): ModelCatalogEntry => ({
+      ...model(id, name),
+      providerName,
+      connectionLabel,
+      upstreamModelId,
+    });
+    const union = [
+      qualified(
+        "openrouter/abcdefabcdef/openai/gpt-5.1-codex",
+        "GPT-5.1 Codex",
+        "OpenRouter",
+        "openrouter",
+        "openai/gpt-5.1-codex",
+      ),
+      qualified(
+        "openrouter/abcdefabcdef/z-ai/glm-5.2",
+        "GLM 5.2",
+        "OpenRouter",
+        "openrouter",
+        "z-ai/glm-5.2",
+      ),
+      qualified(
+        "codex/fedcbafedcba/gpt-5.1-codex",
+        "GPT-5.1 Codex",
+        "Codex",
+        "codex subscription",
+        "gpt-5.1-codex",
+      ),
+    ];
+    expect(filterModels(union, "codex").map((m) => m.id)).toEqual([
+      "codex/fedcbafedcba/gpt-5.1-codex",
+      "openrouter/abcdefabcdef/openai/gpt-5.1-codex",
+    ]);
+    // Ties keep catalog order; a model-only query is unaffected by ranking.
+    expect(filterModels(union, "glm").map((m) => m.id)).toEqual([
+      "openrouter/abcdefabcdef/z-ai/glm-5.2",
+    ]);
+  });
 });
 
 describe("limitModelsPerConnection", () => {

@@ -568,7 +568,11 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       // The current model selection applies to this and subsequent turns (and is persisted on
       // the session server-side, so a first-send selection survives the session's creation).
       if (selectedModelId) form.set("modelId", selectedModelId);
-      if (selectedEffort) form.set("effort", selectedEffort);
+      // Effort rides along only with an explicit model selection: without one, the agent's
+      // deployed fallback (which already encodes its own effort) handles the turn, and the
+      // server rejects effort-only requests it can't validate against a model.
+      if (selectedModelId && selectedEffort)
+        form.set("effort", selectedEffort);
 
       try {
         const controller = new AbortController();

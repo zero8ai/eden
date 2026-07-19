@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { groupDrafts } from "~/deploy/quick-deploy";
+import { groupDrafts, shouldCloseAfterShip } from "~/deploy/quick-deploy";
 import type { DraftChange } from "~/data/ports";
 
 function draft(agentId: string | null, path = `${agentId ?? "shared"}.ts`): DraftChange {
@@ -52,5 +52,42 @@ describe("groupDrafts", () => {
 
   it("is empty for no drafts", () => {
     expect(groupDrafts([], roster)).toEqual([]);
+  });
+});
+
+/**
+ * The dialog cannot rely on unmounting to dismiss (AgentNav lives in the layout the post-ship
+ * redirect lands back on), so it closes itself on the in-flight → idle transition — but ONLY when
+ * the action redirected (no { error } payload). Pins that transition table.
+ */
+describe("shouldCloseAfterShip", () => {
+  it("closes when a ship finishes without an error (action redirected)", () => {
+    expect(
+      shouldCloseAfterShip({ wasDeploying: true, deploying: false, error: undefined }),
+    ).toBe(true);
+  });
+
+  it("stays open while the ship is still in flight", () => {
+    expect(
+      shouldCloseAfterShip({ wasDeploying: false, deploying: true, error: undefined }),
+    ).toBe(false);
+    expect(
+      shouldCloseAfterShip({ wasDeploying: true, deploying: true, error: undefined }),
+    ).toBe(false);
+  });
+
+  it("stays open when the ship returned an error, so the user can retry or cancel", () => {
+    expect(
+      shouldCloseAfterShip({ wasDeploying: true, deploying: false, error: "Build gate failed" }),
+    ).toBe(false);
+  });
+
+  it("does not close idle renders that never shipped (e.g. reopening after an old error)", () => {
+    expect(
+      shouldCloseAfterShip({ wasDeploying: false, deploying: false, error: undefined }),
+    ).toBe(false);
+    expect(
+      shouldCloseAfterShip({ wasDeploying: false, deploying: false, error: "old error" }),
+    ).toBe(false);
   });
 });

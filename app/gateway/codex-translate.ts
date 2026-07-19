@@ -47,6 +47,19 @@ export interface ChatCompletionsBody {
   stream?: boolean;
 }
 
+/**
+ * Whether the client asked for a streamed (SSE) response.
+ *
+ * Follows the OpenAI convention: streaming happens ONLY when `stream: true` is explicitly set.
+ * An absent `stream` field means a non-streaming request — the `@ai-sdk/openai-compatible`
+ * provider's `doGenerate` omits `stream` (only `doStream` sends `stream: true`), so treating an
+ * absent field as streaming would hand a non-streaming client an SSE body it then tries to
+ * `JSON.parse`, yielding `Unexpected token 'd', "data: {..."` (a turnStep `AI_JSONParseError`).
+ */
+export function wantsStreaming(body: ChatCompletionsBody): boolean {
+  return body.stream === true;
+}
+
 // ── Responses payload shaping ──────────────────────────────────────────────────
 
 /** Convert a chat-message content value into Responses `input_text`/`input_image` parts. */

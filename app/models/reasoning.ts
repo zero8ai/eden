@@ -69,7 +69,7 @@ export function classifyReasoningCapability(input: {
     if (!/^(?:gpt-5(?:[.:-]|$)|o\d(?:[.:-]|$)|codex-)/.test(base)) {
       return null;
     }
-    if (/^gpt-5(?:\.4|\.3|\.2)(?:[.:-]|$)/.test(base)) {
+    if (/^gpt-5(?:\.6|\.5|\.4|\.3|\.2)(?:[.:-]|$)/.test(base)) {
       return {
         supportedEfforts: ["none", "low", "medium", "high", "xhigh"],
       };

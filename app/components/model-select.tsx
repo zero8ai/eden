@@ -159,9 +159,19 @@ export function ModelSelect({
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
 
+  // Load on mount, not just on open: the closed trigger resolves the raw qualified id
+  // (openrouter/abc…/slug) into "Name · Provider", which needs the catalog.
+  const { load, state, data } = fetcher;
+  useEffect(() => {
+    if (state === "idle" && !data) load("/api/models");
+  }, [state, data, load]);
+
   const models = fetcher.data?.models;
   const unavailable = fetcher.data?.unavailable ?? [];
   const loading = fetcher.state === "loading";
+  const selected = value
+    ? models?.find((entry) => entry.id === value)
+    : undefined;
 
   const commit = (id: string) => {
     setOpen(false);
@@ -248,8 +258,17 @@ export function ModelSelect({
               triggerClassName,
             )}
           >
+            {/* Resolve the qualified id to "Name · Provider" — the raw openrouter/abc…/slug form
+                reads as noise and hides WHICH connection serves the model (the whole point of a
+                qualified reference). Fall back to the raw id until the catalog loads. */}
             <span className="truncate">
-              {busy ? "Saving…" : (value ?? placeholder)}
+              {busy
+                ? "Saving…"
+                : selected
+                  ? selected.providerName
+                    ? `${selected.name} · ${selected.providerName}`
+                    : selected.name
+                  : (value ?? placeholder)}
             </span>
           </Button>
         </PopoverTrigger>
@@ -343,7 +362,17 @@ export function ModelSelect({
                     onSelect={() => commit(model.id)}
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm">{model.name}</div>
+                      {/* Per-row provider badge: slugs overlap across providers (OpenRouter's
+                          catalog carries codex-slug models), and the group header scrolls out of
+                          view — every row must say on its own which connection it belongs to. */}
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-sm">{model.name}</span>
+                        {model.providerName && (
+                          <span className="shrink-0 rounded border border-border px-1 py-px text-[10px] leading-4 text-muted-foreground">
+                            {model.providerName}
+                          </span>
+                        )}
+                      </div>
                       <div className="truncate font-mono text-xs text-muted-foreground">
                         {model.upstreamModelId}
                       </div>

@@ -8,7 +8,15 @@
  * shows a provisioning state while the instance builds/deploys.
  */
 import { getSessionAuth, sessionLoader } from "~/auth/session.server";
-import { Loader2, Sparkles } from "lucide-react";
+import {
+  GitPullRequest,
+  Info,
+  Loader2,
+  MessageSquare,
+  Plus,
+  Sparkles,
+  TriangleAlert,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Link,
@@ -29,12 +37,13 @@ import { getCheckoutRow } from "~/assistant/checkout-sync.server";
 import { hasActiveTurn, TURN_IDLE_TIMEOUT_MS } from "~/chat/turn-stream.server";
 import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import {
-  AssistantBubble,
+  AssistantTurn,
   ChatComposer,
   ChatTranscript,
   InputRequestsBlock,
   MarkdownText,
   StepsCard,
+  TurnMeta,
   UserBubble,
 } from "~/components/chat";
 import { TurnError } from "~/components/turn-error";
@@ -42,7 +51,6 @@ import { EmptyTeamState } from "~/components/empty-team-state";
 import { LocalizedDate } from "~/components/localized-values";
 import { AgentNav, AppShell, PageHeader, repoCrumbs } from "~/components/shell";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
-import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
   Select,
@@ -348,9 +356,13 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         }
       >
         <SelectTrigger
-          className="h-9 w-52 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
+          className="h-8 w-56 gap-1.5 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
           aria-label="Assistant conversation"
         >
+          <MessageSquare
+            className="size-3.5 shrink-0 text-muted-foreground"
+            aria-hidden
+          />
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -511,20 +523,24 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
     () => (
       <div className="flex flex-wrap items-center gap-2">
         {sessionPicker}
-        <Button asChild variant="outline" size="sm">
-          <Link to={`${base}/assistant/config`}>Configure</Link>
-        </Button>
         <NewSessionForm method="post">
           <input type="hidden" name="intent" value="new-session" />
           <Button
             type="submit"
             variant="outline"
             size="sm"
-            disabled={busy && !currentSessionContinuationBlocked}
+            disabled={
+              (busy && !currentSessionContinuationBlocked) ||
+              newSessionFetcher.state !== "idle"
+            }
           >
-            New conversation
+            <Plus aria-hidden />
+            New chat
           </Button>
         </NewSessionForm>
+        <Button asChild variant="ghost" size="sm">
+          <Link to={`${base}/assistant/config`}>Configure</Link>
+        </Button>
       </div>
     ),
     [
@@ -532,9 +548,65 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
       base,
       busy,
       currentSessionContinuationBlocked,
+      newSessionFetcher.state,
       sessionPicker,
     ],
   );
+
+  // One slim status area with strict precedence (error > blocked > send feedback > sync note)
+  // instead of a stack of full Alert boxes — the transcript never opens under a wall of chrome.
+  // Provisioning isn't repeated here: the in-transcript ProvisioningCard and the composer's
+  // busy hint already carry that state.
+  const statusStrip = useMemo(() => {
+    if (historyError) {
+      return <StatusStrip tone="error">{historyError}</StatusStrip>;
+    }
+    if (currentSessionContinuationBlocked) {
+      return (
+        <StatusStrip
+          tone="error"
+          title="This conversation can't be continued"
+          action={
+            <NewSessionForm method="post">
+              <input type="hidden" name="intent" value="new-session" />
+              <Button
+                type="submit"
+                variant="outline"
+                size="sm"
+                disabled={newSessionFetcher.state !== "idle"}
+              >
+                <Plus aria-hidden />
+                New chat
+              </Button>
+            </NewSessionForm>
+          }
+        >
+          Its assistant instance was replaced, so the old session can&apos;t
+          resume. The history stays visible — start a new chat to keep going.
+        </StatusStrip>
+      );
+    }
+    if (sendError) {
+      return <StatusStrip tone="info">{sendError}</StatusStrip>;
+    }
+    if (syncWarnings.length > 0) {
+      return (
+        <StatusStrip tone="info" title="Last sync note">
+          {syncWarnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </StatusStrip>
+      );
+    }
+    return null;
+  }, [
+    NewSessionForm,
+    currentSessionContinuationBlocked,
+    historyError,
+    newSessionFetcher.state,
+    sendError,
+    syncWarnings,
+  ]);
 
   const transcriptLead = useMemo(
     () => (
@@ -546,51 +618,10 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           description="Tell it what your agents should do. It writes the code, verifies the build, and stages everything for review on the Deployment tab — you never touch git."
           actions={headerActions}
         />
-        {provisioning && (
-          <Alert className="mb-4">
-            <AlertTitle>Setting up your assistant…</AlertTitle>
-            <AlertDescription>
-              eden is building and starting your assistant instance. This takes
-              a minute the first time — the page updates automatically.
-            </AlertDescription>
-          </Alert>
-        )}
-        {currentSessionContinuationBlocked && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertTitle>Start a new conversation</AlertTitle>
-            <AlertDescription>
-              Cached history remains visible, but the replacement assistant
-              instance can&apos;t continue the old Eve session that owns this
-              conversation.
-            </AlertDescription>
-          </Alert>
-        )}
-        {historyError && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertDescription>{historyError}</AlertDescription>
-          </Alert>
-        )}
-        {sendError && (
-          <Alert className="mb-4">
-            <AlertDescription>{sendError}</AlertDescription>
-          </Alert>
-        )}
-        {syncWarnings.map((warning) => (
-          <Alert key={warning} className="mb-4">
-            <AlertTitle>Last sync note</AlertTitle>
-            <AlertDescription>{warning}</AlertDescription>
-          </Alert>
-        ))}
+        {statusStrip}
       </>
     ),
-    [
-      currentSessionContinuationBlocked,
-      headerActions,
-      historyError,
-      provisioning,
-      sendError,
-      syncWarnings,
-    ],
+    [headerActions, statusStrip],
   );
 
   const idle = instanceStatus === "idle";
@@ -672,14 +703,29 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
           !idle &&
           !failed &&
           !provisioning && (
-            <div className="py-8 text-center">
-              <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <div className="py-10 text-center">
+              <div className="mx-auto mb-3 flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-primary/20">
                 <Sparkles className="size-6" aria-hidden />
               </div>
-              <p className="text-sm text-muted-foreground">
-                Say what you want built. The assistant keeps context across
-                turns.
+              <h2 className="text-base font-medium">
+                Start with what you want built
+              </h2>
+              <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+                The assistant keeps context across turns, so you can refine as
+                you go.
               </p>
+              <div className="mx-auto mt-5 flex max-w-xl flex-wrap items-center justify-center gap-2">
+                {STARTER_PROMPTS.map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    className="rounded-full border bg-card px-3.5 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                    onClick={() => send(prompt)}
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -717,24 +763,26 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         )}
         {replayingRunningSession &&
           shownEntries.at(-1)?.role !== "assistant" && (
-            <StepsCard
-              steps={[]}
-              idPrefix="running-session"
-              activity="Still working…"
-            />
+            <AssistantTurn>
+              <StepsCard
+                steps={[]}
+                idPrefix="running-session"
+                activity="Still working…"
+              />
+            </AssistantTurn>
           )}
         {currentSessionStatus === "failed" &&
           !visibleLive &&
           shownEntries.at(-1)?.role === "user" && (
-            <AssistantBubble>
-              <p className="text-sm text-muted-foreground">
+            <AssistantTurn>
+              <p className="text-muted-foreground">
                 {currentSessionContinuationBlocked
                   ? "This turn was interrupted when its assistant instance was replaced. Start a new conversation to continue."
                   : currentSessionOwnerLive
                     ? "This turn was interrupted before it finished. Send the message again to retry."
                     : "This turn was interrupted before it finished while the assistant was unavailable. Restart the assistant before retrying."}
               </p>
-            </AssistantBubble>
+            </AssistantTurn>
           )}
         {visibleLive && (
           <>
@@ -756,15 +804,21 @@ export default function Assistant({ loaderData }: Route.ComponentProps) {
         <ChatComposer
           placeholder={
             currentSessionContinuationBlocked
-              ? "Start a new conversation to continue…"
+              ? "Start a new chat to continue…"
               : idle || failed
                 ? "Set up the assistant to start…"
                 : provisioning
                   ? "Setting up your assistant…"
                   : "What should your agent be able to do?"
           }
-          busy={busy || idle || failed}
-          disabled={currentSessionContinuationBlocked}
+          busy={busy}
+          busyHint={
+            provisioning
+              ? "Setting up your assistant…"
+              : "The assistant is working…"
+          }
+          // Not-yet-provisioned reads as unavailable (setup card explains), not as in-flight work.
+          disabled={currentSessionContinuationBlocked || idle || failed}
           onSend={send}
         />
       </div>
@@ -858,6 +912,52 @@ function reduceLive(prev: LiveTurn, evt: StreamEvent): LiveTurn {
   }
 }
 
+const STARTER_PROMPTS = [
+  "What can this repo's agents do today?",
+  "Create an agent that summarizes new GitHub issues",
+  "Add a scheduled daily report to my agent",
+];
+
+/**
+ * The page's single status surface: one slim strip above the transcript. Callers pick the one
+ * highest-precedence item to show — this renders it with a tone icon, optional title, and an
+ * optional trailing action.
+ */
+function StatusStrip({
+  tone,
+  title,
+  action,
+  children,
+}: {
+  tone: "error" | "info";
+  title?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const Icon = tone === "error" ? TriangleAlert : Info;
+  return (
+    <div
+      className={`mb-4 flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm ${
+        tone === "error"
+          ? "border-destructive/30 bg-destructive/5"
+          : "border-border bg-muted/40"
+      }`}
+    >
+      <Icon
+        className={`mt-0.5 size-4 shrink-0 ${
+          tone === "error" ? "text-destructive" : "text-muted-foreground"
+        }`}
+        aria-hidden
+      />
+      <div className="min-w-0 flex-1 space-y-0.5">
+        {title && <p className="font-medium leading-snug">{title}</p>}
+        <div className="text-muted-foreground">{children}</div>
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
 function formatSessionLabel(title: string, updatedAt: string) {
   const date = new Date(updatedAt);
   if (Number.isNaN(date.getTime())) return title;
@@ -920,6 +1020,11 @@ function formatElapsed(totalSeconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+/**
+ * The in-flight turn, rendered with the same anatomy as a cached AgentEntry so the handoff from
+ * live stream to cache is visually seamless: activity/steps first (what it's doing), then the
+ * streaming reply, pending questions, the quiet sync confirmation, and a de-emphasized meta line.
+ */
 function LiveBubble({
   live,
   onRetry,
@@ -930,50 +1035,56 @@ function LiveBubble({
   busy?: boolean;
 }) {
   return (
-    <div className="space-y-2">
-      {(live.text || live.error || live.inputRequests.length > 0) && (
-        <AssistantBubble>
-          {live.modelId && (
-            <span className="mb-1.5 flex items-center gap-1.5">
-              <span className="font-mono text-xs text-muted-foreground">
-                {live.modelId}
-              </span>
-            </span>
-          )}
-          {live.error ? (
-            <TurnError
-              message={live.error}
-              detail={live.errorDetail}
-              retryable={live.errorRetryable}
-              onRetry={onRetry}
-              busy={busy}
-            />
-          ) : live.text ? (
-            <MarkdownText text={live.text} />
-          ) : null}
-          <InputRequestsBlock requests={live.inputRequests} busy />
-        </AssistantBubble>
-      )}
+    <AssistantTurn>
       <StepsCard
         steps={live.steps}
         idPrefix="live"
         activity={live.done ? null : live.activity}
       />
-      {live.sync &&
-        (live.sync.error ? (
-          <p className="text-xs text-destructive">
-            Eden couldn&apos;t sync this turn&apos;s changes to the pull request
-            ({live.sync.error}). They&apos;re safe in the conversation checkout
-            and will sync after the next turn.
-          </p>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            Changes synced
-            {live.sync.prNumber ? ` to PR #${live.sync.prNumber}` : ""} — review
-            them on the Changes tab.
-          </p>
-        ))}
-    </div>
+      {live.error ? (
+        <TurnError
+          message={live.error}
+          detail={live.errorDetail}
+          retryable={live.errorRetryable}
+          onRetry={onRetry}
+          busy={busy}
+        />
+      ) : live.text ? (
+        <MarkdownText text={live.text} />
+      ) : null}
+      <InputRequestsBlock requests={live.inputRequests} busy />
+      {live.sync && <SyncNote sync={live.sync} />}
+      <TurnMeta items={[live.done && live.modelId]} />
+    </AssistantTurn>
+  );
+}
+
+/** Post-turn checkout sync outcome as a quiet, icon-led confirmation line — not a banner. */
+function SyncNote({ sync }: { sync: NonNullable<LiveTurn["sync"]> }) {
+  if (sync.error) {
+    return (
+      <p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+        <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+        <span>
+          Eden couldn&apos;t sync this turn&apos;s changes to the pull request (
+          {sync.error}). They&apos;re safe in the conversation checkout and will
+          sync after the next turn.
+        </span>
+      </p>
+    );
+  }
+  return (
+    <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+      <GitPullRequest
+        className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
+        aria-hidden
+      />
+      <span>
+        Changes synced
+        {sync.prNumber ? ` to PR #${sync.prNumber}` : ""} — review them on the
+        Changes tab.
+      </span>
+    </p>
   );
 }
 
@@ -1002,21 +1113,14 @@ function AgentEntry({
     !entry.text &&
     !entry.inputRequests?.length;
   return (
-    <div className="space-y-2">
+    <AssistantTurn>
+      <StepsCard
+        steps={entry.steps ?? []}
+        idPrefix={entry.id}
+        activity={running ? "Still working…" : undefined}
+      />
       {!awaitingReply && (
-        <AssistantBubble>
-          {entry.version && (
-            <span className="mb-1.5 flex items-center gap-1.5">
-              <Badge variant="secondary" className="text-xs">
-                {entry.version}
-              </Badge>
-              {entry.modelId && (
-                <span className="font-mono text-xs text-muted-foreground">
-                  {entry.modelId}
-                </span>
-              )}
-            </span>
-          )}
+        <>
           {entry.error ? (
             <TurnError
               message={entry.error}
@@ -1039,13 +1143,9 @@ function AgentEntry({
               busy={busy}
             />
           )}
-        </AssistantBubble>
+          <TurnMeta items={[entry.version, entry.modelId]} />
+        </>
       )}
-      <StepsCard
-        steps={entry.steps ?? []}
-        idPrefix={entry.id}
-        activity={running ? "Still working…" : undefined}
-      />
-    </div>
+    </AssistantTurn>
   );
 }

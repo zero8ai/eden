@@ -7,7 +7,7 @@
  * conversational feel.
  */
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
-import { ArrowUp, ChevronRight, Loader2 } from "lucide-react";
+import { ArrowUp, ChevronRight, Loader2, Sparkles } from "lucide-react";
 
 import type { ChatInputRequest, ChatStep } from "~/chat/types";
 import { Button } from "~/components/ui/button";
@@ -59,7 +59,7 @@ export function ChatTranscript({
     >
       <div className="mx-auto w-full max-w-5xl px-4 pt-6 sm:px-6">
         {lead}
-        <div className="space-y-4 pb-2">{children}</div>
+        <div className="space-y-6 pb-2">{children}</div>
       </div>
     </div>
   );
@@ -78,6 +78,41 @@ export function AssistantBubble({ children }: { children: ReactNode }) {
     <div className="w-fit max-w-[85%] rounded-2xl border border-l-2 border-primary/20 border-l-primary/50 bg-card px-4 py-2.5 text-sm">
       {children}
     </div>
+  );
+}
+
+/**
+ * One assistant turn as an open block with a glyph gutter (no bubble chrome): the glyph
+ * marks "the assistant speaks" so user (right, filled) vs assistant (left, open) turns scan
+ * instantly, and everything that belongs to the turn — activity, reply, questions, sync
+ * note, metadata — stacks inside the same column instead of floating as detached cards.
+ */
+export function AssistantTurn({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex gap-3">
+      <div
+        className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-primary/20"
+        aria-hidden
+      >
+        <Sparkles className="size-3.5" />
+      </div>
+      <div className="min-w-0 flex-1 space-y-2 pt-1 text-sm">{children}</div>
+    </div>
+  );
+}
+
+/** De-emphasized single-line turn metadata (version, model id) — a footer, not a header. */
+export function TurnMeta({
+  items,
+}: {
+  items: (string | null | undefined | false)[];
+}) {
+  const shown = items.filter((item): item is string => Boolean(item));
+  if (shown.length === 0) return null;
+  return (
+    <p className="font-mono text-[11px] leading-relaxed text-muted-foreground/70">
+      {shown.join(" · ")}
+    </p>
   );
 }
 
@@ -504,10 +539,10 @@ export function PendingBubble() {
 }
 
 /**
- * The agent's work for one turn, as its own collapsed card next to the reply bubble.
- * Collapsed it reads as a summary ("4 steps · 12.3s"); expanded it lists each step's
- * tool + summary with duration/tokens, and failed steps surface their detail. During a
- * live turn, pass `activity` — the header shows a spinner with what the agent is doing
+ * The agent's work for one turn as a quiet inline disclosure, not a detached card: collapsed
+ * it reads as a one-line summary ("4 steps · 12.3s"); expanded it lists each step on a
+ * timeline rail with tool + summary, duration/tokens, and failed steps surface their detail.
+ * During a live turn, pass `activity` — the row shows a spinner with what the agent is doing
  * right now instead of the summary.
  */
 export function StepsCard({
@@ -523,59 +558,86 @@ export function StepsCard({
   if (steps.length === 0 && !activity) return null;
   const totalMs = steps.reduce((sum, s) => sum + (s.durationMs ?? 0), 0);
   const failed = steps.some((s) => s.isError);
+
+  // Nothing to expand yet — a bare working line, no dead chevron.
+  if (steps.length === 0) {
+    return (
+      <div className="flex min-w-0 items-center gap-1.5 py-0.5 text-xs text-muted-foreground">
+        <Loader2
+          className="size-3 shrink-0 animate-spin text-primary"
+          aria-hidden
+        />
+        <span className="min-w-0 truncate">{activity}</span>
+      </div>
+    );
+  }
+
   return (
-    <details className="group w-fit max-w-[85%] rounded-xl border border-l-2 border-l-blue-500/50 bg-muted/40 text-xs text-muted-foreground">
-      <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 [&::-webkit-details-marker]:hidden">
+    <details className="group w-fit max-w-full text-xs">
+      <summary className="flex w-fit cursor-pointer select-none items-center gap-1.5 rounded-md py-0.5 pr-1.5 text-muted-foreground transition-colors [&::-webkit-details-marker]:hidden hover:text-foreground">
         <ChevronRight
-          className="size-3.5 shrink-0 text-blue-600 transition-transform group-open:rotate-90 dark:text-blue-400"
+          className="size-3.5 shrink-0 transition-transform group-open:rotate-90"
           aria-hidden
         />
         {activity ? (
           <span className="flex min-w-0 items-center gap-1.5">
-            <Loader2 className="size-3 shrink-0 animate-spin text-blue-600 dark:text-blue-400" />
-            <span className="truncate font-mono">{activity}</span>
-            {steps.length > 0 && (
-              <span className="shrink-0 text-muted-foreground/70">
-                · {steps.length} step{steps.length === 1 ? "" : "s"}
-              </span>
-            )}
+            <Loader2
+              className="size-3 shrink-0 animate-spin text-primary"
+              aria-hidden
+            />
+            <span className="min-w-0 truncate">{activity}</span>
+            <span className="shrink-0 text-muted-foreground/70">
+              · {steps.length} step{steps.length === 1 ? "" : "s"}
+            </span>
           </span>
         ) : (
           <span>
             {steps.length} step{steps.length === 1 ? "" : "s"}
             {totalMs > 0 ? ` · ${(totalMs / 1000).toFixed(1)}s` : ""}
-            {failed ? " · failed" : ""}
+            {failed ? (
+              <span className="text-destructive"> · failed</span>
+            ) : null}
           </span>
         )}
       </summary>
-      {steps.length > 0 && (
-        <ul className="space-y-1 border-t px-3 py-2">
-          {steps.map((s, i) => (
-            <li key={`${idPrefix}-step-${s.type}-${i}`} className="font-mono">
-              <div>
+      <ol className="ml-[7px] mt-1 space-y-1.5 border-l border-border py-1 pl-4">
+        {steps.map((s, i) => (
+          <li key={`${idPrefix}-step-${s.type}-${i}`} className="min-w-0">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <span className="font-mono font-medium text-foreground/80">
                 {s.toolName ?? s.type}
-                {s.summary ? ` · ${s.summary}` : s.name ? ` · ${s.name}` : ""}
+              </span>
+              {(s.summary || s.name) && (
+                <span className="min-w-0 max-w-full truncate font-mono text-muted-foreground">
+                  {s.summary ?? s.name}
+                </span>
+              )}
+              <span className="shrink-0 text-muted-foreground/70">
                 {s.durationMs != null
-                  ? ` · ${(s.durationMs / 1000).toFixed(1)}s`
+                  ? `${(s.durationMs / 1000).toFixed(1)}s`
                   : ""}
                 {s.tokensIn != null || s.tokensOut != null
-                  ? ` · ${s.tokensIn ?? 0} in / ${s.tokensOut ?? 0} out tok`
+                  ? `${s.durationMs != null ? " · " : ""}${s.tokensIn ?? 0} in / ${s.tokensOut ?? 0} out tok`
                   : ""}
-                {s.isError ? " · failed" : ""}
-              </div>
-              {(s.message || s.code || s.details) && (
-                <div className="mt-0.5 whitespace-pre-wrap pl-3 text-destructive">
-                  {s.message}
-                  {s.code ? `${s.message ? "\n" : ""}Code: ${s.code}` : ""}
-                  {s.details
-                    ? `${s.message || s.code ? "\n" : ""}Details: ${s.details}`
-                    : ""}
-                </div>
+              </span>
+              {s.isError && (
+                <span className="shrink-0 font-medium text-destructive">
+                  failed
+                </span>
               )}
-            </li>
-          ))}
-        </ul>
-      )}
+            </div>
+            {(s.message || s.code || s.details) && (
+              <div className="mt-0.5 whitespace-pre-wrap font-mono text-destructive">
+                {s.message}
+                {s.code ? `${s.message ? "\n" : ""}Code: ${s.code}` : ""}
+                {s.details
+                  ? `${s.message || s.code ? "\n" : ""}Details: ${s.details}`
+                  : ""}
+              </div>
+            )}
+          </li>
+        ))}
+      </ol>
     </details>
   );
 }
@@ -588,15 +650,26 @@ function autoGrow(el: HTMLTextAreaElement) {
   el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_HEIGHT)}px`;
 }
 
+function ComposerKbd({ children }: { children: ReactNode }) {
+  return (
+    <kbd className="rounded border border-border bg-muted px-1 py-px font-sans text-[10px] font-medium text-muted-foreground">
+      {children}
+    </kbd>
+  );
+}
+
 export function ChatComposer({
   placeholder,
   busy,
+  busyHint,
   disabled = false,
   onSend,
   controls,
 }: {
   placeholder: string;
   busy: boolean;
+  /** What the surface is waiting on while `busy` — shown with a spinner in the toolbar. */
+  busyHint?: string;
   /** Disable composing without showing the in-flight spinner used for `busy`. */
   disabled?: boolean;
   onSend: (message: string) => void;
@@ -617,7 +690,7 @@ export function ChatComposer({
   };
 
   return (
-    <div className="rounded-2xl border bg-card shadow-sm transition focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
+    <div className="rounded-2xl border bg-card shadow-sm transition focus-within:border-ring focus-within:ring-1 focus-within:ring-ring has-[textarea:disabled]:bg-muted/30">
       <Textarea
         ref={ref}
         placeholder={placeholder}
@@ -633,15 +706,34 @@ export function ChatComposer({
           }
         }}
       />
-      <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
-        <div className="flex min-w-0 items-center gap-2">{controls}</div>
+      <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5 pl-3.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          {controls}
+          {busy ? (
+            <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2
+                className="size-3 shrink-0 animate-spin text-primary"
+                aria-hidden
+              />
+              <span className="min-w-0 truncate">{busyHint ?? "Working…"}</span>
+            </span>
+          ) : (
+            !disabled && (
+              <span className="hidden items-center gap-1 text-[11px] text-muted-foreground/70 sm:flex">
+                <ComposerKbd>Enter</ComposerKbd> to send
+                <span className="text-muted-foreground/50">·</span>
+                <ComposerKbd>Shift+Enter</ComposerKbd> for a new line
+              </span>
+            )
+          )}
+        </div>
         <Button
           type="button"
           size="icon"
           className="size-9 shrink-0 rounded-full"
           onClick={send}
           disabled={unavailable}
-          aria-label="Send"
+          aria-label={busy ? "Waiting for the current turn" : "Send"}
         >
           {busy ? (
             <Loader2 className="size-4 animate-spin" />

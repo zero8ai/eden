@@ -176,7 +176,9 @@ function edenModel(id: string, effort?: 'none' | 'minimal' | 'low' | 'medium' | 
   }
   return edenReasoningModel(model, effort);
 }
-function edenReasoningModel(model: LanguageModel, effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh') {
+// \`ai\`'s LanguageModel union admits bare gateway id strings, which eve's defineDynamic model slot
+// rejects — exclude them so edenModel's inferred return type stays assignable.
+function edenReasoningModel(model: Exclude<LanguageModel, string>, effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh') {
   if (!effort) return model;
   return wrapLanguageModel({
     model,
@@ -191,7 +193,7 @@ function edenReasoningModel(model: LanguageModel, effort?: 'none' | 'minimal' | 
 // Eden owns the marked helper region. Match the generated selector plus its optional router, but
 // stop before any neighboring user code between that wiring and the agent export.
 const EDEN_MODEL_HELPER_BLOCK =
-  /\/\/ Eden playground model override:[\s\S]*?\n}\n(?:(?:(?:[ \t]*|\/\/[^\n]*)\n)*function edenModel\s*\([\s\S]*?\n}\n)?(?:function edenReasoningModel\s*\([\s\S]*?\n}\n)?/;
+  /\/\/ Eden playground model override:[\s\S]*?\n}\n(?:(?:(?:[ \t]*|\/\/[^\n]*)\n)*function edenModel\s*\([\s\S]*?\n}\n)?(?:(?:(?:[ \t]*|\/\/[^\n]*)\n)*function edenReasoningModel\s*\([\s\S]*?\n}\n)?/;
 const LEGACY_EDEN_MODEL_RESOLVER =
   "return { model: openrouter.chatModel(selected.id), modelContextWindowTokens: selected.contextWindowTokens };";
 const CURRENT_EDEN_MODEL_RESOLVER =

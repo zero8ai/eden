@@ -150,37 +150,9 @@ export function detectSandbox(paths: string[], base: string): AgentSandbox | nul
 }
 
 /**
- * Best-effort model id from `agent.ts`. eve agents commonly declare a model as a string
- * literal (e.g. `model: 'anthropic/claude-...'`); we grab the first such literal. This is a
- * heuristic for the read-only view, not a substitute for executing the module.
- */
-function extractModel(agentModuleSource: string | undefined): string | null {
-  if (!agentModuleSource) return null;
-  // Eden's dynamic wrapper first (`model: defineDynamic({ fallback: … })` — the deploy-default
-  // id lives in the fallback), then the provider-wrapped form, then the bare literal — the same
-  // order `readModel` in ~/eve/agentModule uses, so repo and draft views agree.
-  if (/\bmodel\s*:\s*defineDynamic\s*\(/.test(agentModuleSource)) {
-    const fallbackCall = agentModuleSource.match(
-      /\bfallback\s*:\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\(\s*(['"`])([^'"`]+)\1/,
-    );
-    if (fallbackCall) return fallbackCall[2];
-    const fallbackLiteral = agentModuleSource.match(/\bfallback\s*:\s*(['"`])([^'"`]+)\1/);
-    if (fallbackLiteral) return fallbackLiteral[2];
-  }
-  const call = agentModuleSource.match(
-    /\bmodel\s*:\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\(\s*(['"`])([^'"`]+)\1/,
-  );
-  if (call) return call[2];
-  const match = agentModuleSource.match(
-    /\bmodel\s*:\s*(['"`])([^'"`]+)\1/,
-  );
-  return match ? match[2] : null;
-}
-
-/**
  * Best-effort one-line description from a `defineAgent({ description: '...' })` literal in an
- * agent/subagent module. Mirrors extractModel's heuristic posture: string literals only, no
- * module execution. Collapses internal whitespace so a multi-line template still reads as one line.
+ * agent/subagent module: string literals only, no module execution. Collapses internal
+ * whitespace so a multi-line template still reads as one line.
  */
 export function extractDescription(agentModuleSource: string | undefined): string | null {
   if (!agentModuleSource) return null;
@@ -218,7 +190,6 @@ export function buildAgentConfig(source: AgentSource, root: string = AGENT_ROOT)
 
   return {
     hasAgentModule: paths.includes(agentModulePath),
-    model: extractModel(files[agentModulePath]),
     instructions: files[instructionsPath] ?? null,
     sandbox: detectSandbox(paths, root),
     subagentSandboxes,

@@ -48,8 +48,8 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { ModelSelection } from "~/components/model-select";
-import { hasDynamicModel, readReasoningEffort } from "~/eve/agentModule";
-import { buildAgentConfig } from "~/eve/parse";
+import { hasDynamicModel } from "~/eve/agentModule";
+import { resolveAgentModel } from "~/models/agent-model-config.server";
 import { getAgentSource } from "~/github/cached.server";
 import { contextPath } from "~/lib/paths";
 import { stageModelSwitchingUpgrade } from "~/models/stage-model.server";
@@ -116,19 +116,11 @@ export const loader = (args: LoaderFunctionArgs) =>
           agentId: active.id,
           userId: auth.user!.id,
         }),
-        // The selector's default: the agent's configured model (the defineDynamic fallback).
-        // Best-effort — a repo-read hiccup must not take down the playground.
-        getAgentSource(project.repoInstallationId, {
-          owner: project.repoOwner,
-          repo: project.repoName,
-        })
-          .then((source) => {
-            const module = source.files[`${active.root}/agent.ts`] ?? "";
-            return {
-              model: buildAgentConfig(source, active.root).model,
-              effort: readReasoningEffort(module),
-            };
-          })
+        // The selector's default: the agent's configured model, resolved by name from Eden's
+        // control plane (never parsed from agent.ts). Best-effort — a lookup hiccup must not
+        // take down the playground.
+        resolveAgentModel(project.orgId, active.name)
+          .then((r) => ({ model: r?.model ?? null, effort: r?.effort ?? null }))
           .catch(() => ({ model: null, effort: null })),
       ]);
       // Whether each target's DEPLOYED build honors the per-conversation model directive —

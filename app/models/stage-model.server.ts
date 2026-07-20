@@ -1,6 +1,5 @@
 /**
- * Model staging shared by Settings' "Model" section and the Playground's "Enable model
- * switching". Two module generations exist:
+ * Model staging for Settings' "Model" section. Two module generations exist:
  *
  *  - **Workspace-resolver modules** (`model: edenAgentModel('<name>')` from the generated
  *    `eden-model.ts`): the file carries no model at all — it resolves the org's configured
@@ -20,9 +19,6 @@ import {
 import {
   ensureModelProviderDependencies,
   orgResolverAgentName,
-  readModel,
-  readModelContextWindow,
-  readReasoningEffort,
   scaffoldAgentModule,
   setModel,
   usesOrgModelResolver,
@@ -76,38 +72,25 @@ export async function stageModelChange(
   store: DataStore = getRuntime().data,
   deps?: StageModelDeps,
 ): Promise<StageModelResult> {
-  return stageModelChangeInternal(input, store, deps, true);
-}
-
-async function stageModelChangeInternal(
-  input: StageModelInput,
-  store: DataStore,
-  deps: StageModelDeps | undefined,
-  validateSelection: boolean,
-): Promise<StageModelResult> {
   const modelInfo = await (deps?.lookupModel ?? findWorkspaceModel)(
     input.project.orgId,
     input.model,
   );
-  if (validateSelection && !modelInfo) {
+  if (!modelInfo) {
     return {
       ok: false,
       error:
         "That model is not available from an active provider connection in this workspace.",
     };
   }
-  if (
-    validateSelection &&
-    input.effort &&
-    !modelInfo?.supportedEfforts?.includes(input.effort)
-  ) {
+  if (input.effort && !modelInfo.supportedEfforts?.includes(input.effort)) {
     return {
       ok: false,
       error: "That reasoning effort is not supported by the selected model.",
     };
   }
   const contextWindowTokens =
-    modelInfo?.contextWindow ?? input.fallbackContextWindowTokens;
+    modelInfo.contextWindow ?? input.fallbackContextWindowTokens;
   const path = `${input.root}/agent.ts`;
   const view = await resolveFileView(input.project, path, store, deps);
 
@@ -176,46 +159,4 @@ async function stageModelChangeInternal(
       : Promise.resolve(),
   ]);
   return { ok: true, mode: "staged" };
-}
-
-/**
- * Make a member playground-switchable WITHOUT changing its model: re-stage the CURRENT model
- * through the dynamic wrapper. This is the Playground's "Enable model switching" — the fix for
- * agents whose deployed `agent.ts` predates the wrapper (e.g. imported from the catalog) and
- * therefore ignores the per-conversation directive. A workspace-resolver module is already
- * dynamic (the generated `eden-model.ts` honors the directive), so it needs no staging.
- */
-export async function stageModelSwitchingUpgrade(
-  input: Omit<StageModelInput, "model">,
-  store: DataStore = getRuntime().data,
-  deps?: StageModelDeps,
-): Promise<StageModelResult> {
-  const view = await resolveFileView(
-    input.project,
-    `${input.root}/agent.ts`,
-    store,
-    deps,
-  );
-  if (usesOrgModelResolver(view.content)) return { ok: true, mode: "applied" };
-  const current = view.content ? readModel(view.content) : null;
-  if (!view.content || !current) {
-    return {
-      ok: false,
-      error:
-        "Couldn't read this agent's current model from agent.ts — set a model in Settings instead.",
-    };
-  }
-  return stageModelChangeInternal(
-    {
-      ...input,
-      model: current,
-      // "No model change" includes the context window — keep the module's declared value
-      // when the catalog can't confirm one.
-      fallbackContextWindowTokens: readModelContextWindow(view.content),
-      effort: readReasoningEffort(view.content),
-    },
-    store,
-    deps,
-    false,
-  );
 }

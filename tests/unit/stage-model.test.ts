@@ -1,10 +1,9 @@
 /**
- * Model staging shared by Settings' "Model" section and the Playground's "Enable model
- * switching" — against the in-memory store with GitHub and the model catalog stubbed. Pins the
- * two module generations: a workspace-resolver module (`edenAgentModel(...)`) routes a model
- * save into the org override map with zero repo churn, while a legacy module gets the dynamic
- * wrapper staged (per-conversation directives work), keeps the CURRENT model on upgrade, and
- * re-runs idempotently with package.json normalized alongside.
+ * Model staging for Settings' "Model" section — against the in-memory store with GitHub and the
+ * model catalog stubbed. Pins the two module generations: a workspace-resolver module
+ * (`edenAgentModel(...)`) routes a model save into the org override map with zero repo churn,
+ * while a legacy module gets the dynamic wrapper staged (per-conversation directives work) with
+ * package.json normalized alongside.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,7 +11,6 @@ import { getDraft, listDrafts } from "~/drafts/drafts.server";
 import { hasDynamicModel, readModel } from "~/eve/agentModule";
 import {
   stageModelChange,
-  stageModelSwitchingUpgrade,
   type StageModelDeps,
 } from "~/models/stage-model.server";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
@@ -187,69 +185,6 @@ describe("stageModelChange", () => {
       model: "openai/abcdefghijkl/gpt-5.1",
       effort: null,
     });
-    expect(await listDrafts(PROJECT.id, store)).toEqual([]);
-  });
-});
-
-describe("stageModelSwitchingUpgrade", () => {
-  it("wraps the CURRENT model — no model or context-window change", async () => {
-    const result = await stageModelSwitchingUpgrade(
-      { project: PROJECT, root: "agent", createdBy: "user_1" },
-      store,
-      fakeDeps({ "agent/agent.ts": STATIC_AGENT_TS, "package.json": PKG }),
-    );
-
-    expect(result).toEqual({ ok: true, mode: "staged" });
-    const draft = await getDraft(PROJECT.id, "agent/agent.ts", store);
-    expect(hasDynamicModel(draft?.content)).toBe(true);
-    expect(readModel(draft!.content!)).toBe("z-ai/glm-5.2");
-    // The catalog lookup missed (stubbed to null) — the module's declared window survives.
-    expect(draft!.content!).toContain("modelContextWindowTokens: 1000000");
-  });
-
-  it("is idempotent — a second run re-stages identical content", async () => {
-    const deps = fakeDeps({
-      "agent/agent.ts": STATIC_AGENT_TS,
-      "package.json": PKG,
-    });
-    const input = { project: PROJECT, root: "agent", createdBy: null };
-
-    await stageModelSwitchingUpgrade(input, store, deps);
-    const first = await getDraft(PROJECT.id, "agent/agent.ts", store);
-    const firstPkg = await getDraft(PROJECT.id, "package.json", store);
-
-    // The second run reads the FIRST run's drafts (draft-first file view) and must not churn.
-    await stageModelSwitchingUpgrade(input, store, deps);
-    const second = await getDraft(PROJECT.id, "agent/agent.ts", store);
-    const secondPkg = await getDraft(PROJECT.id, "package.json", store);
-
-    expect(second?.content).toBe(first?.content);
-    expect(secondPkg?.content).toBe(firstPkg?.content);
-    expect(readModel(second!.content!)).toBe("z-ai/glm-5.2");
-  });
-
-  it("errors when there is no agent.ts to read the current model from", async () => {
-    const result = await stageModelSwitchingUpgrade(
-      { project: PROJECT, root: "agent", createdBy: null },
-      store,
-      fakeDeps({ "package.json": PKG }),
-    );
-
-    expect(result).toEqual({
-      ok: false,
-      error: expect.stringContaining("Settings"),
-    });
-    expect(await getDraft(PROJECT.id, "agent/agent.ts", store)).toBeNull();
-  });
-
-  it("is a no-op for a workspace-resolver module — already directive-aware", async () => {
-    const result = await stageModelSwitchingUpgrade(
-      { project: PROJECT, root: "agent", createdBy: null },
-      store,
-      fakeDeps({ "agent/agent.ts": RESOLVER_AGENT_TS, "package.json": PKG }),
-    );
-
-    expect(result).toEqual({ ok: true, mode: "applied" });
     expect(await listDrafts(PROJECT.id, store)).toEqual([]);
   });
 });

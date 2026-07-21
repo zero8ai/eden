@@ -11,7 +11,7 @@
  */
 import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FlaskConical, Square } from "lucide-react";
+import { FlaskConical, MessageSquare, Plus, Server, Square } from "lucide-react";
 import {
   redirect,
   useFetcher,
@@ -49,6 +49,7 @@ import {
 import { ModelSelection } from "~/components/model-select";
 import { resolveAgentModel } from "~/models/agent-model-config.server";
 import { contextPath } from "~/lib/paths";
+import { cn } from "~/lib/utils";
 import { findWorkspaceModel } from "~/models/union.server";
 import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import {
@@ -305,6 +306,15 @@ export function meta() {
   return [{ title: "Playground · eden" }];
 }
 
+/**
+ * Shared styling for the equal-height control pills (session, deployment, model, effort).
+ * Height is left to the SelectTrigger's native h-9 — an explicit h-8 loses to the trigger's
+ * own `data-[size=default]:h-9` on specificity, so pills would silently mismatch. Non-Select
+ * pills (the model Button) pin `h-9` explicitly to line up.
+ */
+const CONTROL_PILL =
+  "border-0 bg-muted/60 text-xs shadow-none hover:bg-muted";
+
 /** Local mirror of an in-flight turn, driven by the NDJSON stream. */
 interface LiveTurn {
   playgroundSessionId: string | null;
@@ -435,9 +445,13 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
         }
       >
         <SelectTrigger
-          className="h-9 w-52 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
+          className={cn(CONTROL_PILL, "w-56 gap-1.5")}
           aria-label="Playground session"
         >
+          <MessageSquare
+            className="size-3.5 shrink-0 text-muted-foreground"
+            aria-hidden
+          />
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -706,19 +720,13 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
     revalidator,
   ]);
 
-  // Stable element between renders so the composer (and any memoized child) doesn't redraw.
-  const targetPicker = useMemo(
+  // A slim "what this turn runs on" bar that sits just ABOVE the composer — the deployment and
+  // model/effort pickers used to be jammed into the composer's send-row at mismatched sizes.
+  // Pulling them out gives them room and keeps the input itself clean.
+  const runSettings = useMemo(
     () => (
-      <>
-        <ModelSelection
-          model={selectedModelId ?? defaultModelId}
-          effort={selectedEffort}
-          busy={false}
-          disabled={busy}
-          placeholder="Deployed model"
-          triggerClassName="h-9 w-auto max-w-56 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted sm:w-auto"
-          onCommit={changeModel}
-        />
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs text-muted-foreground">
+        <span className="pl-1">Talking to</span>
         <Select
           value={deploymentId}
           onValueChange={(nextDeploymentId) => {
@@ -729,9 +737,13 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           disabled={busy}
         >
           <SelectTrigger
-            className="h-9 min-w-44 border-0 bg-muted/60 text-xs shadow-none hover:bg-muted"
+            className={cn(CONTROL_PILL, "max-w-56 gap-1.5")}
             aria-label="Deployment to talk to"
           >
+            <Server
+              className="size-3.5 shrink-0 text-muted-foreground"
+              aria-hidden
+            />
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -742,19 +754,19 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             ))}
           </SelectContent>
         </Select>
-        {busy && (
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            className="h-9 gap-1.5"
-            onClick={stopTurn}
-          >
-            <Square className="size-3.5" />
-            Stop
-          </Button>
-        )}
-      </>
+        <span>with</span>
+        <ModelSelection
+          compact
+          model={selectedModelId ?? defaultModelId}
+          effort={selectedEffort}
+          busy={false}
+          disabled={busy}
+          placeholder="Deployed model"
+          triggerClassName={cn(CONTROL_PILL, "h-9 max-w-56 font-normal")}
+          effortTriggerClassName={CONTROL_PILL}
+          onCommit={changeModel}
+        />
+      </div>
     ),
     [
       busy,
@@ -765,9 +777,27 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       selectedModelId,
       selectedEffort,
       setSearchParams,
-      stopTurn,
       targets,
     ],
+  );
+
+  // The composer's own control slot carries only the Stop button, and only mid-turn — right
+  // next to Send where an interrupt belongs.
+  const composerControls = useMemo(
+    () =>
+      busy ? (
+        <Button
+          type="button"
+          variant="destructive"
+          size="lg"
+          className="gap-1.5"
+          onClick={stopTurn}
+        >
+          <Square className="size-3.5" />
+          Stop
+        </Button>
+      ) : null,
+    [busy, stopTurn],
   );
 
   const headerActions = useMemo(
@@ -779,9 +809,10 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           <Button
             type="submit"
             variant="outline"
-            size="sm"
+            size="lg"
             disabled={busy || creatingSession}
           >
+            <Plus aria-hidden />
             New conversation
           </Button>
         </NewSessionForm>
@@ -936,6 +967,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
 
       {targets.length > 0 && (
         <div className="mx-auto w-full max-w-5xl px-4 pb-4 pt-3 sm:px-6">
+          <div className="mb-2">{runSettings}</div>
           <ChatComposer
             placeholder={
               isTeam
@@ -944,7 +976,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
             }
             busy={busy}
             onSend={send}
-            controls={targetPicker}
+            controls={composerControls}
           />
         </div>
       )}

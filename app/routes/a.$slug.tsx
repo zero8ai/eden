@@ -46,7 +46,6 @@ import {
 } from "~/playground/handoff";
 import {
   createPlaygroundSession,
-  getPlaygroundSession,
   listPlaygroundSessions,
   loadPlaygroundEntriesFromCache,
   reconcilePlaygroundSessionFromEve,

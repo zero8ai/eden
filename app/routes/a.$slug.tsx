@@ -51,8 +51,8 @@ import {
   reconcilePlaygroundSessionFromEve,
   settleAbandonedPlaygroundSession,
   summarizePlaygroundSession,
-  type PlaygroundSession,
 } from "~/playground/sessions.server";
+import type { PlaygroundSession } from "~/playground/sessions.server";
 import { findSessionOwnerTarget } from "~/playground/ownership";
 import { shouldSettleAbandonedSession } from "~/playground/settle";
 import { hasActiveTurn, TURN_IDLE_TIMEOUT_MS } from "~/chat/turn-stream.server";
@@ -213,7 +213,7 @@ export default function PortalPage({ loaderData }: Route.ComponentProps) {
   return <PortalChat data={loaderData} />;
 }
 
-/* ── Guest sign-in (email → 6-digit code) ─────────────────────────────────── */
+/* ── Guest sign-in (magic link, with a 6-digit code fallback) ─────────────── */
 
 function PortalGate({
   slug,
@@ -224,17 +224,20 @@ function PortalGate({
   portalName: string;
   deniedEmail: string | null;
 }) {
-  const [step, setStep] = useState<"email" | "code">("email");
+  // "enter": ask for an email; "linkSent": magic link on its way; "code": type the fallback code.
+  const [stage, setStage] = useState<"enter" | "linkSent" | "code">("enter");
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const codeRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (step === "code") codeRef.current?.focus();
-  }, [step]);
+  const callbackURL = `/a/${encodeURIComponent(slug)}`;
 
-  async function requestCode(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    if (stage === "code") codeRef.current?.focus();
+  }, [stage]);
+
+  async function sendLink(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const value = String(form.get("email") ?? "")
@@ -244,16 +247,29 @@ function PortalGate({
     setError(null);
     setPending(true);
     try {
-      await authClient.emailOtp.sendVerificationOtp({
-        email: value,
-        type: "sign-in",
-      });
+      await authClient.signIn.magicLink({ email: value, callbackURL });
     } catch {
       // Uniform response either way — no email enumeration.
     }
     setEmail(value);
     setPending(false);
-    setStep("code");
+    setStage("linkSent");
+  }
+
+  async function sendCode() {
+    if (!email) return;
+    setError(null);
+    setPending(true);
+    try {
+      await authClient.emailOtp.sendVerificationOtp({
+        email,
+        type: "sign-in",
+      });
+    } catch {
+      // Uniform response either way — no email enumeration.
+    }
+    setPending(false);
+    setStage("code");
   }
 
   async function verifyCode(event: FormEvent<HTMLFormElement>) {
@@ -278,7 +294,12 @@ function PortalGate({
       setPending(false);
       return;
     }
-    window.location.assign(`/a/${encodeURIComponent(slug)}`);
+    window.location.assign(callbackURL);
+  }
+
+  function restart() {
+    setError(null);
+    setStage("enter");
   }
 
   async function useDifferentEmail() {
@@ -295,9 +316,11 @@ function PortalGate({
             <CardDescription>
               {deniedEmail
                 ? `${deniedEmail} does not have access to this portal.`
-                : step === "email"
-                  ? "Enter your email to get a one-time sign-in code."
-                  : `If ${email} has access, a 6-digit code is on its way.`}
+                : stage === "enter"
+                  ? "Enter your email and we'll send you a sign-in link."
+                  : stage === "linkSent"
+                    ? `If ${email} has access, a sign-in link is on its way.`
+                    : `If ${email} has access, a 6-digit code is on its way.`}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -315,8 +338,8 @@ function PortalGate({
                   Use a different email
                 </Button>
               </div>
-            ) : step === "email" ? (
-              <form onSubmit={requestCode} className="space-y-5">
+            ) : stage === "enter" ? (
+              <form onSubmit={sendLink} className="space-y-5">
                 <div className="space-y-2">
                   <Label htmlFor="email">Email</Label>
                   <Input
@@ -330,9 +353,35 @@ function PortalGate({
                   />
                 </div>
                 <Button type="submit" className="h-10 w-full" disabled={pending}>
-                  {pending ? "Sending…" : "Send code"}
+                  {pending ? "Sending…" : "Email me a sign-in link"}
                 </Button>
               </form>
+            ) : stage === "linkSent" ? (
+              <div className="space-y-4">
+                <div className="rounded-lg bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+                  Check your inbox for a link to open {portalName}. You can close
+                  this tab once you&apos;ve clicked it.
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Didn&apos;t get it, or your email blocked the link?
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-10 w-full"
+                  onClick={sendCode}
+                  disabled={pending}
+                >
+                  {pending ? "Sending…" : "Send a 6-digit code instead"}
+                </Button>
+                <button
+                  type="button"
+                  onClick={restart}
+                  className="w-full text-center text-sm font-medium text-foreground underline decoration-muted-foreground/40 underline-offset-4 transition-colors hover:decoration-foreground"
+                >
+                  Use a different email
+                </button>
+              </div>
             ) : (
               <form onSubmit={verifyCode} className="space-y-5">
                 <div className="flex items-baseline justify-between gap-3 rounded-lg bg-muted/50 px-3 py-2 text-sm">
@@ -341,10 +390,7 @@ function PortalGate({
                   </span>
                   <button
                     type="button"
-                    onClick={() => {
-                      setError(null);
-                      setStep("email");
-                    }}
+                    onClick={restart}
                     className="shrink-0 font-medium text-foreground underline decoration-muted-foreground/40 underline-offset-4 transition-colors hover:decoration-foreground"
                   >
                     Change

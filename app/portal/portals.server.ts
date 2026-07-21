@@ -40,6 +40,50 @@ export async function createPortal(input: {
   return row;
 }
 
+/**
+ * The canonical portal a "Share" action targets for one agent (issue #180). Guests never see the
+ * portal abstraction — an agent has a Share button and an access list — so we reuse the agent's
+ * oldest live portal and only mint a new one on the first share. Disabled portals are skipped so
+ * re-sharing a disabled agent produces a fresh, live surface rather than reviving a closed one.
+ */
+export async function findAgentPortal(input: {
+  projectId: string;
+  agentId: string;
+}): Promise<ChatPortal | null> {
+  const [existing] = await db
+    .select()
+    .from(chatPortals)
+    .where(
+      and(
+        eq(chatPortals.projectId, input.projectId),
+        eq(chatPortals.agentId, input.agentId),
+        isNull(chatPortals.disabledAt),
+      ),
+    )
+    .orderBy(chatPortals.createdAt)
+    .limit(1);
+  return existing ?? null;
+}
+
+export async function getOrCreatePortalForAgent(input: {
+  projectId: string;
+  agentId: string;
+  agentName: string;
+  createdBy: string;
+}): Promise<ChatPortal> {
+  const existing = await findAgentPortal({
+    projectId: input.projectId,
+    agentId: input.agentId,
+  });
+  if (existing) return existing;
+  return createPortal({
+    projectId: input.projectId,
+    agentId: input.agentId,
+    name: input.agentName,
+    createdBy: input.createdBy,
+  });
+}
+
 /** Portals of one project with live-grant + conversation counts for the admin list. */
 export async function listProjectPortals(projectId: string): Promise<
   Array<ChatPortal & { grantCount: number; sessionCount: number }>

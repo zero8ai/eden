@@ -68,6 +68,8 @@ export default [
     "repos/:projectId/portals/:portalId",
     "routes/projects.$projectId.portals.$portalId.tsx",
   ),
+  // Share dialog data endpoint (issue #180): grant + magic-link invite, revoke, access list.
+  route("api/repos/:projectId/share", "routes/api.repos.$projectId.share.ts"),
   route("repos/:projectId/runs", "routes/projects.$projectId.runs.tsx"),
   memberRoute("/runs", "routes/projects.$projectId.runs.tsx", "member-runs"),
   route(

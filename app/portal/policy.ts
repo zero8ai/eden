@@ -19,6 +19,19 @@ export function shouldSendPortalOtp(input: {
   return input.type === "sign-in" && input.hasLiveGrant;
 }
 
+/**
+ * Whether a portal magic-link email should be sent. Same guarantee as {@link shouldSendPortalOtp}:
+ * enforced INSIDE the Better Auth send callback, so direct calls to /api/auth/sign-in/magic-link
+ * cannot mail sign-in links to — or mint guest accounts for — emails with no live grant. Magic
+ * links are the primary portal sign-in; the OTP code stays as a fallback for clients whose mail
+ * scanners pre-consume links.
+ */
+export function shouldSendPortalMagicLink(input: {
+  hasLiveGrant: boolean;
+}): boolean {
+  return input.hasLiveGrant;
+}
+
 export type PortalTurnDecision =
   | { allowed: true }
   | { allowed: false; status: number; error: string };

@@ -1152,6 +1152,15 @@ export const playgroundSessions = pgTable(
     modelId: text("model_id"),
     /** Explicit reasoning effort paired with modelId; null delegates to the provider default. */
     effort: text("effort"),
+    /**
+     * Surface discriminator (issue #180): non-null tags a portal guest conversation. The
+     * playground/assistant queries filter on IS NULL so portal sessions never appear in the
+     * builder's own session lists; portal queries filter on the specific portal.
+     */
+    portalId: varchar("portal_id", { length: 12 }).references(
+      () => chatPortals.id,
+      { onDelete: "cascade" },
+    ),
     lastEventAt: timestamp("last_event_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1163,6 +1172,7 @@ export const playgroundSessions = pgTable(
       t.createdBy,
       t.updatedAt,
     ),
+    index("playground_sessions_portal_idx").on(t.portalId, t.updatedAt),
     uniqueIndex("playground_sessions_external_uq").on(
       t.projectId,
       t.externalSessionId,
@@ -1196,6 +1206,99 @@ export const playgroundEvents = pgTable(
     createdAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.sessionId, t.streamIndex] })],
+);
+
+/**
+ * Agent Portals (issue #180): a portal publishes ONE agent to a minimal public chat page at
+ * /a/:slug for guests outside the org. Conversations reuse `playground_sessions` (tagged with
+ * `portal_id`); this table holds the publishing config — the pinned model, spend/rate controls,
+ * and the access mode.
+ */
+export const chatPortals = pgTable(
+  "chat_portals",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    projectId: varchar("project_id", { length: 12 })
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    agentId: varchar("agent_id", { length: 12 })
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    /** URL segment of the public chat page (/a/:slug). Minted with newId — never guessable-by-name. */
+    slug: varchar("slug", { length: 32 }).notNull(),
+    /** Display name shown to guests as the page title. */
+    name: text("name").notNull(),
+    /** "invite" (v1: explicit email allowlist). "domain" and "link" are future modes. */
+    accessMode: text("access_mode").notNull().default("invite"),
+    /**
+     * Pinned model for every portal turn (carried by the signed model directive); null = the
+     * deployed default. Guests never get a model selector.
+     */
+    modelId: text("model_id"),
+    /** Explicit reasoning effort paired with modelId. */
+    effort: text("effort"),
+    /** Per-guest rate limit on the stream action (turns per rolling hour). */
+    turnsPerHour: integer("turns_per_hour").notNull().default(20),
+    /** Per-portal cap across all guests per rolling 30 days; null = uncapped. */
+    monthlyTurnCap: integer("monthly_turn_cap"),
+    /** Set = the portal is switched off; guests get a 404 while config/grants are preserved. */
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("chat_portals_slug_uq").on(t.slug),
+    index("chat_portals_project_idx").on(t.projectId),
+  ],
+);
+
+/**
+ * Portal access list: which emails may sign in to a portal (issue #180). A grant is checked
+ * BEFORE an OTP is ever sent and again on every portal request, so revocation (`revoked_at`)
+ * takes effect immediately even against a live guest session. Re-inviting clears `revoked_at`.
+ */
+export const portalGrants = pgTable(
+  "portal_grants",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    portalId: varchar("portal_id", { length: 12 })
+      .notNull()
+      .references(() => chatPortals.id, { onDelete: "cascade" }),
+    /** Stored lowercase; matched case-insensitively against the signed-in user's email. */
+    email: text("email").notNull(),
+    invitedBy: text("invited_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("portal_grants_portal_email_uq").on(t.portalId, t.email),
+    index("portal_grants_email_idx").on(t.email),
+  ],
+);
+
+/**
+ * One row per accepted portal turn (issue #180) — the counter behind both abuse controls on the
+ * stream action: the per-guest hourly rate limit and the per-portal rolling-30-day cap.
+ * Append-only; counted with time-windowed queries.
+ */
+export const portalTurns = pgTable(
+  "portal_turns",
+  {
+    id: varchar("id", { length: 12 }).primaryKey().$defaultFn(newId),
+    portalId: varchar("portal_id", { length: 12 })
+      .notNull()
+      .references(() => chatPortals.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("portal_turns_portal_user_at_idx").on(t.portalId, t.userId, t.createdAt)],
 );
 
 /**

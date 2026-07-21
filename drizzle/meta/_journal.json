@@ -92,6 +92,13 @@
       "when": 1784462169361,
       "tag": "0012_fine_azazel",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784597722492,
+      "tag": "0013_slimy_vampiro",
+      "breakpoints": true
     }
   ]
 }

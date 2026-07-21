@@ -5,6 +5,7 @@ import { db } from "~/db/client.server";
 import { userWorkspaceMemory } from "~/db/schema";
 import { newId } from "~/lib/id";
 import { auth } from "~/lib/auth.server";
+import { portalGuestHome } from "~/portal/portals.server";
 import type { SessionAuth } from "./session.server";
 
 export type WorkspaceInfo = {
@@ -149,6 +150,14 @@ export async function ensureWorkspace(
   }
 
   if (decision.kind === "create") {
+    // A portal GUEST (issue #180) has zero memberships by design — an OTP-minted user whose
+    // session is only useful for granted portals. Don't provision a personal workspace for one
+    // who wanders onto an app route; send them back to their portal instead.
+    const guestHome = await portalGuestHome({
+      userId: session.user.id,
+      email: session.user.email,
+    });
+    if (guestHome) throw redirect(guestHome);
     await createPersonalWorkspace(session);
   } else {
     await setActiveWorkspace(session, decision.orgId);

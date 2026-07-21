@@ -481,6 +481,7 @@ const TABS: Record<NavLevel, { path: string; label: string }[]> = {
     { path: "/playground", label: "Playground" },
     { path: "/runs", label: "Runs" },
     { path: "/assistant", label: "Assistant" },
+    { path: "/portals", label: "Portals" },
     { path: "/settings", label: "Settings" },
   ],
   // Team landing: the repo-wide surfaces. Assistant is project-level (one per repo), so it lives
@@ -489,6 +490,7 @@ const TABS: Record<NavLevel, { path: string; label: string }[]> = {
     { path: "", label: "Overview" },
     { path: "/deployment", label: "Deployment" },
     { path: "/assistant", label: "Assistant" },
+    { path: "/portals", label: "Portals" },
     { path: "/settings", label: "Settings" },
   ],
   // One team member: the member-scoped surfaces (+ the switcher). No Assistant tab — it is a

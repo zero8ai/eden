@@ -62,6 +62,12 @@ export default [
     "routes/projects.$projectId.playground.tsx",
     "member-playground",
   ),
+  // Agent Portals admin (issue #180): repo-level list + per-portal management.
+  route("repos/:projectId/portals", "routes/projects.$projectId.portals.tsx"),
+  route(
+    "repos/:projectId/portals/:portalId",
+    "routes/projects.$projectId.portals.$portalId.tsx",
+  ),
   route("repos/:projectId/runs", "routes/projects.$projectId.runs.tsx"),
   memberRoute("/runs", "routes/projects.$projectId.runs.tsx", "member-runs"),
   route(
@@ -152,6 +158,11 @@ export default [
     "api/repos/:projectId/assistant/stream",
     "routes/api.projects.$projectId.assistant.stream.ts",
   ),
+  // Agent Portals (issue #180): the public guest chat page at /a/:slug (outside the app
+  // shell) and its guest-guarded stream/stop siblings of the playground routes.
+  route("a/:slug", "routes/a.$slug.tsx"),
+  route("api/portal/:slug/stream", "routes/api.portal.$slug.stream.ts"),
+  route("api/portal/:slug/stop", "routes/api.portal.$slug.stop.ts"),
   route("api/github/webhook", "routes/api.github.webhook.tsx"),
   // Per-agent GitHub App Manifest flow (issue #26): submit the manifest to GitHub, then
   // GitHub redirects back to the callback with a single-use code to convert.

@@ -277,7 +277,14 @@ function packageJsonPathForAgentRoot(root: string): string {
 function agentRootForAgentModule(path: string): string | null {
   if (path === "agent/agent.ts") return "agent";
   const match = path.match(/^(agents\/[^/]+\/agent)\/agent\.ts$/);
-  return match ? match[1] : null;
+  if (match) return match[1];
+  // A subagent module (`<root>/subagents/<name>/agent.ts`) compiles in its member's build and
+  // shares the member's package.json — a wired subagent selected alone still needs the member's
+  // provider-dependency overlay below.
+  const subagent = path.match(
+    /^(agent|agents\/[^/]+\/agent)\/subagents\/.+\/agent\.ts$/,
+  );
+  return subagent ? subagent[1] : null;
 }
 
 function usesOpenRouter(source: string | null | undefined): boolean {
@@ -447,6 +454,7 @@ export async function publishDrafts(
     project: input.project,
     files: selected.map((d) => ({ path: d.path, content: d.content })),
   });
+
   // The built-in assistant's config (.eden/assistant/** markdown + JSON) is not part of any eve
   // build, so a changeset of ONLY those files has nothing to compile — skip the gate. Any member
   // file in the selection still triggers the normal build check.

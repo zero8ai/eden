@@ -1,17 +1,16 @@
 /**
- * Model staging shared by Settings' "Model" section and the Playground's "Enable model
- * switching" — against the in-memory store with GitHub and the model catalog stubbed. Pins the
- * migration contract: `agent.ts` gets the dynamic wrapper (per-conversation directives work),
- * the upgrade path keeps the CURRENT model and context window (no model change), package.json
- * is normalized alongside, and re-running stages identical content (idempotent).
+ * Model staging for Settings' "Model" section — against the in-memory store with GitHub and the
+ * model catalog stubbed. Pins the two module generations: a workspace-resolver module
+ * (`edenAgentModel(...)`) routes a model save into the org override map with zero repo churn,
+ * while a legacy module gets the dynamic wrapper staged (per-conversation directives work) with
+ * package.json normalized alongside.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getDraft } from "~/drafts/drafts.server";
+import { getDraft, listDrafts } from "~/drafts/drafts.server";
 import { hasDynamicModel, readModel } from "~/eve/agentModule";
 import {
   stageModelChange,
-  stageModelSwitchingUpgrade,
   type StageModelDeps,
 } from "~/models/stage-model.server";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
@@ -44,7 +43,17 @@ const PKG =
   JSON.stringify({ dependencies: { eve: "^0.20.0", zod: "^4.4.3" } }, null, 2) +
   "\n";
 
-/** Repo reads and the catalog lookup, keyed by path — no GitHub, no network. */
+/** A workspace-resolver module — no model in the file; org config is the source of truth. */
+const RESOLVER_AGENT_TS = `import { defineAgent } from 'eve';
+import { edenAgentModel } from './eden-model';
+
+export default defineAgent({
+  model: edenAgentModel('bookkeeping'),
+  modelContextWindowTokens: 200000,
+});
+`;
+
+/** Repo reads and the catalog lookups, keyed by path — no GitHub, no network. */
 function fakeDeps(files: Record<string, string>): StageModelDeps {
   return {
     readFile: async (_installationId, _repo, path) => files[path] ?? null,
@@ -94,7 +103,7 @@ describe("stageModelChange", () => {
       fakeDeps({ "agent/agent.ts": STATIC_AGENT_TS, "package.json": PKG }),
     );
 
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, mode: "staged" });
     const agentDraft = await getDraft(PROJECT.id, "agent/agent.ts", store);
     expect(hasDynamicModel(agentDraft?.content)).toBe(true);
     expect(readModel(agentDraft!.content!)).toBe("openai/abcdefghijkl/gpt-5.1");
@@ -149,56 +158,33 @@ describe("stageModelChange", () => {
     });
     expect(await getDraft(PROJECT.id, "agent/agent.ts", store)).toBeNull();
   });
-});
 
-describe("stageModelSwitchingUpgrade", () => {
-  it("wraps the CURRENT model — no model or context-window change", async () => {
-    const result = await stageModelSwitchingUpgrade(
-      { project: PROJECT, root: "agent", createdBy: "user_1" },
-      store,
-      fakeDeps({ "agent/agent.ts": STATIC_AGENT_TS, "package.json": PKG }),
-    );
-
-    expect(result).toEqual({ ok: true });
-    const draft = await getDraft(PROJECT.id, "agent/agent.ts", store);
-    expect(hasDynamicModel(draft?.content)).toBe(true);
-    expect(readModel(draft!.content!)).toBe("z-ai/glm-5.2");
-    // The catalog lookup missed (stubbed to null) — the module's declared window survives.
-    expect(draft!.content!).toContain("modelContextWindowTokens: 1000000");
-  });
-
-  it("is idempotent — a second run re-stages identical content", async () => {
+  it("writes the org override map for a workspace-resolver module — no drafts, no repo churn", async () => {
     const deps = fakeDeps({
-      "agent/agent.ts": STATIC_AGENT_TS,
+      "agent/agent.ts": RESOLVER_AGENT_TS,
       "package.json": PKG,
     });
-    const input = { project: PROJECT, root: "agent", createdBy: null };
+    const setOverride = vi.fn().mockResolvedValue(undefined);
+    deps.setOverride = setOverride;
 
-    await stageModelSwitchingUpgrade(input, store, deps);
-    const first = await getDraft(PROJECT.id, "agent/agent.ts", store);
-    const firstPkg = await getDraft(PROJECT.id, "package.json", store);
-
-    // The second run reads the FIRST run's drafts (draft-first file view) and must not churn.
-    await stageModelSwitchingUpgrade(input, store, deps);
-    const second = await getDraft(PROJECT.id, "agent/agent.ts", store);
-    const secondPkg = await getDraft(PROJECT.id, "package.json", store);
-
-    expect(second?.content).toBe(first?.content);
-    expect(secondPkg?.content).toBe(firstPkg?.content);
-    expect(readModel(second!.content!)).toBe("z-ai/glm-5.2");
-  });
-
-  it("errors when there is no agent.ts to read the current model from", async () => {
-    const result = await stageModelSwitchingUpgrade(
-      { project: PROJECT, root: "agent", createdBy: null },
+    const result = await stageModelChange(
+      {
+        project: PROJECT,
+        root: "agent",
+        model: "openai/abcdefghijkl/gpt-5.1",
+        effort: null,
+        createdBy: "user_1",
+      },
       store,
-      fakeDeps({ "package.json": PKG }),
+      deps,
     );
 
-    expect(result).toEqual({
-      ok: false,
-      error: expect.stringContaining("Settings"),
+    expect(result).toEqual({ ok: true, mode: "applied" });
+    // The override is keyed by the agent NAME the module resolves itself by.
+    expect(setOverride).toHaveBeenCalledWith("org_1", "bookkeeping", {
+      model: "openai/abcdefghijkl/gpt-5.1",
+      effort: null,
     });
-    expect(await getDraft(PROJECT.id, "agent/agent.ts", store)).toBeNull();
+    expect(await listDrafts(PROJECT.id, store)).toEqual([]);
   });
 });

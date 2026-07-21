@@ -69,12 +69,12 @@ const CRYPTO_IMPORT =
 const CREATE_HMAC_IMPORT = "import { createHmac } from 'node:crypto';\n";
 const TIMING_SAFE_EQUAL_IMPORT =
   "import { timingSafeEqual } from 'node:crypto';\n";
-const OPENROUTER_FACTORY =
+export const OPENROUTER_FACTORY =
   "const openrouter = createOpenAICompatible({ name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY ?? '' });\n";
 // Eden's model gateway (issue #28): a `codex/<connectionId>/<slug>` model runs on the org's
 // connected Codex subscription through Eden's translating gateway. The base URL + token are
 // injected at deploy only when the org has a Codex connection; OpenRouter ids never touch it.
-const EDEN_GATEWAY_FACTORY =
+export const EDEN_GATEWAY_FACTORY =
   "const edenGateway = createOpenAICompatible({ name: 'eden', baseURL: process.env.EDEN_MODEL_GATEWAY_URL ?? '', apiKey: process.env.EDEN_MODEL_GATEWAY_TOKEN ?? '' });\n";
 const LEGACY_OPENROUTER_IMPORT =
   /import\s+\{\s*createOpenRouter\s*\}\s+from\s+['"]@openrouter\/ai-sdk-provider['"];\n?/;
@@ -96,7 +96,7 @@ function edenModelCallStart(model: string, effort?: string | null): string {
  * Its regex must stay in sync with `~/models/model-directive` (the Eden-side builder/stripper).
  * Kept dependency-free (structural message type) so it compiles in any agent repo.
  */
-const EDEN_MODEL_HELPER = `// Eden playground model override: the playground pins a model per conversation by
+export const EDEN_MODEL_HELPER = `// Eden playground model override: the playground pins a model per conversation by
 // prefixing the sent message with one machine-readable line, e.g.
 //   <!-- eden:model anthropic/<connection>/claude-sonnet-5 ctx=200000 effort=high -->
 //   <!-- eden:sig <hmac> -->
@@ -148,22 +148,37 @@ function edenModel(id: string, effort?: 'none' | 'minimal' | 'low' | 'medium' | 
   const envName =
     'EDEN_PROVIDER_' + provider.toUpperCase() + '_' + connectionId.toUpperCase() + '_API_KEY';
   const apiKey = process.env[envName];
+  // \`eve build\` evaluates this module INSIDE \`docker build\`, where Eden deliberately injects no
+  // connection credentials (they reach only the running container's env). A missing key must not
+  // throw here — that would fail every publish-gate and deploy image build. Construct the model
+  // with a placeholder and raise the same error on the first actual request instead.
+  const key = apiKey ?? 'eden-missing-credential';
+  const model =
+    provider === 'anthropic'
+      ? createAnthropic({ name: 'anthropic/' + connectionId, apiKey: key }).chat(upstreamModelId)
+      : provider === 'openai'
+        ? createOpenAI({ name: 'openai/' + connectionId, apiKey: key }).responses(upstreamModelId)
+        : createOpenAICompatible({
+            name: 'openrouter/' + connectionId,
+            baseURL: 'https://openrouter.ai/api/v1',
+            apiKey: key,
+          }).chatModel(upstreamModelId);
   if (!apiKey) {
-    throw new Error('No credential was deployed for the selected ' + provider + ' connection.');
+    return wrapLanguageModel({
+      model,
+      middleware: {
+        specificationVersion: 'v4',
+        transformParams: async () => {
+          throw new Error('No credential was deployed for the selected ' + provider + ' connection.');
+        },
+      },
+    });
   }
-  if (provider === 'anthropic') {
-    return edenReasoningModel(createAnthropic({ name: 'anthropic/' + connectionId, apiKey }).chat(upstreamModelId), effort);
-  }
-  if (provider === 'openai') {
-    return edenReasoningModel(createOpenAI({ name: 'openai/' + connectionId, apiKey }).responses(upstreamModelId), effort);
-  }
-  return edenReasoningModel(createOpenAICompatible({
-    name: 'openrouter/' + connectionId,
-    baseURL: 'https://openrouter.ai/api/v1',
-    apiKey,
-  }).chatModel(upstreamModelId), effort);
+  return edenReasoningModel(model, effort);
 }
-function edenReasoningModel(model: LanguageModel, effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh') {
+// \`ai\`'s LanguageModel union admits bare gateway id strings, which eve's defineDynamic model slot
+// rejects — exclude them so edenModel's inferred return type stays assignable.
+function edenReasoningModel(model: Exclude<LanguageModel, string>, effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh') {
   if (!effort) return model;
   return wrapLanguageModel({
     model,
@@ -178,7 +193,7 @@ function edenReasoningModel(model: LanguageModel, effort?: 'none' | 'minimal' | 
 // Eden owns the marked helper region. Match the generated selector plus its optional router, but
 // stop before any neighboring user code between that wiring and the agent export.
 const EDEN_MODEL_HELPER_BLOCK =
-  /\/\/ Eden playground model override:[\s\S]*?\n}\n(?:(?:(?:[ \t]*|\/\/[^\n]*)\n)*function edenModel\s*\([\s\S]*?\n}\n)?(?:function edenReasoningModel\s*\([\s\S]*?\n}\n)?/;
+  /\/\/ Eden playground model override:[\s\S]*?\n}\n(?:(?:(?:[ \t]*|\/\/[^\n]*)\n)*function edenModel\s*\([\s\S]*?\n}\n)?(?:(?:(?:[ \t]*|\/\/[^\n]*)\n)*function edenReasoningModel\s*\([\s\S]*?\n}\n)?/;
 const LEGACY_EDEN_MODEL_RESOLVER =
   "return { model: openrouter.chatModel(selected.id), modelContextWindowTokens: selected.contextWindowTokens };";
 const CURRENT_EDEN_MODEL_RESOLVER =
@@ -204,6 +219,7 @@ function dynamicModelValue(model: string, effort?: string | null): string {
  * call or bare string) ignores the directive and always runs its baked-in model.
  */
 export function hasDynamicModel(source: string | null | undefined): boolean {
+  if (usesOrgModelResolver(source)) return true;
   return (
     typeof source === "string" &&
     MODEL_DYNAMIC.test(source) &&
@@ -214,6 +230,9 @@ export function hasDynamicModel(source: string | null | undefined): boolean {
 
 /** Read the model string from an agent module, or null if not found. */
 export function readModel(source: string): string | null {
+  // A workspace-resolver module has no baked-in model: the id lives in Eden's org
+  // configuration, and the resolver argument is an agent NAME, not a model.
+  if (usesOrgModelResolver(source)) return null;
   if (MODEL_DYNAMIC.test(source)) {
     const fallbackCall = source.match(FALLBACK_CALL);
     if (fallbackCall) return fallbackCall[4];
@@ -224,6 +243,26 @@ export function readModel(source: string): string | null {
   if (call) return call[4];
   const m = source.match(MODEL_LITERAL);
   return m ? m[3] : null;
+}
+
+// The workspace-config resolver call Eden scaffolds (`model: edenAgentModel('<agent-name>')`,
+// exported by the repo's generated `eden-model.ts`). The module resolves the model at runtime
+// from Eden's org configuration, so the agent file itself never carries a model string.
+const ORG_MODEL_RESOLVER = /\bmodel\s*:\s*edenAgentModel\s*\(\s*(['"`])([^'"`]*)\1/;
+
+/**
+ * True when the module's model is resolved through the workspace configuration
+ * (`edenAgentModel(...)` from the generated `eden-model.ts`). Such a module has no baked-in
+ * model: Eden's Settings save writes the org override map instead of rewriting this file.
+ */
+export function usesOrgModelResolver(source: string | null | undefined): boolean {
+  return typeof source === "string" && ORG_MODEL_RESOLVER.test(source);
+}
+
+/** The agent name a `model: edenAgentModel('<name>')` module resolves itself by, or null. */
+export function orgResolverAgentName(source: string): string | null {
+  const match = source.match(ORG_MODEL_RESOLVER);
+  return match ? match[2] : null;
 }
 
 /** Read Eden's explicit fallback reasoning effort, or null for provider default. */

@@ -10,7 +10,8 @@ import { data, redirect, type ActionFunctionArgs } from "react-router";
 import { liveTargets } from "~/chat/playground.server";
 import { asString, streamTurnResponse } from "~/chat/turn-stream.server";
 import { signModelDirective } from "~/models/model-directive.server";
-import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
+import { parseRequestedModelSelection } from "~/models/playground-selection";
+import { type ReasoningEffort } from "~/models/reasoning";
 import {
   findWorkspaceModel,
   ownsWorkspaceModelReference,
@@ -51,19 +52,15 @@ export async function action(args: ActionFunctionArgs) {
   const message = asString(form.get("message")).trim();
   if (!message) throw data({ error: "Type a message first." }, { status: 400 });
   // The composer's current model selection; absent = keep the session's stored override.
-  const requestedModelId = asString(form.get("modelId")).trim() || null;
-  const requestedEffortRaw = asString(form.get("effort")).trim();
-  const requestedEffort: ReasoningEffort | null = requestedEffortRaw
-    ? isReasoningEffort(requestedEffortRaw)
-      ? requestedEffortRaw
-      : null
-    : null;
-  if (requestedEffortRaw && !requestedEffort) {
-    throw data(
-      { error: "That reasoning effort is not valid." },
-      { status: 400 },
-    );
+  const selection = parseRequestedModelSelection({
+    modelId: asString(form.get("modelId")),
+    effort: asString(form.get("effort")),
+  });
+  if (!selection.ok) {
+    throw data({ error: selection.error }, { status: 400 });
   }
+  const requestedModelId = selection.modelId;
+  const requestedEffort = selection.effort;
   const requestedModel = requestedModelId
     ? await findWorkspaceModel(project.orgId, requestedModelId)
     : null;

@@ -58,6 +58,37 @@ describe("assistant template authoring guidance", () => {
     expect(guidance).not.toMatch(/staged drafts?/i);
   });
 
+  it("routes every marketplace type through the real installer", async () => {
+    const [instructions, skill, catalogTool, installTool, version] =
+      await Promise.all([
+        readTemplate("agent/instructions.md"),
+        readTemplate("agent/skills/building-eve-agents.md"),
+        readTemplate("agent/tools/eden-catalog.ts"),
+        readTemplate("agent/tools/eden-install.ts"),
+        readTemplate("VERSION"),
+      ]);
+
+    const guidance = `${instructions}\n${skill}\n${catalogTool}`;
+    expect(guidance).toMatch(/eden_catalog[\s\S]*eden_install/i);
+    expect(guidance).toMatch(/never (copy|hand-copy)/i);
+    expect(guidance).toContain("eden-lock.json");
+    expect(guidance).toContain("sandbox.bootstrap");
+    for (const type of [
+      "tool",
+      "skill",
+      "subagent",
+      "channel",
+      "connection",
+      "bundle",
+      "agent",
+    ]) {
+      expect(catalogTool).toContain(`"${type}"`);
+      expect(installTool).toContain(`"${type}"`);
+    }
+    expect(installTool).toContain('edenCall("install"');
+    expect(version.trim()).toBe("0.2.1");
+  });
+
   it("passes the normalized assistant effort into the eve agent runtime", async () => {
     const [agent, bootstrap, entrypoint] = await Promise.all([
       readTemplate("agent/agent.ts"),

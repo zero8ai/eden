@@ -39,11 +39,14 @@ describe("classifyReasoningCapability", () => {
   );
 
   it("preserves newer OpenAI effort levels", () => {
-    expect(
-      classifyReasoningCapability({ provider: "openai", modelId: "gpt-5.4" }),
-    ).toEqual({
-      supportedEfforts: ["none", "low", "medium", "high", "xhigh"],
-    });
+    for (const modelId of ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol"]) {
+      expect(
+        classifyReasoningCapability({ provider: "openai", modelId }),
+        modelId,
+      ).toEqual({
+        supportedEfforts: ["none", "low", "medium", "high", "xhigh"],
+      });
+    }
   });
 
   it("uses the GPT-5.1 effort set", () => {

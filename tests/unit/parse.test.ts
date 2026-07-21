@@ -85,7 +85,6 @@ describe("buildAgentConfig with a member root", () => {
       "agents/deployer/agent",
     );
     expect(config.hasAgentModule).toBe(true);
-    expect(config.model).toBe("anthropic/claude-sonnet-5");
     expect(config.tools).toEqual([
       {
         name: "cloudflare",
@@ -101,36 +100,22 @@ describe("buildAgentConfig with a member root", () => {
     expect(config.schedules.map((t) => t.name)).toEqual(["morning"]);
   });
 
-  it("reads the model from Eden's defineDynamic fallback", () => {
-    const config = buildAgentConfig({
-      paths: SINGLE,
-      files: {
-        "agent/agent.ts": `import { defineAgent, defineDynamic } from 'eve';
-export default defineAgent({
-  model: defineDynamic({
-    fallback: openrouter.chatModel('anthropic/claude-sonnet-5'),
-    events: {
-      'step.started': (_event, ctx) => {
-        const selected = edenSelectedModel(ctx.messages);
-        return selected ? { model: openrouter.chatModel(selected.id) } : null;
+  // The model is workspace configuration resolved from the DB by agent name — never parsed out
+  // of agent.ts. buildAgentConfig no longer surfaces a model, so an `edenAgentModel('<name>')`
+  // module can't leak its NAME argument as if it were a model id (the bug this replaced).
+  it("does not expose a model field parsed from agent.ts", () => {
+    const config = buildAgentConfig(
+      {
+        paths: ["agent/agent.ts"],
+        files: {
+          "agent/agent.ts": `import { edenAgentModel } from './eden-model';
+export default defineAgent({ model: edenAgentModel('bookkeeping'), modelContextWindowTokens: 200000 });`,
+        },
       },
-    },
-  }),
-  modelContextWindowTokens: 200000,
-});`,
-      },
-    });
-    expect(config.model).toBe("anthropic/claude-sonnet-5");
-  });
-
-  it("reads a gateway-string defineDynamic fallback", () => {
-    const config = buildAgentConfig({
-      paths: SINGLE,
-      files: {
-        "agent/agent.ts": `export default defineAgent({ model: defineDynamic({ fallback: 'openai/gpt-5.1', events: {} }) });`,
-      },
-    });
-    expect(config.model).toBe("openai/gpt-5.1");
+      "agent",
+    );
+    expect(config.hasAgentModule).toBe(true);
+    expect("model" in config).toBe(false);
   });
 });
 

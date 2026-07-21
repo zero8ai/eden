@@ -6,7 +6,7 @@
       "name": "Engineer",
       "version": "0.6.1",
       "description": "A general-purpose software engineer agent that works GitHub issues across authorized repositories, creates feature branches, and opens pull requests into main.",
-      "hash": "4fa48780f46d1989c3daf46efd53c8bcec201b7f"
+      "hash": "e15f38a65b6461fd6c6f74c32eb604e0f534dddc"
     },
     {
       "id": "github-bundle",
@@ -68,17 +68,17 @@
       "id": "mayi",
       "type": "connection",
       "name": "May I?",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Human approvals for agent actions via May I? (mayi.sh). Install it, click Connect on the agent's Deployment tab (Eden registers the OAuth client automatically — no operator app to create), and gated tools park until a human approves in the May I? app, then resume with a signed receipt. Scheduled work that may need an approval must use the handler form of an eve schedule and hand the run to the channel with receive(mayi, ...) — task-mode schedules can't park for a human.",
-      "hash": "b791833ad8a03d8c085545a128bfed9714926183"
+      "hash": "4a362c125f9252e38534dd644e47404551591f9c"
     },
     {
       "id": "xero",
       "type": "connection",
       "name": "Xero",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "Bookkeeping operations against a Xero organisation through Eden's brokered-capability framework: the agent's container never holds any Xero credential. Eden keeps the OAuth grant and executes only a whitelisted set of operations — read reference data, search bills, look up and create contacts, and create DRAFT bills (a human approves them in Xero) with attached source files. Which operation groups are enabled is your choice at install time and editable any time from the Deployment tab, with instant effect.",
-      "hash": "bee97cebc19cd8c4bc45cca00703456d1f47410f"
+      "hash": "4961af830aff07f24f77383b057f8ad6bdc61318"
     },
     {
       "id": "agent-browser",

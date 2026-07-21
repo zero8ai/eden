@@ -96,11 +96,12 @@ export async function runMergeChange(
       repo,
       pullNumber,
     );
+    const installationId = project.repoInstallationId;
     const gate = await runConversationMergeGate({
       projectId: project.id,
       repo,
       ref: branch!,
-      installationId: project.repoInstallationId,
+      installationId,
       teamLayout: project.layout === "team",
       paths,
       checkBuild: deps.checkBuild,

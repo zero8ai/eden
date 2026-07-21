@@ -36,8 +36,6 @@ export interface AgentSandbox {
 export interface AgentConfig {
   /** Whether `agent/agent.ts` exists (the agent entrypoint module). */
   hasAgentModule: boolean;
-  /** Best-effort model id parsed from `agent.ts` (heuristic; null if not found). */
-  model: string | null;
   /** Contents of `agent/instructions.md`, or null when absent. */
   instructions: string | null;
   /** The agent's own sandbox definition, or null when it runs eve's framework default. */

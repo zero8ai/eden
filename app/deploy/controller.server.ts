@@ -113,7 +113,15 @@ function deployDeps(): DeployDeps {
   };
 }
 
-function hasModelCredential(env: Record<string, string>): boolean {
+/**
+ * `hasCodex` stands in for a runnable Codex model source: the gateway URL/token themselves are
+ * ALWAYS injected now (they also carry runtime model-config resolution), so their presence no
+ * longer implies a Codex connection.
+ */
+function hasModelCredential(
+  env: Record<string, string>,
+  hasCodex: boolean,
+): boolean {
   return Boolean(
     Object.keys(env).some((name) =>
       /^EDEN_PROVIDER_(?:ANTHROPIC|OPENAI|OPENROUTER)_[A-Z]{12}_API_KEY$/.test(
@@ -125,7 +133,7 @@ function hasModelCredential(env: Record<string, string>): boolean {
     env.OPENROUTER_API_KEY ||
     env.AI_GATEWAY_API_KEY ||
     env.VERCEL_OIDC_TOKEN ||
-    env.EDEN_MODEL_GATEWAY_TOKEN,
+    hasCodex,
   );
 }
 
@@ -390,14 +398,14 @@ export async function deployRelease(
       }
     }
 
-    // Eden model gateway (issue #28): when the org has an active Codex connection, point the
-    // agent's edenGateway provider at Eden's translating gateway with an org-scoped token so a
-    // `codex/<connection>/<slug>` model runs on the connected subscription. Eden-owned (anti-
-    // shadowing like EDEN_SANDBOX_ENV): strip any user-set values first, then set. A Codex-only
-    // org passes hasModelCredential via the gateway token.
+    // Eden gateway coordinates (issue #28 + runtime model-config): EVERY deploy gets the
+    // org-scoped URL + token — the generated eden-model.ts resolves the workspace's configured
+    // model through `<url>/model-config` at runtime, and a `codex/<connection>/<slug>` model
+    // runs on the connected subscription through `<url>/chat/completions`. Eden-owned (anti-
+    // shadowing like EDEN_SANDBOX_ENV): strip any user-set values first, then set.
     delete envVars.EDEN_MODEL_GATEWAY_URL;
     delete envVars.EDEN_MODEL_GATEWAY_TOKEN;
-    if (project && (await deps.hasCodexConnection?.(project.orgId))) {
+    if (project) {
       envVars.EDEN_MODEL_GATEWAY_URL = gatewayBaseUrl();
       envVars.EDEN_MODEL_GATEWAY_TOKEN = mintGatewayToken(project.orgId);
     }
@@ -406,7 +414,15 @@ export async function deployRelease(
       envVars.EDEN_MODEL_DIRECTIVE_SECRET = deps.modelDirectiveSecret(dep.id);
     }
 
-    if (project && deps.providerDeploymentEnv && !hasModelCredential(envVars)) {
+    // A Codex-only org has no API key in env — its model source is the gateway itself.
+    const hasCodex = Boolean(
+      project && (await deps.hasCodexConnection?.(project.orgId)),
+    );
+    if (
+      project &&
+      deps.providerDeploymentEnv &&
+      !hasModelCredential(envVars, hasCodex)
+    ) {
       throw new Error(
         "No model provider credential is available for this deployment. Connect Anthropic, OpenAI Platform, OpenRouter, or OpenAI Codex in Org settings -> Model providers, then redeploy.",
       );

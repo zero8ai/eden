@@ -13,8 +13,25 @@ import {
   CodexUpstreamError,
   createChunkTranslator,
   SseParser,
+  wantsStreaming,
   type ChatCompletionChunk,
 } from "~/gateway/codex-translate";
+
+describe("wantsStreaming", () => {
+  it("streams only when stream:true is explicitly set", () => {
+    expect(wantsStreaming({ stream: true })).toBe(true);
+  });
+
+  it("treats an absent stream field as non-streaming (OpenAI default)", () => {
+    // The `@ai-sdk/openai-compatible` provider's non-streaming doGenerate omits `stream`;
+    // returning SSE here is what caused the turnStep AI_JSONParseError.
+    expect(wantsStreaming({})).toBe(false);
+  });
+
+  it("treats stream:false as non-streaming", () => {
+    expect(wantsStreaming({ stream: false })).toBe(false);
+  });
+});
 
 describe("buildResponsesPayload", () => {
   it("sends Codex base instructions and moves system prompts to a leading user input item", () => {

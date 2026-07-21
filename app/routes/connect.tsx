@@ -58,8 +58,6 @@ import {
   verifyGitHubInstallState,
 } from "~/github/install-state.server";
 import { warmAgentSource } from "~/github/cached.server";
-import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
-import { ownsWorkspaceModelReference } from "~/models/union.server";
 import {
   fetchAgentSource,
   listInstallationRepos,
@@ -227,30 +225,15 @@ export async function action(args: ActionFunctionArgs) {
     if (layout === "single" && !agentName)
       return { error: "Agent name is required." };
     try {
-      const selection =
-        layout === "single"
-          ? await getWorkspaceAssistantSelection(org.id).catch(() => ({
-              model: null,
-              effort: null,
-            }))
-          : { model: null, effort: null };
-      let model = selection.model;
-      if (model && !(await ownsWorkspaceModelReference(org.id, model))) {
-        model = null;
-      }
-      if (layout === "single" && !model) {
-        return {
-          error:
-            "Choose a connected workspace default model in Org settings before creating an agent repository.",
-        };
-      }
+      // No model is chosen or baked at creation: the scaffolded agent resolves the
+      // workspace's configured model at runtime (Org settings → Default model, or a
+      // per-agent override there). An unconfigured workspace gets a readable runtime
+      // error pointing at Org settings — configuring it later needs no repo change.
       const repo = await createEveRepo(installationGrantId, {
         owner,
         name,
         layout,
         ...(layout === "single" ? { agentName } : {}),
-        ...(model ? { model } : {}),
-        ...(model ? { effort: selection.effort } : {}),
       });
       const project = await createProject({
         orgId: org.id,

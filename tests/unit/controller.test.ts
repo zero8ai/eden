@@ -1238,7 +1238,7 @@ describe("Codex model-gateway env injection (issue #28)", () => {
     expect(deployedEnvs[0].EDEN_MODEL_GATEWAY_TOKEN).toBeTruthy();
   });
 
-  it("injects no gateway env when the org has no Codex connection", async () => {
+  it("injects the gateway env even without a Codex connection — runtime model-config rides on it", async () => {
     const release = await createRelease(
       { projectId: PROJECT, agentId: AGENT, gitSha: "c3".repeat(20) },
       store,
@@ -1260,8 +1260,30 @@ describe("Codex model-gateway env injection (issue #28)", () => {
         hasCodexConnection: async () => false,
       },
     );
-    expect(deployedEnvs[0]).not.toHaveProperty("EDEN_MODEL_GATEWAY_URL");
-    expect(deployedEnvs[0]).not.toHaveProperty("EDEN_MODEL_GATEWAY_TOKEN");
+    const { verifyGatewayToken } = await import("~/gateway/token.server");
+    expect(deployedEnvs[0].EDEN_MODEL_GATEWAY_URL).toContain("/api/gateway/v1");
+    expect(verifyGatewayToken(deployedEnvs[0].EDEN_MODEL_GATEWAY_TOKEN)).toBe(
+      ORG,
+    );
+  });
+
+  it("still fails the credential check for an org with no model source — the always-on gateway token is not a credential", async () => {
+    const release = await createRelease(
+      { projectId: PROJECT, agentId: AGENT, gitSha: "c4".repeat(20) },
+      store,
+    );
+    const result = await deployRelease(
+      { environmentId: ENV, releaseId: release.id },
+      {
+        store,
+        deployTarget: fakeDeployTarget({ health: { status: "live" } }),
+        secrets: fakeSecrets(),
+        providerDeploymentEnv: async () => ({}),
+        hasCodexConnection: async () => false,
+      },
+    );
+    expect(result.status).toBe("failed");
+    expect(result.errorDetail).toContain("No model provider credential");
   });
 });
 

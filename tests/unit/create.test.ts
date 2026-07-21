@@ -17,22 +17,29 @@ describe("repo scaffold", () => {
     ).toBe(false);
   });
 
-  it("starts new members without a dummy example tool", () => {
-    const files = memberScaffold(
-      "assistant",
-      "anthropic/abcdefghijkl/claude-sonnet-4-5",
-    );
+  it("starts new members on the workspace model resolver, with no baked model", () => {
+    const files = memberScaffold("assistant");
 
     expect(files.map((file) => file.path)).toEqual([
       "agents/assistant/agent/instructions.md",
       "agents/assistant/agent/agent.ts",
+      "agents/assistant/agent/eden-model.ts",
       "agents/assistant/agent/sandbox.ts",
       "agents/assistant/package.json",
     ]);
     expect(files.some((file) => file.path.includes("/tools/"))).toBe(false);
-    expect(
-      files.find((file) => file.path.endsWith("agent.ts"))?.content,
-    ).toContain("edenModel('anthropic/abcdefghijkl/claude-sonnet-4-5')");
+    const agentTs = files.find((file) =>
+      file.path.endsWith("agent/agent.ts"),
+    )?.content;
+    // The member resolves its model from Eden's workspace configuration by NAME — no model
+    // string anywhere in the repo.
+    expect(agentTs).toContain("edenAgentModel('assistant')");
+    expect(agentTs).toContain("from './eden-model'");
+    const moduleTs = files.find((file) =>
+      file.path.endsWith("eden-model.ts"),
+    )?.content;
+    expect(moduleTs).toContain("export function edenAgentModel");
+    expect(moduleTs).toContain("/model-config?agent=");
     const packageJson = files.find((file) =>
       file.path.endsWith("package.json"),
     );

@@ -24,6 +24,26 @@ export interface DraftGroup {
  * exist. Members with no drafts are omitted; file order is preserved within each group. Drafts are
  * attributed to roster members by agentId, so the breakdown names match the roster the user sees.
  */
+/**
+ * Should the confirmation dialog close itself after a ship attempt? The success path redirects to
+ * the scope's Overview, but AgentNav (and therefore the dialog) lives in the project layout that
+ * the redirect usually lands back on — the component never unmounts, so the dialog can't rely on
+ * unmounting to dismiss. Instead it watches the ship fetcher: a transition from in-flight back to
+ * idle WITHOUT an error payload means the action redirected (success) — close so the ShipProgress
+ * banner underneath is visible. An error keeps the dialog open for retry/cancel. Pure so the
+ * transition semantics are unit-testable without a DOM.
+ */
+export function shouldCloseAfterShip(args: {
+  /** Was the ship fetcher in flight (submitting/loading) on the previous render? */
+  wasDeploying: boolean;
+  /** Is it in flight now? */
+  deploying: boolean;
+  /** The action's { error } payload, if it returned one instead of redirecting. */
+  error: string | undefined;
+}): boolean {
+  return args.wasDeploying && !args.deploying && !args.error;
+}
+
 export function groupDrafts(
   drafts: DraftChange[],
   roster: { id: string; name: string }[],

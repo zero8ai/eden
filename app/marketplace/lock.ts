@@ -39,6 +39,15 @@ const installEntrySchema = z.object({
   member: z.string().nullable(),
   /** FINAL repo-relative paths the install owns (excludes package.json / eden-lock.json). */
   files: z.array(z.string().min(1)),
+  /**
+   * Paths this install deliberately PRESERVED at register time (issue #177): files that already
+   * existed outside the lock and were kept byte-for-byte and left UNMANAGED. They are NOT in
+   * `files`, so uninstall never deletes them; recording them here lets the Settings drift check
+   * treat them as present (not missing) and lets a later repair/update keep preserving them
+   * instead of blocking on the very files the register step promised to leave alone.
+   * LOCK_VERSION stays 1 — optional, old locks parse fine.
+   */
+  preservedFiles: z.array(z.string().min(1)).optional(),
   /** The npm dependencies the install ASKED for (name → range) — uninstall lists these. */
   dependencies: z.record(z.string(), z.string()).optional(),
   /**

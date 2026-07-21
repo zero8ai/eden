@@ -21,6 +21,11 @@ import { listDrafts as listDraftsDefault } from "~/drafts/drafts.server";
 import { ASSISTANT_CONFIG_ROOT } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
 import { readAgentFile } from "~/github/repo.server";
+import {
+  TEMPLATE_TYPES,
+  isTemplateSlug,
+  type TemplateType,
+} from "~/marketplace/manifest";
 import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import type { ConnectedProject } from "~/project/guard.server";
 import { drizzleSecretKV } from "~/seams/oss/secret-store";
@@ -179,9 +184,13 @@ export async function catalogOp(
   if (input.op === "template") {
     if (!input.type || !input.id)
       return fail("template lookup needs a type and id.");
+    if (!TEMPLATE_TYPES.includes(input.type as TemplateType)) {
+      return fail(`Unknown template type "${input.type}".`);
+    }
+    if (!isTemplateSlug(input.id)) return fail("Invalid template id.");
     try {
       const template = await deps.catalog.template(
-        input.type as "agent" | "skill" | "tool",
+        input.type as TemplateType,
         input.id,
       );
       return { ok: true, template };

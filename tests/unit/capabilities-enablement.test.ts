@@ -42,7 +42,7 @@ const DEFAULT_GROUPS = ["reference-read", "bills-read", "contacts-read"];
 
 const XERO_SCOPES = [
   "offline_access",
-  "accounting.transactions",
+  "accounting.invoices",
   "accounting.contacts",
   "accounting.settings.read",
   "accounting.attachments",

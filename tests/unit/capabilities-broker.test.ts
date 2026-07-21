@@ -40,7 +40,7 @@ const SCOPE = { projectId: "projabcdefgh", agentId: "agntabcdefgh" };
 const okFetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
 
 const XERO_SCOPES =
-  "offline_access accounting.transactions accounting.contacts accounting.settings.read accounting.attachments";
+  "offline_access accounting.invoices accounting.contacts accounting.settings.read accounting.attachments";
 
 function brokerDeps(over: Partial<BrokerDeps>): BrokerDeps {
   return {

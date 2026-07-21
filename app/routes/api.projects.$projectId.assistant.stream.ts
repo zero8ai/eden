@@ -107,9 +107,8 @@ export async function action(args: ActionFunctionArgs) {
 
   // Coding-agent model: make sure the conversation's git checkout exists on the
   // instance before the turn runs (clone/fetch, recovering from volume loss), and hand the model its
-  // checkout path on the first turn plus a note if the base branch advanced. The checkout is on the
+  // checkout path plus a note if the base branch advanced. The checkout is on the
   // shared home volume, so the model's sandbox sees the same tree the sync engine later mirrors.
-  const firstTurn = !playgroundSessionId;
   const [ensured, checkoutRow] = await Promise.all([
     ensureConversationCheckout({
       conversationId: session.id,
@@ -123,9 +122,15 @@ export async function action(args: ActionFunctionArgs) {
   const ensureError = checkoutEnsureError(ensured);
   if (ensureError) throw data({ error: ensureError }, { status: 503 });
   const prefixParts: string[] = [];
-  if (firstTurn && !ensured.unsupported) {
+  // Repeated on EVERY turn, not just the first: "first turn" used to be inferred from the absence
+  // of a playgroundSessionId, but sessions can be created before their first stream turn (the
+  // new-session button, a send queued while the instance provisions), and long conversations can
+  // lose the one-time note to context compaction. A model that never sees its checkout path goes
+  // hunting with `find`, edits a stale checkout from another conversation, and the post-turn sync
+  // of the real (untouched) checkout silently no-ops — edits exist on disk but never reach a PR.
+  if (!ensured.unsupported) {
     prefixParts.push(
-      `[Eden] Your working checkout for this conversation is at ${conversationCheckoutPath(session.id)} on branch ${conversationBranch(session.id)}. Do all repo edits there with bash — Eden auto-syncs your changes to a pull request after each turn.`,
+      `[Eden] Your working checkout for this conversation is at ${conversationCheckoutPath(session.id)} on branch ${conversationBranch(session.id)}. Do ALL repo edits inside that directory with bash — never in any other checkout or clone — Eden auto-syncs changes from that directory (only) to a pull request after each turn.`,
     );
   }
   if (ensured.note) prefixParts.push(`[Eden] ${ensured.note}`);

@@ -367,6 +367,11 @@ export default defineAgent({
     });
     expect(readReasoningEffort(low)).toBe("low");
     expect(low.match(/function edenReasoningModel/g)).toHaveLength(1);
+    // `ai`'s LanguageModel union includes bare id strings, which eve's model slot rejects — the
+    // generated signature must exclude them or `tsc --noEmit` fails in the publish gate.
+    expect(low).toContain(
+      "function edenReasoningModel(model: Exclude<LanguageModel, string>",
+    );
     expect(
       setModel(low, "openai/abcdefghijkl/gpt-5.2", { effort: "low" }),
     ).toBe(low);
@@ -537,5 +542,45 @@ describe("ensureModelProviderDependencies", () => {
         JSON.parse(ensureModelProviderDependencies(pkg)).dependencies.eve,
       ).toBe("^0.22.0");
     }
+  });
+});
+
+/**
+ * The generated router must never throw while the MODULE evaluates: `eve build` runs inside
+ * `docker build`, where Eden deliberately injects no EDEN_PROVIDER_* credentials (they reach only
+ * the running container). A module-scope throw failed every publish-gate and deploy image build
+ * for qualified anthropic/openai/openrouter references. The "No credential was deployed" error is
+ * deferred into a request-time middleware instead.
+ */
+describe("edenModel missing-credential deferral", () => {
+  it("keeps the credential error out of edenModel's synchronous path", () => {
+    const source = scaffoldAgentModule("openrouter/abcdefghijkl/z-ai/glm-5.2");
+    const errorAt = source.indexOf("No credential was deployed");
+    expect(errorAt).toBeGreaterThan(-1);
+    // The throw may only live inside a deferred middleware (transformParams), not in the
+    // synchronous body between `function edenModel(` and the middleware wrapper.
+    const before = source.slice(0, errorAt);
+    const routerAt = before.lastIndexOf("function edenModel(");
+    expect(routerAt).toBeGreaterThan(-1);
+    expect(before.lastIndexOf("transformParams")).toBeGreaterThan(routerAt);
+    // A missing key builds the model with a placeholder instead of exploding at module scope.
+    expect(source).toContain("eden-missing-credential");
+  });
+
+  it("mirrors the deferral in the engineer template's copy of the router", () => {
+    const source = readFileSync(
+      path.join(
+        __dirname,
+        "../../catalog/templates/agents/engineer/files/agent.ts",
+      ),
+      "utf8",
+    );
+    const errorAt = source.indexOf("No credential was deployed");
+    expect(errorAt).toBeGreaterThan(-1);
+    const before = source.slice(0, errorAt);
+    const routerAt = before.lastIndexOf("function edenModel(");
+    expect(routerAt).toBeGreaterThan(-1);
+    expect(before.lastIndexOf("transformParams")).toBeGreaterThan(routerAt);
+    expect(source).toContain("eden-missing-credential");
   });
 });

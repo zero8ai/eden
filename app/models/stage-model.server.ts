@@ -1,9 +1,14 @@
 /**
- * Model staging shared by Settings' "Model" section and the Playground's "Enable model
- * switching": rewrite the member's `agent.ts` through `setModel` (the chosen model becomes the
- * `defineDynamic` fallback, so the agent honors the playground's per-conversation directive)
- * and keep its `package.json` provider/eve dependencies compatible — both staged as drafts on
- * the normal change-set rails, nothing touches git until the user publishes.
+ * Model staging for Settings' "Model" section. Two module generations exist:
+ *
+ *  - **Workspace-resolver modules** (`model: edenAgentModel('<name>')` from the generated
+ *    `eden-model.ts`): the file carries no model at all — it resolves the org's configured
+ *    model at runtime. A model save writes the org's per-agent override map (Eden DB) and
+ *    touches NOTHING in the repo: no drafts, no publish, no redeploy.
+ *  - **Legacy dynamic-wrapper modules**: rewrite the member's `agent.ts` through `setModel`
+ *    (the chosen model becomes the `defineDynamic` fallback, so the agent honors the
+ *    playground's per-conversation directive) and keep its `package.json` provider/eve
+ *    dependencies compatible — both staged as drafts on the normal change-set rails.
  */
 import type { DataStore } from "~/data/ports";
 import {
@@ -13,14 +18,14 @@ import {
 } from "~/drafts/drafts.server";
 import {
   ensureModelProviderDependencies,
-  readModel,
-  readModelContextWindow,
-  readReasoningEffort,
+  orgResolverAgentName,
   scaffoldAgentModule,
   setModel,
+  usesOrgModelResolver,
 } from "~/eve/agentModule";
 import type { ReasoningEffort } from "~/models/reasoning";
 import { packageJsonPathForRoot } from "~/marketplace/install.server";
+import { setAgentModelOverride } from "~/models/agent-model-config.server";
 import { findWorkspaceModel } from "~/models/union.server";
 import { getRuntime } from "~/seams/index.server";
 
@@ -43,57 +48,72 @@ export interface StageModelInput {
   createdBy: string | null;
 }
 
-export type StageModelResult = { ok: true } | { ok: false; error: string };
+export type StageModelResult =
+  /** "applied": written to org config, live on the agent's next step. "staged": drafted for publish. */
+  | { ok: true; mode: "staged" | "applied" }
+  | { ok: false; error: string };
 
-/** GitHub reads + the model-catalog lookup, injected so unit tests run with zero I/O. */
+/** GitHub reads + the model-catalog lookup + the override writer, injected for zero-I/O tests. */
 export interface StageModelDeps extends FileViewDeps {
   lookupModel: typeof findWorkspaceModel;
+  /** Injected in tests; defaults to the real org override map. */
+  setOverride?: typeof setAgentModelOverride;
 }
 
 /**
- * Stage the model change for one member: `agent.ts` (dynamic wrapper, `model` as the fallback)
- * plus `package.json` when its dependencies need the OpenRouter provider / eve bump. Re-running
- * with the same model re-stages identical content (draft upsert — idempotent).
+ * Apply the model change for one member. A workspace-resolver module records the choice in the
+ * org's per-agent override map (the running agent picks it up on its next step). A legacy module
+ * stages `agent.ts` (dynamic wrapper, `model` as the fallback) plus `package.json` when its
+ * dependencies need the OpenRouter provider / eve bump. Re-running with the same model is
+ * idempotent on both paths.
  */
 export async function stageModelChange(
   input: StageModelInput,
   store: DataStore = getRuntime().data,
   deps?: StageModelDeps,
 ): Promise<StageModelResult> {
-  return stageModelChangeInternal(input, store, deps, true);
-}
-
-async function stageModelChangeInternal(
-  input: StageModelInput,
-  store: DataStore,
-  deps: StageModelDeps | undefined,
-  validateSelection: boolean,
-): Promise<StageModelResult> {
   const modelInfo = await (deps?.lookupModel ?? findWorkspaceModel)(
     input.project.orgId,
     input.model,
   );
-  if (validateSelection && !modelInfo) {
+  if (!modelInfo) {
     return {
       ok: false,
       error:
         "That model is not available from an active provider connection in this workspace.",
     };
   }
-  if (
-    validateSelection &&
-    input.effort &&
-    !modelInfo?.supportedEfforts?.includes(input.effort)
-  ) {
+  if (input.effort && !modelInfo.supportedEfforts?.includes(input.effort)) {
     return {
       ok: false,
       error: "That reasoning effort is not supported by the selected model.",
     };
   }
   const contextWindowTokens =
-    modelInfo?.contextWindow ?? input.fallbackContextWindowTokens;
+    modelInfo.contextWindow ?? input.fallbackContextWindowTokens;
   const path = `${input.root}/agent.ts`;
   const view = await resolveFileView(input.project, path, store, deps);
+
+  // Workspace-resolver module: the model choice is org configuration, not repo content. Write
+  // the override keyed by the name the module resolves itself (and its subagents) by.
+  if (view.content && usesOrgModelResolver(view.content)) {
+    const agentName = orgResolverAgentName(view.content);
+    if (!agentName) {
+      return {
+        ok: false,
+        error:
+          "This agent resolves its model from the workspace configuration, but its " +
+          "edenAgentModel(...) call has no readable agent name — fix agent.ts first.",
+      };
+    }
+    await (deps?.setOverride ?? setAgentModelOverride)(
+      input.project.orgId,
+      agentName,
+      { model: input.model, effort: input.effort ?? null },
+    );
+    return { ok: true, mode: "applied" };
+  }
+
   const next = view.content
     ? setModel(view.content, input.model, {
         contextWindowTokens,
@@ -138,45 +158,5 @@ async function stageModelChangeInternal(
         )
       : Promise.resolve(),
   ]);
-  return { ok: true };
-}
-
-/**
- * Make a member playground-switchable WITHOUT changing its model: re-stage the CURRENT model
- * through the dynamic wrapper. This is the Playground's "Enable model switching" — the fix for
- * agents whose deployed `agent.ts` predates the wrapper (e.g. imported from the catalog) and
- * therefore ignores the per-conversation directive.
- */
-export async function stageModelSwitchingUpgrade(
-  input: Omit<StageModelInput, "model">,
-  store: DataStore = getRuntime().data,
-  deps?: StageModelDeps,
-): Promise<StageModelResult> {
-  const view = await resolveFileView(
-    input.project,
-    `${input.root}/agent.ts`,
-    store,
-    deps,
-  );
-  const current = view.content ? readModel(view.content) : null;
-  if (!view.content || !current) {
-    return {
-      ok: false,
-      error:
-        "Couldn't read this agent's current model from agent.ts — set a model in Settings instead.",
-    };
-  }
-  return stageModelChangeInternal(
-    {
-      ...input,
-      model: current,
-      // "No model change" includes the context window — keep the module's declared value
-      // when the catalog can't confirm one.
-      fallbackContextWindowTokens: readModelContextWindow(view.content),
-      effort: readReasoningEffort(view.content),
-    },
-    store,
-    deps,
-    false,
-  );
+  return { ok: true, mode: "staged" };
 }

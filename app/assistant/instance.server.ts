@@ -114,8 +114,26 @@ function assistantImageRef(hash: string): string {
 }
 
 /** gitSha marker for a template-hash release (not a real repo commit — see docs §3). */
-function templateGitSha(hash: string): string {
-  return `tmpl-${hash}`;
+function templateGitSha(hash: string, configKey: string): string {
+  return `tmpl-${hash}-c${configKey}`;
+}
+
+/**
+ * Short fingerprint of the org's workspace assistant selection (model + effort), folded into the
+ * release marker. A container's env is fixed when it is created, so a changed selection can never
+ * reach a running (or stopped) instance — it needs a NEW deployment. Making the selection part of
+ * the release identity lets ensure/peek read a model change as a stale deployment and re-provision
+ * transparently, instead of pinning the org to whatever model was baked at first deploy.
+ */
+async function workspaceConfigKey(orgId: string): Promise<string> {
+  const selection = await getWorkspaceAssistantSelection(orgId).catch(() => ({
+    model: null as string | null,
+    effort: null as string | null,
+  }));
+  return createHash("sha256")
+    .update(`${selection.model ?? ""}|${selection.effort ?? ""}`)
+    .digest("hex")
+    .slice(0, 8);
 }
 
 // ── Agent + environment ───────────────────────────────────────────────────────
@@ -248,9 +266,10 @@ async function ensureAssistantRelease(
   projectId: string,
   agent: Agent,
   hash: string,
+  configKey: string,
   store: DataStore,
 ): Promise<Release> {
-  const gitSha = templateGitSha(hash);
+  const gitSha = templateGitSha(hash, configKey);
   const existing = await store.releases.findByCommit(agent.id, gitSha);
   if (existing) return existing;
   try {
@@ -294,8 +313,17 @@ export async function runAssistantDeploy(
   const hash = await assistantTemplateHash();
   const imageRef = assistantImageRef(hash);
 
-  // Reuse the release for this template hash, or synthesize one.
-  let release = await ensureAssistantRelease(project.id, agent, hash, store);
+  // Reuse the release for this template hash + workspace selection, or synthesize one. The image
+  // stays keyed on the template hash alone — a model change reuses the built image and only the
+  // container env differs.
+  const configKey = await workspaceConfigKey(project.orgId);
+  let release = await ensureAssistantRelease(
+    project.id,
+    agent,
+    hash,
+    configKey,
+    store,
+  );
 
   // Take over a pending/building row, else create one (visible immediately).
   const existing = await store.deployments.listByEnvironment(environment.id);
@@ -416,8 +444,11 @@ export async function ensureAssistantInstance(
 ): Promise<AssistantInstance> {
   const runtime = getRuntime();
   const { agent, environment } = await ensureAssistantAgent(projectId, store);
+  const project = await store.projects.findById(projectId);
+  if (!project) throw new Error("Project not found for assistant instance.");
   const hash = await assistantTemplateHash();
-  const currentSha = templateGitSha(hash);
+  const configKey = await workspaceConfigKey(project.orgId);
+  const currentSha = templateGitSha(hash, configKey);
 
   const deployments = await store.deployments.listByEnvironment(environment.id);
   const base = {
@@ -504,7 +535,13 @@ export async function ensureAssistantInstance(
   // without this, a loader re-read right after the provision click still saw "idle" until the
   // worker got around to inserting the row, and the UI flickered back to the empty state (#17).
   // Persisting `pending` up front means peekAssistantInstance reports "provisioning" immediately.
-  const release = await ensureAssistantRelease(projectId, agent, hash, store);
+  const release = await ensureAssistantRelease(
+    projectId,
+    agent,
+    hash,
+    configKey,
+    store,
+  );
   let dep;
   try {
     dep = await store.deployments.insert({
@@ -560,7 +597,7 @@ export async function ensureAssistantInstance(
 
 /** A read-only snapshot for the loader — NO side effects (no enqueue, no wake, no build). */
 export interface AssistantSnapshot {
-  status: "live" | "provisioning" | "failed" | "idle";
+  status: "live" | "provisioning" | "resumable" | "failed" | "idle";
   agentId: string | null;
   environmentId: string | null;
   /** Human stage label while provisioning (e.g. "Building the assistant image…"); null otherwise. */
@@ -582,8 +619,11 @@ export interface AssistantSnapshot {
 
 /**
  * Report the assistant instance's current status without provisioning or waking it (loader-safe).
- * `idle` means nothing usable is running (never deployed, or stopped) — the UI offers to set it
- * up, and a turn provisions/wakes it on demand via `ensureAssistantInstance`.
+ * `idle` means the assistant was never set up — the UI offers first-run setup. `resumable` means
+ * a previous instance exists but isn't currently usable as-is (stopped container, live row whose
+ * release marker predates an Eden upgrade or a workspace model change, or a live row missing its
+ * url) — the UI treats this as ready, and the next turn wakes or re-provisions it via
+ * `ensureAssistantInstance`.
  */
 export async function peekAssistantInstance(
   projectId: string,
@@ -611,7 +651,12 @@ export async function peekAssistantInstance(
     };
   const base = { agentId: agent.id, environmentId: env.id, ...idle };
 
-  const currentSha = templateGitSha(await assistantTemplateHash());
+  const project = await store.projects.findById(projectId);
+  if (!project) return { ...base, status: "idle", target: null };
+  const currentSha = templateGitSha(
+    await assistantTemplateHash(),
+    await workspaceConfigKey(project.orgId),
+  );
   const deployments = await store.deployments.listByEnvironment(env.id);
   const live = deployments.find(
     (d) => d.status === "live" && d.url && d.gitSha === currentSha,
@@ -645,6 +690,16 @@ export async function peekAssistantInstance(
           : "Preparing the build…",
       provisionStartedAt: active.createdAt.toISOString(),
     };
+  }
+  // Anything ensureAssistantInstance can wake or transparently replace on the next turn — a
+  // stopped container, a live row on a pre-upgrade template sha, or a live row missing its url —
+  // must NOT read as "never set up": that regressed long-standing projects into the first-run
+  // setup flow whenever an Eden release changed the assistant template hash.
+  const resumable = deployments.find(
+    (d) => d.status === "live" || d.status === "stopped",
+  );
+  if (resumable) {
+    return { ...base, status: "resumable", target: null };
   }
   if (
     deployments.length > 0 &&

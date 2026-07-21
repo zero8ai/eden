@@ -30,6 +30,29 @@ const GPT5_CONTEXT = 272_000;
 
 /** Curated Codex-backend model specs. Ordered newest/most-capable first. */
 export const CODEX_MODEL_SPECS: readonly CodexModelSpec[] = [
+  // The 5.6 family (ChatMock registry). Upstream also lists a "max" effort, which Eden's
+  // ReasoningEffort scale doesn't model — capped at xhigh.
+  {
+    slug: "gpt-5.6-sol",
+    name: "GPT-5.6 Sol",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["none", "low", "medium", "high", "xhigh"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5.6-terra",
+    name: "GPT-5.6 Terra",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["none", "low", "medium", "high", "xhigh"],
+    providerDefaultEffort: "medium",
+  },
+  {
+    slug: "gpt-5.6-luna",
+    name: "GPT-5.6 Luna",
+    contextWindow: GPT5_CONTEXT,
+    supportedEfforts: ["none", "low", "medium", "high", "xhigh"],
+    providerDefaultEffort: "medium",
+  },
   {
     slug: "gpt-5.5",
     name: "GPT-5.5",

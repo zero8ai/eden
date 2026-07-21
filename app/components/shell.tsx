@@ -29,6 +29,7 @@ import {
 } from "react-router";
 
 import { QuickDeploy } from "~/components/quick-deploy";
+import { ShareAgent } from "~/components/share-agent";
 import { WorkspaceTasksIndicator } from "~/components/workspace-tasks";
 import { EdenWordmark } from "~/components/marketing/logo";
 import { ThemeToggle } from "~/components/theme-toggle";
@@ -562,6 +563,10 @@ export function AgentNav({
         <div className="order-1 flex shrink-0 flex-wrap items-center gap-3 sm:order-2">
           <QuickDeploy base={base} />
           <StagedChangesPill base={base} />
+          {/* Share targets a concrete agent, so only where the nav has one (issue #180). */}
+          {(level === "single" || level === "member") && (
+            <ShareAgent base={base} />
+          )}
           {level === "member" && roster && activeAgent && (
             <AgentSwitcher roster={roster} activeAgent={activeAgent} />
           )}

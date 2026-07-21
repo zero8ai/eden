@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluatePortalTurn, shouldSendPortalOtp } from "~/portal/policy";
+import {
+  evaluatePortalTurn,
+  shouldSendPortalMagicLink,
+  shouldSendPortalOtp,
+} from "~/portal/policy";
+
+describe("shouldSendPortalMagicLink", () => {
+  it("sends a magic link only when a live grant exists", () => {
+    expect(shouldSendPortalMagicLink({ hasLiveGrant: true })).toBe(true);
+    expect(shouldSendPortalMagicLink({ hasLiveGrant: false })).toBe(false);
+  });
+});
 
 describe("shouldSendPortalOtp", () => {
   it("sends a sign-in OTP only when a live grant exists", () => {

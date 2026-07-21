@@ -1,16 +1,17 @@
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { emailOTP, organization } from "better-auth/plugins";
+import { emailOTP, magicLink, organization } from "better-auth/plugins";
 
 import { db } from "~/db/client.server";
 import * as schema from "~/db/auth-schema";
 import { sendOrganizationInvitation } from "~/email/send-organization-invitation.server";
 import { sendEmailVerification } from "~/email/send-email-verification.server";
 import { sendPasswordResetEmail } from "~/email/send-password-reset.server";
+import { sendPortalMagicLinkEmail } from "~/email/send-portal-magic-link.server";
 import { sendPortalOtpEmail } from "~/email/send-portal-otp.server";
 import { assertProductionAuthEnvironment } from "~/lib/auth-env.server";
-import { shouldSendPortalOtp } from "~/portal/policy";
+import { shouldSendPortalMagicLink, shouldSendPortalOtp } from "~/portal/policy";
 import { findLivePortalForEmail } from "~/portal/portals.server";
 
 assertProductionAuthEnvironment();
@@ -123,6 +124,35 @@ export const auth = betterAuth({
           );
           throw new APIError("INTERNAL_SERVER_ERROR", {
             message: "Could not send the sign-in code.",
+          });
+        }
+      },
+    }),
+    // Agent Portals one-click sign-in (issue #180): the primary portal auth. As with the OTP
+    // plugin above, the grant check lives INSIDE the send callback, so direct calls to
+    // /api/auth/sign-in/magic-link can neither mail links to ungranted addresses nor mint guest
+    // accounts for them. Clicking the link is the email verification; the OTP code stays as a
+    // fallback for mail scanners that pre-consume links. Skipping is silent (anti-enumeration).
+    magicLink({
+      expiresIn: 30 * 60,
+      async sendMagicLink({ email, url }) {
+        const portal = await findLivePortalForEmail(email);
+        if (!shouldSendPortalMagicLink({ hasLiveGrant: portal !== null })) {
+          return;
+        }
+        try {
+          await sendPortalMagicLinkEmail({
+            userEmail: email,
+            portalName: portal!.portalName,
+            url,
+          });
+        } catch (error) {
+          // Never log the error object: provider errors can include the token-bearing HTML body.
+          console.error(
+            `Could not send a portal sign-in link (${(error as Error)?.name ?? "Error"}).`,
+          );
+          throw new APIError("INTERNAL_SERVER_ERROR", {
+            message: "Could not send the sign-in link.",
           });
         }
       },

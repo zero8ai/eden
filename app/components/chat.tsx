@@ -7,11 +7,20 @@
  * conversational feel.
  */
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
-import { ArrowUp, ChevronRight, Loader2, Sparkles } from "lucide-react";
+import {
+  ArrowUp,
+  ChevronRight,
+  CircleHelp,
+  CornerDownLeft,
+  Loader2,
+  ShieldAlert,
+  Sparkles,
+} from "lucide-react";
 
-import type { ChatInputRequest, ChatStep } from "~/chat/types";
+import type { ChatInputOption, ChatInputRequest, ChatStep } from "~/chat/types";
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
+import { cn } from "~/lib/utils";
 
 /** How close to the bottom (px) still counts as "pinned" — scrolling further up pauses
  * auto-scroll until the user returns to the bottom. */
@@ -457,12 +466,22 @@ function safeHref(value: string): string | null {
 }
 
 /**
- * Pending agent input requests (ask_question / tool approvals), rendered as distinct
- * callouts inside the assistant bubble so a question never gets lost after a reply that
- * trails off with "one decision for you:". Multiple-choice questions and approvals render
- * their options as buttons — clicking one sends the option as the answer (eve resolves a
- * follow-up matching an option's id/label). Pass `onAnswer` only where answering makes
- * sense (the newest turn); without it the options render as a static record.
+ * Pending agent input requests (ask_question / tool approvals), rendered inline at the end
+ * of the turn so a question never gets lost after a reply that trails off with "one decision
+ * for you:". Rendered unboxed (a labelled section, not a nested card) so it sits cleanly
+ * whether the surface wraps it in a chat bubble (playground/portal) or an open turn column
+ * (assistant), instead of stacking a box inside a bubble.
+ *
+ * The shape of the ask drives the affordance:
+ * - tool approval (`display: "confirmation"`) → its options as action buttons;
+ * - multiple choice with per-option descriptions → a stack of selectable rows;
+ * - short multiple choice → a row of pill buttons;
+ * - free text (no options) or `allowFreeform` alongside options → a hint pointing at the
+ *   composer, where a typed reply resolves the request.
+ *
+ * Clicking an option sends its label as the answer (eve resolves a follow-up matching an
+ * option's id/label). Pass `onAnswer` only where answering makes sense (the newest turn);
+ * without it the options render as a static, non-interactive record.
  */
 export function InputRequestsBlock({
   requests,
@@ -475,51 +494,137 @@ export function InputRequestsBlock({
 }) {
   if (requests.length === 0) return null;
   return (
-    <div className="mt-2 space-y-2">
+    <div className="mt-2.5 space-y-4">
       {requests.map((request) => (
-        <div
+        <InputRequestView
           key={request.requestId}
-          className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2"
-        >
-          <p className="text-xs font-medium text-primary">
-            {request.display === "confirmation"
-              ? "The agent needs your approval"
-              : "The agent is waiting for your answer"}
-          </p>
-          <p className="mt-1 whitespace-pre-wrap">{request.prompt}</p>
-          {request.options && request.options.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {request.options.map((option) => (
-                <Button
-                  key={option.id}
-                  type="button"
-                  size="sm"
-                  variant={
-                    option.style === "danger"
-                      ? "destructive"
-                      : option.style === "primary"
-                        ? "default"
-                        : "outline"
-                  }
-                  disabled={!onAnswer || busy}
-                  title={option.description ?? undefined}
-                  onClick={() => onAnswer?.(option.label)}
-                >
-                  {option.label}
-                </Button>
-              ))}
-            </div>
-          )}
-          {onAnswer && (request.allowFreeform || !request.options?.length) && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {request.options?.length
-                ? "Or type your own answer below."
-                : "Type your answer below."}
-            </p>
-          )}
-        </div>
+          request={request}
+          onAnswer={onAnswer}
+          busy={busy}
+        />
       ))}
     </div>
+  );
+}
+
+function InputRequestView({
+  request,
+  onAnswer,
+  busy,
+}: {
+  request: ChatInputRequest;
+  onAnswer?: (text: string) => void;
+  busy?: boolean;
+}) {
+  const isConfirmation = request.display === "confirmation";
+  const options = request.options ?? [];
+  const asRows = options.some((option) => option.description);
+  const answerable = Boolean(onAnswer) && !busy;
+  const showFreeformHint =
+    Boolean(onAnswer) && (request.allowFreeform || options.length === 0);
+
+  return (
+    <div className="space-y-2.5">
+      <div className="flex items-center gap-1.5 text-primary">
+        {isConfirmation ? (
+          <ShieldAlert className="size-3.5 shrink-0" aria-hidden />
+        ) : (
+          <CircleHelp className="size-3.5 shrink-0" aria-hidden />
+        )}
+        <span className="text-[11px] font-semibold tracking-wide uppercase">
+          {isConfirmation ? "Approval needed" : "Your response"}
+        </span>
+      </div>
+      <p className="text-sm leading-relaxed font-medium whitespace-pre-wrap text-foreground">
+        {request.prompt}
+      </p>
+      {options.length > 0 &&
+        (asRows ? (
+          <div className="grid gap-2">
+            {options.map((option) => (
+              <OptionRow
+                key={option.id}
+                option={option}
+                disabled={!answerable}
+                onSelect={() => onAnswer?.(option.label)}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {options.map((option) => (
+              <Button
+                key={option.id}
+                type="button"
+                size="sm"
+                variant={
+                  option.style === "danger"
+                    ? "destructive"
+                    : option.style === "primary"
+                      ? "default"
+                      : "outline"
+                }
+                disabled={!answerable}
+                title={option.description ?? undefined}
+                onClick={() => onAnswer?.(option.label)}
+              >
+                {option.label}
+              </Button>
+            ))}
+          </div>
+        ))}
+      {showFreeformHint && (
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <CornerDownLeft className="size-3 shrink-0" aria-hidden />
+          <span>
+            {options.length > 0
+              ? "Or type your own answer in the box below."
+              : "Type your answer in the box below."}
+          </span>
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** A multiple-choice option that carries a description — a full-width selectable row
+ * (label + description) rather than a pill, so the extra context stays readable. */
+function OptionRow({
+  option,
+  disabled,
+  onSelect,
+}: {
+  option: ChatInputOption;
+  disabled: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onSelect}
+      className={cn(
+        "group flex w-full items-center gap-3 rounded-xl border border-border bg-card px-3.5 py-2.5 text-left shadow-sm transition disabled:pointer-events-none disabled:opacity-70 disabled:shadow-none",
+        option.style === "danger"
+          ? "hover:border-destructive/60 hover:bg-destructive/5"
+          : "hover:border-primary/60 hover:bg-primary/[0.06]",
+      )}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm leading-snug font-medium text-foreground">
+          {option.label}
+        </span>
+        {option.description && (
+          <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">
+            {option.description}
+          </span>
+        )}
+      </span>
+      <ChevronRight
+        className="size-4 shrink-0 text-muted-foreground/40 transition group-hover:translate-x-0.5 group-hover:text-primary"
+        aria-hidden
+      />
+    </button>
   );
 }
 

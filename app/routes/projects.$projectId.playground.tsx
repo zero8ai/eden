@@ -13,7 +13,6 @@ import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlaskConical, MessageSquare, Plus, Server, Square } from "lucide-react";
 import {
-  Link,
   redirect,
   useFetcher,
   useNavigate,
@@ -48,16 +47,9 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { ModelSelection } from "~/components/model-select";
-import { hasDynamicModel, readReasoningEffort } from "~/eve/agentModule";
-import { buildAgentConfig } from "~/eve/parse";
-import { getAgentSource } from "~/github/cached.server";
+import { resolveAgentModel } from "~/models/agent-model-config.server";
 import { contextPath } from "~/lib/paths";
 import { cn } from "~/lib/utils";
-import {
-  stageModelSwitchingUpgrade,
-  stageSubagentModelWiring,
-} from "~/models/stage-model.server";
-import { unresolvedSubagentModelError } from "~/models/subagent-wiring";
 import { findWorkspaceModel } from "~/models/union.server";
 import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
 import {
@@ -121,42 +113,13 @@ export const loader = (args: LoaderFunctionArgs) =>
           agentId: active.id,
           userId: auth.user!.id,
         }),
-        // The selector's default: the agent's configured model (the defineDynamic fallback).
-        // Best-effort — a repo-read hiccup must not take down the playground.
-        getAgentSource(project.repoInstallationId, {
-          owner: project.repoOwner,
-          repo: project.repoName,
-        })
-          .then((source) => {
-            const module = source.files[`${active.root}/agent.ts`] ?? "";
-            return {
-              model: buildAgentConfig(source, active.root).model,
-              effort: readReasoningEffort(module),
-            };
-          })
+        // The selector's default: the agent's configured model, resolved by name from Eden's
+        // control plane (never parsed from agent.ts). Best-effort — a lookup hiccup must not
+        // take down the playground.
+        resolveAgentModel(project.orgId, active.name)
+          .then((r) => ({ model: r?.model ?? null, effort: r?.effort ?? null }))
           .catch(() => ({ model: null, effort: null })),
       ]);
-      // Whether each target's DEPLOYED build honors the per-conversation model directive —
-      // read agent.ts at the release's commit, not repo HEAD (HEAD may already carry the
-      // dynamic wrapper while the running build predates it). Best-effort: null (unknown) on
-      // a read hiccup, so a GitHub blip never locks the selector by mistake.
-      const dynamicByRef = new Map<string, boolean | null>();
-      await Promise.all(
-        [...new Set(targets.map((target) => target.gitSha))].map(
-          async (ref) => {
-            const supported = await getAgentSource(project.repoInstallationId, {
-              owner: project.repoOwner,
-              repo: project.repoName,
-              ref,
-            })
-              .then((source) =>
-                hasDynamicModel(source.files[`${active.root}/agent.ts`]),
-              )
-              .catch(() => null);
-            dynamicByRef.set(ref, supported);
-          },
-        ),
-      );
       const selectedSessionId = args.url.searchParams.get("session");
       let currentSession =
         (selectedSessionId
@@ -258,10 +221,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
       return {
         project,
-        targets: targets.map((target) => ({
-          ...target,
-          supportsModelSwitching: dynamicByRef.get(target.gitSha) ?? null,
-        })),
+        targets,
         sessions: sessions.map(summarizePlaygroundSession),
         currentSessionId: currentSession?.id ?? null,
         currentSessionEnvironmentId: currentSession?.environmentId ?? null,
@@ -339,43 +299,6 @@ export async function action(args: ActionFunctionArgs) {
     }
     return { ok: true as const };
   }
-  // Stage the dynamic-model migration for THIS agent (current model kept as the fallback).
-  // The playground offers this when the deployed build is static — a static agent.ts ignores
-  // the per-conversation directive, so the selector would silently no-op. Staged only: the
-  // user still publishes + deploys the change to activate it.
-  if (String(form.get("intent")) === "enable-model-switching") {
-    const result = await stageModelSwitchingUpgrade({
-      project,
-      root: active.root,
-      createdBy: auth.user.id,
-    });
-    if (!result.ok) return result;
-    // Route the member's subagents through the same wrapper (a bare gateway-bound subagent model
-    // otherwise fails at runtime / blocks the publish gate). Best-effort — never fail the member's
-    // upgrade over a subagent read hiccup. A subagent model no active connection can run is
-    // surfaced as a warning now instead of a runtime credential failure later.
-    try {
-      const source = await getAgentSource(project.repoInstallationId, {
-        owner: project.repoOwner,
-        repo: project.repoName,
-      });
-      const wiring = await stageSubagentModelWiring({
-        project,
-        memberRoot: active.root,
-        candidatePaths: source.paths,
-        createdBy: auth.user.id,
-      });
-      if (wiring.unresolved.length > 0) {
-        return {
-          ok: true as const,
-          warning: unresolvedSubagentModelError(wiring.unresolved),
-        };
-      }
-    } catch {
-      // ignore — the publish gate remains the backstop
-    }
-    return result;
-  }
   return { ok: true as const };
 }
 
@@ -441,8 +364,6 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
   const newSessionFetcher = useFetcher<typeof action>();
   const NewSessionForm = newSessionFetcher.Form;
   const modelFetcher = useFetcher<typeof action>();
-  const enableFetcher = useFetcher<typeof action>();
-  const EnableSwitchingForm = enableFetcher.Form;
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [live, setLive] = useState<LiveTurn | null>(null);
@@ -512,28 +433,6 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           target.environmentId === currentSessionEnvironmentId),
     ) ?? defaultTarget;
   const deploymentId = selectedTarget?.deploymentId ?? "";
-  // The deployed build we're talking to ignores the model directive (static agent.ts) — lock
-  // the selector and offer the staged migration instead of letting it silently no-op. An
-  // unknown flag (null — the release read failed) leaves the selector alone.
-  const modelSwitchingLocked = selectedTarget?.supportsModelSwitching === false;
-  const enableStaged =
-    enableFetcher.data &&
-    "ok" in enableFetcher.data &&
-    enableFetcher.data.ok === true;
-  const enableError =
-    enableFetcher.data &&
-    "ok" in enableFetcher.data &&
-    enableFetcher.data.ok === false
-      ? enableFetcher.data.error
-      : null;
-  // Staged, but some subagent model couldn't be routed to an active connection — say so now,
-  // while the user can still act on it, instead of at runtime.
-  const enableWarning =
-    enableFetcher.data &&
-    "warning" in enableFetcher.data &&
-    typeof enableFetcher.data.warning === "string"
-      ? enableFetcher.data.warning
-      : null;
 
   const sessionPicker = useMemo(() => {
     if (!currentSessionId || sessions.length === 0) return null;
@@ -861,7 +760,7 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
           model={selectedModelId ?? defaultModelId}
           effort={selectedEffort}
           busy={false}
-          disabled={busy || modelSwitchingLocked}
+          disabled={busy}
           placeholder="Deployed model"
           triggerClassName={cn(CONTROL_PILL, "h-9 max-w-56 font-normal")}
           effortTriggerClassName={CONTROL_PILL}
@@ -874,7 +773,6 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
       changeModel,
       defaultModelId,
       deploymentId,
-      modelSwitchingLocked,
       searchParams,
       selectedModelId,
       selectedEffort,
@@ -1069,55 +967,6 @@ export default function Playground({ loaderData }: Route.ComponentProps) {
 
       {targets.length > 0 && (
         <div className="mx-auto w-full max-w-5xl px-4 pb-4 pt-3 sm:px-6">
-          {modelSwitchingLocked && (
-            <Alert className="mb-3">
-              <AlertDescription>
-                {enableStaged ? (
-                  <span>
-                    Model switching is staged for this agent — publish and
-                    deploy the change from the{" "}
-                    <Link
-                      to={`${base}/deployment`}
-                      className="font-medium underline underline-offset-2"
-                    >
-                      Deployment tab
-                    </Link>{" "}
-                    to activate it.
-                  </span>
-                ) : (
-                  <span className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                    <span>
-                      This deployment runs a fixed model, so it can&apos;t
-                      switch models per conversation yet.
-                    </span>
-                    <EnableSwitchingForm method="post">
-                      <input
-                        type="hidden"
-                        name="intent"
-                        value="enable-model-switching"
-                      />
-                      <Button
-                        type="submit"
-                        variant="outline"
-                        size="sm"
-                        disabled={enableFetcher.state !== "idle"}
-                      >
-                        Enable model switching
-                      </Button>
-                    </EnableSwitchingForm>
-                    {enableError && (
-                      <span className="text-destructive">{enableError}</span>
-                    )}
-                    {enableWarning && (
-                      <span className="whitespace-pre-wrap text-amber-700 dark:text-amber-400">
-                        {enableWarning}
-                      </span>
-                    )}
-                  </span>
-                )}
-              </AlertDescription>
-            </Alert>
-          )}
           <div className="mb-2">{runSettings}</div>
           <ChatComposer
             placeholder={

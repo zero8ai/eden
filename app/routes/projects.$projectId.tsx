@@ -57,7 +57,7 @@ import {
 } from "~/components/deploy-freshness";
 import { listDeployments, queueDeploy } from "~/deploy/controller.server";
 import { listDrafts } from "~/drafts/drafts.server";
-import { readModel } from "~/eve/agentModule";
+import { listAgentModelOverrides } from "~/models/agent-model-config.server";
 import { buildAgentConfig, buildSubagentSummaries } from "~/eve/parse";
 import {
   RESOURCE_KINDS,
@@ -73,11 +73,7 @@ import { contextPath } from "~/lib/paths";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { RelativeTime } from "~/components/localized-values";
 import { cn } from "~/lib/utils";
-import {
-  getWorkspaceAssistantModel,
-  getWorkspaceAssistantSelection,
-} from "~/org/workspace.server";
-import { ownsWorkspaceModelReference } from "~/models/union.server";
+import { getWorkspaceAssistantModel } from "~/org/workspace.server";
 import {
   agentFromParams,
   agentParamRedirect,
@@ -209,9 +205,15 @@ export const loader = (args: LoaderFunctionArgs) =>
           source.paths,
         );
 
-        const orgDefaultModel = await getWorkspaceAssistantModel(
-          project.orgId,
-        ).catch(() => null);
+        // Model badges are workspace configuration, resolved by agent name from the control
+        // plane (per-agent override else the workspace default) — never parsed from agent.ts.
+        const [orgDefaultModel, agentOverrides] = await Promise.all([
+          getWorkspaceAssistantModel(project.orgId).catch(() => null),
+          listAgentModelOverrides(project.orgId).catch(() => []),
+        ]);
+        const overrideModelByName = new Map(
+          agentOverrides.map((o) => [o.agentName, o.model]),
+        );
         const teamLayout = project.layout === "team";
         // The hierarchy: a team repo LANDS on the team (roster) view; a member's config
         // surface is a drill-in (?agent=<name>). Single-agent repos go straight to their
@@ -232,15 +234,6 @@ export const loader = (args: LoaderFunctionArgs) =>
                 roster.map(async (a) => {
                   const c = buildAgentConfig(source, a.root);
                   const subagents = buildSubagentSummaries(source, a.root);
-                  // A staged agent.ts draft wins over the repo value — same rule the
-                  // member view follows, so the roster badge never lags a model change.
-                  const draft = drafts.find(
-                    (d) =>
-                      d.path === `${a.root}/agent.ts` && d.content !== null,
-                  );
-                  const model = draft?.content
-                    ? (readModel(draft.content) ?? c.model)
-                    : c.model;
                   // "N secrets missing" (§7): template-required names still unset/unattached.
                   const requiredState = await agentRequiredSecretState({
                     projectId: project.id,
@@ -251,7 +244,7 @@ export const loader = (args: LoaderFunctionArgs) =>
                   }).catch(() => ({ missing: [] }));
                   return {
                     name: a.name,
-                    model: model ?? orgDefaultModel,
+                    model: overrideModelByName.get(a.name) ?? orgDefaultModel,
                     tools: c.tools.length,
                     skills: c.skills.length,
                     schedules: c.schedules.length,
@@ -266,8 +259,6 @@ export const loader = (args: LoaderFunctionArgs) =>
           `(?:^|; )${TEAM_INTRO_COOKIE}=1`,
         ).test(args.request.headers.get("cookie") ?? "");
 
-        // The model shown inline must reflect the newest intent: a staged agent.ts draft
-        // wins over the repo value (same rule the editors follow).
         const config =
           view === "member" && active
             ? buildAgentConfig(source, active.root)
@@ -278,12 +269,9 @@ export const loader = (args: LoaderFunctionArgs) =>
             d.path === `${active.root}/agent.ts` &&
             d.content !== null,
         );
+        // A staged agent.ts draft means the entrypoint exists even if the repo lacks it yet.
         if (config && agentTsDraft?.content) {
-          config.model = readModel(agentTsDraft.content) ?? config.model;
           config.hasAgentModule = true;
-        }
-        if (config) {
-          config.model = config.model ?? orgDefaultModel;
         }
 
         // Deploy status: what's running per environment (member header line) and — after a
@@ -447,23 +435,13 @@ export async function action(args: ActionFunctionArgs) {
       if (roster.some((a) => a.name === name)) {
         return { error: `An agent named "${name}" already exists.` };
       }
-      const selection = await getWorkspaceAssistantSelection(
-        project.orgId,
-      ).catch(() => ({ model: null, effort: null }));
-      let model = selection.model;
-      if (model && !(await ownsWorkspaceModelReference(project.orgId, model))) {
-        model = null;
-      }
-      if (!model) {
-        return {
-          error:
-            "Choose a connected workspace default model in Org settings before adding an agent.",
-        };
-      }
+      // No model is baked into the scaffold: the member resolves the workspace's configured
+      // model (or its own override) from Eden at runtime, so it follows Org settings from
+      // day one and model changes never touch the repo.
       const change = await proposeChange(project.repoInstallationId, repo, {
         base: project.defaultBranch,
         branch: `eden/add-member-${name}`,
-        files: memberScaffold(name, model, selection.effort),
+        files: memberScaffold(name),
         title: `Add agent: ${name}`,
         body:
           `Scaffolds a new eve agent at \`agents/${name}/\` (instructions, agent.ts, a ` +

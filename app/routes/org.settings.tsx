@@ -11,6 +11,7 @@ import {
   Plug,
   ScrollText,
   ShieldAlert,
+  X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -53,6 +54,12 @@ import {
   setWorkspaceAssistantModel,
 } from "~/org/workspace.server";
 import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
+import {
+  listAgentModelOverrides,
+  removeAgentModelOverride,
+  setAgentModelOverride,
+  type AgentModelOverride,
+} from "~/models/agent-model-config.server";
 import {
   createApiKeyConnection,
   deleteModelConnection,
@@ -97,6 +104,8 @@ interface OrgSettingsView {
   /** Connected workspace default (null = no default). */
   assistantModel: string | null;
   assistantEffort: ReasoningEffort | null;
+  /** Per-agent model overrides — the explicit exceptions to the workspace default. */
+  agentOverrides: AgentModelOverride[];
   /** Connected model providers (issue #28) — display metadata only, never a token. */
   connections: ModelConnection[];
   /** Better Auth organization:update permission for the active workspace. */
@@ -134,19 +143,28 @@ export const loader = (args: LoaderFunctionArgs) =>
           audit: [],
           assistantModel: null,
           assistantEffort: null,
+          agentOverrides: [],
           connections: [],
           canManage: false,
         };
       }
-      const [limit, used, audit, assistantSelection, connections, canManage] =
-        await Promise.all([
-          getSpendLimit(org.id),
-          tokensUsedSince(org.id),
-          listAudit(org.id, 50),
-          getWorkspaceAssistantSelection(org.id),
-          listModelConnections(org.id),
-          canManageWorkspace(org.id, auth.requestHeaders),
-        ]);
+      const [
+        limit,
+        used,
+        audit,
+        assistantSelection,
+        agentOverrides,
+        connections,
+        canManage,
+      ] = await Promise.all([
+        getSpendLimit(org.id),
+        tokensUsedSince(org.id),
+        listAudit(org.id, 50),
+        getWorkspaceAssistantSelection(org.id),
+        listAgentModelOverrides(org.id),
+        listModelConnections(org.id),
+        canManageWorkspace(org.id, auth.requestHeaders),
+      ]);
       return {
         org,
         mode: getRuntime().mode,
@@ -155,6 +173,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         audit,
         assistantModel: assistantSelection.model,
         assistantEffort: assistantSelection.effort,
+        agentOverrides,
         connections,
         canManage,
       };
@@ -235,6 +254,16 @@ export async function action(args: ActionFunctionArgs) {
     ) {
       await setWorkspaceAssistantModel(org.id, null);
     }
+    // Agent overrides pinned to the removed connection can never run again — drop them so
+    // those agents fall back to the workspace default instead of a dead credential.
+    const overrides = await listAgentModelOverrides(org.id);
+    await Promise.all(
+      overrides
+        .filter(
+          (o) => parseProviderModelReference(o.model)?.connectionId === id,
+        )
+        .map((o) => removeAgentModelOverride(org.id, o.agentName)),
+    );
     await deleteModelConnection(org.id, id);
     await recordAudit({
       orgId: org.id,
@@ -277,6 +306,53 @@ export async function action(args: ActionFunctionArgs) {
     throw redirect("/org/settings");
   }
 
+  // ── Per-agent model overrides: the workspace's explicit exceptions to the default ──
+  if (intent === "set-agent-model-override") {
+    const agentName = String(form.get("agentName") ?? "").trim();
+    const model = String(form.get("model") ?? "").trim();
+    const effortValue = String(form.get("effort") ?? "").trim();
+    const effort =
+      effortValue && isReasoningEffort(effortValue) ? effortValue : null;
+    if (!agentName) return { error: "Enter the agent's name." };
+    if (!model) return { error: "Pick a model for the override." };
+    if (effortValue && !effort)
+      return { error: "Choose a valid reasoning effort." };
+    const modelInfo = await findWorkspaceModel(org.id, model);
+    if (!modelInfo) {
+      return {
+        error:
+          "That model is not available from an active provider connection in this workspace.",
+      };
+    }
+    if (effort && !modelInfo.supportedEfforts?.includes(effort)) {
+      return {
+        error: "That reasoning effort is not supported by the selected model.",
+      };
+    }
+    await setAgentModelOverride(org.id, agentName, { model, effort });
+    await recordAudit({
+      orgId: org.id,
+      actorUserId: auth.user.id,
+      action: "agent_model_override_set",
+      target: agentName,
+      meta: { model, effort: effort ?? "provider-default" },
+    });
+    return { ok: true as const };
+  }
+
+  if (intent === "remove-agent-model-override") {
+    const agentName = String(form.get("agentName") ?? "").trim();
+    if (!agentName) return { error: "No agent specified." };
+    await removeAgentModelOverride(org.id, agentName);
+    await recordAudit({
+      orgId: org.id,
+      actorUserId: auth.user.id,
+      action: "agent_model_override_removed",
+      target: agentName,
+    });
+    return { ok: true as const };
+  }
+
   const capRaw = String(form.get("monthlyTokenCap") ?? "").trim();
   const monthlyTokenCap =
     capRaw === "" ? null : Math.max(0, Number(capRaw) || 0);
@@ -306,6 +382,7 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
     audit,
     assistantModel,
     assistantEffort,
+    agentOverrides,
     connections,
     canManage,
   } = loaderData;
@@ -443,9 +520,11 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                 </p>
               )}
               <p className="text-xs text-muted-foreground">
-                Used by the authoring assistant and agents that do not set their
-                own model. A workspace with no default has no implicit
-                OpenRouter fallback.
+                Used by the authoring assistant and by every agent without an
+                override below. Running agents resolve this at each step, so a
+                change lands within about 30 seconds — no redeploy. A workspace
+                with no default has no implicit fallback: agents error until a
+                model is configured here.
               </p>
               {modelFetcher.data &&
                 "error" in modelFetcher.data &&
@@ -455,6 +534,11 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
                   </p>
                 )}
             </div>
+
+            <AgentOverridesSection
+              overrides={agentOverrides}
+              canManage={canManage}
+            />
           </CardContent>
         </Card>
 
@@ -559,6 +643,181 @@ export default function OrgSettings({ loaderData }: Route.ComponentProps) {
         </Card>
       </div>
     </AppShell>
+  );
+}
+
+/**
+ * Per-agent model overrides — the workspace's explicit exceptions to the default model. Each
+ * row pins one agent name to a model; the X removes the pin so the agent falls back to the
+ * default. Agents resolve this map at runtime by name (subagents by their parent's name), so
+ * every change lands on running agents within seconds, with no repo change and no redeploy.
+ */
+function AgentOverridesSection({
+  overrides,
+  canManage,
+}: {
+  overrides: AgentModelOverride[];
+  canManage: boolean;
+}) {
+  return (
+    <div className="max-w-xl space-y-3 border-t pt-4">
+      <Label>Per-agent model overrides</Label>
+      <p className="text-xs text-muted-foreground">
+        Pin a specific model for one agent, by agent name (subagents always
+        follow their parent agent). Remove an override to fall back to the
+        default model above.
+      </p>
+      {overrides.length === 0 ? (
+        <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+          No overrides — every agent uses the default model.
+        </div>
+      ) : (
+        <ul className="divide-y rounded-lg border">
+          {overrides.map((override) => (
+            <AgentOverrideRow
+              key={override.agentName}
+              override={override}
+              canManage={canManage}
+            />
+          ))}
+        </ul>
+      )}
+      {canManage && <AddAgentOverrideRow />}
+    </div>
+  );
+}
+
+/** One override — the agent name, an inline model/effort picker, and the remove X. */
+function AgentOverrideRow({
+  override,
+  canManage,
+}: {
+  override: AgentModelOverride;
+  canManage: boolean;
+}) {
+  const fetcher = useFetcher<typeof action>();
+  const busy = fetcher.state !== "idle";
+  return (
+    <li className="flex flex-wrap items-center gap-2 px-3 py-2">
+      <span className="min-w-24 font-mono text-sm">{override.agentName}</span>
+      <div className="flex-1">
+        {canManage ? (
+          <ModelSelection
+            model={override.model}
+            effort={override.effort}
+            busy={busy}
+            onCommit={(model, effort) =>
+              fetcher.submit(
+                {
+                  intent: "set-agent-model-override",
+                  agentName: override.agentName,
+                  model,
+                  effort: effort ?? "",
+                },
+                { method: "post" },
+              )
+            }
+          />
+        ) : (
+          <span className="font-mono text-sm text-muted-foreground">
+            {override.model}
+            {override.effort ? ` · ${override.effort}` : ""}
+          </span>
+        )}
+      </div>
+      {canManage && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          aria-label={`Remove the model override for ${override.agentName}`}
+          disabled={busy}
+          onClick={() =>
+            fetcher.submit(
+              {
+                intent: "remove-agent-model-override",
+                agentName: override.agentName,
+              },
+              { method: "post" },
+            )
+          }
+        >
+          <X className="size-4" aria-hidden />
+        </Button>
+      )}
+      {fetcher.data && "error" in fetcher.data && fetcher.data.error && (
+        <p className="w-full text-sm text-destructive">{fetcher.data.error}</p>
+      )}
+    </li>
+  );
+}
+
+/** Add an override: type the agent's name, pick the model — committing the picker saves. */
+function AddAgentOverrideRow() {
+  const fetcher = useFetcher<typeof action>();
+  const [agentName, setAgentName] = useState("");
+  const [missingName, setMissingName] = useState(false);
+  const busy = fetcher.state !== "idle";
+
+  // Clear the row after a successful save so it's ready for the next override.
+  useEffect(() => {
+    if (
+      fetcher.state === "idle" &&
+      fetcher.data &&
+      "ok" in fetcher.data &&
+      fetcher.data.ok
+    ) {
+      setAgentName("");
+    }
+  }, [fetcher.data, fetcher.state]);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={agentName}
+          onChange={(event) => {
+            setAgentName(event.target.value);
+            setMissingName(false);
+          }}
+          placeholder="agent name"
+          aria-label="Agent name for the new override"
+          className="h-9 w-40 font-mono"
+        />
+        <div className="flex-1">
+          <ModelSelection
+            model={null}
+            effort={null}
+            busy={busy}
+            placeholder="Add an override…"
+            onCommit={(model, effort) => {
+              if (!agentName.trim()) {
+                setMissingName(true);
+                return;
+              }
+              fetcher.submit(
+                {
+                  intent: "set-agent-model-override",
+                  agentName: agentName.trim(),
+                  model,
+                  effort: effort ?? "",
+                },
+                { method: "post" },
+              );
+            }}
+          />
+        </div>
+      </div>
+      {missingName && (
+        <p className="text-sm text-destructive">
+          Enter the agent's name first — it's the name in{" "}
+          <code>edenAgentModel('…')</code>.
+        </p>
+      )}
+      {fetcher.data && "error" in fetcher.data && fetcher.data.error && (
+        <p className="text-sm text-destructive">{fetcher.data.error}</p>
+      )}
+    </div>
   );
 }
 

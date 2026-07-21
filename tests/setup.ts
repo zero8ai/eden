@@ -4,3 +4,6 @@
  * (lazy, never-connected) postgres.js client at import time. No Postgres process is required.
  */
 process.env.DATABASE_URL ??= "postgres://unit:unit@localhost:5432/unit_never_connects";
+// Every deploy now mints the org-scoped gateway token (runtime model-config resolution), so
+// the HMAC key must exist suite-wide, exactly as it does on any real control plane.
+process.env.EDEN_SECRETS_KEY ??= "a".repeat(64); // 32-byte key as 64 hex chars

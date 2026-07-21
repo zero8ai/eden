@@ -77,8 +77,7 @@ import {
   listIngestTokens,
 } from "~/observability/store.server";
 import { listDrafts, stageDeletions, stageDraft } from "~/drafts/drafts.server";
-import { readModel, readReasoningEffort } from "~/eve/agentModule";
-import { buildAgentConfig, EMPTY_TEAM_MARKER } from "~/eve/parse";
+import { EMPTY_TEAM_MARKER } from "~/eve/parse";
 import { getAgentSource } from "~/github/cached.server";
 import { fetchAgentSource, readAgentFile } from "~/github/repo.server";
 import { proposeChange, type FileChange } from "~/github/write.server";
@@ -96,11 +95,8 @@ import {
   type ResolvedTemplate,
 } from "~/marketplace/compose.server";
 import type { TemplateType } from "~/marketplace/manifest";
-import {
-  stageModelChange,
-  stageSubagentModelWiring,
-} from "~/models/stage-model.server";
-import { unresolvedSubagentModelError } from "~/models/subagent-wiring";
+import { resolveAgentModel } from "~/models/agent-model-config.server";
+import { stageModelChange } from "~/models/stage-model.server";
 import { ownsWorkspaceModelReference } from "~/models/union.server";
 import { getWorkspaceAssistantSelection } from "~/org/workspace.server";
 import { isReasoningEffort, type ReasoningEffort } from "~/models/reasoning";
@@ -423,31 +419,23 @@ export const loader = (args: LoaderFunctionArgs) =>
       };
 
       if (showMember && active) {
-        const [envs, orgDefaultSelection] = await Promise.all([
+        const agentTsPath = `${active.root}/agent.ts`;
+        const [envs, resolved] = await Promise.all([
           listAgentEnvironments(active.id),
-          getWorkspaceAssistantSelection(project.orgId).catch(() => ({
-            model: null,
-            effort: null,
-          })),
+          resolveAgentModel(project.orgId, active.name).catch(() => null),
         ]);
-        const config = buildAgentConfig(source, active.root);
-        // The model shown must reflect the newest intent: a staged agent.ts draft wins.
-        // A deletion draft (content null) carries no model — fall back to the repo value.
-        const agentTsDraft = drafts.find(
-          (d) => d.path === `${active.root}/agent.ts` && d.content !== null,
+        // Model + effort are workspace configuration, resolved from Eden's control plane by
+        // agent name (the `edenAgentModel('<name>')` identity the running agent resolves itself
+        // by) — never parsed out of agent.ts. An explicit per-agent override wins; otherwise the
+        // shown value is the workspace default ("inherited default").
+        base.model = resolved?.model ?? null;
+        base.effort = resolved?.effort ?? null;
+        base.modelInherited = resolved?.source === "workspace-default";
+        const agentTsStaged = drafts.some(
+          (d) => d.path === agentTsPath && d.content !== null,
         );
-        const agentModel = agentTsDraft?.content
-          ? (readModel(agentTsDraft.content) ?? config.model)
-          : config.model;
-        base.model = agentModel ?? orgDefaultSelection.model;
-        base.effort = agentModel
-          ? agentTsDraft?.content
-            ? readReasoningEffort(agentTsDraft.content)
-            : readReasoningEffort(source.files[`${active.root}/agent.ts`] ?? "")
-          : orgDefaultSelection.effort;
-        base.modelInherited = !agentModel && !!orgDefaultSelection.model;
-        base.hasAgentModule = config.hasAgentModule || !!agentTsDraft;
-        base.modelStaged = !!agentTsDraft;
+        base.hasAgentModule = source.paths.includes(agentTsPath) || agentTsStaged;
+        base.modelStaged = agentTsStaged;
         base.envs = envs;
         base.scope = resolveScope(
           new URL(args.request.url).searchParams.get("env"),
@@ -593,29 +581,7 @@ export async function action(args: ActionFunctionArgs) {
         createdBy: auth.user.id,
       });
       if (!result.ok) return { error: result.error };
-      // Same wiring for the member's subagents so a bare gateway-bound subagent model gets routed
-      // through the connected providers too (they'd otherwise fail at runtime, and the publish
-      // gate would block). Best-effort: a subagent read hiccup must not fail the member's save.
-      // A subagent model NO active connection can run is reported as a save-time warning — the
-      // actionable moment; the alternative is a runtime credential failure after deploy.
-      try {
-        const source = await getAgentSource(project.repoInstallationId, repo);
-        const wiring = await stageSubagentModelWiring({
-          project,
-          memberRoot: active.root,
-          candidatePaths: source.paths,
-          createdBy: auth.user.id,
-        });
-        if (wiring.unresolved.length > 0) {
-          return {
-            ok: true as const,
-            warning: unresolvedSubagentModelError(wiring.unresolved),
-          };
-        }
-      } catch {
-        // ignore — the publish gate remains the backstop
-      }
-      return { ok: true as const };
+      return { ok: true as const, mode: result.mode };
     }
 
     // ── Marketplace installs: update / uninstall stage reviewable repo changes ──
@@ -657,19 +623,19 @@ export async function action(args: ActionFunctionArgs) {
       let installModel: string | null = null;
       let installEffort: ReasoningEffort | null = null;
       if (template.manifest.type === "agent") {
-        const agentPath = `${active.root}/agent.ts`;
-        const agentDraft = drafts.find((draft) => draft.path === agentPath);
-        const agentSource =
-          agentDraft !== undefined
-            ? agentDraft.content
-            : (source.files[agentPath] ?? null);
-        const currentModel = agentSource ? readModel(agentSource) : null;
+        // The agent's configured model is workspace state, resolved by name from the control
+        // plane — not read from agent.ts. Fall back to the workspace default only when that
+        // resolved model points at a connection that is no longer usable.
+        const resolved = await resolveAgentModel(
+          project.orgId,
+          active.name,
+        ).catch(() => null);
         if (
-          currentModel &&
-          (await ownsWorkspaceModelReference(project.orgId, currentModel))
+          resolved &&
+          (await ownsWorkspaceModelReference(project.orgId, resolved.model))
         ) {
-          installModel = currentModel;
-          installEffort = agentSource ? readReasoningEffort(agentSource) : null;
+          installModel = resolved.model;
+          installEffort = resolved.effort;
         } else {
           const workspaceSelection = await getWorkspaceAssistantSelection(
             project.orgId,
@@ -1240,7 +1206,7 @@ function ModelSection({
   const fetcher = useFetcher<{
     ok?: boolean;
     error?: string;
-    warning?: string;
+    mode?: "staged" | "applied";
   }>();
   const modelBadges = useMemo(
     () => (
@@ -1291,14 +1257,11 @@ function ModelSection({
       {fetcher.data?.error && (
         <p className="mt-2 text-sm text-destructive">{fetcher.data.error}</p>
       )}
-      {fetcher.data?.warning && (
-        <p className="mt-2 whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
-          {fetcher.data.warning}
-        </p>
-      )}
-      {fetcher.data?.ok && !fetcher.data.warning && (
+      {fetcher.data?.ok && (
         <p className="mt-2 text-sm text-muted-foreground">
-          Staged — ship or publish it from the Deployment tab.
+          {fetcher.data.mode === "applied"
+            ? "Saved — the agent picks this up on its next step, no redeploy needed."
+            : "Staged — ship or publish it from the Deployment tab."}
         </p>
       )}
     </section>

@@ -201,6 +201,9 @@ export default [
   // Eden model gateway (issue #28): a deployed agent / the assistant set to a codex/<conn>/<slug>
   // model reaches this route (Bearer edng_ token) to run on the org's connected Codex subscription.
   route("api/gateway/v1/chat/completions", "routes/api.gateway.chat.ts"),
+  // Runtime model resolution: a deployed agent's generated eden-model.ts asks (same Bearer
+  // edng_ token) which model the workspace wants it on — per-agent override, else the default.
+  route("api/gateway/v1/model-config", "routes/api.gateway.model-config.ts"),
   // Connect an OpenAI Codex subscription via device-code OAuth (Org settings dialog fetcher).
   route("api/connections/codex", "routes/api.connections.codex.ts"),
   // Better Auth's documented React Router resource route. The splat forwards every

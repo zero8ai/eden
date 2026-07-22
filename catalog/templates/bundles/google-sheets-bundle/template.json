@@ -2,11 +2,11 @@
   "id": "google-sheets-bundle",
   "type": "bundle",
   "name": "Google Sheets",
-  "description": "Everything an agent needs to work with Google Sheets: the connector (install → Connect Google → read/write spreadsheets) plus a usage skill teaching A1 notation, read-before-write, and the values vs batchUpdate operations. Recommended way to add Sheets.",
-  "version": "0.2.0",
+  "description": "Everything an agent needs to work with Google Sheets: the connector (install → Connect Google → read/write/create/share spreadsheets) plus a usage skill teaching A1 notation, read-before-write, the values vs batchUpdate operations, and creating and sharing sheets. Recommended way to add Sheets.",
+  "version": "0.3.0",
   "eve": ">=0.20.0",
   "files": [],
-  "setup": "This bundle installs the **Google Sheets connector** and its **usage skill** together. After installing, open the agent's **Deployment** tab and click **Connect Google** on the Connections card to authorize your account (one consent screen for the `spreadsheets` scope) and the agent can read and write spreadsheets it has access to.\n\n**Operators:** the connector needs a Google OAuth client configured on the control plane (`EDEN_GOOGLE_CLIENT_ID` / `EDEN_GOOGLE_CLIENT_SECRET`, redirect URI `<origin>/google/callback`) — see the Google Sheets connector's setup notes for the Google Cloud steps and the publishing-status/verification ladder.",
+  "setup": "This bundle installs the **Google Sheets connector** and its **usage skill** together. After installing, open the agent's **Deployment** tab and click **Connect Google** on the Connections card to authorize an account (one consent screen for the `spreadsheets` and `drive.file` scopes) and the agent can read, write, create, and share spreadsheets. Connect a **dedicated Google account** to give the agent its own sheets — with `drive.file` it only sees the spreadsheets it creates.\n\n**Operators:** the connector needs a Google OAuth client configured on the control plane (`EDEN_GOOGLE_CLIENT_ID` / `EDEN_GOOGLE_CLIENT_SECRET`, redirect URI `<origin>/google/callback`), with BOTH the Google Sheets API and the Google Drive API enabled — see the Google Sheets connector's setup notes for the Google Cloud steps and the publishing-status/verification ladder.",
   "includes": [
     { "type": "connection", "id": "google-sheets" },
     { "type": "skill", "id": "google-sheets-skill" }

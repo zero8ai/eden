@@ -1,0 +1,350 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Google Drive API (sharing subset)",
+    "description": "Vendored, trimmed OpenAPI 3.0.3 spec for the Google Drive v3 API, covering only the file-sharing operations the Google Sheets connector needs: listing/reading a file's metadata and creating, listing, and removing its permissions. It is authorized with the `drive.file` scope, which grants access ONLY to files the app itself created (or that the user explicitly opened with it) — so in practice these operations act on the spreadsheets THIS agent created via spreadsheets_create, letting it share them and manage who can see them. Authorization is handled by the caller (a bearer OAuth2 access token); no auth is declared in this spec.",
+    "version": "v3"
+  },
+  "servers": [
+    {
+      "url": "https://www.googleapis.com",
+      "description": "Google Drive API production endpoint"
+    }
+  ],
+  "paths": {
+    "/drive/v3/files": {
+      "get": {
+        "operationId": "drive_files_list",
+        "summary": "List files the app can access",
+        "description": "Lists files the connected account can see through this app. Under the drive.file scope this is limited to files the app created (e.g. spreadsheets made with spreadsheets_create) or that the user opened with it — use it to find the id/name/URL of a sheet the agent made earlier. Narrow the results with the 'q' query, e.g. \"mimeType='application/vnd.google-apps.spreadsheet'\" for spreadsheets only, or \"name contains 'Report'\".",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "A query string filtering which files are returned, using Drive's search syntax, e.g. \"mimeType='application/vnd.google-apps.spreadsheet'\", \"name contains 'Q1'\", or \"trashed=false\". Combine terms with 'and'.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "description": "Maximum number of files to return per page (1-1000, default 100).",
+            "schema": { "type": "integer", "format": "int32" }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "description": "The nextPageToken from a previous response, to fetch the following page.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "orderBy",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated sort keys, e.g. 'modifiedTime desc' or 'name'. Valid keys include createdTime, modifiedTime, name, and starred.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "description": "A partial-response field mask selecting which fields to return, e.g. 'files(id,name,mimeType,webViewLink),nextPageToken'. If omitted a default subset is returned. Request only what you need.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The list of matching files.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileList" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/drive/v3/files/{fileId}": {
+      "get": {
+        "operationId": "drive_files_get",
+        "summary": "Get a file's metadata",
+        "description": "Returns metadata for a single file the app can access, such as its name, mimeType, owners, and webViewLink (the shareable URL). For a spreadsheet, the fileId is the same value as the spreadsheetId. Use this to confirm a sheet exists and read its shareable link after creating it.",
+        "parameters": [
+          {
+            "name": "fileId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the file to retrieve. For a spreadsheet this equals its spreadsheetId.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "description": "A partial-response field mask, e.g. 'id,name,mimeType,webViewLink,owners'. If omitted a default subset is returned.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requested file's metadata.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/File" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/drive/v3/files/{fileId}/permissions": {
+      "get": {
+        "operationId": "drive_permissions_list",
+        "summary": "List a file's permissions",
+        "description": "Returns the permissions (who has access, and at what role) for a file the app created. Use this to see current sharing before adding or removing access. Under drive.file the file must be one the app created or the user opened with it.",
+        "parameters": [
+          {
+            "name": "fileId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the file whose permissions to list (a spreadsheetId, for a sheet).",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "description": "Maximum number of permissions to return per page (1-100).",
+            "schema": { "type": "integer", "format": "int32" }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "description": "The nextPageToken from a previous response, to fetch the following page.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "description": "A partial-response field mask, e.g. 'permissions(id,type,role,emailAddress,displayName),nextPageToken'. Requesting emailAddress requires the caller to have sharing visibility.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file's permissions.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PermissionList" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "drive_permissions_create",
+        "summary": "Share a file (create a permission)",
+        "description": "Grants access to a file by creating a permission. This is how the agent SHARES a spreadsheet it created: set the request body's 'type' (user, group, domain, or anyone), 'role' (reader, commenter, or writer), and, for user/group, the target 'emailAddress' (or 'domain' for a domain). Set sendNotificationEmail=true to email the recipient a link (with an optional emailMessage). To make a sheet link-viewable by anyone, use type='anyone' with role='reader' (sendNotificationEmail must be false for 'anyone'). The file must be one the app created (drive.file scope).",
+        "parameters": [
+          {
+            "name": "fileId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the file to share (a spreadsheetId, for a sheet).",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "sendNotificationEmail",
+            "in": "query",
+            "required": false,
+            "description": "Whether to send a notification email to the new grantee. Defaults to true for user/group permissions. Must be false (or omitted) when type is 'anyone' or 'domain'.",
+            "schema": { "type": "boolean" }
+          },
+          {
+            "name": "emailMessage",
+            "in": "query",
+            "required": false,
+            "description": "A custom message to include in the notification email. Only used when sendNotificationEmail is true.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "transferOwnership",
+            "in": "query",
+            "required": false,
+            "description": "Whether to transfer ownership to the new grantee (role must be 'owner'). Rarely needed; leave false for normal sharing.",
+            "schema": { "type": "boolean" }
+          },
+          {
+            "name": "supportsAllDrives",
+            "in": "query",
+            "required": false,
+            "description": "Whether the request supports both My Drive and shared drives. Safe to set true.",
+            "schema": { "type": "boolean" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The permission to create. Provide role and type; for user/group also provide emailAddress, for domain provide domain.",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Permission" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The created permission.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Permission" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/drive/v3/files/{fileId}/permissions/{permissionId}": {
+      "delete": {
+        "operationId": "drive_permissions_delete",
+        "summary": "Unshare a file (delete a permission)",
+        "description": "Removes a permission from a file, revoking that grantee's access. Get the permissionId from drive_permissions_list. The owner permission cannot be deleted.",
+        "parameters": [
+          {
+            "name": "fileId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the file whose permission to remove.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "permissionId",
+            "in": "path",
+            "required": true,
+            "description": "The ID of the permission to delete (from drive_permissions_list). The value 'anyone' removes the link-sharing permission.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "supportsAllDrives",
+            "in": "query",
+            "required": false,
+            "description": "Whether the request supports both My Drive and shared drives. Safe to set true.",
+            "schema": { "type": "boolean" }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The permission was deleted (no content)."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Permission": {
+        "type": "object",
+        "description": "A permission for a file — a grant of a role to a user, group, domain, or to anyone.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The ID of this permission. Read-only; assigned by the API. Use it with drive_permissions_delete."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["user", "group", "domain", "anyone"],
+            "description": "The grantee type. 'user' and 'group' require emailAddress; 'domain' requires domain; 'anyone' grants access to everyone (optionally with the link)."
+          },
+          "role": {
+            "type": "string",
+            "enum": ["owner", "organizer", "fileOrganizer", "writer", "commenter", "reader"],
+            "description": "The role granted. For sharing a sheet the common choices are 'reader' (view), 'commenter', or 'writer' (edit). 'owner' transfers ownership and requires transferOwnership=true."
+          },
+          "emailAddress": {
+            "type": "string",
+            "description": "The email address of the user or group this permission refers to. Required when type is 'user' or 'group'."
+          },
+          "domain": {
+            "type": "string",
+            "description": "The domain this permission refers to, e.g. 'example.com'. Required when type is 'domain'."
+          },
+          "allowFileDiscovery": {
+            "type": "boolean",
+            "description": "For type 'domain' or 'anyone', whether the file is discoverable through search (true) or reachable only via the link (false). Defaults to false."
+          },
+          "displayName": {
+            "type": "string",
+            "description": "The display name of the grantee. Read-only."
+          }
+        }
+      },
+      "PermissionList": {
+        "type": "object",
+        "description": "A list of permissions on a file.",
+        "properties": {
+          "permissions": {
+            "type": "array",
+            "description": "The list of permissions.",
+            "items": { "$ref": "#/components/schemas/Permission" }
+          },
+          "nextPageToken": {
+            "type": "string",
+            "description": "A token for the next page of results, present only when more results exist."
+          }
+        }
+      },
+      "File": {
+        "type": "object",
+        "description": "Metadata for a Drive file.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The ID of the file. For a spreadsheet this equals its spreadsheetId."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name of the file (the spreadsheet title, for a sheet)."
+          },
+          "mimeType": {
+            "type": "string",
+            "description": "The MIME type of the file, e.g. 'application/vnd.google-apps.spreadsheet' for a Google Sheet."
+          },
+          "webViewLink": {
+            "type": "string",
+            "description": "A link for opening the file in a browser — the shareable URL. Read-only."
+          },
+          "owners": {
+            "type": "array",
+            "description": "The owners of the file.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "emailAddress": { "type": "string" },
+                "displayName": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "FileList": {
+        "type": "object",
+        "description": "A list of files.",
+        "properties": {
+          "files": {
+            "type": "array",
+            "description": "The list of files. Fields present depend on the request's field mask.",
+            "items": { "$ref": "#/components/schemas/File" }
+          },
+          "nextPageToken": {
+            "type": "string",
+            "description": "A token for the next page of results, present only when more results exist."
+          }
+        }
+      }
+    }
+  }
+}

@@ -2,8 +2,8 @@
   "id": "google-sheets-skill",
   "type": "skill",
   "name": "Google Sheets usage",
-  "description": "Practical guidance for driving the google_sheets__* tools: A1 notation, read-before-write discipline, RAW vs USER_ENTERED, append vs update, and the batchUpdate request shapes for structural changes.",
-  "version": "0.1.0",
+  "description": "Practical guidance for driving the google_sheets__* and google_drive__* tools: A1 notation, read-before-write discipline, RAW vs USER_ENTERED, append vs update, the batchUpdate request shapes for structural changes, and creating and sharing spreadsheets.",
+  "version": "0.2.0",
   "eve": ">=0.20.0",
   "files": ["skills/google-sheets.md"]
 }

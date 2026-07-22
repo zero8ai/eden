@@ -6,9 +6,10 @@ description: How to read and write Google Sheets correctly with the google_sheet
 # Working with Google Sheets
 
 This agent has a Google Sheets connection: each Sheets API operation is exposed as a tool named
-`google_sheets__<operationId>` (for example `google_sheets__spreadsheets_values_get`). Discover the
-exact tools and their parameters with the connection's tool search before calling — do not guess
-parameter names.
+`google_sheets__<operationId>` (for example `google_sheets__spreadsheets_values_get`). It also has a
+companion Google Drive connection for **sharing**, whose tools are named `google_drive__<operationId>`
+(for example `google_drive__permissions_create`). Discover the exact tools and their parameters with
+the connection's tool search before calling — do not guess parameter names.
 
 ## Identifying a spreadsheet
 
@@ -18,6 +19,39 @@ parameter names.
   non-alphanumeric characters, wrap it in single quotes: `'Q1 Budget'!A1:C10`.
 - Open-ended ranges are allowed: `Sheet1!A:A` (a whole column), `Sheet1!2:2` (a whole row),
   `Sheet1` (the whole sheet).
+
+## Creating a spreadsheet
+
+Call `google_sheets__spreadsheets_create` with a body of at least `{ "properties": { "title": "..." } }`
+to make a new spreadsheet. The response includes the generated `spreadsheetId` and `spreadsheetUrl` —
+keep the id, it's how you address the sheet afterwards. You can pass an initial `sheets` array to
+create named tabs up front; omit it for a single default sheet.
+
+A spreadsheet the agent creates is owned by the **connected Google account** and lands in that
+account's Drive. If a dedicated account was connected for this agent, these are effectively the
+agent's own sheets — and because the connection uses the `drive.file` scope, the agent can only
+reach the spreadsheets it created, not the rest of that account's Drive.
+
+## Sharing a spreadsheet
+
+Creating a sheet does **not** give anyone else access — a new sheet is private to the connected
+account until you share it. Sharing is a **Drive** operation, so use the `google_drive__*` tools
+(the `fileId` of a sheet is the same value as its `spreadsheetId`):
+
+- `google_drive__permissions_create` — grant access. Body fields:
+  - `role`: `reader` (view), `commenter`, or `writer` (edit).
+  - `type`: `user` or `group` (needs `emailAddress`), `domain` (needs `domain`), or `anyone`.
+  - For a person, set `type: "user"`, `emailAddress`, and `role`, plus the query param
+    `sendNotificationEmail=true` (with optional `emailMessage`) to email them a link.
+  - For a public view-only link, set `type: "anyone"`, `role: "reader"`, and
+    `sendNotificationEmail=false`. Then read the sheet's `webViewLink` (via
+    `google_drive__files_get`) to hand out the URL.
+- `google_drive__permissions_list` — see who currently has access (and their `permissionId`).
+- `google_drive__permissions_delete` — revoke access using a `permissionId` from the list (or
+  `anyone` to turn off link sharing).
+
+`google_drive__files_list` / `google_drive__files_get` find a sheet the agent made earlier (its id,
+name, and `webViewLink`). Under `drive.file` these only return files the agent created.
 
 ## Read before you write
 
@@ -72,9 +106,14 @@ for genuine structural edits.
 
 - Read/write in reasonable chunks; a single call returning an enormous grid is slow — request only
   the ranges you need.
-- **Permission denied / 403**: the **connected Google account** doesn't have access to that
-  spreadsheet. Share the sheet with that account (or connect an account that already has access) —
-  the agent can only reach spreadsheets its connected identity can open.
+- **Permission denied / 403 on a Sheets call**: the **connected Google account** doesn't have
+  access to that spreadsheet. Share the sheet with that account (or connect an account that already
+  has access) — the agent can only reach spreadsheets its connected identity can open, or that it
+  created itself.
+- **Permission denied / 403 on a `google_drive__*` sharing call**: either the `drive.file` scope
+  wasn't granted (reconnect Google from the agent's Deployment tab with all permissions checked), or
+  the target sheet was **not created by this agent** — under `drive.file` the agent can only share
+  files it created itself, so it can't re-share a sheet someone else made.
 - **404**: wrong `spreadsheetId`, or a sheet/tab name that doesn't exist — re-check with
   `spreadsheets_get`.
 - A first call in a session may pause for human approval (the connection is approval-gated by

@@ -106,12 +106,15 @@ function ExchangeView({ exchange }: { exchange: DelegationExchange }) {
       ) : (
         exchange.steps.map((step, i) =>
           step.kind === "message" ? (
-            // The linked run is the PEER's: its "assistant" is the delegate answering.
+            // The transcript is the PEER's: its "assistant" is the delegate answering.
+            // User beats after the initial ask are the human's answers (speaker: "human").
             <p key={i}>
               <span className="font-medium">
                 {step.role === "assistant"
                   ? (exchange.toAgentName ?? AGENT_FALLBACK)
-                  : (exchange.fromAgentName ?? AGENT_FALLBACK)}
+                  : step.speaker === "human"
+                    ? "human"
+                    : (exchange.fromAgentName ?? AGENT_FALLBACK)}
                 :
               </span>{" "}
               {step.text}

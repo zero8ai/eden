@@ -25,6 +25,7 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       releases,
       deployments,
       playgroundSessions,
+      playgroundEvents,
       delegations,
       runs,
       runSteps,
@@ -188,8 +189,22 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       },
     ]);
 
-    // 10:45 — a second delegation parks on a human and opens ivy's agent-side session;
-    // its run recording never landed (runId null — best-effort).
+    // 10:45 — a second delegation parks on a human and opens ivy's agent-side session.
+    // The relayed ask lands in the linked run's metadata, but the REAL exchange lives in
+    // the FOH session's cached events (relay parking): parked question, human answer,
+    // final reply.
+    const PARKED_ASK = 'From your teammate "sam": which registrar for eden.dev?';
+    const [parkedRun] = await db
+      .insert(runs)
+      .values({
+        projectId: project.id,
+        agentId: ivy.id,
+        channel: "teammate",
+        status: "completed",
+        metadata: { input: PARKED_ASK, fromAgentId: sam.id, fromAgentName: "sam" },
+        startedAt: t(45),
+      })
+      .returning();
     const [waitingDelegation] = await db
       .insert(delegations)
       .values({
@@ -198,11 +213,23 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
         fromEnvironmentId: env.id,
         toAgentId: ivy.id,
         toEnvironmentId: env.id,
+        runId: parkedRun.id,
         status: "waiting",
         startedAt: t(45),
         finishedAt: t(45),
       })
       .returning();
+    await db
+      .update(runs)
+      .set({
+        metadata: {
+          input: PARKED_ASK,
+          delegationId: waitingDelegation.id,
+          fromAgentId: sam.id,
+          fromAgentName: "sam",
+        },
+      })
+      .where(eq(runs.id, parkedRun.id));
     const [agentSession] = await db
       .insert(playgroundSessions)
       .values({
@@ -216,12 +243,84 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
         createdAt: t(46),
       })
       .returning();
+    await db.insert(playgroundEvents).values([
+      {
+        sessionId: agentSession.id,
+        streamIndex: 1,
+        type: "turn.started",
+        data: { turnId: "turn_0", sequence: 0 },
+      },
+      {
+        sessionId: agentSession.id,
+        streamIndex: 2,
+        type: "message.received",
+        data: { turnId: "turn_0", message: PARKED_ASK, sequence: 0 },
+      },
+      {
+        sessionId: agentSession.id,
+        streamIndex: 3,
+        type: "input.requested",
+        data: {
+          turnId: "turn_0",
+          requests: [
+            { requestId: "req_1", prompt: "Which registrar account should I use?" },
+          ],
+        },
+      },
+      {
+        sessionId: agentSession.id,
+        streamIndex: 4,
+        type: "turn.completed",
+        data: { turnId: "turn_0", sequence: 0 },
+      },
+      {
+        sessionId: agentSession.id,
+        streamIndex: 5,
+        type: "turn.started",
+        data: { turnId: "turn_1", sequence: 1 },
+      },
+      {
+        sessionId: agentSession.id,
+        streamIndex: 6,
+        type: "message.received",
+        data: { turnId: "turn_1", message: "Use the Cloudflare account", sequence: 1 },
+      },
+      {
+        sessionId: agentSession.id,
+        streamIndex: 7,
+        type: "message.completed",
+        data: { turnId: "turn_1", message: "Done — transferred via Cloudflare." },
+      },
+      {
+        sessionId: agentSession.id,
+        streamIndex: 8,
+        type: "turn.completed",
+        data: { turnId: "turn_1", sequence: 1 },
+      },
+    ]);
+
+    // A third delegation whose run recording never landed (runId null — best-effort)
+    // and that opened no session: the expansion must degrade cleanly.
+    const [bareDelegation] = await db
+      .insert(delegations)
+      .values({
+        projectId: project.id,
+        fromAgentId: sam.id,
+        fromEnvironmentId: env.id,
+        toAgentId: ivy.id,
+        toEnvironmentId: env.id,
+        status: "waiting",
+        startedAt: t(47),
+        finishedAt: t(47),
+      })
+      .returning();
 
     // The projection reconstructs the scenario newest-first, builder noise and the
     // delegation-linked run excluded.
     const page = await listTeamActivity(project.id);
     const ids = page.events.map((e) => e.id);
     expect(ids).toEqual([
+      `delegation:${bareDelegation.id}`,
       `session:${agentSession.id}`,
       `delegation:${waitingDelegation.id}`,
       `delegation:${delegationRow.id}`,
@@ -230,18 +329,24 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       `deployment:${deployment.id}`,
     ]);
     expect(page.events[0]).toMatchObject({
-      type: "session",
-      openedByAgentName: "sam",
-      openedByUserName: null,
-      agentName: "ivy",
-    });
-    expect(page.events[1]).toMatchObject({
       type: "delegation",
       status: "waiting",
       ask: null, // runId never landed
       finishedAt: null, // park-time finishedAt is not an outcome
     });
+    expect(page.events[1]).toMatchObject({
+      type: "session",
+      openedByAgentName: "sam",
+      openedByUserName: null,
+      agentName: "ivy",
+    });
     expect(page.events[2]).toMatchObject({
+      type: "delegation",
+      status: "waiting",
+      ask: PARKED_ASK,
+      finishedAt: null,
+    });
+    expect(page.events[3]).toMatchObject({
       type: "delegation",
       fromAgentName: "sam",
       toAgentName: "ivy",
@@ -249,12 +354,12 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       status: "completed",
       finishedAt: t(46).toISOString(),
     });
-    expect(page.events[4]).toMatchObject({
+    expect(page.events[5]).toMatchObject({
       type: "session",
       openedByUserName: "Aaron",
       title: "the pricing page is broken",
     });
-    expect(page.events[5]).toMatchObject({
+    expect(page.events[6]).toMatchObject({
       type: "deployment",
       agentName: "ivy",
       version: "v3",
@@ -270,7 +375,8 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       `deployment:${deployment.id}`,
     ]);
 
-    // The exchange expansion reconstructs who said what and what was done.
+    // The exchange expansion reconstructs who said what and what was done. The leading
+    // user message duplicates the ask (already in the header) and is deduped.
     const exchange = await getDelegationExchange(project.id, delegationRow.id);
     expect(exchange).toMatchObject({
       fromAgentName: "sam",
@@ -279,7 +385,6 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       ask: "can you check DNS for eden.dev?",
     });
     expect(exchange?.steps).toEqual([
-      { kind: "message", role: "user", text: "can you check DNS for eden.dev?" },
       { kind: "tool", toolName: "bash", summary: "dig eden.dev", isError: false },
       {
         kind: "message",
@@ -288,8 +393,32 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       },
     ]);
 
+    // A relay-parked delegation's exchange is built from the agent-opened FOH session's
+    // cached events, not the linked run's steps: parked question and final reply are the
+    // delegate's, the answer is the human's, and the ask appears only in the header.
+    const parked = await getDelegationExchange(project.id, waitingDelegation.id);
+    expect(parked).toMatchObject({ status: "waiting", ask: PARKED_ASK });
+    expect(parked?.steps).toEqual([
+      {
+        kind: "message",
+        role: "assistant",
+        text: "Which registrar account should I use?",
+      },
+      {
+        kind: "message",
+        role: "user",
+        text: "Use the Cloudflare account",
+        speaker: "human",
+      },
+      {
+        kind: "message",
+        role: "assistant",
+        text: "Done — transferred via Cloudflare.",
+      },
+    ]);
+
     // Null-runId expansion degrades cleanly; other projects' delegations are invisible.
-    const bare = await getDelegationExchange(project.id, waitingDelegation.id);
+    const bare = await getDelegationExchange(project.id, bareDelegation.id);
     expect(bare).toMatchObject({ ask: null, steps: [], status: "waiting" });
     expect(await getDelegationExchange("proj_nope_12", delegationRow.id)).toBeNull();
 

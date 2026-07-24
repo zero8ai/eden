@@ -29,11 +29,14 @@ import {
   runSteps,
 } from "~/db/schema";
 import {
+  dropLeadingAsk,
+  exchangeStepsFromEntries,
   projectActivity,
   summarizeExchangeSteps,
   type ActivityPage,
   type ExchangeStep,
 } from "~/foh/activity";
+import { loadPlaygroundEntriesFromCache } from "~/playground/sessions.server";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -188,7 +191,12 @@ export interface DelegationExchange {
   finishedAt: string | null;
   /** The ask, from the linked run's metadata; null when the run never landed. */
   ask: string | null;
-  /** The exchange transcript from the linked run's steps; empty when runId is null. */
+  /**
+   * The exchange transcript. Relay-parked delegations read the agent-opened FOH session's
+   * cached events (the delegate's real transcript); others fall back to the linked run's
+   * steps. Empty when neither source exists. The leading user message is deduped against
+   * `ask` (the header already quotes it).
+   */
   steps: ExchangeStep[];
 }
 
@@ -217,28 +225,50 @@ export async function getDelegationExchange(
 
   let ask: string | null = null;
   let steps: ExchangeStep[] = [];
-  if (row.runId) {
-    const [run] = await db
-      .select({ id: runs.id, metadata: runs.metadata })
-      .from(runs)
-      .where(and(eq(runs.id, row.runId), eq(runs.projectId, projectId)))
-      .limit(1);
-    if (run) {
-      ask = typeof run.metadata?.input === "string" ? run.metadata.input : null;
-      const stepRows = await db
-        .select({
-          seq: runSteps.seq,
-          type: runSteps.type,
-          toolName: runSteps.toolName,
-          isError: runSteps.isError,
-          data: runSteps.data,
-        })
-        .from(runSteps)
-        .where(eq(runSteps.runId, run.id))
-        .orderBy(asc(runSteps.seq));
-      steps = summarizeExchangeSteps(stepRows);
-    }
+  const run = row.runId
+    ? (
+        await db
+          .select({ id: runs.id, metadata: runs.metadata })
+          .from(runs)
+          .where(and(eq(runs.id, row.runId), eq(runs.projectId, projectId)))
+          .limit(1)
+      )[0]
+    : undefined;
+  if (run) {
+    ask = typeof run.metadata?.input === "string" ? run.metadata.input : null;
   }
+
+  // Relay parking opens an agent-side FOH session for the delegate; when it exists, ITS
+  // cached events are the real exchange (parked question, human answer, final reply) — the
+  // linked run's steps then only hold the inbound ask + an empty model beat. Non-parking
+  // delegations have no such session and their run_steps do carry the exchange.
+  const [fohSession] = await db
+    .select()
+    .from(playgroundSessions)
+    .where(
+      and(
+        eq(playgroundSessions.delegationId, row.id),
+        eq(playgroundSessions.projectId, projectId),
+      ),
+    )
+    .limit(1);
+  if (fohSession) {
+    steps = exchangeStepsFromEntries(await loadPlaygroundEntriesFromCache(fohSession));
+  } else if (run) {
+    const stepRows = await db
+      .select({
+        seq: runSteps.seq,
+        type: runSteps.type,
+        toolName: runSteps.toolName,
+        isError: runSteps.isError,
+        data: runSteps.data,
+      })
+      .from(runSteps)
+      .where(eq(runSteps.runId, run.id))
+      .orderBy(asc(runSteps.seq));
+    steps = summarizeExchangeSteps(stepRows);
+  }
+  steps = dropLeadingAsk(steps, ask);
 
   const settled = row.status === "completed" || row.status === "failed";
   return {

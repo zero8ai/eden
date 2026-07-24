@@ -8,6 +8,10 @@ import { useFetcher, useRouteLoaderData } from "react-router";
 import { Button } from "~/components/ui/button";
 import type { loader as agentLoader, action as agentAction } from "./foh.agent";
 
+// The parent's new-session action, re-exported so this index route can take the
+// POST itself — a relative `action="."` from an index route still targets the index.
+export { action } from "./foh.agent";
+
 export default function FohAgentIndex() {
   const parent = useRouteLoaderData<typeof agentLoader>("routes/foh.agent");
   const newSessionFetcher = useFetcher<typeof agentAction>();
@@ -30,8 +34,7 @@ export default function FohAgentIndex() {
             ? "Open a conversation from the list, or start a fresh one."
             : `Start a conversation — give ${agentName} a piece of work, and come back whenever you're needed.`}
         </p>
-        {/* `action="."` (no ?index) routes the POST to the parent foh.agent action. */}
-        <newSessionFetcher.Form method="post" action=".">
+        <newSessionFetcher.Form method="post">
           <input type="hidden" name="intent" value="new-session" />
           <Button
             type="submit"

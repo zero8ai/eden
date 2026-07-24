@@ -204,9 +204,18 @@ export function projectActivity(
   return { events: page, nextBefore };
 }
 
-/** One beat of an expanded delegation exchange (from run_steps rows). */
+/** One beat of an expanded delegation exchange (from run_steps or a cached FOH session). */
 export type ExchangeStep =
-  | { kind: "message"; role: "user" | "assistant"; text: string }
+  | {
+      kind: "message";
+      role: "user" | "assistant";
+      text: string;
+      /**
+       * FOH-session-backed exchanges only: user messages after the initial ask arrived via
+       * the FOH answer path — they're the human answering, not the asking agent.
+       */
+      speaker?: "human";
+    }
   | { kind: "tool"; toolName: string | null; summary: string | null; isError: boolean }
   | { kind: "error"; text: string };
 
@@ -241,6 +250,92 @@ export function summarizeExchangeSteps(rows: ExchangeStepRow[]): ExchangeStep[] 
       const text = typeof data.message === "string" ? data.message : "step failed";
       steps.push({ kind: "error", text });
     }
+  }
+  return steps;
+}
+
+/**
+ * The slice of a projected `ChatEntry` the exchange needs — structural so the pure mapper
+ * never imports server code (ChatEntry is assignable to it).
+ */
+export interface ExchangeEntry {
+  role: "user" | "assistant";
+  text: string;
+  steps?: Array<{
+    toolName?: string | null;
+    summary?: string | null;
+    isError?: boolean;
+    message?: string | null;
+  }>;
+  inputRequests?: Array<{ prompt: string }>;
+  error?: string | null;
+}
+
+/**
+ * Project a cached FOH session transcript (the delegate's REAL exchange for a relay-parked
+ * delegation) into exchange steps. Attribution: assistant beats (replies, tools, parked
+ * questions) are the delegate's; the FIRST user message is the relayed ask (the asking
+ * agent's — usually deduped against the header by `dropLeadingAsk`); every later user
+ * message arrived via the FOH answer path, i.e. the human answering (`speaker: "human"`).
+ */
+export function exchangeStepsFromEntries(entries: ExchangeEntry[]): ExchangeStep[] {
+  const steps: ExchangeStep[] = [];
+  let sawUser = false;
+  for (const entry of entries) {
+    if (entry.role === "user") {
+      if (entry.text) {
+        steps.push(
+          sawUser
+            ? { kind: "message", role: "user", text: entry.text, speaker: "human" }
+            : { kind: "message", role: "user", text: entry.text },
+        );
+      }
+      sawUser = true;
+      continue;
+    }
+    for (const step of entry.steps ?? []) {
+      if (step.toolName) {
+        steps.push({
+          kind: "tool",
+          toolName: step.toolName,
+          summary: step.summary ?? null,
+          isError: step.isError ?? false,
+        });
+      } else if (step.isError) {
+        steps.push({ kind: "error", text: step.message || "step failed" });
+      }
+    }
+    if (entry.text) {
+      steps.push({ kind: "message", role: "assistant", text: entry.text });
+    }
+    // A parked question never lands in the reply text — surface the prompt as the
+    // delegate speaking (that's what the human saw and answered).
+    for (const request of entry.inputRequests ?? []) {
+      if (request.prompt) {
+        steps.push({ kind: "message", role: "assistant", text: request.prompt });
+      }
+    }
+    if (entry.error) steps.push({ kind: "error", text: entry.error });
+  }
+  return steps;
+}
+
+/**
+ * The exchange header already quotes the ask — when the transcript opens with the same
+ * user message (the relayed ask), drop it so the ask renders once, not twice.
+ */
+export function dropLeadingAsk(
+  steps: ExchangeStep[],
+  ask: string | null,
+): ExchangeStep[] {
+  const head = steps[0];
+  if (
+    ask != null &&
+    head?.kind === "message" &&
+    head.role === "user" &&
+    head.text.trim() === ask.trim()
+  ) {
+    return steps.slice(1);
   }
   return steps;
 }

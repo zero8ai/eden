@@ -7,6 +7,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  dropLeadingAsk,
+  exchangeStepsFromEntries,
   projectActivity,
   summarizeExchangeSteps,
   type ActivityDelegationRow,
@@ -253,5 +255,79 @@ describe("summarizeExchangeSteps", () => {
       { kind: "error", text: "overloaded" },
       { kind: "tool", toolName: null, summary: null, isError: true },
     ]);
+  });
+});
+
+describe("exchangeStepsFromEntries", () => {
+  const ASK = 'From your teammate "ivy": draft the release note.';
+
+  it("projects a parked FOH exchange: ask, parked question, human answer, final reply", () => {
+    const steps = exchangeStepsFromEntries([
+      { role: "user", text: ASK },
+      {
+        role: "assistant",
+        text: "",
+        steps: [{ toolName: null, isError: false }], // quiet model beat — dropped
+        inputRequests: [{ prompt: "Technical or business audience?" }],
+      },
+      { role: "user", text: "Technical audience" },
+      { role: "assistant", text: "This release delivers stability improvements." },
+    ]);
+    expect(steps).toEqual([
+      { kind: "message", role: "user", text: ASK },
+      { kind: "message", role: "assistant", text: "Technical or business audience?" },
+      // Only the first user message is the asker's; later ones are the human answering.
+      {
+        kind: "message",
+        role: "user",
+        text: "Technical audience",
+        speaker: "human",
+      },
+      {
+        kind: "message",
+        role: "assistant",
+        text: "This release delivers stability improvements.",
+      },
+    ]);
+  });
+
+  it("maps tool steps, surfaces failed no-tool steps and turn errors", () => {
+    const steps = exchangeStepsFromEntries([
+      {
+        role: "assistant",
+        text: "DNS looks fine.",
+        steps: [
+          { toolName: "bash", summary: "dig eden.dev", isError: false },
+          { toolName: null, isError: true, message: "overloaded" },
+        ],
+        error: "the turn failed late",
+      },
+    ]);
+    expect(steps).toEqual([
+      { kind: "tool", toolName: "bash", summary: "dig eden.dev", isError: false },
+      { kind: "error", text: "overloaded" },
+      { kind: "message", role: "assistant", text: "DNS looks fine." },
+      { kind: "error", text: "the turn failed late" },
+    ]);
+  });
+});
+
+describe("dropLeadingAsk", () => {
+  const steps = (first: string) =>
+    exchangeStepsFromEntries([
+      { role: "user", text: first },
+      { role: "assistant", text: "on it" },
+    ]);
+
+  it("drops the leading user message when it equals the ask (the header shows it)", () => {
+    expect(dropLeadingAsk(steps("  check DNS  "), "check DNS")).toEqual([
+      { kind: "message", role: "assistant", text: "on it" },
+    ]);
+  });
+
+  it("keeps a leading user message that differs from the ask, and no-ops on null ask", () => {
+    expect(dropLeadingAsk(steps("something else"), "check DNS")).toHaveLength(2);
+    expect(dropLeadingAsk(steps("check DNS"), null)).toHaveLength(2);
+    expect(dropLeadingAsk([], "check DNS")).toEqual([]);
   });
 });

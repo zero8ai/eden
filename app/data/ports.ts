@@ -10,10 +10,12 @@
 import type {
   agentLinks,
   agents,
+  conversationReads,
   delegations,
   deployments,
   draftChanges,
   environments,
+  inboxItems,
   jobs,
   projects,
   releases,
@@ -32,6 +34,8 @@ export type AgentLink = typeof agentLinks.$inferSelect;
 export type Delegation = typeof delegations.$inferSelect;
 export type Run = typeof runs.$inferSelect;
 export type WorkspaceTask = typeof workspaceTasks.$inferSelect;
+export type InboxItem = typeof inboxItems.$inferSelect;
+export type ConversationRead = typeof conversationReads.$inferSelect;
 
 /** A deployment row joined to its release's version/commit (the list/split view). */
 export interface DeploymentWithRelease {
@@ -292,6 +296,8 @@ export interface DelegationRepo {
     toAgentId: string;
     toEnvironmentId: string | null;
   }): Promise<Delegation>;
+  /** One delegation row — the resume hook checks it's still `waiting` before settling it. */
+  findById(id: string): Promise<Delegation | null>;
   /** Settle a delegation row once the peer turn finishes (or fails). */
   finalize(
     id: string,
@@ -307,6 +313,45 @@ export interface DelegationRepo {
   countActiveEdge(fromAgentId: string, toAgentId: string, since: Date): Promise<number>;
   /** Active (running, not stale) delegations across a project — the project-wide cap. */
   countActiveProject(projectId: string, since: Date): Promise<number>;
+}
+
+/**
+ * Front of House inbox rows (mirrors WorkspaceTaskRepo: a small user-facing projection a
+ * badge polls). Recipient model (D5): `userId` set = that user's item; `userId` NULL = visible
+ * to every user with access to the item's project.
+ */
+export interface InboxItemRepo {
+  insert(input: {
+    projectId: string;
+    sessionId: string;
+    kind: string;
+    prompt?: string | null;
+    requestId?: string | null;
+    agentId?: string | null;
+    userId?: string | null;
+    delegationId?: string | null;
+    runId?: string | null;
+  }): Promise<InboxItem>;
+  /** Mark one item resolved (idempotent on already-resolved rows). */
+  resolve(id: string): Promise<void>;
+  /** Resolve every pending item for a session, optionally only the given kinds. */
+  resolveBySession(sessionId: string, kinds?: string[]): Promise<void>;
+  /** A session's pending items, oldest first (dedupe by requestId happens here). */
+  findPendingBySession(sessionId: string): Promise<InboxItem[]>;
+  /**
+   * The viewer's pending items across their scoped projects, newest first: items addressed to
+   * them (`user_id = userId`) plus team-wide items (`user_id IS NULL`) — D5 visibility.
+   */
+  listPendingForProjects(projectIds: string[], userId: string): Promise<InboxItem[]>;
+  /** Badge count over the same visibility rule as listPendingForProjects. */
+  countPendingForProjects(projectIds: string[], userId: string): Promise<number>;
+}
+
+/** Per-viewer FOH read cursors (D3): unread = session.lastEventAt > lastReadAt. */
+export interface ConversationReadRepo {
+  /** Record the viewer's read cursor; later of (existing, at) wins so cursors only advance. */
+  upsert(sessionId: string, userId: string, at: Date): Promise<void>;
+  listForUser(userId: string, sessionIds: string[]): Promise<ConversationRead[]>;
 }
 
 export interface RunRepo {
@@ -336,4 +381,6 @@ export interface DataStore {
   agentLinks: AgentLinkRepo;
   delegations: DelegationRepo;
   runs: RunRepo;
+  inboxItems: InboxItemRepo;
+  conversationReads: ConversationReadRepo;
 }

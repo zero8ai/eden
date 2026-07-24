@@ -6,6 +6,7 @@ import {
 } from "react-router";
 
 import { auth } from "~/lib/auth.server";
+import { marketingHostRedirect } from "~/lib/marketing-host.server";
 import {
   clearGoogleCallbackCookie,
   isGoogleCallbackStagingRequest,
@@ -100,7 +101,8 @@ function hasValidMutationOrigin(request: Request): boolean {
   }
 }
 
-function safeReturnTo(request: Request, fallback = "/dashboard"): string {
+// Post-login home is Front of House at `/` (FOH D18).
+function safeReturnTo(request: Request, fallback = "/"): string {
   const url = new URL(request.url);
   const candidate = `${url.pathname}${url.search}`;
   return candidate.startsWith("/") && !candidate.startsWith("//")
@@ -198,6 +200,12 @@ export const betterAuthSessionMiddleware: MiddlewareFunction<Response> = async (
   if (!hasValidMutationOrigin(request)) {
     return hardenDynamicResponse(new Response("Forbidden", { status: 403 }));
   }
+
+  // Host split (FOH D11): with MARKETING_HOST configured, the marketing host serves only
+  // the marketing paths and every other GET bounces to the app origin — and the app host
+  // bounces the marketing-only paths back. No-op when the env is unset (self-host default).
+  const hostRedirect = marketingHostRedirect(request);
+  if (hostRedirect) return hardenDynamicResponse(hostRedirect);
 
   // Better Auth's own handler owns all cookies for its endpoints. In particular, sign-out and
   // reset responses must not be followed by an older rolling session cookie from this wrapper.

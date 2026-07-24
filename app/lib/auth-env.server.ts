@@ -57,6 +57,17 @@ function isHttpsOrigin(value: string): boolean {
   }
 }
 
+function isBareHostname(value: string): boolean {
+  if (value.length > 253) return false;
+  const labels = value.split(".");
+  return labels.every(
+    (label) =>
+      label.length >= 1 &&
+      label.length <= 63 &&
+      DOMAIN_LABEL_PATTERN.test(label),
+  );
+}
+
 export function assertProductionAuthEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ): void {
@@ -78,6 +89,22 @@ export function assertProductionAuthEnvironment(
     errors.push(
       "BETTER_AUTH_URL must be an absolute HTTPS origin without credentials, a path, query parameters, or a fragment.",
     );
+  }
+
+  // Optional marketing host (FOH host split, D11): a bare hostname — no scheme, port, path,
+  // or credentials — and never the app host itself (the redirect rules would loop).
+  const marketingHost = env.MARKETING_HOST?.trim() ?? "";
+  if (marketingHost) {
+    if (!isBareHostname(marketingHost)) {
+      errors.push(
+        "MARKETING_HOST must be a bare host such as www.example.com — no scheme, port, path, or credentials.",
+      );
+    } else if (
+      isHttpsOrigin(authUrl) &&
+      new URL(authUrl).hostname === marketingHost.toLowerCase()
+    ) {
+      errors.push("MARKETING_HOST must differ from the BETTER_AUTH_URL host.");
+    }
   }
 
   if (!env.POSTMARK_SERVER_TOKEN?.trim()) {

@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import nodemailer from "nodemailer";
 import { Models, ServerClient } from "postmark";
 
@@ -19,6 +21,23 @@ function fromAddress(): string {
 }
 
 function createEmailClient(): EmailSender {
+  // The client is a module-load singleton (see `sendEmail` below), so all of
+  // these env vars — including MAILBOX_DIR — must be set before server start.
+  const mailboxDir = process.env.MAILBOX_DIR?.trim();
+  if (process.env.NODE_ENV !== "production" && mailboxDir) {
+    // Dev/e2e file mailbox: wins over SMTP so test runs capture email even
+    // when SMTP_URL is also configured. Never active in production.
+    console.info(`Email client initialized with file mailbox: ${mailboxDir}`);
+    return async ({ to, subject, html }) => {
+      await mkdir(mailboxDir, { recursive: true });
+      const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+      await writeFile(
+        join(mailboxDir, name),
+        JSON.stringify({ to, subject, html }),
+      );
+    };
+  }
+
   const smtpUrl = process.env.SMTP_URL?.trim();
   if (process.env.NODE_ENV !== "production" && smtpUrl) {
     const transport = nodemailer.createTransport(smtpUrl);

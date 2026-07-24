@@ -110,6 +110,7 @@ export const loader = (args: LoaderFunctionArgs) =>
 
       if (snapshot.agentId) {
         const rows = await listPlaygroundSessions({
+          surface: "assistant",
           projectId: project.id,
           agentId: snapshot.agentId,
           userId: auth.user!.id,
@@ -243,6 +244,7 @@ export async function action(args: ActionFunctionArgs) {
       projectId: project.id,
       agentId: agent.id,
       userId: auth.user.id,
+      surface: "assistant",
     });
     throw redirect(
       `/repos/${project.id}/assistant?session=${encodeURIComponent(session.id)}`,

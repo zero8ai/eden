@@ -5,7 +5,17 @@
  * not merge a parent route's `meta` into children, so the shared tags live here and
  * each public route spreads them in.
  */
-export const SITE_URL = "https://eden.zero8.ai";
+// Canonical/OG URLs follow the configured marketing host (host split, D11). The env read is
+// guarded because meta functions also run in the browser, where `process` does not exist —
+// crawlers only ever see the server-rendered document, so the SSR value is the one that
+// matters and the client-side fallback to the constant is harmless.
+const configuredMarketingHost =
+  typeof process !== "undefined"
+    ? process.env.MARKETING_HOST?.trim()
+    : undefined;
+export const SITE_URL = configuredMarketingHost
+  ? `https://${configuredMarketingHost}`
+  : "https://eden.zero8.ai";
 
 /** Absolute URL of the social share image (1200×630). Served from /public. */
 export const OG_IMAGE = `${SITE_URL}/og.png`;

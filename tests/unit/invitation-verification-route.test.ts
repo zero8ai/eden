@@ -179,7 +179,7 @@ describe("invitation verification route", () => {
     expect(mocks.dbWhere).toHaveBeenCalledOnce();
     expect(mocks.acceptInvitation).toHaveBeenCalledOnce();
     expect(response?.status).toBe(302);
-    expect(response?.headers.get("location")).toBe("/dashboard");
+    expect(response?.headers.get("location")).toBe("/");
   });
 
   it("ignores a delivery token bound to a different invitation", async () => {
@@ -238,6 +238,6 @@ describe("invitation verification route", () => {
     }
 
     expect(mocks.dbUpdate).not.toHaveBeenCalled();
-    expect(response?.headers.get("location")).toBe("/dashboard");
+    expect(response?.headers.get("location")).toBe("/");
   });
 });

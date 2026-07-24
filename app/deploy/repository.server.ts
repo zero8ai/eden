@@ -102,4 +102,12 @@ export async function deleteRepository(
     meta: { projectId: project.id, environments: envs.length, teardownIssues },
   });
   await store.projects.deleteById(project.id);
+
+  // The repo's Better Auth team (FOH D9) is not covered by the projects cascade — remove it
+  // best-effort after the row delete. Lazy import keeps the Better Auth singleton out of this
+  // module's graph for unit tests; deleteProjectTeam itself never throws.
+  if (project.teamId) {
+    const { deleteProjectTeam } = await import("~/auth/teams.server");
+    await deleteProjectTeam(project.orgId, project.teamId);
+  }
 }

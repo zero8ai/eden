@@ -51,6 +51,7 @@ import {
 } from "~/components/ui/select";
 import {
   ensureWorkspace,
+  requireBackOfHouse,
   resolveActiveWorkspace,
 } from "~/auth/workspace.server";
 import { selectedCapabilityGroupIds } from "~/capabilities/enablement";
@@ -277,6 +278,8 @@ export const loader = (args: LoaderFunctionArgs) =>
       if (!isTemplateSlug(id)) throw data("Unknown template", { status: 404 });
       await ensureWorkspace(args.request, auth);
       const active = await resolveActiveWorkspace(auth);
+      // Back of house is admin/owner-only (D10); front-of-house members live at `/`.
+      if (active) requireBackOfHouse(active, "page");
       const org = active?.org;
 
       // Resolve composition (includes) up front: the plan, the file preview, the dep/secret

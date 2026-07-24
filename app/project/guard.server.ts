@@ -9,6 +9,7 @@ import type { SessionAuth } from "~/auth/session.server";
 import {
   ensureWorkspace,
   listUserWorkspaces,
+  requireBackOfHouse,
   resolveActiveWorkspace,
   setActiveWorkspace,
 } from "~/auth/workspace.server";
@@ -70,6 +71,10 @@ export async function requireProject(
     active = await resolveActiveWorkspace(auth);
     if (!active) throw data("No organization", { status: 403 });
   }
+  // Every /repos page and /api/repos resource route funnels through here, so this is THE
+  // back-of-house chokepoint (D10): front-of-house members are turned away before any
+  // project data loads. FOH routes use their own guard, never requireProject.
+  requireBackOfHouse(active, opts?.request ? "page" : "api");
   const project = projectId
     ? await getProject(active.org.id, projectId)
     : undefined;

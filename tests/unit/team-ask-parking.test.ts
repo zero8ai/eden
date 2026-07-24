@@ -1,0 +1,538 @@
+/**
+ * WP4 — relay parking + wake-on-delegation (Front of House §5), against in-memory fakes.
+ * Pins: a stopped peer is woken through the injected wake dep (and a failed wake denies
+ * cleanly); a parked peer flips the delegation `waiting` (exiting the caps — D7), opens the
+ * agent-opened FOH session with the peer's REAL eve handles + a question-derived title (D6),
+ * backfills the transcript (D8), files team-wide inbox items (D5/D19), and returns the
+ * structured `waiting_on_human` result; parking-machinery failures fall back to the M7 deny;
+ * and `ensureLiveDeploymentForEnvironment` itself (fresh-url discipline, no stale reuse).
+ */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { TurnResult } from "~/agent/talk.server";
+import type { ChatInputRequest } from "~/chat/types";
+import type { DeploymentWithRelease } from "~/data/ports";
+import { ensureLiveDeploymentForEnvironment } from "~/deploy/wake.server";
+import type { PlaygroundSession } from "~/playground/sessions.server";
+import type { AskDeps } from "~/team/ask.server";
+import { runAsk } from "~/team/ask.server";
+import { finalizeDelegationOnResume } from "~/team/resume.server";
+import type { DeployTarget } from "~/seams/types";
+import { makeFakeStore, type FakeStore } from "../fakes/store";
+
+let store: FakeStore;
+
+const PROJECT = "proj_1";
+const NOW = new Date(1_000_000_000);
+
+function request(over: Partial<ChatInputRequest> = {}): ChatInputRequest {
+  return { requestId: "r1", prompt: "Which environment should I target?", ...over };
+}
+
+function turnResult(over: Partial<TurnResult> = {}): TurnResult {
+  return {
+    ok: true,
+    sessionId: "sess_peer",
+    continuationToken: "tok_peer",
+    streamIndex: 7,
+    reply: "Build 42 is live.",
+    replyIsStructured: false,
+    inputRequests: [],
+    modelId: "m/x",
+    turnId: "turn_1",
+    steps: [],
+    messages: [],
+    error: null,
+    ...over,
+  };
+}
+
+async function seedCallerDeployment(): Promise<string> {
+  const rel = await store.releases.insert({
+    projectId: PROJECT,
+    agentId: "pm",
+    version: "v1",
+    gitSha: "a".repeat(40),
+  });
+  const dep = await store.deployments.insert({
+    environmentId: "env_pm_prod",
+    releaseId: rel.id,
+    status: "live",
+    trafficWeight: 100,
+  });
+  return dep.id;
+}
+
+async function seedTarget(status: "live" | "stopped", url: string | null) {
+  const rel = await store.releases.insert({
+    projectId: PROJECT,
+    agentId: "deployer",
+    version: "v1",
+    gitSha: "b".repeat(40),
+  });
+  const dep = await store.deployments.insert({
+    environmentId: "env_dep_prod",
+    releaseId: rel.id,
+    status,
+    trafficWeight: 100,
+  });
+  if (url) await store.deployments.update(dep.id, { url });
+  return dep;
+}
+
+/** A deps bundle whose parking collaborators capture their inputs. */
+function makeDeps(over: Partial<AskDeps> = {}): AskDeps & {
+  createdSessions: Array<Parameters<AskDeps["createSession"]>[0]>;
+  backfills: Array<Parameters<AskDeps["backfillSession"]>[0]>;
+} {
+  const createdSessions: Array<Parameters<AskDeps["createSession"]>[0]> = [];
+  const backfills: Array<Parameters<AskDeps["backfillSession"]>[0]> = [];
+  return {
+    store,
+    sendTurn: async () => turnResult(),
+    recordStart: async () => true,
+    recordFinish: async () => {},
+    resolveRunId: async () => "run_9",
+    ensureLiveDeployment: async () => null,
+    createSession: async (input) => {
+      createdSessions.push(input);
+      return { id: "ps_agent_opened", ...input } as unknown as PlaygroundSession;
+    },
+    backfillSession: async (input) => {
+      backfills.push(input);
+    },
+    now: () => NOW,
+    timeoutMs: 600_000,
+    createdSessions,
+    backfills,
+    ...over,
+  };
+}
+
+/** Capture the delegation id the relay inserts (the fake store has no list surface). */
+function captureDelegationId(): { id: () => string } {
+  const insert = store.delegations.insert.bind(store.delegations);
+  let captured = "";
+  store.delegations.insert = async (input) => {
+    const row = await insert(input);
+    captured = row.id;
+    return row;
+  };
+  return { id: () => captured };
+}
+
+beforeEach(() => {
+  store = makeFakeStore();
+  store.seedProject({ id: PROJECT, orgId: "org_1", repoOwner: "acme", repoName: "team" });
+  store.seedAgent({ id: "pm", projectId: PROJECT, name: "pm", root: "agents/pm/agent" });
+  store.seedAgent({
+    id: "deployer",
+    projectId: PROJECT,
+    name: "deployer",
+    root: "agents/deployer/agent",
+  });
+  store.seedEnvironment({ id: "env_pm_prod", projectId: PROJECT, agentId: "pm", name: "production" });
+  store.seedEnvironment({
+    id: "env_dep_prod",
+    projectId: PROJECT,
+    agentId: "deployer",
+    name: "production",
+  });
+});
+
+describe("runAsk — wake-on-delegation", () => {
+  it("wakes a stopped peer through the injected dep and proceeds", async () => {
+    const deploymentId = await seedCallerDeployment();
+    const stopped = await seedTarget("stopped", "http://stale.local");
+
+    let sentUrl = "";
+    const wake = vi.fn(
+      async (): Promise<DeploymentWithRelease | null> => ({
+        id: stopped.id,
+        status: "live",
+        trafficWeight: 100,
+        url: "http://woken.local",
+        errorDetail: null,
+        createdAt: stopped.createdAt,
+        releaseId: stopped.releaseId,
+        version: "v1",
+        gitSha: "b".repeat(40),
+      }),
+    );
+    const deps = makeDeps({
+      ensureLiveDeployment: wake,
+      sendTurn: async (input) => {
+        sentUrl = input.baseUrl;
+        return turnResult();
+      },
+    });
+
+    const res = await runAsk({ deploymentId, teammate: "deployer", message: "go" }, deps);
+
+    expect(wake).toHaveBeenCalledWith("env_dep_prod");
+    expect(sentUrl).toBe("http://woken.local");
+    expect(res).toMatchObject({ ok: true, reply: "Build 42 is live." });
+  });
+
+  it("denies cleanly when the wake fails (returns null)", async () => {
+    const deploymentId = await seedCallerDeployment();
+    await seedTarget("stopped", null);
+    const res = await runAsk(
+      { deploymentId, teammate: "deployer", message: "go" },
+      makeDeps({ ensureLiveDeployment: async () => null }),
+    );
+    expect(res).toEqual({ ok: false, error: expect.stringContaining("couldn't be woken") });
+  });
+
+  it("denies cleanly when the wake throws", async () => {
+    const deploymentId = await seedCallerDeployment();
+    await seedTarget("stopped", null);
+    const res = await runAsk(
+      { deploymentId, teammate: "deployer", message: "go" },
+      makeDeps({
+        ensureLiveDeployment: async () => {
+          throw new Error("docker exploded");
+        },
+      }),
+    );
+    expect(res).toEqual({ ok: false, error: expect.stringContaining("couldn't be woken") });
+  });
+
+  it("keeps the never-deployed denial (nothing to wake, dep never called)", async () => {
+    const deploymentId = await seedCallerDeployment();
+    const wake = vi.fn(async () => null);
+    const res = await runAsk(
+      { deploymentId, teammate: "deployer", message: "go" },
+      makeDeps({ ensureLiveDeployment: wake }),
+    );
+    expect(res).toEqual({ ok: false, error: expect.stringContaining("never been deployed") });
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("keeps the no-live denial for failed-only rows (nothing stopped to wake)", async () => {
+    const deploymentId = await seedCallerDeployment();
+    const rel = await store.releases.insert({
+      projectId: PROJECT,
+      agentId: "deployer",
+      version: "v1",
+      gitSha: "c".repeat(40),
+    });
+    await store.deployments.insert({
+      environmentId: "env_dep_prod",
+      releaseId: rel.id,
+      status: "failed",
+      trafficWeight: 0,
+    });
+    const wake = vi.fn(async () => null);
+    const res = await runAsk(
+      { deploymentId, teammate: "deployer", message: "go" },
+      makeDeps({ ensureLiveDeployment: wake }),
+    );
+    expect(res).toEqual({ ok: false, error: expect.stringContaining("no live deployment") });
+    expect(wake).not.toHaveBeenCalled();
+  });
+});
+
+describe("ensureLiveDeploymentForEnvironment", () => {
+  const startTarget = (start: DeployTarget["start"]): DeployTarget =>
+    ({ start }) as unknown as DeployTarget;
+
+  it("returns a live row with a url without touching the deploy target", async () => {
+    const dep = await seedTarget("live", "http://live.local");
+    const start = vi.fn();
+    const row = await ensureLiveDeploymentForEnvironment("env_dep_prod", {
+      store,
+      deployTarget: startTarget(start),
+    });
+    expect(row).toMatchObject({ id: dep.id, url: "http://live.local" });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("wakes a stopped row and flips it live with the FRESH url, never the stale one", async () => {
+    const dep = await seedTarget("stopped", "http://stale.local");
+    const start = vi.fn(async () => ({ status: "live" as const, url: "http://fresh.local" }));
+    const row = await ensureLiveDeploymentForEnvironment("env_dep_prod", {
+      store,
+      deployTarget: startTarget(start),
+    });
+    expect(start).toHaveBeenCalledWith(dep.id);
+    expect(row).toMatchObject({ id: dep.id, status: "live", url: "http://fresh.local" });
+    const [stored] = await store.deployments.listByEnvironment("env_dep_prod");
+    expect(stored).toMatchObject({ status: "live", url: "http://fresh.local" });
+  });
+
+  it("returns null (row untouched) when the wake health is not live", async () => {
+    const dep = await seedTarget("stopped", null);
+    const row = await ensureLiveDeploymentForEnvironment("env_dep_prod", {
+      store,
+      deployTarget: startTarget(async () => ({ status: "failed", detail: "no boot" })),
+    });
+    expect(row).toBeNull();
+    expect(await store.deployments.findById(dep.id)).toMatchObject({ status: "stopped" });
+  });
+
+  it("returns null when the start throws", async () => {
+    await seedTarget("stopped", null);
+    const row = await ensureLiveDeploymentForEnvironment("env_dep_prod", {
+      store,
+      deployTarget: startTarget(async () => {
+        throw new Error("dockerd down");
+      }),
+    });
+    expect(row).toBeNull();
+  });
+
+  it("returns null when the environment has no live or stopped rows", async () => {
+    const row = await ensureLiveDeploymentForEnvironment("env_dep_prod", {
+      store,
+      deployTarget: startTarget(vi.fn()),
+    });
+    expect(row).toBeNull();
+  });
+});
+
+describe("runAsk — relay parking", () => {
+  it("parks: delegation waiting, agent-opened session with real handles, backfill, inbox, structured result", async () => {
+    const deploymentId = await seedCallerDeployment();
+    const live = await seedTarget("live", "http://deployer.local");
+    const deleg = captureDelegationId();
+
+    const requests = [
+      request(),
+      request({ requestId: "r2", prompt: "Proceed with the merge?", display: "confirmation" }),
+    ];
+    const deps = makeDeps({
+      sendTurn: async () => turnResult({ reply: null, inputRequests: requests }),
+    });
+
+    const res = await runAsk(
+      { deploymentId, teammate: "deployer", message: "Ship the release" },
+      deps,
+    );
+
+    expect(res).toEqual({
+      ok: true,
+      status: "waiting_on_human",
+      teammate: "deployer",
+      question: "Which environment should I target?",
+      note: expect.stringContaining("do not re-ask"),
+    });
+
+    // Delegation flipped waiting with the peer handles — and it exits the caps (D7).
+    const delegation = await store.delegations.findById(deleg.id());
+    expect(delegation).toMatchObject({
+      status: "waiting",
+      externalSessionId: "sess_peer",
+      runId: "run_9",
+    });
+    expect(await store.delegations.countActiveEdge("pm", "deployer", new Date(0))).toBe(0);
+    expect(await store.delegations.countActiveProject(PROJECT, new Date(0))).toBe(0);
+
+    // Agent-opened session row: FOH surface, no creator, question-derived title, REAL handles.
+    expect(deps.createdSessions).toEqual([
+      {
+        projectId: PROJECT,
+        agentId: "deployer",
+        userId: null,
+        surface: "foh",
+        environmentId: "env_dep_prod",
+        deploymentId: live.id,
+        releaseId: live.releaseId,
+        version: "v1",
+        title: "Which environment should I target?",
+        openedByAgentId: "deployer",
+        delegationId: deleg.id(),
+        externalSessionId: "sess_peer",
+        continuationToken: "tok_peer",
+        streamIndex: 7,
+        status: "waiting",
+        pendingInputAt: NOW,
+        lastEventAt: NOW,
+      },
+    ]);
+
+    // D8: transcript backfilled from eve for the new row, against the live target url.
+    expect(deps.backfills).toHaveLength(1);
+    expect(deps.backfills[0].session).toMatchObject({ id: "ps_agent_opened" });
+    expect(deps.backfills[0].target).toMatchObject({
+      url: "http://deployer.local",
+      deploymentId: live.id,
+      environmentName: "production",
+    });
+
+    // Inbox: one team-wide item per request, D19 kind mapping, delegation + run refs.
+    const pending = await store.inboxItems.findPendingBySession("ps_agent_opened");
+    expect(pending).toMatchObject([
+      {
+        kind: "question",
+        prompt: "Which environment should I target?",
+        requestId: "r1",
+        userId: null,
+        agentId: "deployer",
+        delegationId: deleg.id(),
+        runId: "run_9",
+        projectId: PROJECT,
+      },
+      { kind: "approval", requestId: "r2", userId: null },
+    ]);
+  });
+
+  it("parks even when assistant text preceded the ask (settleFohTurn semantics)", async () => {
+    const deploymentId = await seedCallerDeployment();
+    await seedTarget("live", "http://deployer.local");
+    const res = await runAsk(
+      { deploymentId, teammate: "deployer", message: "hi" },
+      makeDeps({
+        sendTurn: async () =>
+          turnResult({ reply: "One thing before I continue —", inputRequests: [request()] }),
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, status: "waiting_on_human" });
+  });
+
+  it("fails the old way when the parked turn has no session handle to resume on", async () => {
+    const deploymentId = await seedCallerDeployment();
+    await seedTarget("live", "http://deployer.local");
+    const deleg = captureDelegationId();
+    const deps = makeDeps({
+      sendTurn: async () =>
+        turnResult({ reply: null, sessionId: null, inputRequests: [request()] }),
+    });
+    const res = await runAsk({ deploymentId, teammate: "deployer", message: "hi" }, deps);
+    expect(res).toEqual({
+      ok: false,
+      error: expect.stringContaining("needs input to continue"),
+    });
+    expect(await store.delegations.findById(deleg.id())).toMatchObject({ status: "failed" });
+    expect(deps.createdSessions).toHaveLength(0);
+  });
+
+  it("falls back to the deny path when the parking machinery fails (no dangling waiting row)", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const deploymentId = await seedCallerDeployment();
+    await seedTarget("live", "http://deployer.local");
+    const deleg = captureDelegationId();
+    const res = await runAsk(
+      { deploymentId, teammate: "deployer", message: "hi" },
+      makeDeps({
+        sendTurn: async () => turnResult({ reply: null, inputRequests: [request()] }),
+        createSession: async () => {
+          throw new Error("insert failed");
+        },
+      }),
+    );
+    expect(res).toEqual({
+      ok: false,
+      error: expect.stringContaining("needs input to continue"),
+    });
+    expect(await store.delegations.findById(deleg.id())).toMatchObject({ status: "failed" });
+    error.mockRestore();
+  });
+
+  it("keeps a failed backfill best-effort: the park still lands", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const deploymentId = await seedCallerDeployment();
+    await seedTarget("live", "http://deployer.local");
+    const deleg = captureDelegationId();
+    const res = await runAsk(
+      { deploymentId, teammate: "deployer", message: "hi" },
+      makeDeps({
+        sendTurn: async () => turnResult({ reply: null, inputRequests: [request()] }),
+        backfillSession: async () => {
+          throw new Error("eve unreachable");
+        },
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, status: "waiting_on_human" });
+    expect(await store.delegations.findById(deleg.id())).toMatchObject({ status: "waiting" });
+    expect(await store.inboxItems.findPendingBySession("ps_agent_opened")).toHaveLength(1);
+    error.mockRestore();
+  });
+
+  it("leaves the completed and empty-reply paths unchanged", async () => {
+    const deploymentId = await seedCallerDeployment();
+    await seedTarget("live", "http://deployer.local");
+    const deleg = captureDelegationId();
+
+    const ok = await runAsk(
+      { deploymentId, teammate: "deployer", message: "hi" },
+      makeDeps(),
+    );
+    expect(ok).toMatchObject({ ok: true, reply: "Build 42 is live." });
+    expect(await store.delegations.findById(deleg.id())).toMatchObject({
+      status: "completed",
+    });
+
+    const empty = await runAsk(
+      { deploymentId, teammate: "deployer", message: "hi" },
+      makeDeps({ sendTurn: async () => turnResult({ reply: "   " }) }),
+    );
+    expect(empty).toEqual({ ok: false, error: '"deployer" finished without a reply.' });
+  });
+});
+
+describe("finalizeDelegationOnResume", () => {
+  async function seedWaiting(): Promise<string> {
+    const row = await store.delegations.insert({
+      projectId: PROJECT,
+      fromAgentId: "pm",
+      fromEnvironmentId: "env_pm_prod",
+      toAgentId: "deployer",
+      toEnvironmentId: "env_dep_prod",
+    });
+    await store.delegations.finalize(row.id, {
+      status: "waiting",
+      externalSessionId: "sess_peer",
+      runId: "run_9",
+    });
+    return row.id;
+  }
+
+  it("completes a waiting delegation on a completed resume", async () => {
+    const id = await seedWaiting();
+    await finalizeDelegationOnResume({ delegationId: id, outcome: "completed" }, store);
+    expect(await store.delegations.findById(id)).toMatchObject({
+      status: "completed",
+      externalSessionId: "sess_peer",
+      runId: "run_9",
+    });
+  });
+
+  it("fails a waiting delegation with the turn error on a failed resume", async () => {
+    const id = await seedWaiting();
+    await finalizeDelegationOnResume(
+      { delegationId: id, outcome: "failed", error: "boom" },
+      store,
+    );
+    expect(await store.delegations.findById(id)).toMatchObject({
+      status: "failed",
+      error: "boom",
+    });
+  });
+
+  it("keeps a re-parked delegation waiting", async () => {
+    const id = await seedWaiting();
+    await finalizeDelegationOnResume({ delegationId: id, outcome: "parked" }, store);
+    expect(await store.delegations.findById(id)).toMatchObject({ status: "waiting" });
+  });
+
+  it("never touches running/settled rows (the relay owns those) or missing ids", async () => {
+    const running = await store.delegations.insert({
+      projectId: PROJECT,
+      fromAgentId: "pm",
+      fromEnvironmentId: "env_pm_prod",
+      toAgentId: "deployer",
+      toEnvironmentId: "env_dep_prod",
+    });
+    await finalizeDelegationOnResume(
+      { delegationId: running.id, outcome: "completed" },
+      store,
+    );
+    expect(await store.delegations.findById(running.id)).toMatchObject({
+      status: "running",
+    });
+    await expect(
+      finalizeDelegationOnResume({ delegationId: "deleg_missing", outcome: "completed" }, store),
+    ).resolves.toBeUndefined();
+  });
+});

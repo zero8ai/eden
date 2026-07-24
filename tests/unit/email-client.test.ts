@@ -1,3 +1,6 @@
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -24,6 +27,7 @@ const saved = {
   SMTP_URL: process.env.SMTP_URL,
   POSTMARK_SERVER_TOKEN: process.env.POSTMARK_SERVER_TOKEN,
   FROM_EMAIL: process.env.FROM_EMAIL,
+  MAILBOX_DIR: process.env.MAILBOX_DIR,
 };
 
 function restore(name: keyof typeof saved) {
@@ -46,6 +50,7 @@ describe("transactional email client", () => {
     delete process.env.SMTP_URL;
     delete process.env.POSTMARK_SERVER_TOKEN;
     delete process.env.FROM_EMAIL;
+    delete process.env.MAILBOX_DIR;
   });
 
   afterEach(() => {
@@ -53,6 +58,7 @@ describe("transactional email client", () => {
     restore("SMTP_URL");
     restore("POSTMARK_SERVER_TOKEN");
     restore("FROM_EMAIL");
+    restore("MAILBOX_DIR");
     vi.restoreAllMocks();
   });
 
@@ -128,5 +134,89 @@ describe("transactional email client", () => {
     expect(warning).toHaveBeenCalled();
     expect(mocks.createTransport).not.toHaveBeenCalled();
     expect(mocks.postmarkSend).not.toHaveBeenCalled();
+  });
+
+  describe("MAILBOX_DIR file mailbox", () => {
+    let baseDir: string;
+
+    beforeEach(async () => {
+      baseDir = await mkdtemp(join(tmpdir(), "eden-mailbox-"));
+    });
+
+    afterEach(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it("writes each email to a JSON file, creating the directory", async () => {
+      process.env.NODE_ENV = "development";
+      // Nested + nonexistent to verify the recursive mkdir.
+      process.env.MAILBOX_DIR = join(baseDir, "nested", "mailbox");
+      const { sendEmail } = await freshClient();
+
+      await sendEmail({
+        to: "invitee@example.com",
+        subject: "Invite",
+        html: "<p>Join</p>",
+      });
+
+      const files = await readdir(process.env.MAILBOX_DIR);
+      expect(files).toHaveLength(1);
+      expect(files[0]).toMatch(/^\d+-[a-z0-9]+\.json$/);
+      const body = JSON.parse(
+        await readFile(join(process.env.MAILBOX_DIR, files[0]), "utf8"),
+      );
+      expect(body).toEqual({
+        to: "invitee@example.com",
+        subject: "Invite",
+        html: "<p>Join</p>",
+      });
+      expect(mocks.createTransport).not.toHaveBeenCalled();
+      expect(mocks.postmarkSend).not.toHaveBeenCalled();
+    });
+
+    it("wins over SMTP_URL in non-production", async () => {
+      process.env.NODE_ENV = "development";
+      process.env.MAILBOX_DIR = baseDir;
+      process.env.SMTP_URL = "smtp://127.0.0.1:1025";
+      process.env.POSTMARK_SERVER_TOKEN = "postmark-token";
+      const { sendEmail } = await freshClient();
+
+      await sendEmail({
+        to: "member@example.com",
+        subject: "Invite",
+        html: "<p>Join</p>",
+      });
+
+      expect(await readdir(baseDir)).toHaveLength(1);
+      expect(mocks.createTransport).not.toHaveBeenCalled();
+      expect(mocks.smtpSend).not.toHaveBeenCalled();
+      expect(mocks.postmarkSend).not.toHaveBeenCalled();
+    });
+
+    it("is ignored in production: Postmark is still chosen", async () => {
+      process.env.NODE_ENV = "production";
+      process.env.MAILBOX_DIR = baseDir;
+      process.env.POSTMARK_SERVER_TOKEN = "postmark-token";
+      process.env.FROM_EMAIL = "Eden <noreply@example.com>";
+      const { sendEmail } = await freshClient();
+
+      await sendEmail({
+        to: "person@example.com",
+        subject: "Reset",
+        html: "<p>Reset</p>",
+      });
+
+      expect(mocks.postmarkSend).toHaveBeenCalledTimes(1);
+      expect(await readdir(baseDir)).toHaveLength(0);
+    });
+
+    it("is ignored in production: startup still fails without Postmark", async () => {
+      process.env.NODE_ENV = "production";
+      process.env.MAILBOX_DIR = baseDir;
+      await expect(freshClient()).rejects.toThrow(
+        "POSTMARK_SERVER_TOKEN is required in production.",
+      );
+      expect(await readdir(baseDir)).toHaveLength(0);
+    });
   });
 });

@@ -55,8 +55,9 @@ function buildDescription(teammates) {
     "",
     "Each ask opens a FRESH conversation with the teammate: they cannot see this " +
       "conversation, so write a complete, self-contained request that includes every piece of " +
-      "context they need. The returned value is the teammate's final answer — there is no " +
-      "follow-up on the same thread.",
+      "context they need. The returned value is the teammate's final answer. If it instead " +
+      'carries status "waiting_on_human", the teammate paused to ask a human a question - ' +
+      "the delegation resumes and finishes on its own once a human answers, so do not re-ask.",
   ].join("\\n");
 }
 

@@ -1,6 +1,8 @@
+// The default post-auth destination is Front of House at `/` (FOH D18); back of house
+// keeps its own /dashboard entry for admins/owners.
 export function safeReturnTo(
   value: string | null | undefined,
-  fallback = "/dashboard",
+  fallback = "/",
 ): string {
   // Backslashes are treated as slashes by browsers ("/\evil.com" → "//evil.com").
   if (

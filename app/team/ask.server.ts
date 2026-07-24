@@ -6,19 +6,30 @@
  * and the correlation row — lives here so the flow is unit-testable against an injected store +
  * `sendTurn` + recorders, with zero I/O.
  *
- * Business failures the model should read (no permission, no live peer, caps hit, the peer parked
- * on a question) come back as `{ ok: false, error }` — the ROUTE returns those with HTTP 200 so
- * the tool surfaces the text. Only a bad token is a 401, and that check is the route's.
+ * Business failures the model should read (no permission, no reachable peer, caps hit) come back
+ * as `{ ok: false, error }` — the ROUTE returns those with HTTP 200 so the tool surfaces the
+ * text. Only a bad token is a 401, and that check is the route's. A peer that parks on a human
+ * question is NOT a failure (Front of House §5 relay parking): the delegation flips `waiting`,
+ * an agent-opened FOH session adopts the peer's eve handles, and the caller gets a structured
+ * `waiting_on_human` result — also on the 200 path.
  */
 import type { TurnResult } from "~/agent/talk.server";
 import { sendTurn } from "~/agent/talk.server";
-import type { DataStore } from "~/data/ports";
+import type { Target } from "~/chat/playground.server";
+import type { DataStore, DeploymentWithRelease } from "~/data/ports";
+import { ensureLiveDeploymentForEnvironment } from "~/deploy/wake.server";
+import { openInboxQuestion } from "~/foh/inbox.server";
 import {
   externalRunId,
   recordTurnFinish,
   recordTurnStart,
 } from "~/observability/record.server";
 import { getRunIdByExternal } from "~/observability/store.server";
+import {
+  backfillPlaygroundEventsFromEve,
+  createPlaygroundSession,
+  titleFromMessage,
+} from "~/playground/sessions.server";
 import { getRuntime } from "~/seams/index.server";
 
 /** Default relay/peer-turn budget; the tool's fetch adds 60s of slack on top. */
@@ -43,6 +54,11 @@ export interface AskDeps {
   recordStart: typeof recordTurnStart;
   recordFinish: typeof recordTurnFinish;
   resolveRunId: (projectId: string, externalRunId: string) => Promise<string | null>;
+  /** Wake a stopped peer (scale-to-zero) — injected so tests fake the container start. */
+  ensureLiveDeployment: (environmentId: string) => Promise<DeploymentWithRelease | null>;
+  /** FOH session substrate for relay parking (D6/D8) — injected: unit tests stay zero-I/O. */
+  createSession: typeof createPlaygroundSession;
+  backfillSession: typeof backfillPlaygroundEventsFromEve;
   now: () => Date;
   timeoutMs: number;
 }
@@ -54,6 +70,10 @@ export function defaultAskDeps(): AskDeps {
     recordStart: recordTurnStart,
     recordFinish: recordTurnFinish,
     resolveRunId: getRunIdByExternal,
+    ensureLiveDeployment: (environmentId) =>
+      ensureLiveDeploymentForEnvironment(environmentId),
+    createSession: createPlaygroundSession,
+    backfillSession: backfillPlaygroundEventsFromEve,
     now: () => new Date(),
     timeoutMs: delegationTimeoutMs(),
   };
@@ -74,6 +94,18 @@ export type AskResult =
       sessionId: string | null;
       runId: string | null;
       runPath: string | null;
+    }
+  /**
+   * The peer parked on a human question (§5 relay parking). The delegation stays open
+   * (`waiting`) and resumes on its own when a human answers in Eden — the caller should NOT
+   * re-ask. Rides the same HTTP 200 path as every business outcome.
+   */
+  | {
+      ok: true;
+      status: "waiting_on_human";
+      teammate: string;
+      question: string;
+      note: string;
     }
   | { ok: false; error: string };
 
@@ -137,7 +169,8 @@ export async function runAsk(input: AskInput, deps: AskDeps): Promise<AskResult>
   }
 
   // 5. Target env = the peer's environment with the SAME NAME as the caller's (ship-fan-out
-  //    convention). 6. It must have a live deployment with a reachable url.
+  //    convention). 6. It must have a live deployment with a reachable url — or a `stopped`
+  //    one we can wake (§5 wake-on-delegation: a scaled-to-zero peer is started, not denied).
   const targetEnvs = await store.environments.listByAgent(target.id);
   const targetEnv = targetEnvs.find((e) => e.name === callerEnv.name);
   if (!targetEnv) {
@@ -146,13 +179,22 @@ export async function runAsk(input: AskInput, deps: AskDeps): Promise<AskResult>
     );
   }
   const targetDeployments = await store.deployments.listByEnvironment(targetEnv.id);
-  const live = targetDeployments.find((d) => d.status === "live" && d.url);
+  let live = targetDeployments.find((d) => d.status === "live" && d.url) ?? null;
+  if (!live) {
+    const stopped = targetDeployments.find((d) => d.status === "stopped");
+    if (!stopped) {
+      const everDeployed = targetDeployments.length > 0;
+      return deny(
+        everDeployed
+          ? `"${teammate}" has no live deployment in "${callerEnv.name}" right now — it needs to be deployed and running.`
+          : `"${teammate}" has never been deployed to "${callerEnv.name}" — deploy it before delegating.`,
+      );
+    }
+    live = await deps.ensureLiveDeployment(targetEnv.id).catch(() => null);
+  }
   if (!live || !live.url) {
-    const everDeployed = targetDeployments.length > 0;
     return deny(
-      everDeployed
-        ? `"${teammate}" has no live deployment in "${callerEnv.name}" right now — it needs to be deployed and running.`
-        : `"${teammate}" has never been deployed to "${callerEnv.name}" — deploy it before delegating.`,
+      `"${teammate}" is stopped in "${callerEnv.name}" and couldn't be woken — try again shortly.`,
     );
   }
 
@@ -228,18 +270,128 @@ export async function runAsk(input: AskInput, deps: AskDeps): Promise<AskResult>
 
   const runPath = runId ? runPathFor(project.id, target.name, runId) : null;
 
-  // 9. Parked-on-input turns don't compose across a delegation (D5) — surface the request text.
-  //    A turn that settled "ok" with NO reply is a failure too: a "successful" delegation with
-  //    nothing in it would only confuse the calling model.
-  const parked =
-    result.inputRequests.length > 0 && (!result.reply || !result.reply.trim());
-  const emptyReply = result.ok && !parked && (!result.reply || !result.reply.trim());
-  if (parked || emptyReply || !result.ok) {
-    const error = parked
-      ? `"${teammate}" needs input to continue: ${result.inputRequests[0].prompt}`
-      : emptyReply
-        ? `"${teammate}" finished without a reply.`
-        : (result.error ?? `"${teammate}" couldn't complete the request.`);
+  // 9a. The peer turn failed outright — settle the row and surface the error.
+  if (!result.ok) {
+    const error = result.error ?? `"${teammate}" couldn't complete the request.`;
+    await store.delegations.finalize(delegation.id, {
+      status: "failed",
+      error,
+      externalSessionId: result.sessionId,
+      runId,
+    });
+    return deny(error);
+  }
+
+  // 9b. Relay parking (§5): the peer stopped to ask a human. No longer a failure — flip the
+  //     delegation `waiting` (it exits the concurrency caps by construction: caps count only
+  //     `running` — D7), open an agent-opened FOH session over the SAME eve session (real
+  //     handles, so the ordinary FOH continuation send resumes the peer — never a second eve
+  //     stream consumer), backfill its transcript (D8), file the team-wide inbox item (D5),
+  //     and hand the calling model a structured waiting result. Matches the drain's park rule
+  //     (settleFohTurn): assistant text before the ask does NOT negate the park — eve still
+  //     holds the request.
+  if (result.inputRequests.length > 0 && result.sessionId) {
+    const question = result.inputRequests[0].prompt;
+    try {
+      await store.delegations.finalize(delegation.id, {
+        status: "waiting",
+        externalSessionId: result.sessionId,
+        runId,
+      });
+      const peerTarget: Target = {
+        deploymentId: live.id,
+        environmentId: targetEnv.id,
+        releaseId: live.releaseId,
+        url: live.url,
+        version: live.version,
+        environmentName: targetEnv.name,
+        gitSha: live.gitSha,
+      };
+      const session = await deps.createSession({
+        projectId: project.id,
+        agentId: target.id,
+        userId: null,
+        surface: "foh",
+        environmentId: targetEnv.id,
+        deploymentId: live.id,
+        releaseId: live.releaseId,
+        version: live.version,
+        // D6: title from the QUESTION, never from the delegated ask text — the ask can carry
+        // the caller's private context, and the list title leaks to every team member.
+        title: titleFromMessage(question),
+        openedByAgentId: target.id,
+        delegationId: delegation.id,
+        externalSessionId: result.sessionId,
+        continuationToken: result.continuationToken,
+        streamIndex: result.streamIndex,
+        status: "waiting",
+        pendingInputAt: deps.now(),
+        lastEventAt: deps.now(),
+      });
+      // D8: copy the peer's transcript from eve's durable log into the session cache.
+      // Best-effort: the row's cursor already sits at the turn's end, and the FOH loader
+      // re-backfills an incomplete cache (playgroundCacheIsComplete), so a miss here only
+      // defers the copy — it can never lose events.
+      try {
+        await deps.backfillSession({ session, target: peerTarget });
+      } catch (error) {
+        console.error("[team] parked-peer transcript backfill failed:", error);
+      }
+      for (const request of result.inputRequests) {
+        await openInboxQuestion(
+          {
+            projectId: project.id,
+            sessionId: session.id,
+            agentId: target.id,
+            userId: null,
+            delegationId: delegation.id,
+            runId,
+            request,
+          },
+          store,
+        );
+      }
+      return {
+        ok: true,
+        status: "waiting_on_human",
+        teammate: target.name,
+        question,
+        note: "The delegation is parked until a human answers in Eden; it will resume and finish on its own — do not re-ask.",
+      };
+    } catch (error) {
+      // The parking machinery failed — a `waiting` delegation nobody can answer would dangle
+      // forever, so settle it failed and surface the question (the pre-parking behavior).
+      console.error("[team] relay parking failed:", error);
+      const detail = `"${teammate}" needs input to continue: ${question}`;
+      await store.delegations
+        .finalize(delegation.id, {
+          status: "failed",
+          error: detail,
+          externalSessionId: result.sessionId,
+          runId,
+        })
+        .catch(() => {});
+      return deny(detail);
+    }
+  }
+
+  // 9c. Parked but with NO session handle to resume on — nothing a human could answer into,
+  //     so the M7 behavior stands: surface the request text as a failure.
+  if (result.inputRequests.length > 0) {
+    const error = `"${teammate}" needs input to continue: ${result.inputRequests[0].prompt}`;
+    await store.delegations.finalize(delegation.id, {
+      status: "failed",
+      error,
+      externalSessionId: result.sessionId,
+      runId,
+    });
+    return deny(error);
+  }
+
+  // 9d. A turn that settled "ok" with NO reply is a failure: a "successful" delegation with
+  //     nothing in it would only confuse the calling model.
+  if (!result.reply || !result.reply.trim()) {
+    const error = `"${teammate}" finished without a reply.`;
     await store.delegations.finalize(delegation.id, {
       status: "failed",
       error,

@@ -6,12 +6,26 @@ import type { LoaderFunctionArgs } from "react-router";
 import { SiteHeader, SiteFooter } from "~/components/marketing/site-chrome";
 import { Reveal, Parallax } from "~/components/landing-motion";
 import { caseStudies, getCaseStudy } from "~/lib/case-studies";
+import {
+  appOrigin,
+  isMarketingHost,
+  marketingHostRedirect,
+} from "~/lib/marketing-host.server";
 import { pageMeta } from "~/lib/seo";
 
 export async function loader(args: LoaderFunctionArgs) {
+  // Host split (D11): marketing-host-only when configured (middleware bounces first; this
+  // guard keeps the rule local too).
+  const away = marketingHostRedirect(args.request);
+  if (away) throw away;
   const study = getCaseStudy(args.params.slug ?? "");
   if (!study) throw new Response("Not found", { status: 404 });
-  return sessionLoader(args);
+  const session = await sessionLoader(args);
+  return {
+    ...session,
+    // Cross-host auth CTAs (cookies don't cross subdomains); "" = same-origin links.
+    appOrigin: isMarketingHost(args.request) ? (appOrigin() ?? "") : "",
+  };
 }
 
 export function meta({ params }: Route.MetaArgs) {
@@ -29,7 +43,11 @@ export function meta({ params }: Route.MetaArgs) {
  * module by slug (the loader 404s an unknown slug). Same tokens/motion as the
  * rest of the marketing site.
  */
-export default function CaseStudyDetail({ params }: Route.ComponentProps) {
+export default function CaseStudyDetail({
+  params,
+  loaderData,
+}: Route.ComponentProps) {
+  const { appOrigin } = loaderData;
   const study = getCaseStudy(params.slug ?? "");
   // The loader guarantees this exists; guard keeps TypeScript happy.
   if (!study) return null;
@@ -38,7 +56,7 @@ export default function CaseStudyDetail({ params }: Route.ComponentProps) {
 
   return (
     <main className="min-h-screen bg-eden-bg font-suisse text-eden-fg">
-      <SiteHeader />
+      <SiteHeader appOrigin={appOrigin} />
 
       {/* ————— Hero ————— */}
       <section className="mx-auto max-w-4xl px-6 pb-12 pt-12 sm:pt-20">
@@ -244,12 +262,12 @@ export default function CaseStudyDetail({ params }: Route.ComponentProps) {
             <span className="italic"> before the meeting ends.</span>
           </Reveal>
           <Reveal delay={120} className="mt-10">
-            <Link
-              to="/signup"
+            <a
+              href={`${appOrigin}/signup`}
               className="rounded-full bg-eden-band-fg px-8 py-3 text-lg font-medium text-eden-band-bg transition hover:opacity-85"
             >
               Sign up
-            </Link>
+            </a>
           </Reveal>
         </div>
       </section>

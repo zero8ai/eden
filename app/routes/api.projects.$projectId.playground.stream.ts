@@ -154,6 +154,7 @@ export async function action(args: ActionFunctionArgs) {
       projectId: project.id,
       agentId: active.id,
       userId: auth.user.id,
+      surface: "playground",
       environmentId: target.environmentId,
       deploymentId: target.deploymentId,
       releaseId: target.releaseId,

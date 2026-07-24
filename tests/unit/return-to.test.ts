@@ -17,29 +17,29 @@ describe("safeReturnTo", () => {
     );
   });
 
-  it("falls back for empty, relative, and absolute-URL values", () => {
-    expect(safeReturnTo(null)).toBe("/dashboard");
-    expect(safeReturnTo(undefined)).toBe("/dashboard");
-    expect(safeReturnTo("")).toBe("/dashboard");
-    expect(safeReturnTo("dashboard")).toBe("/dashboard");
-    expect(safeReturnTo("https://evil.com/")).toBe("/dashboard");
+  it("falls back to Front of House for empty, relative, and absolute-URL values (D18)", () => {
+    expect(safeReturnTo(null)).toBe("/");
+    expect(safeReturnTo(undefined)).toBe("/");
+    expect(safeReturnTo("")).toBe("/");
+    expect(safeReturnTo("dashboard")).toBe("/");
+    expect(safeReturnTo("https://evil.com/")).toBe("/");
   });
 
   it("rejects protocol-relative values", () => {
-    expect(safeReturnTo("//evil.com")).toBe("/dashboard");
-    expect(safeReturnTo("//evil.com/path")).toBe("/dashboard");
+    expect(safeReturnTo("//evil.com")).toBe("/");
+    expect(safeReturnTo("//evil.com/path")).toBe("/");
   });
 
   it("rejects dot-segment payloads that normalize to a protocol-relative path", () => {
-    expect(safeReturnTo("/.//evil.com")).toBe("/dashboard");
-    expect(safeReturnTo("/..//evil.com")).toBe("/dashboard");
-    expect(safeReturnTo("/a/..//evil.com")).toBe("/dashboard");
-    expect(safeReturnTo("/.//evil.com?x=1#f")).toBe("/dashboard");
+    expect(safeReturnTo("/.//evil.com")).toBe("/");
+    expect(safeReturnTo("/..//evil.com")).toBe("/");
+    expect(safeReturnTo("/a/..//evil.com")).toBe("/");
+    expect(safeReturnTo("/.//evil.com?x=1#f")).toBe("/");
   });
 
   it("rejects backslash variants (browsers treat \\ as /)", () => {
-    expect(safeReturnTo("/\\evil.com")).toBe("/dashboard");
-    expect(safeReturnTo("/.\\/evil.com")).toBe("/dashboard");
+    expect(safeReturnTo("/\\evil.com")).toBe("/");
+    expect(safeReturnTo("/.\\/evil.com")).toBe("/");
   });
 
   it("honors a custom fallback", () => {

@@ -197,7 +197,9 @@ export async function action(args: Route.ActionArgs) {
       verificationRequired: verificationRequired(error),
     };
   }
-  throw redirect("/dashboard");
+  // Front of house is home (FOH D18): invitees are typically `member`-role and back of house
+  // would turn them away anyway.
+  throw redirect("/");
 }
 
 export function meta() {

@@ -1,4 +1,4 @@
-import { type RouteConfig, index, route } from "@react-router/dev/routes";
+import { type RouteConfig, index, layout, route } from "@react-router/dev/routes";
 
 /**
  * The repository hierarchy is two-level (M5.8): repo pages at /repos/:projectId/..., a team
@@ -10,8 +10,27 @@ const memberRoute = (tail: string, file: string, id: string) =>
   route(`repos/:projectId/agents/:agentName${tail}`, file, { id });
 
 export default [
-  index("routes/home.tsx"),
+  // Front of House is home (FOH PRD §2.6): the three-pane operate surface at `/`, with the
+  // agent/session panes as children (D14 URLs). Sign-in when unauthenticated.
+  layout("routes/foh.tsx", [
+    index("routes/foh._index.tsx"),
+    // Static "activity" outranks the dynamic :agentId sibling in RR7 route ranking.
+    route("t/:projectId/activity", "routes/foh.activity.tsx"),
+    route("t/:projectId/:agentId", "routes/foh.agent.tsx", [
+      index("routes/foh.agent._index.tsx"),
+      route("s/:sessionId", "routes/foh.session.tsx"),
+    ]),
+  ]),
+  // FOH resource routes: the streaming turn + stop for one repo's sessions, and the global
+  // inbox badge/flyout endpoint (D12 polling).
+  route("api/foh/inbox", "routes/api.foh.inbox.ts"),
+  route("api/foh/:projectId/stream", "routes/api.foh.stream.ts"),
+  route("api/foh/:projectId/stop", "routes/api.foh.stop.ts"),
+  // Marketing surface. The landing lives inside the FOH index route (host split, D11:
+  // MARKETING_HOST serves it; every other host serves FOH). Case studies + sitemap +
+  // robots stay pathname-routed with per-host behavior in their loaders.
   route("sitemap.xml", "routes/sitemap[.]xml.tsx"),
+  route("robots.txt", "routes/robots[.]txt.tsx"),
   // Marketing case studies — index + one page per vertical.
   route("case-studies", "routes/case-studies.tsx"),
   route("case-studies/:slug", "routes/case-studies.$slug.tsx"),
@@ -62,14 +81,6 @@ export default [
     "routes/projects.$projectId.playground.tsx",
     "member-playground",
   ),
-  // Agent Portals admin (issue #180): repo-level list + per-portal management.
-  route("repos/:projectId/portals", "routes/projects.$projectId.portals.tsx"),
-  route(
-    "repos/:projectId/portals/:portalId",
-    "routes/projects.$projectId.portals.$portalId.tsx",
-  ),
-  // Share dialog data endpoint (issue #180): grant + magic-link invite, revoke, access list.
-  route("api/repos/:projectId/share", "routes/api.repos.$projectId.share.ts"),
   route("repos/:projectId/runs", "routes/projects.$projectId.runs.tsx"),
   memberRoute("/runs", "routes/projects.$projectId.runs.tsx", "member-runs"),
   route(
@@ -142,6 +153,9 @@ export default [
   // Workspace task-progress indicator (issue #142): running + recent terminal merge/publish tasks
   // for this project. GET polls the list; POST intent=dismiss clears a terminal row.
   route("repos/:projectId/tasks", "routes/api.tasks.tsx"),
+  // Invite-to-repo (FOH invites & roles): GET lists the repo team's pending invitations,
+  // POST intent=invite sends one carrying the repo's teamId.
+  route("api/repos/:projectId/invite", "routes/api.repos.$projectId.invite.ts"),
   // Quick deploy (AgentNav): GET returns the button's envs + staged count for the scope,
   // POST runs the whole Ship pipeline. `?agent=`/`agent` field scopes to one member.
   route("repos/:projectId/quick-deploy", "routes/api.quick-deploy.tsx"),
@@ -160,11 +174,6 @@ export default [
     "api/repos/:projectId/assistant/stream",
     "routes/api.projects.$projectId.assistant.stream.ts",
   ),
-  // Agent Portals (issue #180): the public guest chat page at /a/:slug (outside the app
-  // shell) and its guest-guarded stream/stop siblings of the playground routes.
-  route("a/:slug", "routes/a.$slug.tsx"),
-  route("api/portal/:slug/stream", "routes/api.portal.$slug.stream.ts"),
-  route("api/portal/:slug/stop", "routes/api.portal.$slug.stop.ts"),
   route("api/github/webhook", "routes/api.github.webhook.tsx"),
   // Per-agent GitHub App Manifest flow (issue #26): submit the manifest to GitHub, then
   // GitHub redirects back to the callback with a single-use code to convert.

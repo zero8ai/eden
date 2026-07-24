@@ -5,7 +5,6 @@ import { db } from "~/db/client.server";
 import { userWorkspaceMemory } from "~/db/schema";
 import { newId } from "~/lib/id";
 import { auth } from "~/lib/auth.server";
-import { portalGuestHome } from "~/portal/portals.server";
 import type { SessionAuth } from "./session.server";
 
 export type WorkspaceInfo = {
@@ -23,6 +22,35 @@ export type ActiveWorkspace = {
     role: string;
   };
 };
+
+/**
+ * House gating (FOH invites & roles): `owner`/`admin` get back of house (the /repos build
+ * surface) on top of front of house; a plain `member` is front-of-house only. Better Auth
+ * stores multi-role grants comma-separated, so any owner/admin grant counts.
+ */
+export function isBackOfHouse(role: string): boolean {
+  return role
+    .split(",")
+    .some((part) => part.trim() === "owner" || part.trim() === "admin");
+}
+
+/**
+ * Enforce D10 on a back-of-house surface: a front-of-house `member` is redirected home from
+ * page GET loaders (`"page"` — friendly for humans) and receives a hard 403 JSON Response
+ * from API/resource routes AND mutations (`"api"` — correct for fetchers; a denied POST must
+ * never silently navigate). No-op for owners/admins.
+ */
+export function requireBackOfHouse(
+  active: ActiveWorkspace,
+  mode: "page" | "api",
+): void {
+  if (isBackOfHouse(active.member.role)) return;
+  if (mode === "page") throw redirect("/");
+  throw Response.json(
+    { error: "Back of house is restricted to workspace admins." },
+    { status: 403 },
+  );
+}
 
 export function chooseWorkspaceEntry(input: {
   membershipOrgIds: string[];
@@ -150,14 +178,6 @@ export async function ensureWorkspace(
   }
 
   if (decision.kind === "create") {
-    // A portal GUEST (issue #180) has zero memberships by design — an OTP-minted user whose
-    // session is only useful for granted portals. Don't provision a personal workspace for one
-    // who wanders onto an app route; send them back to their portal instead.
-    const guestHome = await portalGuestHome({
-      userId: session.user.id,
-      email: session.user.email,
-    });
-    if (guestHome) throw redirect(guestHome);
     await createPersonalWorkspace(session);
   } else {
     await setActiveWorkspace(session, decision.orgId);

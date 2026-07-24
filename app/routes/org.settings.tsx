@@ -43,6 +43,7 @@ import { SecretInput } from "~/components/ui/secret-input";
 import { Label } from "~/components/ui/label";
 import {
   ensureWorkspace,
+  requireBackOfHouse,
   resolveActiveWorkspace,
   type WorkspaceInfo,
 } from "~/auth/workspace.server";
@@ -133,6 +134,8 @@ export const loader = (args: LoaderFunctionArgs) =>
       // Close the org-less hole: provision/adopt/choose a workspace before syncing.
       await ensureWorkspace(args.request, auth);
       const active = await resolveActiveWorkspace(auth);
+      // Back of house is admin/owner-only (D10); front-of-house members live at `/`.
+      if (active) requireBackOfHouse(active, "page");
       const org = active?.org;
       if (!org) {
         return {
@@ -187,6 +190,7 @@ export async function action(args: ActionFunctionArgs) {
   const active = await resolveActiveWorkspace(auth);
   const org = active?.org;
   if (!org) return { error: "No organization." };
+  requireBackOfHouse(active, "api");
   if (!(await canManageWorkspace(org.id, auth.requestHeaders))) {
     throw new Response("Forbidden", { status: 403 });
   }

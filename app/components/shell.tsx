@@ -28,8 +28,8 @@ import {
   useNavigation,
 } from "react-router";
 
+import { InviteMember } from "~/components/invite-member";
 import { QuickDeploy } from "~/components/quick-deploy";
-import { ShareAgent } from "~/components/share-agent";
 import { WorkspaceTasksIndicator } from "~/components/workspace-tasks";
 import { EdenWordmark } from "~/components/marketing/logo";
 import { ThemeToggle } from "~/components/theme-toggle";
@@ -118,6 +118,8 @@ export function AppShell({
           )}
           {/* Desktop: inline primary nav. Mobile: folds into the menu button below. */}
           <nav className="ml-auto hidden items-center gap-1 text-sm md:flex">
+            {/* House switcher (FOH D18): back into the operate surface at the app root. */}
+            <HeaderLink to="/">Front of house</HeaderLink>
             <HeaderLink to="/dashboard">Repositories</HeaderLink>
             <HeaderLink to="/marketplace">Marketplace</HeaderLink>
             <HeaderLink to="/org/members">Members</HeaderLink>
@@ -360,6 +362,9 @@ function MobileNav() {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-48">
           <DropdownMenuItem asChild>
+            <Link to="/">Front of house</Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild>
             <Link to="/dashboard">Repositories</Link>
           </DropdownMenuItem>
           <DropdownMenuItem asChild>
@@ -482,7 +487,6 @@ const TABS: Record<NavLevel, { path: string; label: string }[]> = {
     { path: "/playground", label: "Playground" },
     { path: "/runs", label: "Runs" },
     { path: "/assistant", label: "Assistant" },
-    { path: "/portals", label: "Portals" },
     { path: "/settings", label: "Settings" },
   ],
   // Team landing: the repo-wide surfaces. Assistant is project-level (one per repo), so it lives
@@ -491,7 +495,6 @@ const TABS: Record<NavLevel, { path: string; label: string }[]> = {
     { path: "", label: "Overview" },
     { path: "/deployment", label: "Deployment" },
     { path: "/assistant", label: "Assistant" },
-    { path: "/portals", label: "Portals" },
     { path: "/settings", label: "Settings" },
   ],
   // One team member: the member-scoped surfaces (+ the switcher). No Assistant tab — it is a
@@ -563,9 +566,9 @@ export function AgentNav({
         <div className="order-1 flex shrink-0 flex-wrap items-center gap-3 sm:order-2">
           <QuickDeploy base={base} />
           <StagedChangesPill base={base} />
-          {/* Share targets a concrete agent, so only where the nav has one (issue #180). */}
-          {(level === "single" || level === "member") && (
-            <ShareAgent base={base} />
+          {/* Invite-to-repo (FOH): repo-scoped, so it sits at the repo/single level only. */}
+          {(level === "single" || level === "repo") && (
+            <InviteMember base={base} />
           )}
           {level === "member" && roster && activeAgent && (
             <AgentSwitcher roster={roster} activeAgent={activeAgent} />

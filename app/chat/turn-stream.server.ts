@@ -21,7 +21,16 @@ import {
   recordTurnFinish,
   recordTurnStart,
 } from "~/observability/record.server";
+import { settleFohTurn } from "~/foh/needs-you";
 import {
+  openInboxQuestion,
+  recordInboxFinished,
+  resolveInboxForSession,
+} from "~/foh/inbox.server";
+import { finalizeDelegationOnResume } from "~/team/resume.server";
+import {
+  clearSessionPendingInput,
+  markSessionPendingInput,
   savePlaygroundEvents,
   savePlaygroundSessionCursor,
   savePlaygroundSessionProgress,
@@ -87,7 +96,7 @@ export function streamTurnResponse(input: {
   target: Target;
   session: PlaygroundSession;
   message: string;
-  /** Observability channel — "playground" | "assistant". */
+  /** Observability channel — "playground" | "assistant" | "foh". */
   channel: string;
   /** Recompute the session title on the first turn (null once titled). */
   title: string | null;
@@ -110,6 +119,9 @@ export function streamTurnResponse(input: {
     ? `${input.messagePrefix}\n\n${message}`
     : message;
   const tag = `[${channel}]`;
+  // Needs-you writes happen only for FOH conversations (D4) — the builder surfaces must be
+  // byte-for-byte unaffected by this chokepoint.
+  const isFoh = activeSession.surface === "foh";
   const startedAt = new Date();
   const encoder = new TextEncoder();
 
@@ -291,6 +303,29 @@ export function streamTurnResponse(input: {
                 break;
               case "input":
                 send({ type: "input", requests: event.requests });
+                // FOH needs-you chokepoint #1 (D4): record the park durably, so it exists
+                // even with no client connected. `openInboxQuestion` dedupes on requestId
+                // (the loader-side reconcile can observe the same eve request). Wrapped so
+                // inbox bookkeeping can never break the drain; it touches neither the
+                // cursor nor `streamIndex`, and the pending writers carry their own
+                // stop-wins guards.
+                if (isFoh) {
+                  try {
+                    await markSessionPendingInput(activeSession.id);
+                    for (const request of event.requests) {
+                      await openInboxQuestion({
+                        projectId,
+                        sessionId: activeSession.id,
+                        agentId: activeSession.agentId,
+                        userId: activeSession.createdBy,
+                        delegationId: activeSession.delegationId,
+                        request,
+                      });
+                    }
+                  } catch (e) {
+                    console.error(`${tag} foh needs-you park failed`, e);
+                  }
+                }
                 break;
               case "done": {
                 result = event.result;
@@ -388,6 +423,49 @@ export function streamTurnResponse(input: {
               });
             } catch (e) {
               console.error(`${tag} persist session cursor failed`, e);
+            }
+            // FOH needs-you chokepoint #1, terminal half (D4/D13): a parked turn keeps its
+            // pending flag and inbox items; a completed turn clears them and files the
+            // `finished` item; a failed turn clears them (the session itself shows
+            // done-with-error). Exception-swallowed like every other post-turn write.
+            if (isFoh) {
+              const decision = settleFohTurn(settled);
+              try {
+                if (decision.clearPending) {
+                  await clearSessionPendingInput(activeSession.id);
+                }
+                if (decision.resolveAsks) {
+                  await resolveInboxForSession(activeSession.id);
+                }
+                if (decision.recordFinished) {
+                  await recordInboxFinished({
+                    projectId,
+                    sessionId: activeSession.id,
+                    agentId: activeSession.agentId,
+                    userId: activeSession.createdBy,
+                    // A finish summary, not the full reply — the inbox row is a pointer.
+                    prompt: settled.reply ? settled.reply.slice(0, 500) : null,
+                  });
+                }
+              } catch (e) {
+                console.error(`${tag} foh inbox settle failed`, e);
+              }
+              // Delegation wake-on-answer (§5): this session was opened by the relay for a
+              // parked delegation — a completed/failed resume settles the `waiting` row (a
+              // re-park keeps it waiting; the chokepoint above filed the fresh inbox item).
+              // Separate try so an inbox hiccup can never strand the delegation, and vice
+              // versa.
+              if (activeSession.delegationId) {
+                try {
+                  await finalizeDelegationOnResume({
+                    delegationId: activeSession.delegationId,
+                    outcome: decision.outcome,
+                    error: settled.error,
+                  });
+                } catch (e) {
+                  console.error(`${tag} foh delegation finalize failed`, e);
+                }
+              }
             }
             if (settled.sessionId && settled.turnId) {
               try {

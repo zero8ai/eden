@@ -1,18 +1,14 @@
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { emailOTP, magicLink, organization } from "better-auth/plugins";
+import { organization } from "better-auth/plugins";
 
 import { db } from "~/db/client.server";
 import * as schema from "~/db/auth-schema";
 import { sendOrganizationInvitation } from "~/email/send-organization-invitation.server";
 import { sendEmailVerification } from "~/email/send-email-verification.server";
 import { sendPasswordResetEmail } from "~/email/send-password-reset.server";
-import { sendPortalMagicLinkEmail } from "~/email/send-portal-magic-link.server";
-import { sendPortalOtpEmail } from "~/email/send-portal-otp.server";
 import { assertProductionAuthEnvironment } from "~/lib/auth-env.server";
-import { shouldSendPortalMagicLink, shouldSendPortalOtp } from "~/portal/policy";
-import { findLivePortalForEmail } from "~/portal/portals.server";
 
 assertProductionAuthEnvironment();
 
@@ -35,9 +31,7 @@ export const auth = betterAuth({
   onAPIError:
     process.env.NODE_ENV === "production" ? { throw: true } : undefined,
   database: drizzleAdapter(db, { provider: "pg", schema }),
-  // Long-lived sessions (issue #180): portal guests sign in with a one-time code and have no
-  // password to re-enter, so a short session would mean constant OTP round-trips. 30 days,
-  // rolling — applies to all users (Better Auth sessions are not per-plugin).
+  // 30-day rolling sessions for all users.
   session: {
     expiresIn: 60 * 60 * 24 * 30,
   },
@@ -97,66 +91,6 @@ export const auth = betterAuth({
     },
   },
   plugins: [
-    // Agent Portals guest sign-in (issue #180): a 6-digit emailed code, no password, no org.
-    // The grant check lives INSIDE this send callback, so even direct calls to the generic
-    // /api/auth/email-otp endpoints can't spam arbitrary mailboxes or mint guest users for
-    // ungranted emails — no code ever leaves, so verification can never succeed. Skipping is
-    // silent on purpose: the endpoint answers uniformly (anti-enumeration).
-    emailOTP({
-      otpLength: 6,
-      expiresIn: 10 * 60,
-      allowedAttempts: 3,
-      async sendVerificationOTP({ email, otp, type }) {
-        const portal = await findLivePortalForEmail(email);
-        if (!shouldSendPortalOtp({ type, hasLiveGrant: portal !== null })) {
-          return;
-        }
-        try {
-          await sendPortalOtpEmail({
-            userEmail: email,
-            portalName: portal!.portalName,
-            otp,
-          });
-        } catch (error) {
-          // Never log the error object: provider errors can include the code-bearing HTML body.
-          console.error(
-            `Could not send a portal sign-in code (${(error as Error)?.name ?? "Error"}).`,
-          );
-          throw new APIError("INTERNAL_SERVER_ERROR", {
-            message: "Could not send the sign-in code.",
-          });
-        }
-      },
-    }),
-    // Agent Portals one-click sign-in (issue #180): the primary portal auth. As with the OTP
-    // plugin above, the grant check lives INSIDE the send callback, so direct calls to
-    // /api/auth/sign-in/magic-link can neither mail links to ungranted addresses nor mint guest
-    // accounts for them. Clicking the link is the email verification; the OTP code stays as a
-    // fallback for mail scanners that pre-consume links. Skipping is silent (anti-enumeration).
-    magicLink({
-      expiresIn: 30 * 60,
-      async sendMagicLink({ email, url }) {
-        const portal = await findLivePortalForEmail(email);
-        if (!shouldSendPortalMagicLink({ hasLiveGrant: portal !== null })) {
-          return;
-        }
-        try {
-          await sendPortalMagicLinkEmail({
-            userEmail: email,
-            portalName: portal!.portalName,
-            url,
-          });
-        } catch (error) {
-          // Never log the error object: provider errors can include the token-bearing HTML body.
-          console.error(
-            `Could not send a portal sign-in link (${(error as Error)?.name ?? "Error"}).`,
-          );
-          throw new APIError("INTERNAL_SERVER_ERROR", {
-            message: "Could not send the sign-in link.",
-          });
-        }
-      },
-    }),
     organization({
       // Better Auth ships POST /api/auth/organization/delete enabled by default; Eden's tables
       // cascade from organization.id, so one owner-session call would erase an entire tenant
@@ -167,6 +101,18 @@ export const auth = betterAuth({
       // CVE-2026-53514: invitation IDs can be listed by organization members. Require the
       // recipient to prove mailbox ownership before get/accept/reject invitation operations.
       requireEmailVerificationOnInvitation: true,
+      // FOH repo scoping (PRD-FRONT-OF-HOUSE §5): one Better Auth team per connected repo,
+      // mapped via projects.team_id (see app/auth/teams.server.ts). Invitations carry the
+      // repo's teamId; accepting one auto-adds the invitee to that team.
+      teams: {
+        enabled: true,
+        // Eden mints teams 1:1 with repos (ensureProjectTeam); an auto-created default team
+        // per organization would be an unmapped orphan in that model.
+        defaultTeam: { enabled: false },
+        // Deleting the last repo must delete its team; without this Better Auth refuses to
+        // remove an organization's final team.
+        allowRemovingAllTeams: true,
+      },
       sendInvitationEmail: async (invitation) => {
         // Better Auth awaits this but swallows a rejection into logger.error, so log a sanitized
         // marker ourselves (never the error object — provider errors can include the

@@ -1,10 +1,18 @@
-import { and, desc, eq, isNull, max, min, ne } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, max, min, ne, or } from "drizzle-orm";
 
 import { inputRequestsOf, type RawEveEvent } from "~/agent/talk.server";
 import { normalizeTurnError } from "~/chat/stream-error";
 import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
 import { db } from "~/db/client.server";
-import { playgroundEvents, playgroundSessions } from "~/db/schema";
+import {
+  conversationReads,
+  playgroundEvents,
+  playgroundSessions,
+} from "~/db/schema";
+import { openInboxQuestion, resolveInboxForSession } from "~/foh/inbox.server";
+import { reconcileNeedsYouFromTail } from "~/foh/needs-you";
+import { fohSessionStatus, sortSessionsForList } from "~/foh/status";
+import type { FohSessionStatus } from "~/foh/status";
 import {
   parseModelDirective,
   runtimeModelBase,
@@ -16,6 +24,20 @@ import type { ReasoningEffort } from "~/models/reasoning";
 
 export type PlaygroundSession = typeof playgroundSessions.$inferSelect;
 
+/** Which chat surface a query serves; determines the discriminator scope (D1). */
+export type SessionSurface = "playground" | "assistant" | "foh";
+
+/**
+ * The surface discriminator's one hard job is FOH isolation: playground and assistant lists
+ * were already disjoint by (project, agent, creator) scoping, so both builder surfaces read
+ * `surface <> 'foh'` (preserving today's visibility exactly) while FOH reads `= 'foh'`.
+ */
+function surfaceScope(surface: SessionSurface) {
+  return surface === "foh"
+    ? eq(playgroundSessions.surface, "foh")
+    : ne(playgroundSessions.surface, "foh");
+}
+
 export interface PlaygroundSessionSummary {
   id: string;
   title: string;
@@ -25,10 +47,17 @@ export interface PlaygroundSessionSummary {
   modelId: string | null;
   effort: ReasoningEffort | null;
   updatedAt: string;
+  surface: string;
+  pendingInputAt: string | null;
+  /** D4 presentation status (working / needs_you / done / error). */
+  fohStatus: FohSessionStatus;
+  /** D3 unread flag; present only when the caller computed it for a viewer. */
+  unread?: boolean;
 }
 
 export function summarizePlaygroundSession(
   session: PlaygroundSession,
+  opts?: { unread?: boolean },
 ): PlaygroundSessionSummary {
   return {
     id: session.id,
@@ -38,26 +67,18 @@ export function summarizePlaygroundSession(
     modelId: session.modelId,
     effort: session.effort as ReasoningEffort | null,
     updatedAt: session.updatedAt.toISOString(),
+    surface: session.surface,
+    pendingInputAt: session.pendingInputAt?.toISOString() ?? null,
+    fohStatus: fohSessionStatus(session),
+    ...(opts?.unread !== undefined ? { unread: opts.unread } : {}),
   };
-}
-
-/**
- * Portal discriminator for the scope-guarded queries (issue #180). Portal guest conversations
- * share this table but must never mix with a builder's own playground/assistant lists — so the
- * scope ALWAYS constrains `portalId`: to IS NULL for the app surfaces (the default) or to one
- * specific portal for the portal surface.
- */
-function portalScope(portalId?: string | null) {
-  return portalId
-    ? eq(playgroundSessions.portalId, portalId)
-    : isNull(playgroundSessions.portalId);
 }
 
 export async function listPlaygroundSessions(input: {
   projectId: string;
   agentId: string;
   userId: string;
-  portalId?: string | null;
+  surface?: SessionSurface;
 }): Promise<PlaygroundSession[]> {
   return db
     .select()
@@ -67,7 +88,7 @@ export async function listPlaygroundSessions(input: {
         eq(playgroundSessions.projectId, input.projectId),
         eq(playgroundSessions.agentId, input.agentId),
         eq(playgroundSessions.createdBy, input.userId),
-        portalScope(input.portalId),
+        surfaceScope(input.surface ?? "playground"),
       ),
     )
     .orderBy(
@@ -81,7 +102,7 @@ export async function getPlaygroundSession(input: {
   projectId: string;
   agentId: string;
   userId: string;
-  portalId?: string | null;
+  surface?: SessionSurface;
 }): Promise<PlaygroundSession | null> {
   const [row] = await db
     .select()
@@ -92,31 +113,136 @@ export async function getPlaygroundSession(input: {
         eq(playgroundSessions.projectId, input.projectId),
         eq(playgroundSessions.agentId, input.agentId),
         eq(playgroundSessions.createdBy, input.userId),
-        portalScope(input.portalId),
+        surfaceScope(input.surface ?? "playground"),
       ),
     )
     .limit(1);
   return row ?? null;
 }
 
-/** Every conversation of one portal across guests — the builder-side transcript list. */
-export async function listPortalSessions(
-  portalId: string,
+/**
+ * FOH middle-pane list (§6 roles): members see their own sessions plus agent-opened ones
+ * (`created_by IS NULL`); admins/owners (`includeAll`) see every FOH session for the agent.
+ * Rows carry the viewer's unread flag (D3) and come back needs-you first.
+ */
+export async function listFohSessionsForAgent(input: {
+  projectId: string;
+  agentId: string;
+  viewerId: string;
+  includeAll?: boolean;
+}): Promise<Array<PlaygroundSession & { unread: boolean }>> {
+  const rows = await db
+    .select({
+      session: playgroundSessions,
+      lastReadAt: conversationReads.lastReadAt,
+    })
+    .from(playgroundSessions)
+    .leftJoin(
+      conversationReads,
+      and(
+        eq(conversationReads.sessionId, playgroundSessions.id),
+        eq(conversationReads.userId, input.viewerId),
+      ),
+    )
+    .where(
+      and(
+        eq(playgroundSessions.projectId, input.projectId),
+        eq(playgroundSessions.agentId, input.agentId),
+        surfaceScope("foh"),
+        input.includeAll
+          ? undefined
+          : or(
+              eq(playgroundSessions.createdBy, input.viewerId),
+              isNull(playgroundSessions.createdBy),
+            ),
+      ),
+    );
+  return sortSessionsForList(
+    rows.map((row) => ({
+      ...row.session,
+      unread:
+        row.session.lastEventAt != null &&
+        (row.lastReadAt == null || row.session.lastEventAt > row.lastReadAt),
+    })),
+  );
+}
+
+/**
+ * One FOH session under the viewer's scope — the same visibility rule as
+ * `listFohSessionsForAgent` (members: own + agent-opened rows; admins/owners: all). The FOH
+ * session view, stream, and stop routes all resolve their row through this.
+ */
+export async function getFohSessionForViewer(input: {
+  id: string;
+  projectId: string;
+  /** Constrain to one agent (session view); omit where the route only knows the session. */
+  agentId?: string;
+  viewerId: string;
+  includeAll?: boolean;
+}): Promise<PlaygroundSession | null> {
+  const [row] = await db
+    .select()
+    .from(playgroundSessions)
+    .where(
+      and(
+        eq(playgroundSessions.id, input.id),
+        eq(playgroundSessions.projectId, input.projectId),
+        input.agentId ? eq(playgroundSessions.agentId, input.agentId) : undefined,
+        surfaceScope("foh"),
+        input.includeAll
+          ? undefined
+          : or(
+              eq(playgroundSessions.createdBy, input.viewerId),
+              isNull(playgroundSessions.createdBy),
+            ),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+/** FOH sessions by id — inbox flyout enrichment (titles + jump targets). FOH-scoped only. */
+export async function listFohSessionsByIds(
+  ids: string[],
 ): Promise<PlaygroundSession[]> {
+  if (ids.length === 0) return [];
   return db
     .select()
     .from(playgroundSessions)
-    .where(eq(playgroundSessions.portalId, portalId))
-    .orderBy(
-      desc(playgroundSessions.updatedAt),
-      desc(playgroundSessions.createdAt),
+    .where(and(inArray(playgroundSessions.id, ids), surfaceScope("foh")));
+}
+
+/**
+ * Which of the given agents have a FRESH `running` session on any surface — the active-turn
+ * half of FOH presence. Freshness matters because a stale `running` row (drain died with the
+ * process) would otherwise show a phantom active turn forever; the drain bumps `updatedAt`
+ * about every second, so anything older than `staleMs` is not a live turn.
+ */
+export async function listAgentsWithFreshRunningSessions(
+  agentIds: string[],
+  staleMs: number,
+): Promise<Set<string>> {
+  if (agentIds.length === 0) return new Set();
+  const cutoff = new Date(Date.now() - staleMs);
+  const rows = await db
+    .selectDistinct({ agentId: playgroundSessions.agentId })
+    .from(playgroundSessions)
+    .where(
+      and(
+        inArray(playgroundSessions.agentId, agentIds),
+        eq(playgroundSessions.status, "running"),
+        gt(playgroundSessions.updatedAt, cutoff),
+      ),
     );
+  return new Set(rows.map((row) => row.agentId));
 }
 
 export async function createPlaygroundSession(input: {
   projectId: string;
   agentId: string;
-  userId: string;
+  /** Null for agent-opened sessions (D6) — pair with openedByAgentId. */
+  userId: string | null;
+  surface?: SessionSurface;
   environmentId?: string | null;
   deploymentId?: string | null;
   releaseId?: string | null;
@@ -124,7 +250,19 @@ export async function createPlaygroundSession(input: {
   title?: string | null;
   modelId?: string | null;
   effort?: ReasoningEffort | null;
-  portalId?: string | null;
+  openedByAgentId?: string | null;
+  delegationId?: string | null;
+  /**
+   * Relay parking (D6/D8): an agent-opened row adopts the parked peer's LIVE eve session at
+   * creation — real handles, so the ordinary FOH continuation send resumes the peer. Human-
+   * opened sessions never pass these (a fresh eve session is seeded by the first turn).
+   */
+  externalSessionId?: string | null;
+  continuationToken?: string | null;
+  streamIndex?: number;
+  status?: "running" | "waiting" | "completed" | "failed";
+  pendingInputAt?: Date | null;
+  lastEventAt?: Date | null;
 }): Promise<PlaygroundSession> {
   const [row] = await db
     .insert(playgroundSessions)
@@ -132,7 +270,7 @@ export async function createPlaygroundSession(input: {
       projectId: input.projectId,
       agentId: input.agentId,
       createdBy: input.userId,
-      portalId: input.portalId ?? null,
+      surface: input.surface ?? "playground",
       environmentId: input.environmentId ?? null,
       worldKey: input.environmentId ?? null,
       lastDeploymentId: input.deploymentId ?? null,
@@ -141,6 +279,14 @@ export async function createPlaygroundSession(input: {
       title: input.title ?? null,
       modelId: input.modelId ?? null,
       effort: input.effort ?? null,
+      openedByAgentId: input.openedByAgentId ?? null,
+      delegationId: input.delegationId ?? null,
+      externalSessionId: input.externalSessionId ?? null,
+      continuationToken: input.continuationToken ?? null,
+      streamIndex: input.streamIndex ?? 0,
+      status: input.status ?? "new",
+      pendingInputAt: input.pendingInputAt ?? null,
+      lastEventAt: input.lastEventAt ?? null,
     })
     .returning();
   return row;
@@ -154,6 +300,7 @@ export async function setPlaygroundSessionModel(input: {
   userId: string;
   modelId: string | null;
   effort?: ReasoningEffort | null;
+  surface?: SessionSurface;
 }): Promise<boolean> {
   const updated = await db
     .update(playgroundSessions)
@@ -168,12 +315,46 @@ export async function setPlaygroundSessionModel(input: {
         eq(playgroundSessions.projectId, input.projectId),
         eq(playgroundSessions.agentId, input.agentId),
         eq(playgroundSessions.createdBy, input.userId),
-        // Portal conversations pin their model on the portal config — never per-session.
-        portalScope(null),
+        surfaceScope(input.surface ?? "playground"),
       ),
     )
     .returning({ id: playgroundSessions.id });
   return updated.length > 0;
+}
+
+/**
+ * Park the session on a human question (needs-you, D4). Written only at the drain/reconcile/
+ * relay chokepoints. Guarded `status <> 'stopped'`: a deliberately stopped session must not be
+ * resurrected into the inbox by a late drain write.
+ */
+export async function markSessionPendingInput(
+  sessionId: string,
+  at: Date = new Date(),
+): Promise<void> {
+  await db
+    .update(playgroundSessions)
+    .set({ pendingInputAt: at, updatedAt: new Date() })
+    .where(
+      and(
+        eq(playgroundSessions.id, sessionId),
+        ne(playgroundSessions.status, "stopped"),
+      ),
+    );
+}
+
+/** Clear the needs-you park (turn completed/failed, or a continuation send superseded it). */
+export async function clearSessionPendingInput(
+  sessionId: string,
+): Promise<void> {
+  await db
+    .update(playgroundSessions)
+    .set({ pendingInputAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(playgroundSessions.id, sessionId),
+        ne(playgroundSessions.status, "stopped"),
+      ),
+    );
 }
 
 export async function markPlaygroundSessionRunning(input: {
@@ -429,6 +610,9 @@ export async function markPlaygroundSessionStopped(input: {
       // recovery hint in the replay, and shouldn't be reconciled back to "failed"
       // (the tsx loader only reconciles "running"/"failed" sessions).
       status: "stopped",
+      // A stop moots any parked question, and the pending writers' stop-wins guards mean
+      // nobody else can clear it once the row is `stopped` — so it must clear here (D4).
+      pendingInputAt: null,
       lastEventAt: new Date(),
       updatedAt: new Date(),
     })
@@ -522,8 +706,43 @@ export async function reconcilePlaygroundSessionFromEve(input: {
     status: nextStatus,
   });
 
+  // FOH needs-you chokepoint #2 (D4): a drain that died with the process is recovered here.
+  // The tail is scanned for unanswered `input.requested`s on its newest turn — `nextStatus`
+  // alone can't tell parked from finished ('waiting' covers both). Park/settle writes are
+  // idempotent (requestId dedupe; only-forward flag semantics) and exception-swallowed so
+  // inbox bookkeeping never breaks a loader.
+  let pendingInputAt = input.session.pendingInputAt;
+  if (input.session.surface === "foh") {
+    try {
+      const decision = reconcileNeedsYouFromTail(tail.events);
+      if (decision.action === "park") {
+        pendingInputAt = pendingInputAt ?? new Date();
+        await markSessionPendingInput(input.session.id, pendingInputAt);
+        for (const data of decision.requestData) {
+          for (const request of inputRequestsOf(data)) {
+            await openInboxQuestion({
+              projectId: input.session.projectId,
+              sessionId: input.session.id,
+              agentId: input.session.agentId,
+              userId: input.session.createdBy,
+              delegationId: input.session.delegationId,
+              request,
+            });
+          }
+        }
+      } else if (decision.action === "settle") {
+        pendingInputAt = null;
+        await clearSessionPendingInput(input.session.id);
+        await resolveInboxForSession(input.session.id);
+      }
+    } catch (e) {
+      console.error("[foh] reconcile needs-you failed", e);
+    }
+  }
+
   return {
     ...input.session,
+    pendingInputAt,
     environmentId: input.target.environmentId,
     worldKey: input.target.environmentId,
     lastDeploymentId: input.target.deploymentId,

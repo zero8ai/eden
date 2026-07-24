@@ -3,11 +3,13 @@
  * instance. Pins caller resolution, default-allow authorization (+ a disabled override), self-ask
  * rejection, the same-env-name target resolution, live-deployment requirement, the per-edge and
  * per-project concurrency caps, a successful delegation (prefix + recording + linked run path +
- * finalized row), a parked-on-input turn, and an unreachable peer.
+ * finalized row), a parked-on-input turn (now a structured waiting result — deep parking
+ * assertions live in team-ask-parking.test.ts), and an unreachable peer.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { TurnResult } from "~/agent/talk.server";
+import type { PlaygroundSession } from "~/playground/sessions.server";
 import type { AskDeps } from "~/team/ask.server";
 import { runAsk } from "~/team/ask.server";
 import { makeFakeStore, type FakeStore } from "../fakes/store";
@@ -77,6 +79,10 @@ function makeDeps(over: Partial<AskDeps> = {}): AskDeps {
     recordStart: async () => true,
     recordFinish: async () => {},
     resolveRunId: async () => "run_1",
+    ensureLiveDeployment: async () => null,
+    createSession: async (input) =>
+      ({ id: "ps_1", ...input }) as unknown as PlaygroundSession,
+    backfillSession: async () => {},
     now: () => NOW,
     timeoutMs: 600_000,
     ...over,
@@ -274,7 +280,7 @@ describe("runAsk — concurrency caps", () => {
 });
 
 describe("runAsk — peer outcomes", () => {
-  it("surfaces a parked-on-input turn as an error (D5) and fails the row", async () => {
+  it("parks a parked-on-input turn as a structured waiting result (§5 relay parking)", async () => {
     const deploymentId = await seedCallerDeployment();
     await seedTargetLive();
     const parked = turnResult({
@@ -293,7 +299,13 @@ describe("runAsk — peer outcomes", () => {
       { deploymentId, teammate: "deployer", message: "hi" },
       makeDeps({ sendTurn: async () => parked }),
     );
-    expect(res).toEqual({ ok: false, error: expect.stringContaining("Which environment?") });
+    expect(res).toEqual({
+      ok: true,
+      status: "waiting_on_human",
+      teammate: "deployer",
+      question: "Which environment?",
+      note: expect.stringContaining("resume"),
+    });
   });
 
   it("treats an ok turn with no reply as a failure (nothing to hand back)", async () => {

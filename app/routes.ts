@@ -26,6 +26,7 @@ export default [
   route("api/foh/inbox", "routes/api.foh.inbox.ts"),
   route("api/foh/:projectId/stream", "routes/api.foh.stream.ts"),
   route("api/foh/:projectId/stop", "routes/api.foh.stop.ts"),
+  route("api/foh/:projectId/read", "routes/api.foh.read.ts"),
   // Marketing surface. The landing lives inside the FOH index route (host split, D11:
   // MARKETING_HOST serves it; every other host serves FOH). Case studies + sitemap +
   // robots stay pathname-routed with per-host behavior in their loaders.

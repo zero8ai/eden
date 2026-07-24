@@ -6,8 +6,9 @@
  * regression criterion outweighs DRY.
  *
  * FOH differences: the guard is FOH scope (members open only their own or agent-opened
- * sessions), opening the session marks it read (D3) and resolves `finished` inbox items
- * (D13), the target is server-picked (no deployment/model pickers — wake-on-send covers
+ * sessions), opening the session posts the read acknowledgement (D3/D13 — an explicit
+ * action, never the prefetchable GET loader), the target is server-picked (no
+ * deployment/model pickers — wake-on-send covers
  * scaled-to-zero agents), and parked questions render as the same answerable callouts wired
  * into the ordinary send path (answering resumes the parked eve session — or the parked
  * PEER session for delegation-opened rows).
@@ -36,7 +37,6 @@ import { TurnError } from "~/components/turn-error";
 import { Button } from "~/components/ui/button";
 import { sessionLoader } from "~/auth/session.server";
 import { requireFohProject } from "~/foh/guard.server";
-import { markSessionRead } from "~/foh/reads.server";
 import { fohSessionStatus } from "~/foh/status";
 import {
   cacheCoversCompletedLiveTurn,
@@ -145,14 +145,10 @@ export const loader = (args: LoaderFunctionArgs) =>
 
       const entries = await loadPlaygroundEntriesFromCache(currentSession);
 
-      // Opening the conversation IS the acknowledgement: advance the read cursor (D3) and
-      // auto-resolve the viewer's `finished` items (D13). Never let read bookkeeping break
-      // the page.
-      try {
-        await markSessionRead(currentSession, auth.user.id);
-      } catch (error) {
-        console.error("[foh] markSessionRead failed", error);
-      }
+      // Opening the conversation IS the acknowledgement — but this loader also runs on
+      // hover/focus prefetch, so the read-cursor mutation lives in /api/foh/:projectId/read
+      // and the component posts it after committed navigation (issue #221 finding 8). GET
+      // stays read-only; `lastEventAt` drives the client effect.
 
       return {
         projectId: access.project.id,
@@ -164,6 +160,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         sessionStatus: currentSession.status,
         sessionFohStatus: fohSessionStatus(currentSession),
         openedByAgent: currentSession.openedByAgentId != null,
+        lastEventAt: currentSession.lastEventAt?.toISOString() ?? null,
         entries,
         historyError,
       };
@@ -203,10 +200,23 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
     sessionStatus,
     sessionFohStatus,
     openedByAgent,
+    lastEventAt,
     entries,
     historyError,
   } = loaderData;
   const revalidator = useRevalidator();
+
+  // Committed-navigation acknowledgement (D3/D13): the loader is prefetch-safe and
+  // read-only, so the MOUNTED page posts the read mark — and again whenever new events
+  // arrive while it stays open (lastEventAt advances on each revalidation).
+  useEffect(() => {
+    const form = new FormData();
+    form.set("playgroundSessionId", sessionId);
+    void fetch(`/api/foh/${projectId}/read`, {
+      method: "POST",
+      body: form,
+    }).catch(() => {});
+  }, [projectId, sessionId, lastEventAt]);
 
   const [live, setLive] = useState<LiveTurn | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);

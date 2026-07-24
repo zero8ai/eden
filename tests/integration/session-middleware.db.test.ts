@@ -3,12 +3,15 @@ import { RouterContextProvider } from "react-router";
 import { describe, expect, it } from "vitest";
 
 const LIVE = process.env.EDEN_DB_SMOKE === "1";
-const ORIGIN = "http://localhost:5277";
 const PASSWORD = "correct-horse-battery-staple";
 
 process.env.BETTER_AUTH_SECRET ??=
   "eden-session-middleware-integration-secret-at-least-32-characters";
-process.env.BETTER_AUTH_URL ??= ORIGIN;
+process.env.BETTER_AUTH_URL ??= "http://localhost:5277";
+// The middleware's mutation-origin guard compares the `origin` header against the configured
+// BETTER_AUTH_URL, so the test origin must follow the sourced environment (worktree `.env.local`
+// files set BETTER_AUTH_URL to their own port) rather than hardcoding one.
+const ORIGIN = new URL(process.env.BETTER_AUTH_URL).origin;
 
 function authRequest(path: string, body: Record<string, unknown>) {
   return new Request(`${ORIGIN}/api/auth/${path}`, {

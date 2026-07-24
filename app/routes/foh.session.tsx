@@ -45,6 +45,7 @@ import { requireFohProject } from "~/foh/guard.server";
 import { fohSessionStatus } from "~/foh/status";
 import {
   cacheCoversCompletedLiveTurn,
+  guardStaleLiveUpdate,
   liveTurnIsForDifferentSession,
   shouldPollRemoteSession,
 } from "~/playground/handoff";
@@ -227,9 +228,19 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
   const [sendError, setSendError] = useState<string | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const stopRequestedRef = useRef(false);
+  // The session on screen, readable from inside a long-lived send() closure (issue #221
+  // finding 6): a reader started for session A must stop touching shared state once the
+  // user navigates to session B.
+  const currentSessionRef = useRef(sessionId);
 
-  // Switching sessions drops any live view from the previous one.
+  // Switching sessions drops any live view from the previous one and aborts its browser
+  // reader. Only the client copy of the stream stops — the server drain is detached and
+  // finishes the turn regardless.
   useEffect(() => {
+    currentSessionRef.current = sessionId;
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    stopRequestedRef.current = false;
     setLive((prev) =>
       prev && prev.playgroundSessionId !== sessionId ? null : prev,
     );
@@ -279,10 +290,21 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
 
   const send = useCallback(
     async (message: string, answer?: ChatInputAnswer) => {
+      // This closure outlives navigation (the reader keeps draining the fetch), so every
+      // state update below is keyed to the session it was started for — a stale reader
+      // must not touch the live view, error banner, or revalidation of the session the
+      // user navigated to (issue #221 finding 6).
+      const forSession = sessionId;
+      const isCurrent = () => currentSessionRef.current === forSession;
+      const applyIfCurrent = (fn: (prev: LiveTurn | null) => LiveTurn | null) =>
+        setLive((prev) =>
+          guardStaleLiveUpdate(currentSessionRef.current, forSession, prev, fn),
+        );
+
       setSendError(null);
       stopRequestedRef.current = false;
-      setLive({
-        playgroundSessionId: sessionId,
+      applyIfCurrent(() => ({
+        playgroundSessionId: forSession,
         baseEntryCount: entries.length,
         userText: message,
         text: "",
@@ -295,21 +317,21 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
         errorDetail: null,
         errorRetryable: false,
         done: false,
-      });
+      }));
       const apply = (evt: StreamEvent) =>
-        setLive((prev) => (prev ? reduceLive(prev, evt) : prev));
+        applyIfCurrent((prev) => (prev ? reduceLive(prev, evt) : prev));
 
       const form = new FormData();
       form.set("message", message);
       form.set("agentId", agentId);
-      form.set("playgroundSessionId", sessionId);
+      form.set("playgroundSessionId", forSession);
       // A clicked question/approval card answers exactly ITS request (issue #221 finding
       // 2); composer text stays the intentional continue/supersede path.
       if (answer) form.set("inputResponses", JSON.stringify([answer]));
 
+      const controller = new AbortController();
+      streamAbortRef.current = controller;
       try {
-        const controller = new AbortController();
-        streamAbortRef.current = controller;
         const res = await fetch(`/api/foh/${projectId}/stream`, {
           method: "POST",
           body: form,
@@ -346,20 +368,24 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
             apply(evt);
           }
         }
-        setLive((prev) =>
+        applyIfCurrent((prev) =>
           prev && !prev.done ? { ...prev, activity: null, done: true } : prev,
         );
-        await revalidator.revalidate();
-        streamAbortRef.current = null;
+        if (isCurrent()) await revalidator.revalidate();
+        // Only the send that owns the controller may clear the ref — a newer send (or the
+        // navigation effect) may have replaced it with its own.
+        if (streamAbortRef.current === controller) streamAbortRef.current = null;
       } catch (error) {
-        streamAbortRef.current = null;
+        if (streamAbortRef.current === controller) streamAbortRef.current = null;
+        // A navigation-triggered abort lands here for the stale session — report nothing.
+        if (!isCurrent()) return;
         if (stopRequestedRef.current) {
           await revalidator.revalidate();
           setLive(null);
           stopRequestedRef.current = false;
           return;
         }
-        setLive((prev) =>
+        applyIfCurrent((prev) =>
           prev
             ? {
                 ...prev,

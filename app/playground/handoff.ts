@@ -30,6 +30,23 @@ export function liveTurnIsForDifferentSession(
 }
 
 /**
+ * Fold a live-turn state update only when the session the reader was started for
+ * (`forSession`) is still the one on screen (`currentSessionId`) — issue #221 finding 6.
+ * A send()'s NDJSON reader outlives navigation (cancelling the browser fetch must not stop
+ * the agent turn, so the closure keeps running), and every one of its state updates goes
+ * through this guard: a stale reader returns `prev` untouched instead of corrupting the
+ * newly selected session's live view.
+ */
+export function guardStaleLiveUpdate<T>(
+  currentSessionId: string | null,
+  forSession: string,
+  prev: T,
+  update: (prev: T) => T,
+): T {
+  return currentSessionId === forSession ? update(prev) : prev;
+}
+
+/**
  * Whether the durable loader transcript safely replaces a completed browser-side turn.
  * A cached user row alone is only a prefix; wait for the assistant side and a settled DB status.
  */

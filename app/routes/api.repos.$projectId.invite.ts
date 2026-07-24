@@ -1,11 +1,18 @@
 /**
- * Invite-to-repo (FOH invites & roles — the portal replacement). A back-of-house admin invites
- * an email to ONE repo: the org invitation carries the repo team's id, so accepting it makes
- * the recipient a workspace `member` scoped to this repo in front of house (Better Auth
- * auto-adds the invitee to `invitation.teamId` on accept).
+ * Invite-to-repo (FOH invites & roles — the portal replacement). A back-of-house admin types
+ * an email to grant ONE repo; the action branches on who the email already is (issue #221):
+ *
+ *  - Existing org member → direct Better Auth addTeamMember grant (createInvitation rejects
+ *    members outright). This is also the admin REPAIR PATH for pre-team members with no
+ *    teamMember rows: typing their email grants the repo immediately.
+ *  - Pending invitation for OTHER repos → cancel it and recreate carrying the merged team-id
+ *    list (resend:true alone re-sends the OLD invitation and silently drops the new team).
+ *  - Pending invitation already targeting this repo → refresh + resend as before.
+ *  - New email → plain single-team invitation; accepting makes the recipient a workspace
+ *    `member` scoped to this repo (Better Auth auto-adds `invitation.teamId` on accept).
  *
  * GET  → this repo's pending team invitations (for the dialog's list).
- * POST intent=invite → ensure the repo team exists, then send the invitation.
+ * POST intent=invite → ensure the repo team exists, then grant or invite as above.
  *
  * requireProject is the admin gate: after D10 it rejects front-of-house members outright.
  */
@@ -16,20 +23,32 @@ import {
 } from "react-router";
 
 import { getSessionAuth, sessionLoader } from "~/auth/session.server";
-import { ensureProjectTeam } from "~/auth/teams.server";
+import {
+  addProjectTeamMember,
+  ensureProjectTeam,
+  findOrgMemberIdByEmail,
+} from "~/auth/teams.server";
 import { requireProject } from "~/project/guard.server";
 import { auth as betterAuth } from "~/lib/auth.server";
 import { publicAuthErrorMessage } from "~/lib/auth-error.server";
 import { recordAudit } from "~/managed/audit.server";
 
-/** Better Auth stores multi-team invitations comma-separated; match any segment. */
+/** Better Auth stores multi-team invitations comma-separated. */
+function splitInvitationTeamIds(
+  invitationTeamId: string | null | undefined,
+): string[] {
+  return (invitationTeamId ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+/** Match any segment of a (possibly multi-team) invitation's team list. */
 function invitationTargetsTeam(
   invitationTeamId: string | null | undefined,
   teamId: string,
 ): boolean {
-  return Boolean(
-    invitationTeamId?.split(",").some((part) => part.trim() === teamId),
-  );
+  return splitInvitationTeamIds(invitationTeamId).includes(teamId);
 }
 
 export const loader = (args: LoaderFunctionArgs) =>
@@ -83,20 +102,75 @@ export async function action(args: ActionFunctionArgs) {
     return { error: "Could not prepare this repository's team." };
   }
 
-  try {
-    // Invitees join with the member role — front of house only, scoped to this repo's team.
-    await betterAuth.api.createInvitation({
-      body: {
-        email,
-        role: "member",
-        organizationId: project.orgId,
+  // Existing org member (any role, including pre-team members with no teamMember rows):
+  // createInvitation would reject them, so grant the team directly. addTeamMember checks the
+  // caller's member:update permission, hence the admin's session headers.
+  const memberUserId = await findOrgMemberIdByEmail(project.orgId, email);
+  if (memberUserId) {
+    try {
+      await addProjectTeamMember({
+        orgId: project.orgId,
         teamId,
-        // A lapsed or duplicate pending invite re-sends instead of erroring (org.members
-        // resend-invite precedent) — the dialog has no separate resend control.
-        resend: true,
-      },
-      headers: auth.requestHeaders,
+        userId: memberUserId,
+        headers: auth.requestHeaders,
+      });
+    } catch (error) {
+      return {
+        error: publicAuthErrorMessage(
+          error,
+          "Could not grant this member access to the repository.",
+        ),
+      };
+    }
+    await recordAudit({
+      orgId: project.orgId,
+      actorUserId: auth.user.id,
+      action: "member_granted_repo",
+      target: email,
+      meta: { projectId: project.id, teamId },
     });
+    return { ok: true as const };
+  }
+
+  try {
+    const pending = await findPendingInvitation(
+      project.orgId,
+      email,
+      auth.requestHeaders,
+    );
+    if (pending && !invitationTargetsTeam(pending.teamId, teamId)) {
+      // A pending invitation for OTHER repos: resend:true would re-send it unchanged and drop
+      // this repo, so replace it with one carrying the merged team list. Keep its role — the
+      // dialog only mints `member` invitations, but never downgrade an unexpected one.
+      await betterAuth.api.cancelInvitation({
+        body: { invitationId: pending.id },
+        headers: auth.requestHeaders,
+      });
+      await betterAuth.api.createInvitation({
+        body: {
+          email,
+          role: (pending.role ?? "member") as "member",
+          organizationId: project.orgId,
+          teamId: [...splitInvitationTeamIds(pending.teamId), teamId],
+        },
+        headers: auth.requestHeaders,
+      });
+    } else {
+      // New email, or a lapsed/duplicate invite already targeting this repo — resend:true
+      // refreshes + re-sends instead of erroring (org.members resend-invite precedent; the
+      // dialog has no separate resend control). Invitees join with the member role — front
+      // of house only, scoped to this repo's team.
+      await betterAuth.api.createInvitation({
+        body: {
+          email,
+          role: "member",
+          organizationId: project.orgId,
+          teamId,
+          resend: true,
+        },
+        headers: auth.requestHeaders,
+      });
+    }
   } catch (error) {
     return {
       error: publicAuthErrorMessage(error, "Could not send the invitation."),
@@ -111,4 +185,23 @@ export async function action(args: ActionFunctionArgs) {
     meta: { projectId: project.id, teamId },
   });
   return { ok: true as const };
+}
+
+/** This email's pending invitation in the org, if any (Better Auth allows at most one). */
+async function findPendingInvitation(
+  orgId: string,
+  email: string,
+  headers: Headers,
+) {
+  const invitations = await betterAuth.api.listInvitations({
+    query: { organizationId: orgId },
+    headers,
+  });
+  return (
+    invitations.find(
+      (candidate) =>
+        candidate.status === "pending" &&
+        candidate.email.toLowerCase() === email,
+    ) ?? null
+  );
 }

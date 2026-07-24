@@ -9,14 +9,17 @@
  * repository teardown, lazy FOH loader) mint teams without threading a privileged session.
  * Callers gate access themselves (requireProject + requireBackOfHouse).
  *
- * There is deliberately no addTeamMember helper: Better Auth's acceptInvitation auto-creates
- * the teamMember row when the invitation carries a teamId, so the invite-to-repo flow only
- * needs createInvitation({ teamId }).
+ * Membership paths: for a NEW email, Better Auth's acceptInvitation auto-creates the
+ * teamMember row when the invitation carries a teamId, so createInvitation({ teamId }) is
+ * enough. For an EXISTING org member Better Auth rejects createInvitation outright
+ * (USER_IS_ALREADY_A_MEMBER_OF_THIS_ORGANIZATION), so granting them a repo goes through
+ * addProjectTeamMember instead — unlike team lifecycle, that call DOES thread the calling
+ * admin's session headers, because add-team-member enforces member:update on the caller.
  */
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 import { db } from "~/db/client.server";
-import { team, teamMember } from "~/db/auth-schema";
+import { member, team, teamMember, user } from "~/db/auth-schema";
 import { projects } from "~/db/schema";
 import { auth } from "~/lib/auth.server";
 
@@ -94,6 +97,51 @@ export async function deleteProjectTeam(
       `[teams] Could not remove team ${teamId} (${(error as Error)?.message ?? "unknown error"}); continuing.`,
     );
   }
+}
+
+/**
+ * Add an EXISTING org member to a repo's team (the invite dialog's direct-grant path, which
+ * is also the admin repair path for pre-team members with no teamMember rows). Requires the
+ * calling admin's session headers: Better Auth's add-team-member enforces member:update on
+ * the caller, requires the target user to already belong to the org, and is idempotent.
+ * Better Auth API errors propagate for the caller to map into a public message.
+ */
+export async function addProjectTeamMember(input: {
+  orgId: string;
+  teamId: string;
+  userId: string;
+  headers: Headers;
+}): Promise<void> {
+  await auth.api.addTeamMember({
+    body: {
+      teamId: input.teamId,
+      userId: input.userId,
+      organizationId: input.orgId,
+    },
+    headers: input.headers,
+  });
+}
+
+/**
+ * The user id of the org member whose account email matches (case-insensitively), or null.
+ * Lets the invite flow decide between a direct team grant and an invitation.
+ */
+export async function findOrgMemberIdByEmail(
+  orgId: string,
+  email: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({ userId: member.userId })
+    .from(member)
+    .innerJoin(user, eq(user.id, member.userId))
+    .where(
+      and(
+        eq(member.organizationId, orgId),
+        sql`lower(${user.email}) = ${email.toLowerCase()}`,
+      ),
+    )
+    .limit(1);
+  return rows[0]?.userId ?? null;
 }
 
 /**

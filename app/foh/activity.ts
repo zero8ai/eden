@@ -97,6 +97,12 @@ export type ActivityEvent =
       status: string;
       /** Triggering input snippet from run metadata, when recorded. */
       input: string | null;
+      /**
+       * The human who triggered the run, when attributable (FOH-channel runs resolve their
+       * playground session's creator). Null for unattributed channels — headlines fall back
+       * to agent-first phrasing.
+       */
+      actorUserName: string | null;
       error: string | null;
     })
   | (ActivityEventBase & {
@@ -119,6 +125,8 @@ export interface ProjectActivityOptions {
   userNames?: Map<string, string>;
   /** Ask text per linked run id (delegation entries), from runs.metadata.input. */
   askByRunId?: Map<string, string | null>;
+  /** Triggering human's name per run id, where attributable (FOH-channel runs). */
+  actorByRunId?: Map<string, string | null>;
 }
 
 const name = (map: Map<string, string>, id: string | null): string | null =>
@@ -138,7 +146,12 @@ export function projectActivity(
   sources: ActivitySources,
   opts: ProjectActivityOptions,
 ): ActivityPage {
-  const { agentNames, userNames = new Map(), askByRunId = new Map() } = opts;
+  const {
+    agentNames,
+    userNames = new Map(),
+    askByRunId = new Map(),
+    actorByRunId = new Map(),
+  } = opts;
   const events: ActivityEvent[] = [];
 
   for (const s of sources.sessions) {
@@ -180,6 +193,7 @@ export function projectActivity(
       channel: r.channel,
       status: r.status,
       input: typeof input === "string" ? input : null,
+      actorUserName: actorByRunId.get(r.id) ?? null,
       error: r.error,
     });
   }

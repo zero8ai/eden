@@ -1,0 +1,2 @@
+ALTER TABLE "playground_sessions" ADD COLUMN "turn_claim_id" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "inbox_items_session_request_pending_uq" ON "inbox_items" USING btree ("session_id","request_id") WHERE "inbox_items"."status" = 'pending' and "inbox_items"."request_id" is not null;

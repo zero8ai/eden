@@ -115,6 +115,13 @@ export function streamTurnResponse(input: {
     optionId?: string;
     text?: string;
   }> | null;
+  /**
+   * Per-turn fencing token (issue #221 finding 5): the FOH route's atomic claim id. When set,
+   * the drain's progress/cursor saves carry it so a superseded drain (another request claimed
+   * the session over a stale `running`) writes zero rows. Builder callers omit it — their
+   * behavior is byte-identical to before.
+   */
+  claimId?: string | null;
 }): Response {
   const {
     projectId,
@@ -236,6 +243,7 @@ export function streamTurnResponse(input: {
                 continuationToken: nextContinuationToken,
                 streamIndex: Math.min(nextStreamIndex, persistedEventIndex),
                 title,
+                claimId: input.claimId ?? undefined,
               }).catch((e) =>
                 console.error(`${tag} persist session progress failed`, e),
               ),
@@ -431,6 +439,7 @@ export function streamTurnResponse(input: {
                 ),
                 title,
                 status: settled.ok ? "waiting" : "failed",
+                claimId: input.claimId ?? undefined,
               });
             } catch (e) {
               console.error(`${tag} persist session cursor failed`, e);

@@ -1,4 +1,16 @@
-import { and, desc, eq, gt, inArray, isNull, max, min, ne, or } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lt,
+  max,
+  min,
+  ne,
+  or,
+} from "drizzle-orm";
 
 import { inputRequestsOf, type RawEveEvent } from "~/agent/talk.server";
 import { normalizeTurnError } from "~/chat/stream-error";
@@ -377,6 +389,51 @@ export async function markPlaygroundSessionRunning(input: {
     .where(eq(playgroundSessions.id, input.id));
 }
 
+/**
+ * Atomically claim the session for one turn (issue #221 finding 5): a compare-and-swap to
+ * `running` carrying the caller's per-turn `claimId` as the fencing token. Everything
+ * `markPlaygroundSessionRunning` sets is set here too. The claim wins when the session is not
+ * `running`, OR its `running` is stale — no drain activity (`updatedAt` bump) for
+ * `staleAfterMs`. The cutoff must match the drain's own idle-failure timeout
+ * (TURN_IDLE_TIMEOUT_MS): the drain bumps `updatedAt` only when events arrive, and a silent
+ * long tool call can go minutes without events — a shorter cutoff would let a second tab
+ * steal a LIVE turn. Returns the claimed row, or null when another turn holds the session.
+ */
+export async function claimPlaygroundSessionForTurn(input: {
+  id: string;
+  target: Target;
+  title?: string | null;
+  claimId: string;
+  /** Stale-takeover cutoff; callers pass TURN_IDLE_TIMEOUT_MS from ~/chat/turn-stream.server. */
+  staleAfterMs: number;
+}): Promise<PlaygroundSession | null> {
+  const staleBefore = new Date(Date.now() - input.staleAfterMs);
+  const [row] = await db
+    .update(playgroundSessions)
+    .set({
+      environmentId: input.target.environmentId,
+      worldKey: input.target.environmentId,
+      lastDeploymentId: input.target.deploymentId,
+      lastReleaseId: input.target.releaseId,
+      lastVersion: input.target.version,
+      title: input.title ?? undefined,
+      status: "running",
+      turnClaimId: input.claimId,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(playgroundSessions.id, input.id),
+        or(
+          ne(playgroundSessions.status, "running"),
+          lt(playgroundSessions.updatedAt, staleBefore),
+        ),
+      ),
+    )
+    .returning();
+  return row ?? null;
+}
+
 export async function savePlaygroundSessionProgress(input: {
   id: string;
   target: Target;
@@ -384,6 +441,8 @@ export async function savePlaygroundSessionProgress(input: {
   continuationToken: string | null;
   streamIndex: number;
   title?: string | null;
+  /** Fencing token (issue #221 finding 5): when set, only the claim-holding drain writes. */
+  claimId?: string;
 }): Promise<void> {
   await db
     .update(playgroundSessions)
@@ -402,11 +461,15 @@ export async function savePlaygroundSessionProgress(input: {
       updatedAt: new Date(),
     })
     // Stop wins races with the detached drain. Once the user has deliberately stopped a turn,
-    // an already-queued progress save must not flip the row back to `running`.
+    // an already-queued progress save must not flip the row back to `running`. The claim fence
+    // (when carried) makes a superseded drain's late writes hit zero rows the same way.
     .where(
       and(
         eq(playgroundSessions.id, input.id),
         ne(playgroundSessions.status, "stopped"),
+        input.claimId
+          ? eq(playgroundSessions.turnClaimId, input.claimId)
+          : undefined,
       ),
     );
 }
@@ -419,6 +482,8 @@ export async function savePlaygroundSessionCursor(input: {
   streamIndex: number;
   title?: string | null;
   status: "running" | "waiting" | "completed" | "failed";
+  /** Fencing token (issue #221 finding 5): when set, only the claim-holding drain writes. */
+  claimId?: string;
 }): Promise<void> {
   await db
     .update(playgroundSessions)
@@ -438,10 +503,14 @@ export async function savePlaygroundSessionCursor(input: {
     })
     // The drain can reach its final cursor save after /stop has settled the row. Preserve the
     // user's terminal `stopped` state instead of racing it back to `waiting` or `failed`.
+    // The claim fence (when carried) no-ops a superseded drain's late terminal write too.
     .where(
       and(
         eq(playgroundSessions.id, input.id),
         ne(playgroundSessions.status, "stopped"),
+        input.claimId
+          ? eq(playgroundSessions.turnClaimId, input.claimId)
+          : undefined,
       ),
     );
 }

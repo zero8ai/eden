@@ -13,14 +13,8 @@
  * paths on the marketing host never reach their loaders: the root session middleware bounces
  * every non-marketing GET to the app origin. Self-host default (env unset) is always FOH.
  */
-import { ArrowRight, LogOut, Plus, Zap } from "lucide-react";
-import {
-  Form,
-  Link,
-  NavLink,
-  Outlet,
-  type LoaderFunctionArgs,
-} from "react-router";
+import { Zap } from "lucide-react";
+import { Link, NavLink, Outlet, type LoaderFunctionArgs } from "react-router";
 
 import { sessionLoader } from "~/auth/session.server";
 import {
@@ -28,12 +22,11 @@ import {
   isBackOfHouse,
   resolveActiveWorkspace,
 } from "~/auth/workspace.server";
+import { AccountMenu } from "~/components/foh/account-menu";
 import { InboxIndicator } from "~/components/foh/inbox";
 import { PresenceDot } from "~/components/foh/presence-dot";
 import { MarketingLanding } from "~/components/marketing/landing";
 import { EdenWordmark } from "~/components/marketing/logo";
-import { ThemeToggle } from "~/components/theme-toggle";
-import { Button } from "~/components/ui/button";
 import { loadFohSidebar } from "~/foh/sidebar.server";
 import { appOrigin, isMarketingHost } from "~/lib/marketing-host.server";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
@@ -102,13 +95,13 @@ function FohShell({ data }: { data: ShellData }) {
   return (
     <div className="flex h-dvh overflow-hidden bg-background">
       <aside className="flex w-64 shrink-0 flex-col border-r">
-        <div className="flex h-14 items-center gap-1 border-b px-3">
-          <Link to="/" className="flex items-center pr-1" aria-label="eden home">
+        {/* Workspace name intentionally absent (issue #212 §1): nobody switches
+            workspaces yet, and the label never sat aligned with the wordmark — it now
+            lives in the account menu below instead. */}
+        <div className="flex h-14 items-center border-b px-3">
+          <Link to="/" className="flex items-center" aria-label="eden home">
             <EdenWordmark className="h-5" />
           </Link>
-          <span className="min-w-0 truncate text-xs text-muted-foreground">
-            {orgName}
-          </span>
           <div className="ml-auto">
             <InboxIndicator />
           </div>
@@ -184,52 +177,13 @@ function FohShell({ data }: { data: ShellData }) {
           )}
         </nav>
 
-        <div className="space-y-1 border-t p-2">
-          {backOfHouse && (
-            <>
-              <Button
-                asChild
-                variant="ghost"
-                size="sm"
-                className="w-full justify-start gap-2 text-muted-foreground"
-              >
-                <Link to="/connect">
-                  <Plus className="size-3.5" aria-hidden />
-                  New repository
-                </Link>
-              </Button>
-              <Button
-                asChild
-                variant="ghost"
-                size="sm"
-                className="w-full justify-start gap-2 text-muted-foreground"
-              >
-                {/* D18: the switcher into the build surface. Members never see it (and the
-                    BOH guard would bounce them anyway). */}
-                <Link to="/dashboard">
-                  <ArrowRight className="size-3.5" aria-hidden />
-                  Back of house
-                </Link>
-              </Button>
-            </>
-          )}
-          <div className="flex items-center gap-1 px-1">
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-              {user?.email}
-            </span>
-            <ThemeToggle />
-            <Form method="post" action="/dashboard">
-              <input type="hidden" name="intent" value="sign-out" />
-              <Button
-                type="submit"
-                variant="ghost"
-                size="sm"
-                aria-label="Sign out"
-              >
-                <LogOut className="size-3.5" aria-hidden />
-              </Button>
-            </Form>
-          </div>
+        <div className="border-t p-2">
+          <AccountMenu
+            name={user?.name ?? null}
+            email={user?.email ?? null}
+            orgName={orgName}
+            backOfHouse={backOfHouse}
+          />
         </div>
       </aside>
 

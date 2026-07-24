@@ -29,6 +29,7 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       delegations,
       runs,
       runSteps,
+      sessions,
     } = await import("~/db/schema");
     const { listTeamActivity, getDelegationExchange } = await import(
       "~/foh/activity.server"
@@ -88,7 +89,9 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       })
       .returning();
 
-    // 10:10 — Aaron opens a session with sam.
+    // 10:10 — Aaron opens a session with sam. The eve session id links the FOH session to
+    // its observability session so foh-channel runs attribute back to Aaron.
+    const EVE_SESSION = "eve_sess_foh_activity_smoke";
     const [humanSession] = await db
       .insert(playgroundSessions)
       .values({
@@ -96,8 +99,18 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
         agentId: sam.id,
         createdBy: USER,
         surface: "foh",
+        externalSessionId: EVE_SESSION,
         title: "the pricing page is broken",
         createdAt: t(10),
+      })
+      .returning();
+    const [obsSession] = await db
+      .insert(sessions)
+      .values({
+        projectId: project.id,
+        agentId: sam.id,
+        externalSessionId: EVE_SESSION,
+        channel: "foh",
       })
       .returning();
 
@@ -111,12 +124,14 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       createdAt: t(11),
     });
 
-    // 10:20 — a plain (non-delegation) run for sam.
+    // 10:20 — a plain (non-delegation) run for sam, linked to Aaron's session so the feed
+    // can say "Aaron messaged sam" (#212 §3 point-of-view headlines).
     const [plainRun] = await db
       .insert(runs)
       .values({
         projectId: project.id,
         agentId: sam.id,
+        sessionId: obsSession.id,
         channel: "foh",
         status: "completed",
         metadata: { input: "look at the pricing page" },
@@ -353,6 +368,15 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       ask: "can you check DNS for eden.dev?",
       status: "completed",
       finishedAt: t(46).toISOString(),
+    });
+    expect(page.events[4]).toMatchObject({
+      type: "run",
+      channel: "foh",
+      agentName: "sam",
+      // Resolved via runs.sessionId → sessions.externalSessionId → the FOH playground
+      // session's creator — the read-time attribution join.
+      actorUserName: "Aaron",
+      input: "look at the pricing page",
     });
     expect(page.events[5]).toMatchObject({
       type: "session",

@@ -27,6 +27,7 @@ import {
   releases,
   runs,
   runSteps,
+  sessions,
 } from "~/db/schema";
 import {
   dropLeadingAsk,
@@ -100,6 +101,7 @@ export async function listTeamActivity(
           status: runs.status,
           channel: runs.channel,
           agentId: runs.agentId,
+          sessionId: runs.sessionId,
           error: runs.error,
           metadata: runs.metadata,
         })
@@ -152,9 +154,43 @@ export async function listTeamActivity(
     ]),
   );
 
+  // FOH-channel runs are a human messaging an agent — attribute them by walking the
+  // observability session back to the FOH playground session's creator (§212: the feed
+  // should read "Aaron messaged sam", not agent-first). Read-time join, so historical rows
+  // resolve too; misses (null sessionId, reaped session) just fall back to agent-first copy.
+  const fohRunSessionIds = [
+    ...new Set(
+      runRows
+        .filter((r) => r.channel === "foh" && r.sessionId != null)
+        .map((r) => r.sessionId as string),
+    ),
+  ];
+  const actorRows = fohRunSessionIds.length
+    ? await db
+        .select({ sessionId: sessions.id, createdBy: playgroundSessions.createdBy })
+        .from(sessions)
+        .innerJoin(
+          playgroundSessions,
+          and(
+            eq(playgroundSessions.externalSessionId, sessions.externalSessionId),
+            eq(playgroundSessions.projectId, projectId),
+            eq(playgroundSessions.surface, "foh"),
+          ),
+        )
+        .where(
+          and(eq(sessions.projectId, projectId), inArray(sessions.id, fohRunSessionIds)),
+        )
+    : [];
+  const creatorBySessionId = new Map(
+    actorRows.map((r) => [r.sessionId, r.createdBy]),
+  );
+
   const openerIds = [
     ...new Set(
-      sessionRows.map((s) => s.createdBy).filter((id): id is string => id != null),
+      [
+        ...sessionRows.map((s) => s.createdBy),
+        ...actorRows.map((r) => r.createdBy),
+      ].filter((id): id is string => id != null),
     ),
   ];
   const userRows = openerIds.length
@@ -163,6 +199,15 @@ export async function listTeamActivity(
         .from(user)
         .where(inArray(user.id, openerIds))
     : [];
+  const userNames = new Map(userRows.map((u) => [u.id, u.name]));
+
+  const actorByRunId = new Map(
+    runRows.map((r) => {
+      const createdBy =
+        r.sessionId != null ? creatorBySessionId.get(r.sessionId) : null;
+      return [r.id, createdBy != null ? (userNames.get(createdBy) ?? null) : null];
+    }),
+  );
 
   return projectActivity(
     {
@@ -174,8 +219,9 @@ export async function listTeamActivity(
     {
       limit,
       agentNames: new Map(agentRows.map((a) => [a.id, a.name])),
-      userNames: new Map(userRows.map((u) => [u.id, u.name])),
+      userNames,
       askByRunId,
+      actorByRunId,
     },
   );
 }

@@ -2,7 +2,8 @@
  * FOH inbox resource route (app/routes/api.foh.inbox.ts): D5 visibility on GET (own +
  * team-wide items within the viewer's scoped projects, enriched with session titles and D14
  * jump paths) and the ownership/tenant guard on POST intent=resolve — another user's personal
- * item and out-of-scope items are unreachable by construction.
+ * item and out-of-scope items are unreachable by construction, and only `finished` items are
+ * dismissible (question/approval state resolves exclusively at the drain chokepoints).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -121,6 +122,22 @@ beforeEach(() => {
     agentId: "agent_ivy",
     userId: "user_1",
   });
+  store.seedInboxItem({
+    id: "i_finished_own",
+    projectId: "proj_a",
+    sessionId: "sess_1",
+    kind: "finished",
+    agentId: "agent_ivy",
+    userId: "user_1",
+  });
+  store.seedInboxItem({
+    id: "i_finished_team",
+    projectId: "proj_a",
+    sessionId: "sess_2",
+    kind: "finished",
+    agentId: "agent_ivy",
+    userId: null,
+  });
 });
 
 describe("GET /api/foh/inbox", () => {
@@ -130,9 +147,9 @@ describe("GET /api/foh/inbox", () => {
       count: number;
     };
     expect(new Set(result.items.map((item) => item.id))).toEqual(
-      new Set(["i_own", "i_team"]),
+      new Set(["i_own", "i_team", "i_finished_own", "i_finished_team"]),
     );
-    expect(result.count).toBe(2);
+    expect(result.count).toBe(4);
     const own = result.items.find((item) => item.id === "i_own")!;
     expect(own.href).toBe("/t/proj_a/agent_ivy/s/sess_1");
     expect(own.sessionTitle).toBe("Session sess_1");
@@ -148,16 +165,32 @@ describe("GET /api/foh/inbox", () => {
 });
 
 describe("POST /api/foh/inbox intent=resolve", () => {
-  it("resolves the viewer's own item", async () => {
-    const result = await action(actionArgs({ intent: "resolve", itemId: "i_own" }));
+  it("resolves the viewer's own finished item", async () => {
+    const result = await action(
+      actionArgs({ intent: "resolve", itemId: "i_finished_own" }),
+    );
     expect(result).toEqual({ ok: true });
-    expect(store.getInboxItem("i_own")?.status).toBe("resolved");
+    expect(store.getInboxItem("i_finished_own")?.status).toBe("resolved");
   });
 
-  it("resolves a team-wide item", async () => {
-    const result = await action(actionArgs({ intent: "resolve", itemId: "i_team" }));
+  it("resolves a team-wide finished item", async () => {
+    const result = await action(
+      actionArgs({ intent: "resolve", itemId: "i_finished_team" }),
+    );
     expect(result).toEqual({ ok: true });
-    expect(store.getInboxItem("i_team")?.status).toBe("resolved");
+    expect(store.getInboxItem("i_finished_team")?.status).toBe("resolved");
+  });
+
+  it("refuses to resolve a question item — drain chokepoints own that state", async () => {
+    const result = await action(actionArgs({ intent: "resolve", itemId: "i_own" }));
+    expect(result).toEqual({ ok: false });
+    expect(store.getInboxItem("i_own")?.status).toBe("pending");
+  });
+
+  it("refuses to resolve a team-wide question item", async () => {
+    const result = await action(actionArgs({ intent: "resolve", itemId: "i_team" }));
+    expect(result).toEqual({ ok: false });
+    expect(store.getInboxItem("i_team")?.status).toBe("pending");
   });
 
   it("refuses another user's personal item", async () => {

@@ -83,6 +83,7 @@ import {
 import { agentRequiredSecretState } from "~/project/secrets.server";
 import { overlayLock } from "~/marketplace/lock";
 import { requireProject, requireRepo } from "~/project/guard.server";
+import { isGithubReauthorizationError } from "~/github/installations.server";
 import type { Project } from "~/db/queries.server";
 import { noindexMeta } from "~/lib/seo";
 import type { Route } from "./+types/projects.$projectId";
@@ -131,6 +132,12 @@ interface ProjectView {
   /** Member view: the active member's parsed config. */
   config: AgentConfig | null;
   error: string | null;
+  /**
+   * True when `error` is a GitHub reauthorization failure (installation missing/unverified) —
+   * the repo can't be read until the App is reconnected, so the surface offers a Reconnect CTA
+   * rather than dead-ending on the message.
+   */
+  needsReconnect: boolean;
   /** Paths with staged (unpublished) drafts, so the config surface can flag them. */
   draftPaths: string[];
   /** Member view: what's running per environment, for the header status line. */
@@ -178,6 +185,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           teamIntroDismissed: false,
           config: null,
           error: "This project has no connected repo.",
+          needsReconnect: false,
           draftPaths: [],
           running: [],
           ship: null,
@@ -366,6 +374,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           teamIntroDismissed,
           config,
           error: null,
+          needsReconnect: false,
           draftPaths: drafts.map((d) => d.path),
           running,
           ship,
@@ -383,6 +392,7 @@ export const loader = (args: LoaderFunctionArgs) =>
           teamIntroDismissed: false,
           config: null,
           error: (error as Error).message,
+          needsReconnect: isGithubReauthorizationError(error),
           draftPaths: [],
           running: [],
           ship: null,
@@ -480,6 +490,7 @@ export default function ProjectDetail({
     teamIntroDismissed,
     config,
     error,
+    needsReconnect,
     draftPaths,
     running,
     ship,
@@ -618,9 +629,31 @@ export default function ProjectDetail({
       )}
 
       {error && (
-        <Alert className="mb-6">
-          <AlertTitle>Couldn&rsquo;t read the repo</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
+        <Alert className="mb-6" variant={needsReconnect ? "destructive" : "default"}>
+          <AlertTitle>
+            {needsReconnect
+              ? "GitHub access needs reconnecting"
+              : "Couldn’t read the repo"}
+          </AlertTitle>
+          <AlertDescription>
+            {needsReconnect ? (
+              <div className="space-y-3">
+                <p>
+                  eden can no longer read{" "}
+                  <span className="font-mono">
+                    {project.repoOwner}/{project.repoName}
+                  </span>{" "}
+                  — its GitHub App installation is missing or unverified.
+                  Reconnect to re-authorize access.
+                </p>
+                <Button asChild size="sm">
+                  <Link to="/connect">Reconnect GitHub</Link>
+                </Button>
+              </div>
+            ) : (
+              error
+            )}
+          </AlertDescription>
         </Alert>
       )}
 

@@ -100,10 +100,29 @@ export async function resolveInstallationGrant(
   return toGrant(rows[0]);
 }
 
+/**
+ * Thrown when a project's installation grant is missing or unverified — the repo can't be read
+ * until the GitHub App is (re)installed and ownership re-verified. Typed so UI surfaces can offer
+ * a Reconnect action instead of dead-ending on the bare message (a plain repo read error has no
+ * such remedy).
+ */
+export class GithubReauthorizationError extends Error {
+  constructor() {
+    super(
+      "This GitHub installation is not authorized for this workspace. Reauthorize it from Connect.",
+    );
+    this.name = "GithubReauthorizationError";
+  }
+}
+
+export function isGithubReauthorizationError(
+  error: unknown,
+): error is GithubReauthorizationError {
+  return error instanceof GithubReauthorizationError;
+}
+
 function reauthorizationError(): Error {
-  return new Error(
-    "This GitHub installation is not authorized for this workspace. Reauthorize it from Connect.",
-  );
+  return new GithubReauthorizationError();
 }
 
 function toGrant(

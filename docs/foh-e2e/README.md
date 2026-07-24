@@ -1,5 +1,46 @@
 # Front of House — e2e acceptance evidence
 
+## Runnable suite
+
+The core acceptance flows are covered by an executable suite: `tests/e2e/` (vitest, no new
+dependencies) drives the REAL route modules (`api.foh.stream`, `foh.session`, `api.foh.inbox`,
+`api.foh.read`), the real disconnect-safe drain, real Better Auth signup/cookies/teams, and the
+live Postgres — against a protocol-faithful fake eve instance (`tests/e2e/fake-eve.ts`, a
+node:http server implementing the verified eve session/stream/cancel contract from
+`app/agent/talk.server.ts`, with every request body recorded for assertions).
+
+Run it from the repo root (same opt-in as `tests/integration`):
+
+```
+set -a; source .env.local; set +a
+EDEN_DB_SMOKE=1 npm run test:e2e
+```
+
+Without `EDEN_DB_SMOKE=1` the specs skip; the default `npm test` glob never picks them up
+(they are named `*.e2e.ts` and run through `tests/e2e/vitest.config.ts` only).
+
+What it proves, at the HTTP/route layer:
+
+| Spec | Flow |
+| --- | --- |
+| `core-loop.e2e.ts` | Send into a new FOH session, abandon the response reader mid-turn (away-mid-turn); the detached drain still persists the full transcript (`playground_events`), lands the session `waiting`, and files the `finished` inbox item. |
+| `park-recovery.e2e.ts` | eve parks on TWO approval requests (`input.requested` → `session.waiting`) with no client attached → `pendingInputAt` + one pending item per requestId; answering ONE via the stream action forwards `inputResponses` with EXACTLY that requestId on the continuation POST, and the supersede rule resolves both items (the un-answered one included). |
+| `concurrent-turns.e2e.ts` | A second stream POST while a fresh turn holds the session `running` → 409 before eve is touched; the fencing token is untouched and the winning drain settles cleanly. |
+| `roles-and-inbox.e2e.ts` | A member's session 404s for a fellow team member but loads for an admin; the inbox loader scopes items per viewer (personal items invisible even to admins); the resolve action refuses question items and dismisses `finished`; the read action resolves the viewer's finished item and advances the read cursor. |
+
+Deliberately NOT re-covered here:
+
+- **Invite → email → accept → scoped member** is already an executable end-to-end test:
+  `tests/integration/foh-teams.db.test.ts` (real Better Auth handler + `MAILBOX_DIR` mailbox
+  driver, invitation/team/member rows asserted in Postgres).
+- **Delegation & wake** (agent↔agent↔human, waking stopped containers) needs real deployed eve
+  containers and a running control plane — it stays browser-run/manual, evidenced by the D1/D2
+  screenshots below.
+- **Browser-level UI criteria** (badges, sorting, empty states, marketing/host routing) remain
+  screenshot-evidenced below.
+
+## Screenshot evidence
+
 Screenshot evidence for every acceptance criterion in
 [`../PRD-FRONT-OF-HOUSE.md`](../PRD-FRONT-OF-HOUSE.md) §6, captured by browser-driven e2e runs
 (agent-browser) against a live dev instance of this branch with **real deployed eve agents**

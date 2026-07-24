@@ -54,6 +54,7 @@ export const loader = (args: LoaderFunctionArgs) =>
       const exchangeId = url.searchParams.get("exchange");
       const [page, exchange] = await Promise.all([
         listTeamActivity(access.project.id, {
+          viewer: { userId: auth.user.id, backOfHouse: access.backOfHouse },
           before: before && !Number.isNaN(before.getTime()) ? before : undefined,
         }),
         exchangeId

@@ -1,7 +1,8 @@
 /**
  * FOH session substrate against a REAL Postgres (WP2): the surface discriminator's isolation
- * guarantee (playground/assistant lists never see FOH rows and vice versa — the §6 regression
- * criterion in DB form), agent-opened rows (nullable created_by + opened_by_agent_id),
+ * guarantee (foh/playground/assistant are three disjoint spaces — each list sees only its own
+ * surface's rows, the §6 regression criterion in DB form), the 0018 legacy-assistant backfill,
+ * agent-opened rows (nullable created_by + opened_by_agent_id),
  * conversation_reads upsert/unread math, inbox insert/resolve, pending-input stop-wins guard,
  * and the FK cascades that keep a deleted session from stranding inbox/read rows.
  *
@@ -9,7 +10,7 @@
  * (`EDEN_DB_SMOKE=1 npx vitest run tests/integration/foh-schema.db.test.ts` with .env.local
  * sourced). Creates its own org/user/project/agent rows and deletes them, so it's safe to re-run.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 const LIVE = process.env.EDEN_DB_SMOKE === "1";
@@ -94,15 +95,67 @@ describe.runIf(LIVE)("FOH session substrate against real Postgres", () => {
       openedByAgentId: agent.id,
     });
 
-    // Surface isolation: builder lists never see FOH rows; FOH never sees builder rows.
+    // Three-way surface isolation (issue #221 PRD gap 2): each surface's list sees ONLY its
+    // own rows, even for the same (project, agent, creator).
     const builderIds = (await listPlaygroundSessions(scope)).map((s) => s.id);
     expect(builderIds).toContain(playgroundRow.id);
-    expect(builderIds).toContain(assistantRow.id);
+    expect(builderIds).not.toContain(assistantRow.id);
     expect(builderIds).not.toContain(fohRow.id);
     expect(builderIds).not.toContain(agentOpened.id);
+    const assistantIds = (
+      await listPlaygroundSessions({ ...scope, surface: "assistant" })
+    ).map((s) => s.id);
+    expect(assistantIds).toContain(assistantRow.id);
+    expect(assistantIds).not.toContain(playgroundRow.id);
+    expect(assistantIds).not.toContain(fohRow.id);
     expect(
       await getPlaygroundSession({ ...scope, id: fohRow.id }),
     ).toBeNull();
+    expect(
+      await getPlaygroundSession({ ...scope, id: assistantRow.id }),
+    ).toBeNull();
+    expect(
+      await getPlaygroundSession({
+        ...scope,
+        id: assistantRow.id,
+        surface: "assistant",
+      }),
+    ).not.toBeNull();
+
+    // Backfill proof (migration 0018): a legacy-shaped row — surface 'playground' (0015's
+    // column default) on a kind-'assistant' agent — flips to 'assistant' under the backfill
+    // UPDATE, and a genuine playground row on a member agent is untouched.
+    const [assistantAgent] = await db
+      .insert(agents)
+      .values({
+        projectId: project.id,
+        name: "eden-assistant",
+        root: "agents/eden-assistant/agent",
+        kind: "assistant",
+      })
+      .returning();
+    const legacyRow = await createPlaygroundSession({
+      projectId: project.id,
+      agentId: assistantAgent.id,
+      userId: USER,
+      // No surface passed: legacy rows carry the 0015 default 'playground'.
+    });
+    await db.execute(sql`
+      UPDATE "playground_sessions"
+      SET "surface" = 'assistant'
+      WHERE "surface" = 'playground'
+        AND "agent_id" IN (SELECT "id" FROM "agents" WHERE "kind" = 'assistant')
+    `);
+    const [backfilled] = await db
+      .select()
+      .from(playgroundSessions)
+      .where(eq(playgroundSessions.id, legacyRow.id));
+    expect(backfilled.surface).toBe("assistant");
+    const [untouched] = await db
+      .select()
+      .from(playgroundSessions)
+      .where(eq(playgroundSessions.id, playgroundRow.id));
+    expect(untouched.surface).toBe("playground");
 
     const fohIds = (
       await listFohSessionsForAgent({

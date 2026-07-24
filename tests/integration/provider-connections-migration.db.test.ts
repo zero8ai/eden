@@ -72,7 +72,7 @@ describe.runIf(LIVE)("Phase 2 provider migration against Postgres", () => {
       `);
 
       const migration = await readFile(
-        path.join(process.cwd(), "drizzle/0004_absurd_rhodey.sql"),
+        path.join(process.cwd(), "drizzle/0005_breezy_boomer.sql"),
         "utf8",
       );
       for (const statement of migration

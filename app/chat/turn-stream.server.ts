@@ -105,6 +105,23 @@ export function streamTurnResponse(input: {
    * path + a base-advanced note) but NOT recorded/echoed as the user's message. Optional.
    */
   messagePrefix?: string | null;
+  /**
+   * Request-correlated HITL answers (FOH answer path): forwarded to eve as `inputResponses`
+   * on the continuation send, so only the clicked request resolves — never the whole
+   * pending batch. Recording/display still use `message`.
+   */
+  inputResponses?: ReadonlyArray<{
+    requestId: string;
+    optionId?: string;
+    text?: string;
+  }> | null;
+  /**
+   * Per-turn fencing token (issue #221 finding 5): the FOH route's atomic claim id. When set,
+   * the drain's progress/cursor saves carry it so a superseded drain (another request claimed
+   * the session over a stale `running`) writes zero rows. Builder callers omit it — their
+   * behavior is byte-identical to before.
+   */
+  claimId?: string | null;
 }): Response {
   const {
     projectId,
@@ -226,6 +243,7 @@ export function streamTurnResponse(input: {
                 continuationToken: nextContinuationToken,
                 streamIndex: Math.min(nextStreamIndex, persistedEventIndex),
                 title,
+                claimId: input.claimId ?? undefined,
               }).catch((e) =>
                 console.error(`${tag} persist session progress failed`, e),
               ),
@@ -236,6 +254,7 @@ export function streamTurnResponse(input: {
           for await (const event of streamTurn({
             baseUrl: target.url,
             message: sentMessage,
+            inputResponses: input.inputResponses,
             sessionId,
             continuationToken: activeSession.continuationToken,
             streamIndex: activeSession.streamIndex,
@@ -307,20 +326,25 @@ export function streamTurnResponse(input: {
                 // even with no client connected. `openInboxQuestion` dedupes on requestId
                 // (the loader-side reconcile can observe the same eve request). Wrapped so
                 // inbox bookkeeping can never break the drain; it touches neither the
-                // cursor nor `streamIndex`, and the pending writers carry their own
-                // stop-wins guards.
+                // cursor nor `streamIndex`. The park claim reports whether it won its
+                // stop-wins guard — when stop got there first, filing inbox items for the
+                // stopped session would resurrect it into the inbox (issue #221 finding 4).
                 if (isFoh) {
                   try {
-                    await markSessionPendingInput(activeSession.id);
-                    for (const request of event.requests) {
-                      await openInboxQuestion({
-                        projectId,
-                        sessionId: activeSession.id,
-                        agentId: activeSession.agentId,
-                        userId: activeSession.createdBy,
-                        delegationId: activeSession.delegationId,
-                        request,
-                      });
+                    const parked = await markSessionPendingInput(
+                      activeSession.id,
+                    );
+                    if (parked) {
+                      for (const request of event.requests) {
+                        await openInboxQuestion({
+                          projectId,
+                          sessionId: activeSession.id,
+                          agentId: activeSession.agentId,
+                          userId: activeSession.createdBy,
+                          delegationId: activeSession.delegationId,
+                          request,
+                        });
+                      }
                     }
                   } catch (e) {
                     console.error(`${tag} foh needs-you park failed`, e);
@@ -420,6 +444,7 @@ export function streamTurnResponse(input: {
                 ),
                 title,
                 status: settled.ok ? "waiting" : "failed",
+                claimId: input.claimId ?? undefined,
               });
             } catch (e) {
               console.error(`${tag} persist session cursor failed`, e);

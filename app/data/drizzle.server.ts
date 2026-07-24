@@ -680,21 +680,50 @@ export const drizzleDataStore: DataStore = {
 
   inboxItems: {
     async insert(input) {
-      const [row] = await db
-        .insert(inboxItems)
-        .values({
-          projectId: input.projectId,
-          sessionId: input.sessionId,
-          kind: input.kind,
-          prompt: input.prompt ?? null,
-          requestId: input.requestId ?? null,
-          agentId: input.agentId ?? null,
-          userId: input.userId ?? null,
-          delegationId: input.delegationId ?? null,
-          runId: input.runId ?? null,
-        })
-        .returning();
-      return row;
+      const values = {
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        kind: input.kind,
+        prompt: input.prompt ?? null,
+        requestId: input.requestId ?? null,
+        agentId: input.agentId ?? null,
+        userId: input.userId ?? null,
+        delegationId: input.delegationId ?? null,
+        runId: input.runId ?? null,
+      };
+      if (input.requestId == null) {
+        const [row] = await db.insert(inboxItems).values(values).returning();
+        return row;
+      }
+      // Request identity (issue #221 finding 4): concurrent drain/reconcile writers racing
+      // the same eve request land on the partial unique index
+      // (session_id, request_id) WHERE status = 'pending' — the loser's insert no-ops and
+      // returns the winner's pending row instead of a duplicate.
+      for (;;) {
+        const [row] = await db
+          .insert(inboxItems)
+          .values(values)
+          .onConflictDoNothing({
+            target: [inboxItems.sessionId, inboxItems.requestId],
+            // The conflict target's index predicate — must match the partial unique index.
+            where: sql`${inboxItems.status} = 'pending' and ${inboxItems.requestId} is not null`,
+          })
+          .returning();
+        if (row) return row;
+        const [existing] = await db
+          .select()
+          .from(inboxItems)
+          .where(
+            and(
+              eq(inboxItems.sessionId, input.sessionId),
+              eq(inboxItems.requestId, input.requestId),
+              eq(inboxItems.status, "pending"),
+            ),
+          )
+          .limit(1);
+        if (existing) return existing;
+        // The winning row was resolved between our insert and select — retry the insert.
+      }
     },
     async resolve(id) {
       await db

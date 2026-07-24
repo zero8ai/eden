@@ -120,6 +120,20 @@
       "when": 1784860255225,
       "tag": "0016_foamy_psynapse",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784877055708,
+      "tag": "0017_bright_loki",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784877683220,
+      "tag": "0018_backfill_assistant_surface",
+      "breakpoints": true
     }
   ]
 }

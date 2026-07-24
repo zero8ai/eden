@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   savePlaygroundEvents: vi.fn(async () => {}),
   savePlaygroundSessionProgress: vi.fn(async () => {}),
   savePlaygroundSessionCursor: vi.fn(async () => {}),
-  markSessionPendingInput: vi.fn(async () => {}),
+  markSessionPendingInput: vi.fn(async () => true),
   clearSessionPendingInput: vi.fn(async () => {}),
   openInboxQuestion: vi.fn(async () => ({ id: "inb_1" })),
   resolveInboxForSession: vi.fn(async () => {}),
@@ -274,6 +274,21 @@ describe("streamTurnResponse — FOH needs-you chokepoint", () => {
 
     expect(mocks.markSessionPendingInput).not.toHaveBeenCalled();
     expect(mocks.openInboxQuestion).not.toHaveBeenCalled();
+  });
+
+  it("skips the inbox insert when the park claim reports a lost race (stop won)", async () => {
+    // markSessionPendingInput's stop-wins guard updated zero rows — the session was stopped
+    // between the input event and the park write. Filing an inbox item anyway would
+    // resurrect the stopped session into the inbox (issue #221 finding 4).
+    mocks.markSessionPendingInput.mockResolvedValueOnce(false);
+    script(parkedTurn([request()]));
+
+    const events = await run({ session: session(), channel: "foh" });
+
+    expect(mocks.markSessionPendingInput).toHaveBeenCalledWith("ps_1");
+    expect(mocks.openInboxQuestion).not.toHaveBeenCalled();
+    // The drain itself is unaffected.
+    expect(events.at(-1)).toMatchObject({ type: "done", ok: true });
   });
 
   it("keeps draining when the park write fails (inbox never breaks the drain)", async () => {

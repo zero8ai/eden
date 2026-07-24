@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   getFohSessionForViewer: vi.fn(),
   createPlaygroundSession: vi.fn(),
   setPlaygroundSessionModel: vi.fn(async () => true),
-  markPlaygroundSessionRunning: vi.fn(async () => {}),
+  claimPlaygroundSessionForTurn: vi.fn(),
   unbindPlaygroundSessionForReseed: vi.fn(),
   loadPlaygroundEntriesFromCache: vi.fn(async () => []),
   streamTurnResponse: vi.fn(() => new Response("ok")),
@@ -49,13 +49,14 @@ vi.mock("~/playground/sessions.server", () => ({
   getFohSessionForViewer: mocks.getFohSessionForViewer,
   createPlaygroundSession: mocks.createPlaygroundSession,
   setPlaygroundSessionModel: mocks.setPlaygroundSessionModel,
-  markPlaygroundSessionRunning: mocks.markPlaygroundSessionRunning,
+  claimPlaygroundSessionForTurn: mocks.claimPlaygroundSessionForTurn,
   unbindPlaygroundSessionForReseed: mocks.unbindPlaygroundSessionForReseed,
   loadPlaygroundEntriesFromCache: mocks.loadPlaygroundEntriesFromCache,
   titleFromMessage: (message: string) => message.slice(0, 80),
 }));
 vi.mock("~/chat/turn-stream.server", () => ({
   streamTurnResponse: mocks.streamTurnResponse,
+  TURN_IDLE_TIMEOUT_MS: 5 * 60_000,
   asString: (value: FormDataEntryValue | null) =>
     typeof value === "string" ? value : "",
 }));
@@ -131,6 +132,11 @@ beforeEach(() => {
   mocks.liveTargets.mockResolvedValue([TARGET]);
   mocks.getFohSessionForViewer.mockResolvedValue(sessionRow());
   mocks.createPlaygroundSession.mockResolvedValue(sessionRow({ id: "ps_new" }));
+  // The claim wins by default, echoing the row it flipped to running (fenced by claimId).
+  mocks.claimPlaygroundSessionForTurn.mockImplementation(
+    async (input: { id: string; claimId: string }) =>
+      sessionRow({ id: input.id, status: "running", turnClaimId: input.claimId }),
+  );
   mocks.streamTurnResponse.mockReturnValue(new Response("ok"));
 });
 
@@ -152,9 +158,19 @@ describe("FOH stream route", () => {
     // Supersede (D13) runs before the turn, never a create.
     expect(mocks.beginFohTurn).toHaveBeenCalledWith("ps_1");
     expect(mocks.createPlaygroundSession).not.toHaveBeenCalled();
-    expect(mocks.markPlaygroundSessionRunning).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "ps_1" }),
+    expect(mocks.claimPlaygroundSessionForTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "ps_1",
+        target: TARGET,
+        claimId: expect.any(String),
+        staleAfterMs: 5 * 60_000,
+      }),
     );
+    // Claim ordering (issue #221 finding 5): the atomic claim decides BEFORE the supersede
+    // clears the park — a losing request must not resolve inbox items.
+    expect(
+      mocks.claimPlaygroundSessionForTurn.mock.invocationCallOrder[0],
+    ).toBeLessThan(mocks.beginFohTurn.mock.invocationCallOrder[0]);
     expect(mocks.streamTurnResponse).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: "foh",
@@ -163,8 +179,26 @@ describe("FOH stream route", () => {
         target: TARGET,
       }),
     );
+    // The fencing token threads from the claim into the drain's saves.
+    const [claimInput] = mocks.claimPlaygroundSessionForTurn.mock
+      .calls[0] as unknown as [{ claimId: string }];
+    expect(mocks.streamTurnResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ claimId: claimInput.claimId }),
+    );
     // Guard precedes work: no wake needed with a live target.
     expect(mocks.ensureLiveDeploymentForEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("409s when another turn holds the claim — no supersede, no stream", async () => {
+    mocks.claimPlaygroundSessionForTurn.mockResolvedValue(null);
+    await expect(
+      action(
+        args({ agentId: "agent_1", playgroundSessionId: "ps_1", message: "go" }),
+      ),
+    ).rejects.toMatchObject({ init: { status: 409 } });
+    // A losing request must not clear the park/inbox items or start a drain.
+    expect(mocks.beginFohTurn).not.toHaveBeenCalled();
+    expect(mocks.streamTurnResponse).not.toHaveBeenCalled();
   });
 
   it("creates the FOH session (surface foh, auto-title) when none is passed", async () => {
@@ -180,6 +214,10 @@ describe("FOH stream route", () => {
     );
     // A brand-new session has nothing to supersede.
     expect(mocks.beginFohTurn).not.toHaveBeenCalled();
+    // The fresh row goes through the same claim path (uniform code, cannot lose).
+    expect(mocks.claimPlaygroundSessionForTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "ps_new" }),
+    );
   });
 
   it("wakes a stopped agent before the turn (session env first) and proceeds", async () => {
@@ -232,6 +270,96 @@ describe("FOH stream route", () => {
       ),
     ).rejects.toMatchObject({ init: { status: 404 } });
     expect(mocks.beginFohTurn).not.toHaveBeenCalled();
+    expect(mocks.streamTurnResponse).not.toHaveBeenCalled();
+  });
+
+  it("forwards a request-correlated answer on a continuation send", async () => {
+    await action(
+      args({
+        agentId: "agent_1",
+        playgroundSessionId: "ps_1",
+        message: "Approve",
+        inputResponses: JSON.stringify([
+          { requestId: "req_1", optionId: "approve" },
+        ]),
+      }),
+    );
+    expect(mocks.streamTurnResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inputResponses: [{ requestId: "req_1", optionId: "approve" }],
+      }),
+    );
+  });
+
+  it("answers exactly one request of a two-approval batch", async () => {
+    // The regression this guards (issue #221 finding 2): eve's text resolver matches a bare
+    // "Approve" against EVERY pending confirmation. The correlated payload must carry only
+    // the clicked card's requestId.
+    await action(
+      args({
+        agentId: "agent_1",
+        playgroundSessionId: "ps_1",
+        message: "Approve",
+        inputResponses: JSON.stringify([
+          { requestId: "req_2", optionId: "approve" },
+        ]),
+      }),
+    );
+    const [forwarded] = mocks.streamTurnResponse.mock.calls[0] as unknown as [
+      { inputResponses: Array<{ requestId: string }> },
+    ];
+    expect(forwarded.inputResponses).toHaveLength(1);
+    expect(forwarded.inputResponses[0].requestId).toBe("req_2");
+  });
+
+  it("drops answers when the session has no eve continuation (fresh/reseeded)", async () => {
+    mocks.getFohSessionForViewer.mockResolvedValue(
+      sessionRow({ externalSessionId: null, continuationToken: null }),
+    );
+    // The claimed row (RETURNING) is what the route reads the continuation from.
+    mocks.claimPlaygroundSessionForTurn.mockResolvedValue(
+      sessionRow({
+        externalSessionId: null,
+        continuationToken: null,
+        status: "running",
+      }),
+    );
+    await action(
+      args({
+        agentId: "agent_1",
+        playgroundSessionId: "ps_1",
+        message: "Approve",
+        inputResponses: JSON.stringify([
+          { requestId: "req_1", optionId: "approve" },
+        ]),
+      }),
+    );
+    expect(mocks.streamTurnResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ inputResponses: null }),
+    );
+  });
+
+  it("400s malformed input responses instead of falling back to text matching", async () => {
+    await expect(
+      action(
+        args({
+          agentId: "agent_1",
+          playgroundSessionId: "ps_1",
+          message: "Approve",
+          inputResponses: "not json",
+        }),
+      ),
+    ).rejects.toMatchObject({ init: { status: 400 } });
+    await expect(
+      action(
+        args({
+          agentId: "agent_1",
+          playgroundSessionId: "ps_1",
+          message: "Approve",
+          inputResponses: JSON.stringify([{ optionId: "approve" }]),
+        }),
+      ),
+    ).rejects.toMatchObject({ init: { status: 400 } });
     expect(mocks.streamTurnResponse).not.toHaveBeenCalled();
   });
 

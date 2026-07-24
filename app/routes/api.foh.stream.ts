@@ -10,8 +10,14 @@
 import { getSessionAuth } from "~/auth/session.server";
 import { data, redirect, type ActionFunctionArgs } from "react-router";
 
+import type { ChatInputAnswer } from "~/chat/types";
+
 import { liveTargets } from "~/chat/playground.server";
-import { asString, streamTurnResponse } from "~/chat/turn-stream.server";
+import {
+  asString,
+  streamTurnResponse,
+  TURN_IDLE_TIMEOUT_MS,
+} from "~/chat/turn-stream.server";
 import { listAgentEnvironments } from "~/db/queries.server";
 import { ensureLiveDeploymentForEnvironment } from "~/deploy/wake.server";
 import { beginFohTurn } from "~/foh/inbox.server";
@@ -24,10 +30,10 @@ import {
   ownsWorkspaceModelReference,
 } from "~/models/union.server";
 import {
+  claimPlaygroundSessionForTurn,
   createPlaygroundSession,
   getFohSessionForViewer,
   loadPlaygroundEntriesFromCache,
-  markPlaygroundSessionRunning,
   setPlaygroundSessionModel,
   titleFromMessage,
   unbindPlaygroundSessionForReseed,
@@ -40,6 +46,46 @@ import {
 import { buildSeedContext } from "~/playground/seed";
 import { getRuntime } from "~/seams/index.server";
 
+/**
+ * Parse the optional request-correlated answer payload (issue #221 finding 2): a JSON array
+ * of eve `InputResponse`s ({requestId, optionId?|text?}) from the clicked question/approval
+ * card. Malformed input is a hard 400 — silently dropping it would fall back to eve's
+ * batch-wide text resolution, the exact bug this field exists to prevent.
+ */
+function parseInputResponses(
+  raw: string,
+): ChatInputAnswer[] | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw data({ error: "Malformed input responses." }, { status: 400 });
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    !parsed.every(
+      (entry): entry is ChatInputAnswer =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as ChatInputAnswer).requestId === "string" &&
+        (entry as ChatInputAnswer).requestId.length > 0 &&
+        ((entry as ChatInputAnswer).optionId === undefined ||
+          typeof (entry as ChatInputAnswer).optionId === "string") &&
+        ((entry as ChatInputAnswer).text === undefined ||
+          typeof (entry as ChatInputAnswer).text === "string"),
+    )
+  ) {
+    throw data({ error: "Malformed input responses." }, { status: 400 });
+  }
+  return parsed.map((entry) => ({
+    requestId: entry.requestId,
+    ...(entry.optionId !== undefined ? { optionId: entry.optionId } : {}),
+    ...(entry.text !== undefined ? { text: entry.text } : {}),
+  }));
+}
+
 export async function action(args: ActionFunctionArgs) {
   const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
@@ -51,6 +97,7 @@ export async function action(args: ActionFunctionArgs) {
   const message = asString(form.get("message")).trim();
   if (!message) throw data({ error: "Type a message first." }, { status: 400 });
   const playgroundSessionId = asString(form.get("playgroundSessionId")) || null;
+  const inputResponses = parseInputResponses(asString(form.get("inputResponses")));
 
   const agent = agentId
     ? await getRuntime().data.agents.findById(agentId)
@@ -163,6 +210,7 @@ export async function action(args: ActionFunctionArgs) {
   }
 
   const title = session?.title ? null : titleFromMessage(message);
+  const isNewSession = !session;
   if (!session) {
     session = await createPlaygroundSession({
       projectId: project.id,
@@ -177,32 +225,53 @@ export async function action(args: ActionFunctionArgs) {
       modelId: requestedModelId,
       effort: requestedEffort,
     });
-  } else {
-    if (
-      requestedModelId &&
-      (requestedModelId !== session.modelId ||
-        requestedEffort !== session.effort)
-    ) {
-      await setPlaygroundSessionModel({
-        id: session.id,
-        projectId: project.id,
-        agentId: agent.id,
-        userId: session.createdBy ?? auth.user.id,
-        modelId: requestedModelId,
-        effort: requestedEffort,
-        surface: "foh",
-      });
-      session = {
-        ...session,
-        modelId: requestedModelId,
-        effort: requestedEffort,
-      };
-    }
+  } else if (
+    requestedModelId &&
+    (requestedModelId !== session.modelId || requestedEffort !== session.effort)
+  ) {
+    await setPlaygroundSessionModel({
+      id: session.id,
+      projectId: project.id,
+      agentId: agent.id,
+      userId: session.createdBy ?? auth.user.id,
+      modelId: requestedModelId,
+      effort: requestedEffort,
+      surface: "foh",
+    });
+    session = {
+      ...session,
+      modelId: requestedModelId,
+      effort: requestedEffort,
+    };
+  }
+
+  // Atomic turn claim (issue #221 finding 5): compare-and-swap the session to `running` with
+  // this request's fencing token — two tabs (or two members, or two Eden replicas) posting to
+  // one session race here, and exactly one wins. Runs after target resolution/reseed (the
+  // claim writes the target fields) and BEFORE `beginFohTurn`: a losing request must not
+  // clear the pending park or resolve inbox items. A stale `running` row (drain dead for the
+  // idle timeout) is taken over. The fresh-session path claims its own new row too — the
+  // uniform code path costs one UPDATE and cannot lose.
+  const claimId = crypto.randomUUID();
+  const claimed = await claimPlaygroundSessionForTurn({
+    id: session.id,
+    target,
+    title,
+    claimId,
+    staleAfterMs: TURN_IDLE_TIMEOUT_MS,
+  });
+  if (!claimed) {
+    throw data(
+      { error: "Someone else's turn is already running in this conversation." },
+      { status: 409 },
+    );
+  }
+  session = claimed;
+  if (!isNewSession) {
     // Supersede (D13): whatever this turn says, eve resolves any parked ask from it — clear
     // the needs-you park and its inbox items before streaming.
     await beginFohTurn(session.id);
   }
-  await markPlaygroundSessionRunning({ id: session.id, target, title });
 
   const directiveBody = [seedContext, message].filter(Boolean).join("\n\n");
   const directive = effectiveModel
@@ -221,6 +290,13 @@ export async function action(args: ActionFunctionArgs) {
   const messagePrefix =
     [directive, seedContext].filter(Boolean).join("\n\n") || null;
 
+  // Answers correlate to requests only on the session that parked them: a fresh session (or
+  // a reseeded one — its eve session is new) has nothing pending, so drop the responses
+  // rather than send eve ids it never issued.
+  const continuingSession = Boolean(
+    session.externalSessionId && session.continuationToken,
+  );
+
   return streamTurnResponse({
     projectId: project.id,
     target,
@@ -229,5 +305,7 @@ export async function action(args: ActionFunctionArgs) {
     channel: "foh",
     title,
     messagePrefix,
+    inputResponses: continuingSession ? inputResponses : null,
+    claimId,
   });
 }

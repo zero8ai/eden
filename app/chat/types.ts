@@ -43,6 +43,18 @@ export interface ChatInputOption {
   style?: "danger" | "default" | "primary" | null;
 }
 
+/**
+ * A request-correlated HITL answer — eve's `InputResponse` wire shape. Carried alongside the
+ * continuation send so eve resolves exactly the clicked request, never the whole pending
+ * batch (a plain text message would otherwise be matched against EVERY pending request's
+ * options — approving one tool card must not approve the rest, issue #221 finding 2).
+ */
+export interface ChatInputAnswer {
+  requestId: string;
+  optionId?: string;
+  text?: string;
+}
+
 export interface ChatEntry {
   id: string;
   role: "user" | "assistant";

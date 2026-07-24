@@ -6,8 +6,9 @@
  * regression criterion outweighs DRY.
  *
  * FOH differences: the guard is FOH scope (members open only their own or agent-opened
- * sessions), opening the session marks it read (D3) and resolves `finished` inbox items
- * (D13), the target is server-picked (no deployment/model pickers — wake-on-send covers
+ * sessions), opening the session posts the read acknowledgement (D3/D13 — an explicit
+ * action, never the prefetchable GET loader), the target is server-picked (no
+ * deployment/model pickers — wake-on-send covers
  * scaled-to-zero agents), and parked questions render as the same answerable callouts wired
  * into the ordinary send path (answering resumes the parked eve session — or the parked
  * PEER session for delegation-opened rows).
@@ -21,7 +22,12 @@ import {
 } from "react-router";
 
 import { liveTargets } from "~/chat/playground.server";
-import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
+import type {
+  ChatEntry,
+  ChatInputAnswer,
+  ChatInputRequest,
+  ChatStep,
+} from "~/chat/types";
 import {
   AssistantBubble,
   ChatComposer,
@@ -36,23 +42,28 @@ import { TurnError } from "~/components/turn-error";
 import { Button } from "~/components/ui/button";
 import { sessionLoader } from "~/auth/session.server";
 import { requireFohProject } from "~/foh/guard.server";
-import { markSessionRead } from "~/foh/reads.server";
+import { openInboxQuestion, resolveInboxForSession } from "~/foh/inbox.server";
+import { repairFohSessionState } from "~/foh/needs-you";
 import { fohSessionStatus } from "~/foh/status";
 import {
   cacheCoversCompletedLiveTurn,
+  guardStaleLiveUpdate,
   liveTurnIsForDifferentSession,
   shouldPollRemoteSession,
 } from "~/playground/handoff";
 import {
   backfillPlaygroundEventsFromEve,
+  clearSessionPendingInput,
   getFohSessionForViewer,
   loadPlaygroundEntriesFromCache,
+  markSessionPendingInput,
   playgroundCacheIsComplete,
   reconcilePlaygroundSessionFromEve,
   settleAbandonedPlaygroundSession,
 } from "~/playground/sessions.server";
 import { shouldSettleAbandonedSession } from "~/playground/settle";
 import { findSessionOwnerTarget } from "~/playground/ownership";
+import { finalizeDelegationOnResume } from "~/team/resume.server";
 import { hasActiveTurn, TURN_IDLE_TIMEOUT_MS } from "~/chat/turn-stream.server";
 import { getRuntime } from "~/seams/index.server";
 import type { ReasoningEffort } from "~/models/reasoning";
@@ -145,14 +156,75 @@ export const loader = (args: LoaderFunctionArgs) =>
 
       const entries = await loadPlaygroundEntriesFromCache(currentSession);
 
-      // Opening the conversation IS the acknowledgement: advance the read cursor (D3) and
-      // auto-resolve the viewer's `finished` items (D13). Never let read bookkeeping break
-      // the page.
+      // Loader-side repair (issue #221 finding 4): the durable retry for a park/settle
+      // write the drain swallowed. The durable transcript cache is the truth; when the
+      // session row disagrees (a lost park, a lying needs-you badge, a stranded waiting
+      // delegation), repair it here. Every write is idempotent, the whole block is
+      // exception-swallowed (bookkeeping never breaks the page), and the repaired flag is
+      // reflected into the returned session so THIS load's UI is already honest.
       try {
-        await markSessionRead(currentSession, auth.user.id);
-      } catch (error) {
-        console.error("[foh] markSessionRead failed", error);
+        const lastEntry = entries.at(-1) ?? null;
+        const repair = repairFohSessionState({
+          status: currentSession.status,
+          pendingInputAt: currentSession.pendingInputAt,
+          lastEntry,
+        });
+        if (repair.action === "park") {
+          const at = new Date();
+          // The park claim reports whether it won its stop-wins guard; a stop that raced
+          // us must not get inbox items filed for its stopped session.
+          const parked = await markSessionPendingInput(currentSession.id, at);
+          if (parked) {
+            for (const request of repair.requests) {
+              await openInboxQuestion({
+                projectId: access.project.id,
+                sessionId: currentSession.id,
+                agentId: currentSession.agentId,
+                userId: currentSession.createdBy,
+                delegationId: currentSession.delegationId,
+                request,
+              });
+            }
+            currentSession = { ...currentSession, pendingInputAt: at };
+          }
+        } else if (repair.action === "settle") {
+          await clearSessionPendingInput(currentSession.id);
+          await resolveInboxForSession(currentSession.id);
+          currentSession = { ...currentSession, pendingInputAt: null };
+        }
+        // Delegation half: a terminal, not-parked session must not strand its delegation
+        // `waiting` forever because the drain's finalize write failed — and finalize itself
+        // only touches delegations still `waiting`, so repeating it here is a no-op when
+        // the drain succeeded. (Known residual, by design: a missed `finished` inbox item
+        // for OTHER viewers is not refiled — opening the session is the acknowledgement.)
+        const terminal =
+          currentSession.status === "waiting" ||
+          currentSession.status === "completed" ||
+          currentSession.status === "failed";
+        if (
+          currentSession.delegationId &&
+          terminal &&
+          repair.action !== "park" &&
+          currentSession.pendingInputAt === null
+        ) {
+          await finalizeDelegationOnResume({
+            delegationId: currentSession.delegationId,
+            outcome:
+              currentSession.status === "failed" ? "failed" : "completed",
+            error:
+              currentSession.status === "failed"
+                ? (lastEntry?.error ?? null)
+                : null,
+          });
+        }
+      } catch (e) {
+        console.error("[foh] loader repair failed", e);
       }
+
+      // Opening the conversation IS the acknowledgement — but this loader also runs on
+      // hover/focus prefetch, so the read-cursor mutation lives in /api/foh/:projectId/read
+      // and the component posts it after committed navigation (issue #221 finding 8). GET
+      // stays read-only; `lastEventAt` drives the client effect.
 
       return {
         projectId: access.project.id,
@@ -164,6 +236,7 @@ export const loader = (args: LoaderFunctionArgs) =>
         sessionStatus: currentSession.status,
         sessionFohStatus: fohSessionStatus(currentSession),
         openedByAgent: currentSession.openedByAgentId != null,
+        lastEventAt: currentSession.lastEventAt?.toISOString() ?? null,
         entries,
         historyError,
       };
@@ -203,18 +276,41 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
     sessionStatus,
     sessionFohStatus,
     openedByAgent,
+    lastEventAt,
     entries,
     historyError,
   } = loaderData;
   const revalidator = useRevalidator();
 
+  // Committed-navigation acknowledgement (D3/D13): the loader is prefetch-safe and
+  // read-only, so the MOUNTED page posts the read mark — and again whenever new events
+  // arrive while it stays open (lastEventAt advances on each revalidation).
+  useEffect(() => {
+    const form = new FormData();
+    form.set("playgroundSessionId", sessionId);
+    void fetch(`/api/foh/${projectId}/read`, {
+      method: "POST",
+      body: form,
+    }).catch(() => {});
+  }, [projectId, sessionId, lastEventAt]);
+
   const [live, setLive] = useState<LiveTurn | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const stopRequestedRef = useRef(false);
+  // The session on screen, readable from inside a long-lived send() closure (issue #221
+  // finding 6): a reader started for session A must stop touching shared state once the
+  // user navigates to session B.
+  const currentSessionRef = useRef(sessionId);
 
-  // Switching sessions drops any live view from the previous one.
+  // Switching sessions drops any live view from the previous one and aborts its browser
+  // reader. Only the client copy of the stream stops — the server drain is detached and
+  // finishes the turn regardless.
   useEffect(() => {
+    currentSessionRef.current = sessionId;
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    stopRequestedRef.current = false;
     setLive((prev) =>
       prev && prev.playgroundSessionId !== sessionId ? null : prev,
     );
@@ -263,11 +359,22 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
   }, [entries, sessionId, visibleLive]);
 
   const send = useCallback(
-    async (message: string) => {
+    async (message: string, answer?: ChatInputAnswer) => {
+      // This closure outlives navigation (the reader keeps draining the fetch), so every
+      // state update below is keyed to the session it was started for — a stale reader
+      // must not touch the live view, error banner, or revalidation of the session the
+      // user navigated to (issue #221 finding 6).
+      const forSession = sessionId;
+      const isCurrent = () => currentSessionRef.current === forSession;
+      const applyIfCurrent = (fn: (prev: LiveTurn | null) => LiveTurn | null) =>
+        setLive((prev) =>
+          guardStaleLiveUpdate(currentSessionRef.current, forSession, prev, fn),
+        );
+
       setSendError(null);
       stopRequestedRef.current = false;
-      setLive({
-        playgroundSessionId: sessionId,
+      applyIfCurrent(() => ({
+        playgroundSessionId: forSession,
         baseEntryCount: entries.length,
         userText: message,
         text: "",
@@ -280,18 +387,21 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
         errorDetail: null,
         errorRetryable: false,
         done: false,
-      });
+      }));
       const apply = (evt: StreamEvent) =>
-        setLive((prev) => (prev ? reduceLive(prev, evt) : prev));
+        applyIfCurrent((prev) => (prev ? reduceLive(prev, evt) : prev));
 
       const form = new FormData();
       form.set("message", message);
       form.set("agentId", agentId);
-      form.set("playgroundSessionId", sessionId);
+      form.set("playgroundSessionId", forSession);
+      // A clicked question/approval card answers exactly ITS request (issue #221 finding
+      // 2); composer text stays the intentional continue/supersede path.
+      if (answer) form.set("inputResponses", JSON.stringify([answer]));
 
+      const controller = new AbortController();
+      streamAbortRef.current = controller;
       try {
-        const controller = new AbortController();
-        streamAbortRef.current = controller;
         const res = await fetch(`/api/foh/${projectId}/stream`, {
           method: "POST",
           body: form,
@@ -328,20 +438,24 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
             apply(evt);
           }
         }
-        setLive((prev) =>
+        applyIfCurrent((prev) =>
           prev && !prev.done ? { ...prev, activity: null, done: true } : prev,
         );
-        await revalidator.revalidate();
-        streamAbortRef.current = null;
+        if (isCurrent()) await revalidator.revalidate();
+        // Only the send that owns the controller may clear the ref — a newer send (or the
+        // navigation effect) may have replaced it with its own.
+        if (streamAbortRef.current === controller) streamAbortRef.current = null;
       } catch (error) {
-        streamAbortRef.current = null;
+        if (streamAbortRef.current === controller) streamAbortRef.current = null;
+        // A navigation-triggered abort lands here for the stale session — report nothing.
+        if (!isCurrent()) return;
         if (stopRequestedRef.current) {
           await revalidator.revalidate();
           setLive(null);
           stopRequestedRef.current = false;
           return;
         }
-        setLive((prev) =>
+        applyIfCurrent((prev) =>
           prev
             ? {
                 ...prev,
@@ -647,7 +761,7 @@ function AgentEntry({
 }: {
   entry: ChatEntry;
   /** Set on the newest entry only — answers a pending input request via the send path. */
-  onAnswer?: (text: string) => void;
+  onAnswer?: (text: string, answer?: ChatInputAnswer) => void;
   /** Set on the newest errored entry only — resends the message to retry the turn. */
   onRetry?: () => void;
   busy?: boolean;

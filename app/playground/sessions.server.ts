@@ -1,4 +1,16 @@
-import { and, desc, eq, gt, inArray, isNull, max, min, ne, or } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lt,
+  max,
+  min,
+  ne,
+  or,
+} from "drizzle-orm";
 
 import { inputRequestsOf, type RawEveEvent } from "~/agent/talk.server";
 import { normalizeTurnError } from "~/chat/stream-error";
@@ -28,14 +40,15 @@ export type PlaygroundSession = typeof playgroundSessions.$inferSelect;
 export type SessionSurface = "playground" | "assistant" | "foh";
 
 /**
- * The surface discriminator's one hard job is FOH isolation: playground and assistant lists
- * were already disjoint by (project, agent, creator) scoping, so both builder surfaces read
- * `surface <> 'foh'` (preserving today's visibility exactly) while FOH reads `= 'foh'`.
+ * Exact-match surface isolation: every query sees only rows stamped with its own surface —
+ * `foh` / `playground` / `assistant` are three disjoint conversation spaces (issue #221 PRD
+ * gap 2). Historically the builder surfaces read `surface <> 'foh'` because migration 0015
+ * stamped every pre-existing row 'playground' (its column default), including genuine
+ * assistant conversations. Migration 0018 backfilled those — rows on kind-'assistant' agents
+ * flipped to surface 'assistant' — so exact equality is now safe for all three surfaces.
  */
 function surfaceScope(surface: SessionSurface) {
-  return surface === "foh"
-    ? eq(playgroundSessions.surface, "foh")
-    : ne(playgroundSessions.surface, "foh");
+  return eq(playgroundSessions.surface, surface);
 }
 
 export interface PlaygroundSessionSummary {
@@ -325,13 +338,15 @@ export async function setPlaygroundSessionModel(input: {
 /**
  * Park the session on a human question (needs-you, D4). Written only at the drain/reconcile/
  * relay chokepoints. Guarded `status <> 'stopped'`: a deliberately stopped session must not be
- * resurrected into the inbox by a late drain write.
+ * resurrected into the inbox by a late drain write. Returns whether the park claim WON (a row
+ * was updated) — callers must skip their inbox inserts on false, or a stop that raced the park
+ * would still file items for a stopped session (issue #221 finding 4).
  */
 export async function markSessionPendingInput(
   sessionId: string,
   at: Date = new Date(),
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const updated = await db
     .update(playgroundSessions)
     .set({ pendingInputAt: at, updatedAt: new Date() })
     .where(
@@ -339,7 +354,9 @@ export async function markSessionPendingInput(
         eq(playgroundSessions.id, sessionId),
         ne(playgroundSessions.status, "stopped"),
       ),
-    );
+    )
+    .returning({ id: playgroundSessions.id });
+  return updated.length > 0;
 }
 
 /** Clear the needs-you park (turn completed/failed, or a continuation send superseded it). */
@@ -377,6 +394,51 @@ export async function markPlaygroundSessionRunning(input: {
     .where(eq(playgroundSessions.id, input.id));
 }
 
+/**
+ * Atomically claim the session for one turn (issue #221 finding 5): a compare-and-swap to
+ * `running` carrying the caller's per-turn `claimId` as the fencing token. Everything
+ * `markPlaygroundSessionRunning` sets is set here too. The claim wins when the session is not
+ * `running`, OR its `running` is stale — no drain activity (`updatedAt` bump) for
+ * `staleAfterMs`. The cutoff must match the drain's own idle-failure timeout
+ * (TURN_IDLE_TIMEOUT_MS): the drain bumps `updatedAt` only when events arrive, and a silent
+ * long tool call can go minutes without events — a shorter cutoff would let a second tab
+ * steal a LIVE turn. Returns the claimed row, or null when another turn holds the session.
+ */
+export async function claimPlaygroundSessionForTurn(input: {
+  id: string;
+  target: Target;
+  title?: string | null;
+  claimId: string;
+  /** Stale-takeover cutoff; callers pass TURN_IDLE_TIMEOUT_MS from ~/chat/turn-stream.server. */
+  staleAfterMs: number;
+}): Promise<PlaygroundSession | null> {
+  const staleBefore = new Date(Date.now() - input.staleAfterMs);
+  const [row] = await db
+    .update(playgroundSessions)
+    .set({
+      environmentId: input.target.environmentId,
+      worldKey: input.target.environmentId,
+      lastDeploymentId: input.target.deploymentId,
+      lastReleaseId: input.target.releaseId,
+      lastVersion: input.target.version,
+      title: input.title ?? undefined,
+      status: "running",
+      turnClaimId: input.claimId,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(playgroundSessions.id, input.id),
+        or(
+          ne(playgroundSessions.status, "running"),
+          lt(playgroundSessions.updatedAt, staleBefore),
+        ),
+      ),
+    )
+    .returning();
+  return row ?? null;
+}
+
 export async function savePlaygroundSessionProgress(input: {
   id: string;
   target: Target;
@@ -384,6 +446,8 @@ export async function savePlaygroundSessionProgress(input: {
   continuationToken: string | null;
   streamIndex: number;
   title?: string | null;
+  /** Fencing token (issue #221 finding 5): when set, only the claim-holding drain writes. */
+  claimId?: string;
 }): Promise<void> {
   await db
     .update(playgroundSessions)
@@ -402,11 +466,15 @@ export async function savePlaygroundSessionProgress(input: {
       updatedAt: new Date(),
     })
     // Stop wins races with the detached drain. Once the user has deliberately stopped a turn,
-    // an already-queued progress save must not flip the row back to `running`.
+    // an already-queued progress save must not flip the row back to `running`. The claim fence
+    // (when carried) makes a superseded drain's late writes hit zero rows the same way.
     .where(
       and(
         eq(playgroundSessions.id, input.id),
         ne(playgroundSessions.status, "stopped"),
+        input.claimId
+          ? eq(playgroundSessions.turnClaimId, input.claimId)
+          : undefined,
       ),
     );
 }
@@ -419,6 +487,8 @@ export async function savePlaygroundSessionCursor(input: {
   streamIndex: number;
   title?: string | null;
   status: "running" | "waiting" | "completed" | "failed";
+  /** Fencing token (issue #221 finding 5): when set, only the claim-holding drain writes. */
+  claimId?: string;
 }): Promise<void> {
   await db
     .update(playgroundSessions)
@@ -438,10 +508,14 @@ export async function savePlaygroundSessionCursor(input: {
     })
     // The drain can reach its final cursor save after /stop has settled the row. Preserve the
     // user's terminal `stopped` state instead of racing it back to `waiting` or `failed`.
+    // The claim fence (when carried) no-ops a superseded drain's late terminal write too.
     .where(
       and(
         eq(playgroundSessions.id, input.id),
         ne(playgroundSessions.status, "stopped"),
+        input.claimId
+          ? eq(playgroundSessions.turnClaimId, input.claimId)
+          : undefined,
       ),
     );
 }
@@ -696,38 +770,37 @@ export async function reconcilePlaygroundSessionFromEve(input: {
   const nextStreamIndex = input.session.streamIndex + tail.events.length;
   const nextStatus =
     statusFromTail(tail.events) ?? sessionStatus(input.session.status);
-  await savePlaygroundSessionCursor({
-    id: input.session.id,
-    target: input.target,
-    externalSessionId: input.session.externalSessionId,
-    continuationToken: input.session.continuationToken,
-    streamIndex: nextStreamIndex,
-    title: null,
-    status: nextStatus,
-  });
 
   // FOH needs-you chokepoint #2 (D4): a drain that died with the process is recovered here.
   // The tail is scanned for unanswered `input.requested`s on its newest turn — `nextStatus`
-  // alone can't tell parked from finished ('waiting' covers both). Park/settle writes are
-  // idempotent (requestId dedupe; only-forward flag semantics) and exception-swallowed so
-  // inbox bookkeeping never breaks a loader.
+  // alone can't tell parked from finished ('waiting' covers both). This runs BEFORE the
+  // cursor save (issue #221 finding 4): every write here is idempotent (requestId
+  // uniqueness; only-forward flag semantics), so a crash between them leaves the cursor
+  // behind and the next reconcile re-reads the tail and repeats — whereas the old order left
+  // an advanced cursor with the park lost forever. Exception-swallowed so inbox bookkeeping
+  // never breaks a loader.
   let pendingInputAt = input.session.pendingInputAt;
   if (input.session.surface === "foh") {
     try {
       const decision = reconcileNeedsYouFromTail(tail.events);
       if (decision.action === "park") {
-        pendingInputAt = pendingInputAt ?? new Date();
-        await markSessionPendingInput(input.session.id, pendingInputAt);
-        for (const data of decision.requestData) {
-          for (const request of inputRequestsOf(data)) {
-            await openInboxQuestion({
-              projectId: input.session.projectId,
-              sessionId: input.session.id,
-              agentId: input.session.agentId,
-              userId: input.session.createdBy,
-              delegationId: input.session.delegationId,
-              request,
-            });
+        const at = pendingInputAt ?? new Date();
+        // The park claim reports whether it won its stop-wins guard; when stop got there
+        // first, the inbox items must not be filed for the stopped session.
+        const parked = await markSessionPendingInput(input.session.id, at);
+        if (parked) {
+          pendingInputAt = at;
+          for (const data of decision.requestData) {
+            for (const request of inputRequestsOf(data)) {
+              await openInboxQuestion({
+                projectId: input.session.projectId,
+                sessionId: input.session.id,
+                agentId: input.session.agentId,
+                userId: input.session.createdBy,
+                delegationId: input.session.delegationId,
+                request,
+              });
+            }
           }
         }
       } else if (decision.action === "settle") {
@@ -739,6 +812,16 @@ export async function reconcilePlaygroundSessionFromEve(input: {
       console.error("[foh] reconcile needs-you failed", e);
     }
   }
+
+  await savePlaygroundSessionCursor({
+    id: input.session.id,
+    target: input.target,
+    externalSessionId: input.session.externalSessionId,
+    continuationToken: input.session.continuationToken,
+    streamIndex: nextStreamIndex,
+    title: null,
+    status: nextStatus,
+  });
 
   return {
     ...input.session,

@@ -830,6 +830,17 @@ export function makeFakeStore(): FakeStore {
 
     inboxItems: {
       async insert(input) {
+        // Mirror the drizzle repo's conflict-safe request identity (issue #221 finding 4):
+        // a pending row for the same (sessionId, requestId) is returned, not duplicated.
+        if (input.requestId != null) {
+          const existing = [...inboxItems.values()].find(
+            (i) =>
+              i.sessionId === input.sessionId &&
+              i.requestId === input.requestId &&
+              i.status === "pending",
+          );
+          if (existing) return existing;
+        }
         const now = new Date(++seq);
         const row: InboxItem = {
           id: id("inbox"),

@@ -4,6 +4,22 @@
  * already cursor-cut (`at < before`), newest-first and limited, then hands the rows to the
  * pure projection in activity.ts. No new write path, no materialized table (PRD: only if the
  * projection provably can't keep up).
+ *
+ * Content policy (issue #221 finding 3) — the feed is viewer-aware:
+ * - Back-of-house viewers (admin/owner) see everything, unredacted.
+ * - Members see session events only for FOH sessions they can open — their own rows plus
+ *   agent-opened ones (the same `created_by = viewer OR created_by IS NULL` predicate as
+ *   `listFohSessionsForAgent`). Out-of-scope sessions are absent, not redacted, consistent
+ *   with the guard's 404 probe philosophy.
+ * - Members keep every run EVENT (existence/status/channel/agent are team activity) but the
+ *   human-authored content — `metadata.input` (the triggering prompt) and `error` — is
+ *   redacted unless the run belongs to an FOH session the member can open. Attribution goes
+ *   through the observability `sessions` table: `runs.session_id` stores that table's
+ *   internal id, and its `external_session_id` matches the FOH playground session's eve
+ *   handle. Everything unattributable (assistant/playground/discord/github runs, other
+ *   members' FOH runs) renders with input/error null.
+ * - Delegation and deployment entries are unchanged: their text is agent-authored, and the
+ *   delegation exchange expansion reads the agent-opened FOH session, which is team-wide.
  */
 import {
   and,
@@ -11,7 +27,10 @@ import {
   desc,
   eq,
   inArray,
+  isNotNull,
+  isNull,
   lt,
+  or,
   type AnyColumn,
   type SQL,
 } from "drizzle-orm";
@@ -46,12 +65,26 @@ const MAX_LIMIT = 200;
 const cutoff = (col: AnyColumn, before?: Date): SQL | undefined =>
   before ? lt(col, before) : undefined;
 
+export interface ActivityViewer {
+  userId: string;
+  /** Admin/owner (from `FohAccess.backOfHouse`): full, unredacted feed. */
+  backOfHouse: boolean;
+}
+
+/** FOH sessions the viewer can open: their own rows plus agent-opened ones (D5). */
+const memberSessionScope = (viewer: ActivityViewer): SQL | undefined =>
+  or(
+    eq(playgroundSessions.createdBy, viewer.userId),
+    isNull(playgroundSessions.createdBy),
+  );
+
 export async function listTeamActivity(
   projectId: string,
-  opts: { before?: Date; limit?: number } = {},
+  opts: { viewer: ActivityViewer; before?: Date; limit?: number },
 ): Promise<ActivityPage> {
   const limit = Math.min(Math.max(opts.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
-  const { before } = opts;
+  const { before, viewer } = opts;
+  const memberView = !viewer.backOfHouse;
 
   const [sessionRows, delegationRows, runRows, deploymentRows, agentRows] =
     await Promise.all([
@@ -69,6 +102,7 @@ export async function listTeamActivity(
           and(
             eq(playgroundSessions.projectId, projectId),
             eq(playgroundSessions.surface, "foh"),
+            memberView ? memberSessionScope(viewer) : undefined,
             cutoff(playgroundSessions.createdAt, before),
           ),
         )
@@ -133,6 +167,51 @@ export async function listTeamActivity(
         .from(agents)
         .where(eq(agents.projectId, projectId)),
     ]);
+
+  // Members keep run events but not their human-authored content unless the run belongs to
+  // an FOH session they can open. `runs.session_id` holds the observability `sessions` row
+  // id; that row shares its eve external_session_id with the FOH playground session, so the
+  // join below resolves "runs whose session the viewer can open". Unattributable runs
+  // (no session link, other surfaces, other members' sessions) get input/error nulled.
+  let feedRuns = runRows;
+  // Observability-session ids whose FOH content this member may read; `null` means
+  // back-of-house (everything visible). Gates BOTH the run input/error redaction below AND
+  // the actor attribution further down — otherwise #212's "Aaron messaged sam" headline would
+  // leak, for a session F3 hides from this member, exactly the participant identity the
+  // session-scoping was withholding.
+  let memberVisibleSessionIds: Set<string> | null = null;
+  if (memberView && runRows.length > 0) {
+    const visibleSessionRows = await db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .innerJoin(
+        playgroundSessions,
+        and(
+          eq(playgroundSessions.projectId, sessions.projectId),
+          eq(playgroundSessions.externalSessionId, sessions.externalSessionId),
+        ),
+      )
+      .where(
+        and(
+          eq(sessions.projectId, projectId),
+          eq(playgroundSessions.surface, "foh"),
+          isNotNull(playgroundSessions.externalSessionId),
+          memberSessionScope(viewer),
+        ),
+      );
+    memberVisibleSessionIds = new Set(visibleSessionRows.map((s) => s.id));
+    const contentVisible = memberVisibleSessionIds;
+    feedRuns = runRows.map((r) =>
+      r.sessionId != null && contentVisible.has(r.sessionId)
+        ? r
+        : {
+            ...r,
+            error: null,
+            // Keep the rest of metadata (delegationId drives delegation-run suppression).
+            metadata: r.metadata ? { ...r.metadata, input: null } : r.metadata,
+          },
+    );
+  }
 
   // Delegation ask text lives on the linked run's metadata (runId is best-effort — the
   // relay records it try/caught, so misses just render without a quote).
@@ -203,6 +282,12 @@ export async function listTeamActivity(
 
   const actorByRunId = new Map(
     runRows.map((r) => {
+      // A member only learns who messaged an agent for runs whose content they may read; for
+      // runs F3 redacts, the actor is withheld too (issue #221 finding 3).
+      const contentVisible =
+        memberVisibleSessionIds === null ||
+        (r.sessionId != null && memberVisibleSessionIds.has(r.sessionId));
+      if (!contentVisible) return [r.id, null];
       const createdBy =
         r.sessionId != null ? creatorBySessionId.get(r.sessionId) : null;
       return [r.id, createdBy != null ? (userNames.get(createdBy) ?? null) : null];
@@ -213,7 +298,7 @@ export async function listTeamActivity(
     {
       sessions: sessionRows,
       delegations: delegationRows,
-      runs: runRows,
+      runs: feedRuns,
       deployments: deploymentRows,
     },
     {

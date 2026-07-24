@@ -1129,10 +1129,11 @@ export const playgroundSessions = pgTable(
       onDelete: "cascade",
     }),
     /**
-     * Which chat surface owns this conversation: 'playground' | 'assistant' | 'foh'. Front of
-     * House sessions are invisible to the playground/assistant lists and vice versa; the two
-     * builder surfaces stay disjoint by (project, agent, creator) scoping as before, so the
-     * discriminator's only hard job is FOH isolation (`surface = 'foh'` vs `<> 'foh'`).
+     * Which chat surface owns this conversation: 'playground' | 'assistant' | 'foh'. The three
+     * surfaces are fully disjoint — every query matches its own surface exactly (see
+     * `surfaceScope`). Rows predating this column were stamped 'playground' by the 0015
+     * default; migration 0018 backfilled legacy assistant conversations (rows on
+     * kind-'assistant' agents) to 'assistant' so the exact match holds.
      */
     surface: text("surface").notNull().default("playground"),
     /**
@@ -1155,6 +1156,12 @@ export const playgroundSessions = pgTable(
     externalSessionId: text("external_session_id"),
     /** Eve channel-owned resume handle. */
     continuationToken: text("continuation_token"),
+    /**
+     * Fencing token for the active turn (issue #221 finding 5): set by the atomic
+     * new/waiting/stopped→running claim in `claimPlaygroundSessionForTurn`; the drain's
+     * progress/cursor writes carry it so a superseded drain's late writes hit zero rows.
+     */
+    turnClaimId: text("turn_claim_id"),
     /** Number of Eve stream events consumed from the durable event stream. */
     streamIndex: integer("stream_index").notNull().default(0),
     /**
@@ -1416,5 +1423,12 @@ export const inboxItems = pgTable(
   (t) => [
     index("inbox_items_project_status_idx").on(t.projectId, t.status),
     index("inbox_items_user_status_idx").on(t.userId, t.status),
+    // Request identity (issue #221 finding 4): concurrent drain/reconcile writers must not
+    // file duplicate pending question/approval items for the same eve request. Partial so
+    // resolved history keeps every occurrence and `finished` items (request_id NULL) are
+    // unconstrained; the insert path pairs it with ON CONFLICT DO NOTHING.
+    uniqueIndex("inbox_items_session_request_pending_uq")
+      .on(t.sessionId, t.requestId)
+      .where(sql`${t.status} = 'pending' and ${t.requestId} is not null`),
   ],
 );

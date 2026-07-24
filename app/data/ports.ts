@@ -321,6 +321,12 @@ export interface DelegationRepo {
  * to every user with access to the item's project.
  */
 export interface InboxItemRepo {
+  /**
+   * File one inbox item. Conflict-safe on request identity (issue #221 finding 4): when
+   * `requestId` is set and a pending row for (sessionId, requestId) already exists —
+   * including one a concurrent writer just inserted — the existing pending row is returned
+   * instead of a duplicate. Items without a requestId (`finished`) always insert.
+   */
   insert(input: {
     projectId: string;
     sessionId: string;

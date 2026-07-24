@@ -5,9 +5,13 @@
  * set (admins: all org repos; members: their teams' repos).
  *
  * GET → pending items (enriched for display) + count.
- * POST intent=resolve → resolve one item the viewer can see (tenant + D5 ownership guard:
- * the item must be in scope AND theirs or team-wide — resolving another user's personal
- * item is refused by construction, since the visibility query never returns it).
+ * POST intent=resolve → dismiss one `finished` item the viewer can see (tenant + D5
+ * ownership guard: the item must be in scope AND theirs or team-wide — resolving another
+ * user's personal item is refused by construction, since the visibility query never returns
+ * it). Question/approval items are NOT resolvable here: the PRD invariant is that they
+ * resolve only at the event-drain chokepoints (answer/approve → continuation, terminal
+ * failure, supersession) — a bare resolve would silently clear a shared needs-you signal
+ * while eve stays parked.
  */
 import { getSessionAuth, sessionLoader } from "~/auth/session.server";
 import {
@@ -68,6 +72,8 @@ export async function action(args: ActionFunctionArgs) {
   );
   const item = visible.find((candidate) => candidate.id === itemId);
   if (!item) return { ok: false as const };
+  // Only the dismissible kind: question/approval state belongs to the drain chokepoints.
+  if (item.kind !== "finished") return { ok: false as const };
   await store.inboxItems.resolve(item.id);
   return { ok: true as const };
 }

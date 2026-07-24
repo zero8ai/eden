@@ -494,4 +494,43 @@ describe("streamTurn", () => {
     expect(done?.kind === "done" && done.result.reply).toBe("gpt-5.1 here");
     expect(done?.kind === "done" && done.result.modelId).toBe("openai/gpt-5.1");
   });
+
+  it("ships inputResponses in the follow-up POST body (and never on a first turn)", async () => {
+    const responses = [{ requestId: "req_1", optionId: "approve" }];
+
+    // Follow-up: session + continuation token present → the body carries the responses.
+    let fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(sessionStart())
+      .mockResolvedValueOnce(streamResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    for await (const _ of streamTurn({
+      baseUrl: "https://agent.example.test",
+      message: "Approve",
+      sessionId: "sess_1",
+      continuationToken: "tok_1",
+      inputResponses: responses,
+    })) {
+      // drain
+    }
+    let body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.inputResponses).toEqual(responses);
+    expect(body.continuationToken).toBe("tok_1");
+
+    // First turn: nothing pending can exist — responses must not be sent.
+    fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(sessionStart())
+      .mockResolvedValueOnce(streamResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    for await (const _ of streamTurn({
+      baseUrl: "https://agent.example.test",
+      message: "Approve",
+      inputResponses: responses,
+    })) {
+      // drain
+    }
+    body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.inputResponses).toBeUndefined();
+  });
 });

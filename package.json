@@ -15,6 +15,7 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "test": "vitest run",
+    "test:e2e": "vitest run --config tests/e2e/vitest.config.ts tests/e2e",
     "catalog:validate": "node catalog/scripts/validate.mjs",
     "catalog:index": "node catalog/scripts/build-index.mjs",
     "doctor": "npx react-doctor@latest",

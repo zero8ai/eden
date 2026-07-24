@@ -1,23 +1,36 @@
 /**
  * FOH activity feed — one team's wall-clock timeline (§5, D14: /t/:projectId/activity).
- * Rendered in place of the agent/session panes: session opens, delegation exchanges
- * ("10:44 sam → ivy: '…'", expandable to the full run transcript via a lazy fetcher on
- * `?exchange=<id>`), runs, and deployments. Cursor-paginated with `?before=<iso>`.
+ * Redesigned per issue #212 §3 for glanceability: every event renders as ONE uniform-height
+ * row — timestamp, a colored category badge (the visual language lives in CATEGORIES), and a
+ * viewer-oriented headline ("Aaron messaged sam", "ivy → sam") with the message preview in
+ * muted text. Every row opens the same detail dialog; delegation dialogs lazy-load the full
+ * exchange transcript via a fetcher on `?exchange=<id>`. Cursor-paginated with `?before=`.
  */
 import {
-  ChevronDown,
-  ChevronRight,
-  MessageSquare,
-  Rocket,
+  ArrowRightLeft,
+  Clock,
+  FlaskConical,
+  Globe,
+  MessageCircle,
+  MessageSquarePlus,
   Play,
+  Rocket,
+  Wrench,
   Zap,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useFetcher, type LoaderFunctionArgs } from "react-router";
 
 import { sessionLoader } from "~/auth/session.server";
 import { LocalizedDateTime } from "~/components/localized-values";
 import { Button } from "~/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "~/components/ui/dialog";
 import type { ActivityEvent } from "~/foh/activity";
 import {
   getDelegationExchange,
@@ -66,6 +79,245 @@ export function meta({ loaderData }: Route.MetaArgs) {
 
 const AGENT_FALLBACK = "removed agent";
 
+/* ---------------------------------------------------------------------------------------
+ * Category visual language (issue #212 §3): each kind of event gets a color + icon + label
+ * so the feed is scannable without reading. Runs are sub-typed by channel — "me messaging
+ * an agent" (foh) is a different beat than a Discord run or a playground test.
+ * ------------------------------------------------------------------------------------- */
+
+interface CategorySpec {
+  label: string;
+  icon: typeof Zap;
+  /** Colored icon-badge classes (background tint + icon color, light and dark). */
+  badge: string;
+}
+
+const CATEGORIES = {
+  session: {
+    label: "Session",
+    icon: MessageSquarePlus,
+    badge: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
+  },
+  delegation: {
+    label: "Agent ↔ agent",
+    icon: ArrowRightLeft,
+    badge: "bg-violet-500/15 text-violet-600 dark:text-violet-400",
+  },
+  chat: {
+    label: "Chat",
+    icon: MessageCircle,
+    badge: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+  },
+  discord: {
+    label: "Discord",
+    icon: MessageCircle,
+    badge: "bg-indigo-500/15 text-indigo-600 dark:text-indigo-400",
+  },
+  assistant: {
+    label: "Assistant",
+    icon: Wrench,
+    badge: "bg-teal-500/15 text-teal-600 dark:text-teal-400",
+  },
+  playground: {
+    label: "Playground",
+    icon: FlaskConical,
+    badge: "bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-400",
+  },
+  schedule: {
+    label: "Scheduled",
+    icon: Clock,
+    badge: "bg-orange-500/15 text-orange-600 dark:text-orange-400",
+  },
+  portal: {
+    label: "Portal",
+    icon: Globe,
+    badge: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
+  },
+  run: {
+    label: "Run",
+    icon: Play,
+    badge: "bg-slate-500/15 text-slate-600 dark:text-slate-400",
+  },
+  deployment: {
+    label: "Deploy",
+    icon: Rocket,
+    badge: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+  },
+} satisfies Record<string, CategorySpec>;
+
+function categoryFor(event: ActivityEvent): CategorySpec {
+  if (event.type === "run") {
+    switch (event.channel) {
+      case "foh":
+        return CATEGORIES.chat;
+      case "discord":
+        return CATEGORIES.discord;
+      case "assistant":
+        return CATEGORIES.assistant;
+      case "playground":
+        return CATEGORIES.playground;
+      case "schedule":
+        return CATEGORIES.schedule;
+      case "portal":
+        return CATEGORIES.portal;
+      default:
+        return CATEGORIES.run;
+    }
+  }
+  return CATEGORIES[event.type];
+}
+
+/* ---------------------------------------------------------------------------------------
+ * Headlines — oriented from the people/agents acting, not the machinery ("Aaron messaged
+ * sam", "ivy → sam"), with the message preview in muted text after the who/what.
+ * ------------------------------------------------------------------------------------- */
+
+function Quote({ text }: { text: string }) {
+  return <span className="text-muted-foreground">“{text}”</span>;
+}
+
+function Headline({ event }: { event: ActivityEvent }) {
+  switch (event.type) {
+    case "session": {
+      const opener =
+        event.openedByAgentName ?? event.openedByUserName ?? "Someone";
+      return (
+        <>
+          <span className="font-medium">{opener}</span> opened a session with{" "}
+          <span className="font-medium">{event.agentName ?? AGENT_FALLBACK}</span>
+          {event.title && (
+            <>
+              {" · "}
+              <Quote text={event.title} />
+            </>
+          )}
+        </>
+      );
+    }
+    case "delegation":
+      return (
+        <>
+          <span className="font-medium">
+            {event.fromAgentName ?? AGENT_FALLBACK}
+          </span>
+          {" → "}
+          <span className="font-medium">{event.toAgentName ?? AGENT_FALLBACK}</span>
+          {event.ask && (
+            <>
+              {" · "}
+              <Quote text={event.ask} />
+            </>
+          )}
+        </>
+      );
+    case "run": {
+      const agent = event.agentName ?? AGENT_FALLBACK;
+      const preview = event.input && (
+        <>
+          {" · "}
+          <Quote text={event.input} />
+        </>
+      );
+      if (event.channel === "foh") {
+        return (
+          <>
+            <span className="font-medium">{event.actorUserName ?? "Someone"}</span>{" "}
+            messaged <span className="font-medium">{agent}</span>
+            {preview}
+          </>
+        );
+      }
+      if (event.channel === "discord") {
+        return (
+          <>
+            <span className="font-medium">{agent}</span> answered on Discord
+            {preview}
+          </>
+        );
+      }
+      if (event.channel === "assistant") {
+        return (
+          <>
+            <span className="font-medium">{agent}</span> worked with the assistant
+            {preview}
+          </>
+        );
+      }
+      if (event.channel === "playground") {
+        return (
+          <>
+            <span className="font-medium">{agent}</span> ran in the playground
+            {preview}
+          </>
+        );
+      }
+      if (event.channel === "schedule") {
+        return (
+          <>
+            <span className="font-medium">{agent}</span> ran on a schedule
+            {preview}
+          </>
+        );
+      }
+      if (event.channel === "portal") {
+        return (
+          <>
+            <span className="font-medium">{agent}</span> answered a portal
+            visitor
+            {preview}
+          </>
+        );
+      }
+      return (
+        <>
+          <span className="font-medium">{agent}</span> ran
+          {preview}
+        </>
+      );
+    }
+    case "deployment":
+      return (
+        <>
+          <span className="font-medium">{event.agentName ?? AGENT_FALLBACK}</span>{" "}
+          was deployed
+          {event.version && (
+            <span className="text-muted-foreground"> · {event.version}</span>
+          )}
+        </>
+      );
+  }
+}
+
+/* ---------------------------------------------------------------------------------------
+ * Status chips — only states worth a glance get color; happy-path terminal states stay
+ * quiet so the exceptional rows pop.
+ * ------------------------------------------------------------------------------------- */
+
+const DELEGATION_STATUS_LABEL: Record<string, string> = {
+  running: "in progress",
+  waiting: "needs you",
+  completed: "completed",
+  failed: "failed",
+};
+
+function statusChip(event: ActivityEvent): { label: string; className: string } | null {
+  if (event.type === "session") return null;
+  if (event.type === "delegation" && event.status === "waiting") {
+    return {
+      label: DELEGATION_STATUS_LABEL.waiting,
+      className:
+        "bg-amber-500/15 text-amber-700 dark:text-amber-400 font-medium",
+    };
+  }
+  if (event.status === "failed") {
+    return { label: "failed", className: "bg-destructive/10 text-destructive" };
+  }
+  if (event.status === "running") {
+    return { label: "running", className: "bg-muted text-muted-foreground" };
+  }
+  return null;
+}
+
 function EventTime({ at }: { at: string }) {
   return (
     <span className="w-24 shrink-0 text-xs tabular-nums text-muted-foreground">
@@ -82,16 +334,14 @@ function EventTime({ at }: { at: string }) {
   );
 }
 
-const DELEGATION_STATUS_LABEL: Record<string, string> = {
-  running: "in progress",
-  waiting: "waiting on you",
-  completed: "completed",
-  failed: "failed",
-};
+/* ---------------------------------------------------------------------------------------
+ * Detail dialog — the ONE consistent drill-in for every row (issue #212 §3): full
+ * timestamps, untruncated text, and for delegations the lazy-loaded exchange transcript.
+ * ------------------------------------------------------------------------------------- */
 
-function ExchangeView({ exchange }: { exchange: DelegationExchange }) {
+function ExchangeTranscript({ exchange }: { exchange: DelegationExchange }) {
   return (
-    <div className="mt-2 space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
+    <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
       {exchange.ask && (
         <p>
           <span className="font-medium">
@@ -145,146 +395,164 @@ function ExchangeView({ exchange }: { exchange: DelegationExchange }) {
   );
 }
 
-function DelegationEntry({
-  event,
-  projectId,
+function DetailField({
+  label,
+  children,
 }: {
-  event: Extract<ActivityEvent, { type: "delegation" }>;
-  projectId: string;
+  label: string;
+  children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
-  const fetcher = useFetcher<typeof loader>();
-  const exchange =
-    fetcher.data?.exchange?.delegationId === event.delegationId
-      ? fetcher.data.exchange
-      : null;
-
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    if (next && !exchange && fetcher.state === "idle") {
-      fetcher.load(
-        `/t/${projectId}/activity?exchange=${encodeURIComponent(event.delegationId)}`,
-      );
-    }
-  };
-
   return (
-    <div className="min-w-0 flex-1">
-      <p className="text-sm">
-        <span className="font-medium">{event.fromAgentName ?? AGENT_FALLBACK}</span>
-        {" → "}
-        <span className="font-medium">{event.toAgentName ?? AGENT_FALLBACK}</span>
-        {event.ask ? <>: “{event.ask}”</> : null}
-      </p>
-      <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-        <span
-          className={cn(
-            event.status === "waiting" && "text-amber-600 dark:text-amber-500",
-            event.status === "failed" && "text-destructive",
-          )}
-        >
-          {DELEGATION_STATUS_LABEL[event.status] ?? event.status}
-        </span>
-        <button
-          type="button"
-          onClick={toggle}
-          className="inline-flex items-center gap-0.5 hover:text-foreground"
-          aria-expanded={open}
-        >
-          {open ? (
-            <ChevronDown className="size-3" aria-hidden />
-          ) : (
-            <ChevronRight className="size-3" aria-hidden />
-          )}
-          {open ? "collapse" : "expand"}
-        </button>
-      </div>
-      {open &&
-        (exchange ? (
-          <ExchangeView exchange={exchange} />
-        ) : (
-          <p className="mt-2 text-xs text-muted-foreground">
-            {fetcher.state !== "idle"
-              ? "Loading exchange…"
-              : "No exchange details available."}
-          </p>
-        ))}
+    <div className="text-sm">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </span>
+      <div className="mt-0.5 break-words">{children}</div>
     </div>
   );
 }
 
-function EventBody({
-  event,
-  projectId,
-}: {
-  event: ActivityEvent;
-  projectId: string;
-}) {
+function EventDetail({ event }: { event: ActivityEvent }) {
   switch (event.type) {
-    case "delegation":
-      return <DelegationEntry event={event} projectId={projectId} />;
-    case "session": {
-      const opener =
-        event.openedByAgentName ?? event.openedByUserName ?? "someone";
+    case "session":
       return (
-        <div className="min-w-0 flex-1">
-          <p className="text-sm">
-            <span className="font-medium">{opener}</span> opened a session with{" "}
-            <span className="font-medium">{event.agentName ?? AGENT_FALLBACK}</span>
-            {event.title ? <>: “{event.title}”</> : null}
-          </p>
-        </div>
+        <>
+          <DetailField label="Opened by">
+            {event.openedByAgentName ?? event.openedByUserName ?? "Unknown"}
+          </DetailField>
+          <DetailField label="Agent">
+            {event.agentName ?? AGENT_FALLBACK}
+          </DetailField>
+          {event.title && <DetailField label="Title">{event.title}</DetailField>}
+        </>
       );
-    }
     case "run":
       return (
-        <div className="min-w-0 flex-1">
-          <p className="text-sm">
-            <span className="font-medium">{event.agentName ?? AGENT_FALLBACK}</span>{" "}
-            ran{event.channel ? ` via ${event.channel}` : ""}
-            {event.input ? <>: “{event.input}”</> : null}
-          </p>
-          <p
-            className={cn(
-              "mt-0.5 text-xs text-muted-foreground",
-              event.status === "failed" && "text-destructive",
-            )}
-          >
-            {event.status}
-            {event.error ? ` — ${event.error}` : ""}
-          </p>
-        </div>
+        <>
+          <DetailField label="Agent">
+            {event.agentName ?? AGENT_FALLBACK}
+          </DetailField>
+          {event.actorUserName && (
+            <DetailField label="Sent by">{event.actorUserName}</DetailField>
+          )}
+          {event.channel && (
+            <DetailField label="Channel">{event.channel}</DetailField>
+          )}
+          <DetailField label="Status">{event.status}</DetailField>
+          {event.input && (
+            <DetailField label="Message">
+              <span className="whitespace-pre-wrap">{event.input}</span>
+            </DetailField>
+          )}
+          {event.error && (
+            <DetailField label="Error">
+              <span className="text-destructive">{event.error}</span>
+            </DetailField>
+          )}
+        </>
       );
     case "deployment":
       return (
-        <div className="min-w-0 flex-1">
-          <p className="text-sm">
-            <span className="font-medium">{event.agentName ?? AGENT_FALLBACK}</span>{" "}
-            deployment{event.version ? ` of ${event.version}` : ""}
-          </p>
-          <p
-            className={cn(
-              "mt-0.5 text-xs text-muted-foreground",
-              event.status === "failed" && "text-destructive",
-            )}
-          >
-            {event.status}
-          </p>
-        </div>
+        <>
+          <DetailField label="Agent">
+            {event.agentName ?? AGENT_FALLBACK}
+          </DetailField>
+          {event.version && (
+            <DetailField label="Version">{event.version}</DetailField>
+          )}
+          <DetailField label="Status">{event.status}</DetailField>
+        </>
+      );
+    case "delegation":
+      // The transcript block is rendered by the dialog itself (it owns the fetcher).
+      return (
+        <>
+          <DetailField label="Status">
+            {DELEGATION_STATUS_LABEL[event.status] ?? event.status}
+          </DetailField>
+          {event.error && (
+            <DetailField label="Error">
+              <span className="text-destructive">{event.error}</span>
+            </DetailField>
+          )}
+        </>
       );
   }
 }
 
-const EVENT_ICON = {
-  session: MessageSquare,
-  delegation: Zap,
-  run: Play,
-  deployment: Rocket,
-} as const;
+function EventDetailDialog({
+  event,
+  projectId,
+  onClose,
+}: {
+  event: ActivityEvent;
+  projectId: string;
+  onClose: () => void;
+}) {
+  const category = categoryFor(event);
+  const Icon = category.icon;
+  const fetcher = useFetcher<typeof loader>();
+  const exchange =
+    event.type === "delegation" &&
+    fetcher.data?.exchange?.delegationId === event.delegationId
+      ? fetcher.data.exchange
+      : null;
+
+  // Delegations lazy-load their full exchange the moment the dialog opens.
+  useEffect(() => {
+    if (event.type !== "delegation") return;
+    fetcher.load(
+      `/t/${projectId}/activity?exchange=${encodeURIComponent(event.delegationId)}`,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once per opened event
+  }, [event.id]);
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[80dvh] gap-4 overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <span
+              className={cn(
+                "flex size-6 shrink-0 items-center justify-center rounded-full",
+                category.badge,
+              )}
+            >
+              <Icon className="size-3.5" aria-hidden />
+            </span>
+            {category.label}
+          </DialogTitle>
+          <DialogDescription>
+            <LocalizedDateTime
+              value={event.at}
+              options={{ dateStyle: "medium", timeStyle: "short" }}
+            />
+          </DialogDescription>
+        </DialogHeader>
+        <p className="text-sm">
+          <Headline event={event} />
+        </p>
+        <div className="space-y-3">
+          <EventDetail event={event} />
+        </div>
+        {event.type === "delegation" &&
+          (exchange ? (
+            <ExchangeTranscript exchange={exchange} />
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {fetcher.state !== "idle"
+                ? "Loading exchange…"
+                : "No exchange details available."}
+            </p>
+          ))}
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export default function FohActivity({ loaderData }: Route.ComponentProps) {
   const { projectId, projectName, events, nextBefore, paged } = loaderData;
+  const [detail, setDetail] = useState<ActivityEvent | null>(null);
 
   return (
     <section className="flex min-w-0 flex-1 flex-col">
@@ -317,15 +585,43 @@ export default function FohActivity({ loaderData }: Route.ComponentProps) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <ol className="divide-y">
             {events.map((event) => {
-              const Icon = EVENT_ICON[event.type];
+              const category = categoryFor(event);
+              const Icon = category.icon;
+              const chip = statusChip(event);
               return (
-                <li key={event.id} className="flex items-start gap-3 px-4 py-3">
-                  <EventTime at={event.at} />
-                  <Icon
-                    className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
-                    aria-hidden
-                  />
-                  <EventBody event={event} projectId={projectId} />
+                <li key={event.id}>
+                  <button
+                    type="button"
+                    onClick={() => setDetail(event)}
+                    className="flex h-11 w-full items-center gap-3 px-4 text-left transition-colors hover:bg-muted/40"
+                  >
+                    <EventTime at={event.at} />
+                    <span
+                      className={cn(
+                        "flex size-6 shrink-0 items-center justify-center rounded-full",
+                        category.badge,
+                      )}
+                      title={category.label}
+                    >
+                      <Icon className="size-3.5" aria-hidden />
+                    </span>
+                    <span className="hidden w-24 shrink-0 truncate text-xs text-muted-foreground sm:inline">
+                      {category.label}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-sm">
+                      <Headline event={event} />
+                    </span>
+                    {chip && (
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-full px-2 py-0.5 text-xs",
+                          chip.className,
+                        )}
+                      >
+                        {chip.label}
+                      </span>
+                    )}
+                  </button>
                 </li>
               );
             })}
@@ -342,6 +638,14 @@ export default function FohActivity({ loaderData }: Route.ComponentProps) {
             </div>
           )}
         </div>
+      )}
+
+      {detail && (
+        <EventDetailDialog
+          event={detail}
+          projectId={projectId}
+          onClose={() => setDetail(null)}
+        />
       )}
     </section>
   );

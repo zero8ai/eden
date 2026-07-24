@@ -174,6 +174,12 @@ export async function listTeamActivity(
   // join below resolves "runs whose session the viewer can open". Unattributable runs
   // (no session link, other surfaces, other members' sessions) get input/error nulled.
   let feedRuns = runRows;
+  // Observability-session ids whose FOH content this member may read; `null` means
+  // back-of-house (everything visible). Gates BOTH the run input/error redaction below AND
+  // the actor attribution further down — otherwise #212's "Aaron messaged sam" headline would
+  // leak, for a session F3 hides from this member, exactly the participant identity the
+  // session-scoping was withholding.
+  let memberVisibleSessionIds: Set<string> | null = null;
   if (memberView && runRows.length > 0) {
     const visibleSessionRows = await db
       .select({ id: sessions.id })
@@ -193,7 +199,8 @@ export async function listTeamActivity(
           memberSessionScope(viewer),
         ),
       );
-    const contentVisible = new Set(visibleSessionRows.map((s) => s.id));
+    memberVisibleSessionIds = new Set(visibleSessionRows.map((s) => s.id));
+    const contentVisible = memberVisibleSessionIds;
     feedRuns = runRows.map((r) =>
       r.sessionId != null && contentVisible.has(r.sessionId)
         ? r
@@ -226,9 +233,43 @@ export async function listTeamActivity(
     ]),
   );
 
+  // FOH-channel runs are a human messaging an agent — attribute them by walking the
+  // observability session back to the FOH playground session's creator (§212: the feed
+  // should read "Aaron messaged sam", not agent-first). Read-time join, so historical rows
+  // resolve too; misses (null sessionId, reaped session) just fall back to agent-first copy.
+  const fohRunSessionIds = [
+    ...new Set(
+      runRows
+        .filter((r) => r.channel === "foh" && r.sessionId != null)
+        .map((r) => r.sessionId as string),
+    ),
+  ];
+  const actorRows = fohRunSessionIds.length
+    ? await db
+        .select({ sessionId: sessions.id, createdBy: playgroundSessions.createdBy })
+        .from(sessions)
+        .innerJoin(
+          playgroundSessions,
+          and(
+            eq(playgroundSessions.externalSessionId, sessions.externalSessionId),
+            eq(playgroundSessions.projectId, projectId),
+            eq(playgroundSessions.surface, "foh"),
+          ),
+        )
+        .where(
+          and(eq(sessions.projectId, projectId), inArray(sessions.id, fohRunSessionIds)),
+        )
+    : [];
+  const creatorBySessionId = new Map(
+    actorRows.map((r) => [r.sessionId, r.createdBy]),
+  );
+
   const openerIds = [
     ...new Set(
-      sessionRows.map((s) => s.createdBy).filter((id): id is string => id != null),
+      [
+        ...sessionRows.map((s) => s.createdBy),
+        ...actorRows.map((r) => r.createdBy),
+      ].filter((id): id is string => id != null),
     ),
   ];
   const userRows = openerIds.length
@@ -237,6 +278,21 @@ export async function listTeamActivity(
         .from(user)
         .where(inArray(user.id, openerIds))
     : [];
+  const userNames = new Map(userRows.map((u) => [u.id, u.name]));
+
+  const actorByRunId = new Map(
+    runRows.map((r) => {
+      // A member only learns who messaged an agent for runs whose content they may read; for
+      // runs F3 redacts, the actor is withheld too (issue #221 finding 3).
+      const contentVisible =
+        memberVisibleSessionIds === null ||
+        (r.sessionId != null && memberVisibleSessionIds.has(r.sessionId));
+      if (!contentVisible) return [r.id, null];
+      const createdBy =
+        r.sessionId != null ? creatorBySessionId.get(r.sessionId) : null;
+      return [r.id, createdBy != null ? (userNames.get(createdBy) ?? null) : null];
+    }),
+  );
 
   return projectActivity(
     {
@@ -248,8 +304,9 @@ export async function listTeamActivity(
     {
       limit,
       agentNames: new Map(agentRows.map((a) => [a.id, a.name])),
-      userNames: new Map(userRows.map((u) => [u.id, u.name])),
+      userNames,
       askByRunId,
+      actorByRunId,
     },
   );
 }

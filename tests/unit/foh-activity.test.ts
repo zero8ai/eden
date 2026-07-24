@@ -145,6 +145,26 @@ describe("projectActivity", () => {
     expect(page.nextBefore).toBe("2026-07-24T10:02:00.000Z");
   });
 
+  it("attributes runs via actorByRunId and defaults to null when unmapped", () => {
+    const page = projectActivity(
+      sources({
+        runs: [
+          run({ id: "run_foh", startedAt: at("2026-07-24T10:31:00Z") }),
+          run({ id: "run_discord", channel: "discord", metadata: {} }),
+        ],
+      }),
+      {
+        limit: 10,
+        agentNames: AGENT_NAMES,
+        actorByRunId: new Map([["run_foh", "Aaron"]]),
+      },
+    );
+    expect(page.events).toMatchObject([
+      { runId: "run_foh", actorUserName: "Aaron" },
+      { runId: "run_discord", actorUserName: null },
+    ]);
+  });
+
   it("suppresses delegation-linked runs so an ask is one entry, not two", () => {
     const page = projectActivity(
       sources({

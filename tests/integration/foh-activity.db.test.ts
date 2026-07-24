@@ -3,9 +3,10 @@
  * deployment, human-opened session, delegation with its linked teammate run (+ steps),
  * agent-opened session, and a plain run — then assert the projection reconstructs it in
  * wall-clock order with the exchange expandable from the linked run (§6 legibility in DB
- * form), tolerating a delegation whose run recording never landed. Also covers the viewer
- * policy (issue #221 finding 3): members see only sessions they can open, and run events
- * keep their metadata but redact input/error unless the run is theirs to read.
+ * form), tolerating a delegation whose run recording never landed. Also covers the point-of-
+ * view attribution (#212 §3: foh-channel runs read "Aaron messaged sam") and the viewer
+ * policy (issue #221 finding 3): members see only sessions they can open, and run events keep
+ * their metadata but redact input/error — and the actor — unless the run is theirs to read.
  *
  * Opt-in: runs only when EDEN_DB_SMOKE=1 and DATABASE_URL point at a live dev database
  * (`EDEN_DB_SMOKE=1 npx vitest run tests/integration/foh-activity.db.test.ts` with
@@ -101,8 +102,9 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       })
       .returning();
 
-    // 10:10 — Aaron opens a session with sam (with an eve handle, so his run below is
-    // attributable to a session he can open).
+    // 10:10 — Aaron opens a session with sam. The eve session id links the FOH session to its
+    // observability session, so his foh-channel run below both attributes back to him (#212)
+    // and stays a session he can open (issue #221 F3).
     const AARON_EVE_SESSION = "wses_foh_activity_aaron";
     const [humanSession] = await db
       .insert(playgroundSessions)
@@ -111,8 +113,8 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
         agentId: sam.id,
         createdBy: USER,
         surface: "foh",
-        title: "the pricing page is broken",
         externalSessionId: AARON_EVE_SESSION,
+        title: "the pricing page is broken",
         createdAt: t(10),
       })
       .returning();
@@ -141,9 +143,10 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       })
       .returning();
 
-    // 10:20 — a plain (non-delegation) run for sam, attributed to Aaron's FOH session the
-    // way the reconciler does it: an observability `sessions` row keyed by the eve external
-    // session id, with runs.session_id holding that row's internal id.
+    // 10:20 — a plain (non-delegation) run for sam, attributed to Aaron's FOH session the way
+    // the reconciler does it: an observability `sessions` row keyed by the eve external
+    // session id, with runs.session_id holding that row's internal id. The feed reads it as
+    // "Aaron messaged sam" (#212 §3), and only Aaron/back-of-house may read its content (F3).
     const [obsSession] = await db
       .insert(sessions)
       .values({
@@ -428,6 +431,10 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
     expect(page.events[5]).toMatchObject({
       type: "run",
       channel: "foh",
+      agentName: "sam",
+      // Resolved via runs.sessionId → sessions.externalSessionId → the FOH playground
+      // session's creator — the read-time attribution join (#212 §3).
+      actorUserName: "Aaron",
       input: "look at the pricing page",
     });
     expect(page.events[6]).toMatchObject({
@@ -474,20 +481,27 @@ describe.runIf(LIVE)("FOH activity projection against real Postgres", () => {
       type: "run",
       channel: "foh",
       input: "look at the pricing page", // his own session's run stays legible
+      actorUserName: "Aaron", //           and he may see who messaged sam (it was him)
     });
     expect(memberPage.events[2]).toMatchObject({
       type: "delegation",
       ask: PARKED_ASK,
     });
 
-    // Another member sees their own session but Aaron's run content redacted.
+    // Another member sees their own session but Aaron's run content redacted — including the
+    // actor, so #212's "Aaron messaged sam" headline can't leak a session F3 hides from her.
     const member2Page = await listTeamActivity(project.id, asBlair);
     const member2Ids = member2Page.events.map((e) => e.id);
     expect(member2Ids).toContain(`session:${user2Session.id}`);
     expect(member2Ids).not.toContain(`session:${humanSession.id}`);
     expect(
       member2Page.events.find((e) => e.id === `run:${plainRun.id}`),
-    ).toMatchObject({ input: null, error: null, status: "completed" });
+    ).toMatchObject({
+      input: null,
+      error: null,
+      actorUserName: null,
+      status: "completed",
+    });
 
     // Cursor pagination: `before` excludes everything at/after the cutoff.
     const older = await listTeamActivity(project.id, {

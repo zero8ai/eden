@@ -40,14 +40,15 @@ export type PlaygroundSession = typeof playgroundSessions.$inferSelect;
 export type SessionSurface = "playground" | "assistant" | "foh";
 
 /**
- * The surface discriminator's one hard job is FOH isolation: playground and assistant lists
- * were already disjoint by (project, agent, creator) scoping, so both builder surfaces read
- * `surface <> 'foh'` (preserving today's visibility exactly) while FOH reads `= 'foh'`.
+ * Exact-match surface isolation: every query sees only rows stamped with its own surface —
+ * `foh` / `playground` / `assistant` are three disjoint conversation spaces (issue #221 PRD
+ * gap 2). Historically the builder surfaces read `surface <> 'foh'` because migration 0015
+ * stamped every pre-existing row 'playground' (its column default), including genuine
+ * assistant conversations. Migration 0018 backfilled those — rows on kind-'assistant' agents
+ * flipped to surface 'assistant' — so exact equality is now safe for all three surfaces.
  */
 function surfaceScope(surface: SessionSurface) {
-  return surface === "foh"
-    ? eq(playgroundSessions.surface, "foh")
-    : ne(playgroundSessions.surface, "foh");
+  return eq(playgroundSessions.surface, surface);
 }
 
 export interface PlaygroundSessionSummary {

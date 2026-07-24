@@ -1129,10 +1129,11 @@ export const playgroundSessions = pgTable(
       onDelete: "cascade",
     }),
     /**
-     * Which chat surface owns this conversation: 'playground' | 'assistant' | 'foh'. Front of
-     * House sessions are invisible to the playground/assistant lists and vice versa; the two
-     * builder surfaces stay disjoint by (project, agent, creator) scoping as before, so the
-     * discriminator's only hard job is FOH isolation (`surface = 'foh'` vs `<> 'foh'`).
+     * Which chat surface owns this conversation: 'playground' | 'assistant' | 'foh'. The three
+     * surfaces are fully disjoint — every query matches its own surface exactly (see
+     * `surfaceScope`). Rows predating this column were stamped 'playground' by the 0015
+     * default; migration 0018 backfilled legacy assistant conversations (rows on
+     * kind-'assistant' agents) to 'assistant' so the exact match holds.
      */
     surface: text("surface").notNull().default("playground"),
     /**

@@ -8,11 +8,13 @@
 import type {
   Agent,
   AgentLink,
+  ConversationRead,
   DataStore,
   Delegation,
   Deployment,
   DraftChange,
   Environment,
+  InboxItem,
   Job,
   Project,
   Release,
@@ -59,6 +61,13 @@ export interface FakeStore extends DataStore {
   seedRun(r: Partial<Run> & { id: string; projectId: string }): Run;
   /** Inspect a run seeded into this fake after repository operations. */
   getRun(id: string): Run | null;
+  seedInboxItem(
+    i: Partial<InboxItem> & { id: string; projectId: string; sessionId: string; kind: string },
+  ): InboxItem;
+  /** Inspect an inbox item (including resolved ones the pending queries hide). */
+  getInboxItem(id: string): InboxItem | null;
+  /** Inspect a viewer's read cursor for a session. */
+  getConversationRead(sessionId: string, userId: string): ConversationRead | null;
   /** Force the next N release inserts to raise a version-collision (exercises retry). */
   forceReleaseCollisions(n: number): void;
   /** Inspect recorded audit entries. */
@@ -80,6 +89,8 @@ export function makeFakeStore(): FakeStore {
   const agentLinks = new Map<string, AgentLink>(); // key: fromAgentId|toAgentId
   const delegations = new Map<string, Delegation>();
   const runs = new Map<string, Run>();
+  const inboxItems = new Map<string, InboxItem>();
+  const conversationReads = new Map<string, ConversationRead>(); // key: sessionId|userId
   const auditEntries: { action: string; target?: string | null; orgId: string }[] = [];
   let forcedCollisions = 0;
 
@@ -107,6 +118,7 @@ export function makeFakeStore(): FakeStore {
         name: p.name ?? "Agent",
         slug: p.slug ?? "agent",
         layout: p.layout ?? "single",
+        teamId: p.teamId ?? null,
         repoOwner: p.repoOwner ?? null,
         repoName: p.repoName ?? null,
         repoInstallationId: p.repoInstallationId ?? null,
@@ -166,6 +178,33 @@ export function makeFakeStore(): FakeStore {
     },
     getRun(rid) {
       return runs.get(rid) ?? null;
+    },
+    seedInboxItem(i) {
+      const now = new Date(++seq);
+      const row: InboxItem = {
+        id: i.id,
+        projectId: i.projectId,
+        sessionId: i.sessionId,
+        delegationId: i.delegationId ?? null,
+        runId: i.runId ?? null,
+        agentId: i.agentId ?? null,
+        userId: i.userId ?? null,
+        kind: i.kind,
+        prompt: i.prompt ?? null,
+        requestId: i.requestId ?? null,
+        status: i.status ?? "pending",
+        resolvedAt: i.resolvedAt ?? null,
+        createdAt: i.createdAt ?? now,
+        updatedAt: i.updatedAt ?? now,
+      };
+      inboxItems.set(row.id, row);
+      return row;
+    },
+    getInboxItem(iid) {
+      return inboxItems.get(iid) ?? null;
+    },
+    getConversationRead(sessionId, userId) {
+      return conversationReads.get(`${sessionId}|${userId}`) ?? null;
     },
     forceReleaseCollisions(n) {
       forcedCollisions = n;
@@ -510,6 +549,8 @@ export function makeFakeStore(): FakeStore {
           name: input.name,
           slug: input.slug,
           layout: input.layout ?? "single",
+          // Repo teams (FOH D9) are minted by ensureProjectTeam, never at insert.
+          teamId: null,
           repoOwner: input.repoOwner ?? null,
           repoName: input.repoName ?? null,
           repoInstallationId: input.repoInstallationId ?? null,
@@ -717,6 +758,9 @@ export function makeFakeStore(): FakeStore {
         delegations.set(row.id, row);
         return row;
       },
+      async findById(did) {
+        return delegations.get(did) ?? null;
+      },
       async finalize(did, patch) {
         const cur = delegations.get(did);
         if (!cur) return;
@@ -781,6 +825,97 @@ export function makeFakeStore(): FakeStore {
           if (run.deploymentId === deploymentId && run.status === "running") running++;
         }
         return running;
+      },
+    },
+
+    inboxItems: {
+      async insert(input) {
+        const now = new Date(++seq);
+        const row: InboxItem = {
+          id: id("inbox"),
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          delegationId: input.delegationId ?? null,
+          runId: input.runId ?? null,
+          agentId: input.agentId ?? null,
+          userId: input.userId ?? null,
+          kind: input.kind,
+          prompt: input.prompt ?? null,
+          requestId: input.requestId ?? null,
+          status: "pending",
+          resolvedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        inboxItems.set(row.id, row);
+        return row;
+      },
+      async resolve(iid) {
+        const cur = inboxItems.get(iid);
+        if (!cur || cur.status !== "pending") return;
+        inboxItems.set(iid, {
+          ...cur,
+          status: "resolved",
+          resolvedAt: new Date(++seq),
+          updatedAt: new Date(seq),
+        });
+      },
+      async resolveBySession(sessionId, kinds) {
+        for (const [iid, item] of inboxItems) {
+          if (item.sessionId !== sessionId || item.status !== "pending") continue;
+          if (kinds && kinds.length > 0 && !kinds.includes(item.kind)) continue;
+          inboxItems.set(iid, {
+            ...item,
+            status: "resolved",
+            resolvedAt: new Date(++seq),
+            updatedAt: new Date(seq),
+          });
+        }
+      },
+      async findPendingBySession(sessionId) {
+        return [...inboxItems.values()]
+          .filter((i) => i.sessionId === sessionId && i.status === "pending")
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      },
+      async listPendingForProjects(projectIds, userId) {
+        const scope = new Set(projectIds);
+        return [...inboxItems.values()]
+          .filter(
+            (i) =>
+              scope.has(i.projectId) &&
+              i.status === "pending" &&
+              (i.userId === userId || i.userId === null),
+          )
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      },
+      async countPendingForProjects(projectIds, userId) {
+        const scope = new Set(projectIds);
+        let n = 0;
+        for (const i of inboxItems.values()) {
+          if (
+            scope.has(i.projectId) &&
+            i.status === "pending" &&
+            (i.userId === userId || i.userId === null)
+          )
+            n++;
+        }
+        return n;
+      },
+    },
+
+    conversationReads: {
+      async upsert(sessionId, userId, at) {
+        const key = `${sessionId}|${userId}`;
+        const existing = conversationReads.get(key);
+        // Only-advance: a stale tab's late write must not rewind the cursor.
+        if (existing && existing.lastReadAt.getTime() >= at.getTime()) return;
+        conversationReads.set(key, { sessionId, userId, lastReadAt: at });
+      },
+      async listForUser(userId, sessionIds) {
+        const scope = new Set(sessionIds);
+        return [...conversationReads.values()].filter(
+          (r) => r.userId === userId && scope.has(r.sessionId),
+        );
       },
     },
   };

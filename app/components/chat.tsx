@@ -469,7 +469,7 @@ function safeHref(value: string): string | null {
  * Pending agent input requests (ask_question / tool approvals), rendered inline at the end
  * of the turn so a question never gets lost after a reply that trails off with "one decision
  * for you:". Rendered unboxed (a labelled section, not a nested card) so it sits cleanly
- * whether the surface wraps it in a chat bubble (playground/portal) or an open turn column
+ * whether the surface wraps it in a chat bubble (playground) or an open turn column
  * (assistant), instead of stacking a box inside a bubble.
  *
  * The shape of the ask drives the affordance:

@@ -10,6 +10,7 @@ import {
 import { sessionLoader } from "~/auth/session.server";
 import {
   ensureWorkspace,
+  requireBackOfHouse,
   resolveActiveWorkspace,
 } from "~/auth/workspace.server";
 import { AppShell, PageHeader, accentText } from "~/components/shell";
@@ -42,7 +43,10 @@ export const loader = (args: LoaderFunctionArgs) =>
     async ({ auth }) => {
       // First org-less login: provision the user's workspace and replay (redirect).
       await ensureWorkspace(args.request, auth);
-      const org = (await resolveActiveWorkspace(auth))?.org ?? null;
+      const active = await resolveActiveWorkspace(auth);
+      // Back of house is admin/owner-only (D10); front-of-house members live at `/`.
+      if (active) requireBackOfHouse(active, "page");
+      const org = active?.org ?? null;
       const projects = org ? await listProjects(org.id) : [];
       const cards: ProjectCard[] = await Promise.all(
         projects.map(async (project) => {

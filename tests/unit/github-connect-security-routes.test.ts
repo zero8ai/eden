@@ -42,8 +42,12 @@ vi.mock("~/auth/session.server", async () => {
 });
 vi.mock("~/auth/workspace.server", () => ({
   ensureWorkspace: vi.fn(),
+  // The fixture member is an owner, so the D10 back-of-house gate is a pass-through here.
+  requireBackOfHouse: vi.fn(),
   resolveActiveWorkspace: vi.fn(async () => mocks.active),
 }));
+// Repo-team creation is best-effort in connect (FOH D9) and covered by its own suites.
+vi.mock("~/auth/teams.server", () => ({ ensureProjectTeam: vi.fn() }));
 vi.mock("~/github/install-state.server", () => ({
   createGitHubInstallState: mocks.createState,
   verifyGitHubInstallState: mocks.verifyState,

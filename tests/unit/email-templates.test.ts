@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { renderEmailVerificationEmail } from "~/email/templates/email-verification";
 import { renderOrganizationInvitationEmail } from "~/email/templates/organization-invitation";
 import { renderPasswordResetEmail } from "~/email/templates/password-reset";
-import { renderPortalMagicLinkEmail } from "~/email/templates/portal-magic-link";
 
 describe("transactional email templates", () => {
   it("renders the Better Auth password-reset URL and account context", async () => {
@@ -46,20 +45,5 @@ describe("transactional email templates", () => {
     expect(html).toContain("invitee@example.com");
     expect(html).toContain("verification-token");
     expect(html).toContain("expires in one hour");
-  });
-
-  it("renders the portal magic-link sign-in URL and code fallback", async () => {
-    const url =
-      "https://eden.example.com/api/auth/magic-link/verify?token=magic-token&callbackURL=%2Fa%2Fportal-slug";
-    const html = await renderPortalMagicLinkEmail({
-      portalName: "Billing Assistant",
-      url,
-    });
-
-    expect(html).toContain("Billing Assistant");
-    expect(html).toContain("magic-token");
-    expect(html).toContain("callbackURL");
-    // The 6-digit code fallback is advertised for mail scanners that eat links.
-    expect(html).toMatch(/6-digit code/i);
   });
 });

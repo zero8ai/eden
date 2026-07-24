@@ -1,0 +1,171 @@
+/**
+ * Pure needs-you decision matrix (app/foh/needs-you.ts) — the logic behind the two FOH
+ * drain chokepoints, tested with zero mocks: how a live-drained turn's end settles the park
+ * state (D4/D13), and what a reconciled eve tail says about it (park / settle / leave alone).
+ */
+import { describe, expect, it } from "vitest";
+
+import type { ChatInputRequest } from "~/chat/types";
+import {
+  reconcileNeedsYouFromTail,
+  settleFohTurn,
+  type TailEventLike,
+} from "~/foh/needs-you";
+
+function ask(requestId = "r1"): ChatInputRequest {
+  return { requestId, prompt: "Which one?" };
+}
+
+describe("settleFohTurn (chokepoint #1, terminal half)", () => {
+  it("parks when the turn ends with pending input requests", () => {
+    expect(settleFohTurn({ ok: true, inputRequests: [ask()] })).toEqual({
+      outcome: "parked",
+      clearPending: false,
+      resolveAsks: false,
+      recordFinished: false,
+    });
+  });
+
+  it("still parks when assistant text preceded the ask (reply + requests)", () => {
+    // Eve commonly emits "One thing before I continue —" as a completed message before
+    // the ask_question call; the reply must not negate the park.
+    const decision = settleFohTurn({ ok: true, inputRequests: [ask()] });
+    expect(decision.outcome).toBe("parked");
+  });
+
+  it("completes: clears the park, resolves asks, files the finished item", () => {
+    expect(settleFohTurn({ ok: true, inputRequests: [] })).toEqual({
+      outcome: "completed",
+      clearPending: true,
+      resolveAsks: true,
+      recordFinished: true,
+    });
+  });
+
+  it("fails: clears the park and resolves asks but files no finished item", () => {
+    expect(settleFohTurn({ ok: false, inputRequests: [] })).toEqual({
+      outcome: "failed",
+      clearPending: true,
+      resolveAsks: true,
+      recordFinished: false,
+    });
+  });
+
+  it("a failed turn wins over its own stale requests", () => {
+    expect(settleFohTurn({ ok: false, inputRequests: [ask()] }).outcome).toBe(
+      "failed",
+    );
+  });
+});
+
+function tail(
+  ...events: Array<[type: string, data?: Record<string, unknown>]>
+): TailEventLike[] {
+  return events.map(([type, data]) => ({ type, data: data ?? {} }));
+}
+
+const askEvent = (turnId: string, requestId = "r1"): [string, Record<string, unknown>] => [
+  "input.requested",
+  { turnId, requests: [{ requestId, prompt: "Which one?" }] },
+];
+
+describe("reconcileNeedsYouFromTail (chokepoint #2)", () => {
+  it("parks on an unanswered ask settling into session.waiting", () => {
+    const decision = reconcileNeedsYouFromTail(
+      tail(askEvent("turn_1"), ["session.waiting"]),
+    );
+    expect(decision.action).toBe("park");
+    expect(decision.action === "park" && decision.requestData).toHaveLength(1);
+  });
+
+  it("parks on text-then-ask (a completed message before the request)", () => {
+    const decision = reconcileNeedsYouFromTail(
+      tail(
+        ["message.completed", { turnId: "turn_1", message: "One thing —" }],
+        askEvent("turn_1"),
+        ["session.waiting"],
+      ),
+    );
+    expect(decision.action).toBe("park");
+  });
+
+  it("keeps a park even when eve closes the turn after the ask", () => {
+    const decision = reconcileNeedsYouFromTail(
+      tail(askEvent("turn_1"), ["turn.completed", { turnId: "turn_1" }], [
+        "session.waiting",
+      ]),
+    );
+    expect(decision.action).toBe("park");
+  });
+
+  it("collects every request of the newest turn", () => {
+    const decision = reconcileNeedsYouFromTail(
+      tail(askEvent("turn_1", "r1"), askEvent("turn_1", "r2"), ["session.waiting"]),
+    );
+    expect(decision.action === "park" && decision.requestData).toHaveLength(2);
+  });
+
+  it("a newer turn's ask supersedes an older turn's", () => {
+    const decision = reconcileNeedsYouFromTail(
+      tail(askEvent("turn_1", "r1"), askEvent("turn_2", "r2"), ["session.waiting"]),
+    );
+    expect(decision.action === "park" && decision.requestData).toEqual([
+      { turnId: "turn_2", requests: [{ requestId: "r2", prompt: "Which one?" }] },
+    ]);
+  });
+
+  it("settles a park answered by a later turn that completed", () => {
+    const decision = reconcileNeedsYouFromTail(
+      tail(
+        askEvent("turn_1"),
+        ["session.waiting"],
+        ["message.received", { turnId: "turn_2", message: "the blue one" }],
+        ["message.completed", { turnId: "turn_2", message: "Done." }],
+        ["turn.completed", { turnId: "turn_2" }],
+        ["session.waiting"],
+      ),
+    );
+    expect(decision.action).toBe("settle");
+  });
+
+  it("settles a plainly completed turn", () => {
+    const decision = reconcileNeedsYouFromTail(
+      tail(
+        ["message.completed", { turnId: "turn_1", message: "Done." }],
+        ["turn.completed", { turnId: "turn_1" }],
+        ["session.waiting"],
+      ),
+    );
+    expect(decision.action).toBe("settle");
+  });
+
+  it("settles on terminal failure, even after an ask", () => {
+    expect(reconcileNeedsYouFromTail(tail(["turn.failed", { turnId: "turn_1" }])).action).toBe(
+      "settle",
+    );
+    expect(
+      reconcileNeedsYouFromTail(tail(askEvent("turn_1"), ["session.failed"])).action,
+    ).toBe("settle");
+  });
+
+  it("does nothing for a bare session.waiting marker (drain-died-after-park case)", () => {
+    // The drain recorded the park and persisted the cursor past input.requested, then died;
+    // the recovered tail is just the waiting marker. Clearing here would erase a real park.
+    expect(reconcileNeedsYouFromTail(tail(["session.waiting"])).action).toBe("none");
+  });
+
+  it("does nothing for mid-turn activity", () => {
+    expect(
+      reconcileNeedsYouFromTail(
+        tail(
+          ["message.received", { turnId: "turn_1", message: "go" }],
+          ["step.started", { turnId: "turn_1", sequence: 1 }],
+        ),
+      ).action,
+    ).toBe("none");
+  });
+
+  it("does nothing for an empty tail", () => {
+    expect(reconcileNeedsYouFromTail([]).action).toBe("none");
+  });
+});

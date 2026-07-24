@@ -2,11 +2,17 @@
  * XML sitemap for the crawlable marketing surface. Generated from the static
  * case-study list so it stays in sync as verticals are added. The authed app
  * (dashboard, repos, connect, …) is intentionally excluded — see robots.txt.
+ * Marketing-host-only when MARKETING_HOST is set (D11); SITE_URL follows it.
  */
+import type { LoaderFunctionArgs } from "react-router";
+
 import { SITE_URL } from "~/lib/seo";
 import { caseStudies } from "~/lib/case-studies";
+import { marketingHostRedirect } from "~/lib/marketing-host.server";
 
-export function loader() {
+export function loader({ request }: LoaderFunctionArgs) {
+  const away = marketingHostRedirect(request);
+  if (away) return away;
   const paths: { loc: string; priority: string; changefreq: string }[] = [
     { loc: "/", priority: "1.0", changefreq: "weekly" },
     { loc: "/case-studies", priority: "0.8", changefreq: "monthly" },

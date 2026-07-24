@@ -4,6 +4,7 @@ import { Form, redirect } from "react-router";
 import { requireSession, sessionLoader } from "~/auth/session.server";
 import {
   ensureWorkspace,
+  requireBackOfHouse,
   resolveActiveWorkspace,
 } from "~/auth/workspace.server";
 import { AppShell, PageHeader, accentText } from "~/components/shell";
@@ -53,6 +54,8 @@ export const loader = (args: Route.LoaderArgs) =>
     async ({ auth }) => {
       await ensureWorkspace(args.request, auth);
       const active = await resolveActiveWorkspace(auth);
+      // Back of house is admin/owner-only (D10); front-of-house members live at `/`.
+      if (active) requireBackOfHouse(active, "page");
       if (!active) {
         return {
           org: null,
@@ -116,6 +119,7 @@ export async function action(args: Route.ActionArgs) {
   const session = await requireSession(args);
   const active = await resolveActiveWorkspace(session);
   if (!active) return { error: "No active workspace." };
+  requireBackOfHouse(active, "api");
 
   const form = await args.request.formData();
   const intent = String(form.get("intent") ?? "");

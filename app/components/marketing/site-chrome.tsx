@@ -11,11 +11,17 @@ import { Logo } from "~/components/marketing/logo";
 /** The public source repository. Eden is open source; every marketing page links here. */
 export const REPO_URL = "https://github.com/zero8ai/eden";
 
-export function SiteHeader() {
+/**
+ * `appOrigin` is the app's absolute origin when the page serves from the marketing host
+ * (host split, FOH D11) — session cookies don't cross subdomains, so auth CTAs become plain
+ * cross-host anchors and the header always renders its signed-out state there. Empty string
+ * (the default, and always the case when MARKETING_HOST is unset) keeps same-origin links.
+ */
+export function SiteHeader({ appOrigin = "" }: { appOrigin?: string }) {
   // The root loader reads the Better Auth session, so identity is available app-wide.
   // When the visitor is already signed in, offer a Dashboard link instead of Sign in.
   const rootData = useRouteLoaderData<typeof rootLoader>("root");
-  const isSignedIn = Boolean(rootData?.user);
+  const isSignedIn = !appOrigin && Boolean(rootData?.user);
 
   return (
     <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
@@ -36,12 +42,12 @@ export function SiteHeader() {
           GitHub
         </a>
         <ThemeToggle />
-        <Link
-          to={isSignedIn ? "/dashboard" : "/login"}
+        <a
+          href={`${appOrigin}${isSignedIn ? "/dashboard" : "/login"}`}
           className="rounded-full border border-eden-fg px-4 py-1.5 transition hover:bg-eden-fg hover:text-eden-bg"
         >
           {isSignedIn ? "Dashboard" : "Sign in"}
-        </Link>
+        </a>
       </nav>
     </header>
   );

@@ -6,9 +6,25 @@ import type { LoaderFunctionArgs } from "react-router";
 import { SiteHeader, SiteFooter } from "~/components/marketing/site-chrome";
 import { Reveal, Parallax } from "~/components/landing-motion";
 import { caseStudies } from "~/lib/case-studies";
+import {
+  appOrigin,
+  isMarketingHost,
+  marketingHostRedirect,
+} from "~/lib/marketing-host.server";
 import { pageMeta } from "~/lib/seo";
 
-export const loader = (args: LoaderFunctionArgs) => sessionLoader(args);
+export async function loader(args: LoaderFunctionArgs) {
+  // Host split (D11): with a marketing host configured this page serves only there — the
+  // root middleware already bounces the app host here; this guard keeps the rule local too.
+  const away = marketingHostRedirect(args.request);
+  if (away) throw away;
+  const session = await sessionLoader(args);
+  return {
+    ...session,
+    // Cross-host auth CTAs (cookies don't cross subdomains); "" = same-origin links.
+    appOrigin: isMarketingHost(args.request) ? (appOrigin() ?? "") : "",
+  };
+}
 
 export function meta({}: Route.MetaArgs) {
   return pageMeta({
@@ -23,10 +39,11 @@ export function meta({}: Route.MetaArgs) {
  * Case-studies index. Editorial cards, one per vertical, each linking to a full
  * write-up. Same tokens/motion as the home page.
  */
-export default function CaseStudies({}: Route.ComponentProps) {
+export default function CaseStudies({ loaderData }: Route.ComponentProps) {
+  const { appOrigin } = loaderData;
   return (
     <main className="min-h-screen bg-eden-bg font-suisse text-eden-fg">
-      <SiteHeader />
+      <SiteHeader appOrigin={appOrigin} />
 
       {/* ————— Hero ————— */}
       <section className="mx-auto max-w-6xl px-6 pb-16 pt-16 sm:pt-24">
@@ -127,12 +144,12 @@ export default function CaseStudies({}: Route.ComponentProps) {
             the grind. Your people keep the judgment.
           </Reveal>
           <Reveal delay={180} className="mt-10">
-            <Link
-              to="/signup"
+            <a
+              href={`${appOrigin}/signup`}
               className="rounded-full bg-eden-band-fg px-8 py-3 text-lg font-medium text-eden-band-bg transition hover:opacity-85"
             >
               Sign up
-            </Link>
+            </a>
           </Reveal>
         </div>
       </section>

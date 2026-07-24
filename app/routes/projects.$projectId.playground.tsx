@@ -222,7 +222,9 @@ export const loader = (args: LoaderFunctionArgs) =>
       return {
         project,
         targets,
-        sessions: sessions.map(summarizePlaygroundSession),
+        sessions: sessions.map((session) =>
+          summarizePlaygroundSession(session),
+        ),
         currentSessionId: currentSession?.id ?? null,
         currentSessionEnvironmentId: currentSession?.environmentId ?? null,
         currentSessionStatus: currentSession?.status ?? null,
@@ -262,6 +264,7 @@ export async function action(args: ActionFunctionArgs) {
       projectId: project.id,
       agentId: active.id,
       userId: auth.user.id,
+      surface: "playground",
     });
     throw redirect(newPlaygroundSessionPath(args.url, session.id));
   }

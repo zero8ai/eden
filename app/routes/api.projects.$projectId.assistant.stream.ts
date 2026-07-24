@@ -76,6 +76,7 @@ export async function action(args: ActionFunctionArgs) {
         projectId: project.id,
         agentId: instance.agentId,
         userId: auth.user.id,
+        surface: "assistant",
       })
     : null;
   if (playgroundSessionId && !session) {
@@ -96,6 +97,7 @@ export async function action(args: ActionFunctionArgs) {
       projectId: project.id,
       agentId: instance.agentId,
       userId: auth.user.id,
+      surface: "assistant",
       environmentId: target.environmentId,
       deploymentId: target.deploymentId,
       releaseId: target.releaseId,

@@ -118,6 +118,12 @@ Fill in every value (`deploy/vps/.env` is gitignored). Notes per section:
   invitations in Postgres, so there is no external auth dashboard or callback registration. Keep
   port 3000 private behind the supplied nginx: it overwrites `X-Real-IP`, which Better Auth trusts
   for per-client production rate limiting.
+- **`MARKETING_HOST` (optional)** — leave unset for a normal install: `/` serves Eden's
+  Front of House (sign-in when logged out). Set it (bare host, e.g. `www.eden.example.com`)
+  only to serve the marketing landing page + case studies from their own subdomain: add a DNS
+  A record for that host, fill in the marketing `server` blocks at the bottom of
+  `deploy/vps/nginx-eden.conf`, and extend the certificate with an extra `-d <marketing-host>`
+  in step 6.
 - **Transactional email** — set `POSTMARK_SERVER_TOKEN` and `FROM_EMAIL` to a verified Postmark
   sender. Better Auth uses it for password resets and organization invitations. Local development
   may use `SMTP_URL` with Mailpit or Mailtrap instead, but production intentionally uses Postmark.
@@ -225,6 +231,12 @@ Confirm TLS from anywhere:
 ```bash
 curl -sI https://<your-domain> | head -1   # expect HTTP/2 200 (or a 30x to /login)
 ```
+
+**Marketing host (optional):** if you set `MARKETING_HOST` in step 4, request the certificate
+for both names in one lineage — append `-d <marketing-host>` to the `certbot certonly` command
+above (the marketing `server` blocks in `nginx-eden.conf` reference the same
+`/etc/letsencrypt/live/<your-domain>/` paths). The marketing host needs its own DNS A record
+pointing at this VPS before issuance.
 
 **Renewal** is a weekly host cron entry — certbot's own systemd timer isn't in play here since
 it's containerized. Add it with `crontab -e`:

@@ -28,6 +28,14 @@ nginx and certbot remain ordinary Docker Compose containers from `deploy/vps`. K
 Swarm preserves the existing certificate volumes, ACME webroot flow, and renewal cron. nginx
 continues to reach Eden and the traffic splitter at `127.0.0.1:3000` and `127.0.0.1:8787`.
 
+The marketing site (landing page + case studies) is host-split: when `MARKETING_HOST` is set in
+the Eden env, those pages serve only on that host while `/` on the app host is Front of House.
+Enabling it on this box is a deploy-day step, not a deploy.sh change: DNS A record for the
+marketing host, the marketing `server` blocks from `deploy/vps/nginx-eden.conf` (same
+`127.0.0.1:3000` upstream and verbatim `proxy_set_header` lines — Better Auth rate-limits on the
+nginx-owned `X-Real-IP`), certificate coverage via an extra `-d`, and `MARKETING_HOST` in the
+stack env. Without it, `/` simply serves Front of House on the sole host.
+
 Swarm cannot safely publish a service port to selected host IP addresses: stack deployment ignores
 the IP portion and publishes it on every interface. Postgres therefore joins the host network and
 binds the two required addresses itself. Do not replace that with a Swarm `ports` entry; Docker's

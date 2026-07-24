@@ -90,6 +90,45 @@ describe("production auth and email environment", () => {
     ).toThrow("FROM_EMAIL must be a mailbox");
   });
 
+  it("accepts a valid optional MARKETING_HOST and no MARKETING_HOST at all", () => {
+    expect(() =>
+      assertProductionAuthEnvironment({
+        ...validProductionEnvironment,
+        MARKETING_HOST: "www.eden.example.com",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertProductionAuthEnvironment({
+        ...validProductionEnvironment,
+        MARKETING_HOST: "  ",
+      }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    "https://www.eden.example.com",
+    "www.eden.example.com/landing",
+    "www.eden.example.com:443",
+    "user@www.eden.example.com",
+    "-bad-.example.com",
+  ])("rejects a non-bare-host MARKETING_HOST: %s", (marketingHost) => {
+    expect(() =>
+      assertProductionAuthEnvironment({
+        ...validProductionEnvironment,
+        MARKETING_HOST: marketingHost,
+      }),
+    ).toThrow("MARKETING_HOST must be a bare host");
+  });
+
+  it("rejects a MARKETING_HOST equal to the app host (redirects would loop)", () => {
+    expect(() =>
+      assertProductionAuthEnvironment({
+        ...validProductionEnvironment,
+        MARKETING_HOST: "eden.example.com",
+      }),
+    ).toThrow("MARKETING_HOST must differ from the BETTER_AUTH_URL host");
+  });
+
   it("reports every missing production value without exposing values", () => {
     expect(() =>
       assertProductionAuthEnvironment({ NODE_ENV: "production" }),

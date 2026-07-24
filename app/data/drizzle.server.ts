@@ -24,7 +24,9 @@ import {
   agentLinks,
   agents,
   auditLog,
+  conversationReads,
   delegations,
+  inboxItems,
   deployments,
   draftChanges,
   environments,
@@ -591,6 +593,14 @@ export const drizzleDataStore: DataStore = {
         .returning();
       return row;
     },
+    async findById(did) {
+      const [row] = await db
+        .select()
+        .from(delegations)
+        .where(eq(delegations.id, did))
+        .limit(1);
+      return row ?? null;
+    },
     async finalize(id, patch) {
       await db
         .update(delegations)
@@ -665,6 +675,108 @@ export const drizzleDataStore: DataStore = {
         .from(runs)
         .where(and(eq(runs.deploymentId, deploymentId), eq(runs.status, "running")));
       return c ?? 0;
+    },
+  },
+
+  inboxItems: {
+    async insert(input) {
+      const [row] = await db
+        .insert(inboxItems)
+        .values({
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          kind: input.kind,
+          prompt: input.prompt ?? null,
+          requestId: input.requestId ?? null,
+          agentId: input.agentId ?? null,
+          userId: input.userId ?? null,
+          delegationId: input.delegationId ?? null,
+          runId: input.runId ?? null,
+        })
+        .returning();
+      return row;
+    },
+    async resolve(id) {
+      await db
+        .update(inboxItems)
+        .set({ status: "resolved", resolvedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(inboxItems.id, id), eq(inboxItems.status, "pending")));
+    },
+    async resolveBySession(sessionId, kinds) {
+      await db
+        .update(inboxItems)
+        .set({ status: "resolved", resolvedAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(inboxItems.sessionId, sessionId),
+            eq(inboxItems.status, "pending"),
+            kinds && kinds.length > 0 ? inArray(inboxItems.kind, kinds) : undefined,
+          ),
+        );
+    },
+    async findPendingBySession(sessionId) {
+      return db
+        .select()
+        .from(inboxItems)
+        .where(
+          and(eq(inboxItems.sessionId, sessionId), eq(inboxItems.status, "pending")),
+        )
+        .orderBy(asc(inboxItems.createdAt));
+    },
+    async listPendingForProjects(projectIds, userId) {
+      if (projectIds.length === 0) return [];
+      return db
+        .select()
+        .from(inboxItems)
+        .where(
+          and(
+            inArray(inboxItems.projectId, projectIds),
+            eq(inboxItems.status, "pending"),
+            // D5: personal items plus team-wide (agent-opened) items.
+            or(eq(inboxItems.userId, userId), isNull(inboxItems.userId)),
+          ),
+        )
+        .orderBy(desc(inboxItems.createdAt));
+    },
+    async countPendingForProjects(projectIds, userId) {
+      if (projectIds.length === 0) return 0;
+      const [{ c }] = await db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(inboxItems)
+        .where(
+          and(
+            inArray(inboxItems.projectId, projectIds),
+            eq(inboxItems.status, "pending"),
+            or(eq(inboxItems.userId, userId), isNull(inboxItems.userId)),
+          ),
+        );
+      return c ?? 0;
+    },
+  },
+
+  conversationReads: {
+    async upsert(sessionId, userId, at) {
+      await db
+        .insert(conversationReads)
+        .values({ sessionId, userId, lastReadAt: at })
+        .onConflictDoUpdate({
+          target: [conversationReads.sessionId, conversationReads.userId],
+          set: { lastReadAt: at },
+          // Only-advance: a stale tab's late write must not rewind the cursor.
+          setWhere: sql`${conversationReads.lastReadAt} < ${at.toISOString()}`,
+        });
+    },
+    async listForUser(userId, sessionIds) {
+      if (sessionIds.length === 0) return [];
+      return db
+        .select()
+        .from(conversationReads)
+        .where(
+          and(
+            eq(conversationReads.userId, userId),
+            inArray(conversationReads.sessionId, sessionIds),
+          ),
+        );
     },
   },
 };

@@ -22,7 +22,12 @@ import {
 } from "react-router";
 
 import { liveTargets } from "~/chat/playground.server";
-import type { ChatEntry, ChatInputRequest, ChatStep } from "~/chat/types";
+import type {
+  ChatEntry,
+  ChatInputAnswer,
+  ChatInputRequest,
+  ChatStep,
+} from "~/chat/types";
 import {
   AssistantBubble,
   ChatComposer,
@@ -273,7 +278,7 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
   }, [entries, sessionId, visibleLive]);
 
   const send = useCallback(
-    async (message: string) => {
+    async (message: string, answer?: ChatInputAnswer) => {
       setSendError(null);
       stopRequestedRef.current = false;
       setLive({
@@ -298,6 +303,9 @@ export default function FohSession({ loaderData }: Route.ComponentProps) {
       form.set("message", message);
       form.set("agentId", agentId);
       form.set("playgroundSessionId", sessionId);
+      // A clicked question/approval card answers exactly ITS request (issue #221 finding
+      // 2); composer text stays the intentional continue/supersede path.
+      if (answer) form.set("inputResponses", JSON.stringify([answer]));
 
       try {
         const controller = new AbortController();
@@ -657,7 +665,7 @@ function AgentEntry({
 }: {
   entry: ChatEntry;
   /** Set on the newest entry only — answers a pending input request via the send path. */
-  onAnswer?: (text: string) => void;
+  onAnswer?: (text: string, answer?: ChatInputAnswer) => void;
   /** Set on the newest errored entry only — resends the message to retry the turn. */
   onRetry?: () => void;
   busy?: boolean;

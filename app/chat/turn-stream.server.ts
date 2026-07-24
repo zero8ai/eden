@@ -105,6 +105,16 @@ export function streamTurnResponse(input: {
    * path + a base-advanced note) but NOT recorded/echoed as the user's message. Optional.
    */
   messagePrefix?: string | null;
+  /**
+   * Request-correlated HITL answers (FOH answer path): forwarded to eve as `inputResponses`
+   * on the continuation send, so only the clicked request resolves — never the whole
+   * pending batch. Recording/display still use `message`.
+   */
+  inputResponses?: ReadonlyArray<{
+    requestId: string;
+    optionId?: string;
+    text?: string;
+  }> | null;
 }): Response {
   const {
     projectId,
@@ -236,6 +246,7 @@ export function streamTurnResponse(input: {
           for await (const event of streamTurn({
             baseUrl: target.url,
             message: sentMessage,
+            inputResponses: input.inputResponses,
             sessionId,
             continuationToken: activeSession.continuationToken,
             streamIndex: activeSession.streamIndex,

@@ -235,6 +235,88 @@ describe("FOH stream route", () => {
     expect(mocks.streamTurnResponse).not.toHaveBeenCalled();
   });
 
+  it("forwards a request-correlated answer on a continuation send", async () => {
+    await action(
+      args({
+        agentId: "agent_1",
+        playgroundSessionId: "ps_1",
+        message: "Approve",
+        inputResponses: JSON.stringify([
+          { requestId: "req_1", optionId: "approve" },
+        ]),
+      }),
+    );
+    expect(mocks.streamTurnResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inputResponses: [{ requestId: "req_1", optionId: "approve" }],
+      }),
+    );
+  });
+
+  it("answers exactly one request of a two-approval batch", async () => {
+    // The regression this guards (issue #221 finding 2): eve's text resolver matches a bare
+    // "Approve" against EVERY pending confirmation. The correlated payload must carry only
+    // the clicked card's requestId.
+    await action(
+      args({
+        agentId: "agent_1",
+        playgroundSessionId: "ps_1",
+        message: "Approve",
+        inputResponses: JSON.stringify([
+          { requestId: "req_2", optionId: "approve" },
+        ]),
+      }),
+    );
+    const [forwarded] = mocks.streamTurnResponse.mock.calls[0] as unknown as [
+      { inputResponses: Array<{ requestId: string }> },
+    ];
+    expect(forwarded.inputResponses).toHaveLength(1);
+    expect(forwarded.inputResponses[0].requestId).toBe("req_2");
+  });
+
+  it("drops answers when the session has no eve continuation (fresh/reseeded)", async () => {
+    mocks.getFohSessionForViewer.mockResolvedValue(
+      sessionRow({ externalSessionId: null, continuationToken: null }),
+    );
+    await action(
+      args({
+        agentId: "agent_1",
+        playgroundSessionId: "ps_1",
+        message: "Approve",
+        inputResponses: JSON.stringify([
+          { requestId: "req_1", optionId: "approve" },
+        ]),
+      }),
+    );
+    expect(mocks.streamTurnResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ inputResponses: null }),
+    );
+  });
+
+  it("400s malformed input responses instead of falling back to text matching", async () => {
+    await expect(
+      action(
+        args({
+          agentId: "agent_1",
+          playgroundSessionId: "ps_1",
+          message: "Approve",
+          inputResponses: "not json",
+        }),
+      ),
+    ).rejects.toMatchObject({ init: { status: 400 } });
+    await expect(
+      action(
+        args({
+          agentId: "agent_1",
+          playgroundSessionId: "ps_1",
+          message: "Approve",
+          inputResponses: JSON.stringify([{ optionId: "approve" }]),
+        }),
+      ),
+    ).rejects.toMatchObject({ init: { status: 400 } });
+    expect(mocks.streamTurnResponse).not.toHaveBeenCalled();
+  });
+
   it("404s an agent from another project", async () => {
     mocks.agentsFindById.mockResolvedValue({ ...AGENT, projectId: "proj_2" });
     await expect(

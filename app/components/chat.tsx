@@ -17,7 +17,12 @@ import {
   Sparkles,
 } from "lucide-react";
 
-import type { ChatInputOption, ChatInputRequest, ChatStep } from "~/chat/types";
+import type {
+  ChatInputAnswer,
+  ChatInputOption,
+  ChatInputRequest,
+  ChatStep,
+} from "~/chat/types";
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
 import { cn } from "~/lib/utils";
@@ -479,8 +484,10 @@ function safeHref(value: string): string | null {
  * - free text (no options) or `allowFreeform` alongside options → a hint pointing at the
  *   composer, where a typed reply resolves the request.
  *
- * Clicking an option sends its label as the answer (eve resolves a follow-up matching an
- * option's id/label). Pass `onAnswer` only where answering makes sense (the newest turn);
+ * Clicking an option sends its label as the visible answer plus a request-correlated
+ * `ChatInputAnswer` ({requestId, optionId}) — surfaces that forward it let eve resolve
+ * exactly the clicked request instead of text-matching the label against every pending
+ * request in the batch. Pass `onAnswer` only where answering makes sense (the newest turn);
  * without it the options render as a static, non-interactive record.
  */
 export function InputRequestsBlock({
@@ -489,7 +496,7 @@ export function InputRequestsBlock({
   busy,
 }: {
   requests: ChatInputRequest[];
-  onAnswer?: (text: string) => void;
+  onAnswer?: (text: string, answer?: ChatInputAnswer) => void;
   busy?: boolean;
 }) {
   if (requests.length === 0) return null;
@@ -513,7 +520,7 @@ function InputRequestView({
   busy,
 }: {
   request: ChatInputRequest;
-  onAnswer?: (text: string) => void;
+  onAnswer?: (text: string, answer?: ChatInputAnswer) => void;
   busy?: boolean;
 }) {
   const isConfirmation = request.display === "confirmation";
@@ -546,7 +553,12 @@ function InputRequestView({
                 key={option.id}
                 option={option}
                 disabled={!answerable}
-                onSelect={() => onAnswer?.(option.label)}
+                onSelect={() =>
+                  onAnswer?.(option.label, {
+                    requestId: request.requestId,
+                    optionId: option.id,
+                  })
+                }
               />
             ))}
           </div>
@@ -566,7 +578,12 @@ function InputRequestView({
                 }
                 disabled={!answerable}
                 title={option.description ?? undefined}
-                onClick={() => onAnswer?.(option.label)}
+                onClick={() =>
+                  onAnswer?.(option.label, {
+                    requestId: request.requestId,
+                    optionId: option.id,
+                  })
+                }
               >
                 {option.label}
               </Button>

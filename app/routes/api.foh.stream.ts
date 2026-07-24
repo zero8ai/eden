@@ -10,6 +10,8 @@
 import { getSessionAuth } from "~/auth/session.server";
 import { data, redirect, type ActionFunctionArgs } from "react-router";
 
+import type { ChatInputAnswer } from "~/chat/types";
+
 import { liveTargets } from "~/chat/playground.server";
 import { asString, streamTurnResponse } from "~/chat/turn-stream.server";
 import { listAgentEnvironments } from "~/db/queries.server";
@@ -40,6 +42,46 @@ import {
 import { buildSeedContext } from "~/playground/seed";
 import { getRuntime } from "~/seams/index.server";
 
+/**
+ * Parse the optional request-correlated answer payload (issue #221 finding 2): a JSON array
+ * of eve `InputResponse`s ({requestId, optionId?|text?}) from the clicked question/approval
+ * card. Malformed input is a hard 400 — silently dropping it would fall back to eve's
+ * batch-wide text resolution, the exact bug this field exists to prevent.
+ */
+function parseInputResponses(
+  raw: string,
+): ChatInputAnswer[] | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw data({ error: "Malformed input responses." }, { status: 400 });
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    !parsed.every(
+      (entry): entry is ChatInputAnswer =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as ChatInputAnswer).requestId === "string" &&
+        (entry as ChatInputAnswer).requestId.length > 0 &&
+        ((entry as ChatInputAnswer).optionId === undefined ||
+          typeof (entry as ChatInputAnswer).optionId === "string") &&
+        ((entry as ChatInputAnswer).text === undefined ||
+          typeof (entry as ChatInputAnswer).text === "string"),
+    )
+  ) {
+    throw data({ error: "Malformed input responses." }, { status: 400 });
+  }
+  return parsed.map((entry) => ({
+    requestId: entry.requestId,
+    ...(entry.optionId !== undefined ? { optionId: entry.optionId } : {}),
+    ...(entry.text !== undefined ? { text: entry.text } : {}),
+  }));
+}
+
 export async function action(args: ActionFunctionArgs) {
   const auth = await getSessionAuth(args);
   if (!auth.user) throw redirect("/login");
@@ -51,6 +93,7 @@ export async function action(args: ActionFunctionArgs) {
   const message = asString(form.get("message")).trim();
   if (!message) throw data({ error: "Type a message first." }, { status: 400 });
   const playgroundSessionId = asString(form.get("playgroundSessionId")) || null;
+  const inputResponses = parseInputResponses(asString(form.get("inputResponses")));
 
   const agent = agentId
     ? await getRuntime().data.agents.findById(agentId)
@@ -221,6 +264,13 @@ export async function action(args: ActionFunctionArgs) {
   const messagePrefix =
     [directive, seedContext].filter(Boolean).join("\n\n") || null;
 
+  // Answers correlate to requests only on the session that parked them: a fresh session (or
+  // a reseeded one — its eve session is new) has nothing pending, so drop the responses
+  // rather than send eve ids it never issued.
+  const continuingSession = Boolean(
+    session.externalSessionId && session.continuationToken,
+  );
+
   return streamTurnResponse({
     projectId: project.id,
     target,
@@ -229,5 +279,6 @@ export async function action(args: ActionFunctionArgs) {
     channel: "foh",
     title,
     messagePrefix,
+    inputResponses: continuingSession ? inputResponses : null,
   });
 }

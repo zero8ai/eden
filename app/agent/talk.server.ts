@@ -300,6 +300,17 @@ function normalizeReply(reply: string | null): {
 export async function* streamTurn(input: {
   baseUrl: string;
   message: string;
+  /**
+   * Request-correlated HITL answers, forwarded verbatim as eve's `inputResponses`. Only
+   * meaningful on a follow-up send (eve resolves them against the session the continuation
+   * token names); with responses present eve skips its batch-wide text resolution, so the
+   * message rides along as ordinary input instead of answering every pending request.
+   */
+  inputResponses?: ReadonlyArray<{
+    requestId: string;
+    optionId?: string;
+    text?: string;
+  }> | null;
   /** Both present → follow-up turn on the existing session (context retained). */
   sessionId?: string | null;
   continuationToken?: string | null;
@@ -396,6 +407,9 @@ export async function* streamTurn(input: {
         body: JSON.stringify({
           message: input.message,
           ...(isFollowUp ? { continuationToken: input.continuationToken } : {}),
+          ...(isFollowUp && input.inputResponses && input.inputResponses.length > 0
+            ? { inputResponses: input.inputResponses }
+            : {}),
         }),
         signal: AbortSignal.timeout(15_000),
       },

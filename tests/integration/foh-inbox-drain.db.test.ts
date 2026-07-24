@@ -238,4 +238,75 @@ describe.runIf(LIVE)("FOH inbox drain against real Postgres", () => {
     await db.delete(organization).where(eq(organization.id, ORG));
     await db.delete(user).where(eq(user.id, USER));
   });
+
+  it("yields ONE pending row for concurrent same-request openInboxQuestion calls", async () => {
+    // Two writers (drain + reconcile, or two replicas) race the same eve request: both pass
+    // the read-then-insert fast path, and the partial unique index + ON CONFLICT DO NOTHING
+    // collapse them to one pending row (issue #221 finding 4).
+    const { db } = await import("~/db/client.server");
+    const { organization, user } = await import("~/db/auth-schema");
+    const { agents, projects } = await import("~/db/schema");
+    const { createPlaygroundSession } = await import(
+      "~/playground/sessions.server"
+    );
+    const { openInboxQuestion } = await import("~/foh/inbox.server");
+    const { drizzleDataStore } = await import("~/data/drizzle.server");
+
+    const ORG = "org_foh_race";
+    const USER = "user_foh_race";
+    const now = new Date();
+    await db.delete(organization).where(eq(organization.id, ORG));
+    await db.delete(user).where(eq(user.id, USER));
+    await db.insert(organization).values({
+      id: ORG,
+      name: "foh race smoke",
+      slug: "foh-race-smoke",
+      createdAt: now,
+    });
+    await db.insert(user).values({
+      id: USER,
+      name: "FOH Race",
+      email: "foh-race@smoke.test",
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const [project] = await db
+      .insert(projects)
+      .values({ orgId: ORG, name: "foh-race", slug: "foh-race-smoke" })
+      .returning();
+    const [agent] = await db
+      .insert(agents)
+      .values({ projectId: project.id, name: "ivy", root: "agents/ivy/agent" })
+      .returning();
+    const session = await createPlaygroundSession({
+      projectId: project.id,
+      agentId: agent.id,
+      userId: USER,
+      surface: "foh",
+    });
+
+    const open = () =>
+      openInboxQuestion({
+        projectId: project.id,
+        sessionId: session.id,
+        agentId: agent.id,
+        userId: USER,
+        request: { requestId: "req_race_1", prompt: "Race me?" },
+      });
+    const [a, b] = await Promise.all([open(), open()]);
+    expect(a.id).toBe(b.id);
+    const pending = await drizzleDataStore.inboxItems.findPendingBySession(
+      session.id,
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      requestId: "req_race_1",
+      kind: "question",
+      status: "pending",
+    });
+
+    await db.delete(organization).where(eq(organization.id, ORG));
+    await db.delete(user).where(eq(user.id, USER));
+  });
 });

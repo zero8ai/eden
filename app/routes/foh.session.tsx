@@ -42,6 +42,8 @@ import { TurnError } from "~/components/turn-error";
 import { Button } from "~/components/ui/button";
 import { sessionLoader } from "~/auth/session.server";
 import { requireFohProject } from "~/foh/guard.server";
+import { openInboxQuestion, resolveInboxForSession } from "~/foh/inbox.server";
+import { repairFohSessionState } from "~/foh/needs-you";
 import { fohSessionStatus } from "~/foh/status";
 import {
   cacheCoversCompletedLiveTurn,
@@ -51,14 +53,17 @@ import {
 } from "~/playground/handoff";
 import {
   backfillPlaygroundEventsFromEve,
+  clearSessionPendingInput,
   getFohSessionForViewer,
   loadPlaygroundEntriesFromCache,
+  markSessionPendingInput,
   playgroundCacheIsComplete,
   reconcilePlaygroundSessionFromEve,
   settleAbandonedPlaygroundSession,
 } from "~/playground/sessions.server";
 import { shouldSettleAbandonedSession } from "~/playground/settle";
 import { findSessionOwnerTarget } from "~/playground/ownership";
+import { finalizeDelegationOnResume } from "~/team/resume.server";
 import { hasActiveTurn, TURN_IDLE_TIMEOUT_MS } from "~/chat/turn-stream.server";
 import { getRuntime } from "~/seams/index.server";
 import type { ReasoningEffort } from "~/models/reasoning";
@@ -150,6 +155,71 @@ export const loader = (args: LoaderFunctionArgs) =>
       }
 
       const entries = await loadPlaygroundEntriesFromCache(currentSession);
+
+      // Loader-side repair (issue #221 finding 4): the durable retry for a park/settle
+      // write the drain swallowed. The durable transcript cache is the truth; when the
+      // session row disagrees (a lost park, a lying needs-you badge, a stranded waiting
+      // delegation), repair it here. Every write is idempotent, the whole block is
+      // exception-swallowed (bookkeeping never breaks the page), and the repaired flag is
+      // reflected into the returned session so THIS load's UI is already honest.
+      try {
+        const lastEntry = entries.at(-1) ?? null;
+        const repair = repairFohSessionState({
+          status: currentSession.status,
+          pendingInputAt: currentSession.pendingInputAt,
+          lastEntry,
+        });
+        if (repair.action === "park") {
+          const at = new Date();
+          // The park claim reports whether it won its stop-wins guard; a stop that raced
+          // us must not get inbox items filed for its stopped session.
+          const parked = await markSessionPendingInput(currentSession.id, at);
+          if (parked) {
+            for (const request of repair.requests) {
+              await openInboxQuestion({
+                projectId: access.project.id,
+                sessionId: currentSession.id,
+                agentId: currentSession.agentId,
+                userId: currentSession.createdBy,
+                delegationId: currentSession.delegationId,
+                request,
+              });
+            }
+            currentSession = { ...currentSession, pendingInputAt: at };
+          }
+        } else if (repair.action === "settle") {
+          await clearSessionPendingInput(currentSession.id);
+          await resolveInboxForSession(currentSession.id);
+          currentSession = { ...currentSession, pendingInputAt: null };
+        }
+        // Delegation half: a terminal, not-parked session must not strand its delegation
+        // `waiting` forever because the drain's finalize write failed — and finalize itself
+        // only touches delegations still `waiting`, so repeating it here is a no-op when
+        // the drain succeeded. (Known residual, by design: a missed `finished` inbox item
+        // for OTHER viewers is not refiled — opening the session is the acknowledgement.)
+        const terminal =
+          currentSession.status === "waiting" ||
+          currentSession.status === "completed" ||
+          currentSession.status === "failed";
+        if (
+          currentSession.delegationId &&
+          terminal &&
+          repair.action !== "park" &&
+          currentSession.pendingInputAt === null
+        ) {
+          await finalizeDelegationOnResume({
+            delegationId: currentSession.delegationId,
+            outcome:
+              currentSession.status === "failed" ? "failed" : "completed",
+            error:
+              currentSession.status === "failed"
+                ? (lastEntry?.error ?? null)
+                : null,
+          });
+        }
+      } catch (e) {
+        console.error("[foh] loader repair failed", e);
+      }
 
       // Opening the conversation IS the acknowledgement — but this loader also runs on
       // hover/focus prefetch, so the read-cursor mutation lives in /api/foh/:projectId/read

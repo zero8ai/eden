@@ -126,3 +126,55 @@ export function reconcileNeedsYouFromTail(
   if (failed || completed) return { action: "settle" };
   return { action: "none" };
 }
+
+export type FohSessionRepair =
+  /** The park write failed at drain time — re-park these requests into the inbox. */
+  | { action: "park"; requests: ChatInputRequest[] }
+  /** The settle write failed — the needs-you badge lies; clear the flag and resolve items. */
+  | { action: "settle" }
+  /** Consistent (or indeterminate: running/stopped) — leave everything alone. */
+  | { action: "none" };
+
+/**
+ * Loader-side repair decision (issue #221 finding 4) — the durable retry for a park/settle
+ * write the drain swallowed. Judged from the durable transcript cache (the newest entry)
+ * against the session row's flag, per the needs-you doctrine: a turn ending with pending
+ * `input.requested`s IS parked.
+ *
+ * - `waiting` + newest entry is an assistant ask (pending inputRequests, no error) but the
+ *   flag is unset → park (the drain's park write failed).
+ * - `waiting`/`failed`/`completed` + NO pending ask on the newest entry but the flag is set
+ *   → settle (the drain's clear write failed; the badge lies).
+ * - Anything else (`running`, `stopped`, or a consistent row) → none.
+ */
+export function repairFohSessionState(input: {
+  status: string;
+  pendingInputAt: Date | null;
+  lastEntry: {
+    role: string;
+    inputRequests?: ChatInputRequest[];
+    error?: string | null;
+  } | null;
+}): FohSessionRepair {
+  const pendingAsks =
+    input.lastEntry?.role === "assistant" && !input.lastEntry.error
+      ? (input.lastEntry.inputRequests ?? [])
+      : [];
+  if (
+    input.status === "waiting" &&
+    pendingAsks.length > 0 &&
+    input.pendingInputAt === null
+  ) {
+    return { action: "park", requests: pendingAsks };
+  }
+  if (
+    (input.status === "waiting" ||
+      input.status === "failed" ||
+      input.status === "completed") &&
+    pendingAsks.length === 0 &&
+    input.pendingInputAt !== null
+  ) {
+    return { action: "settle" };
+  }
+  return { action: "none" };
+}

@@ -23,7 +23,14 @@ vi.mock("~/db/client.server", () => ({
     update: () => ({
       set: (values: Record<string, unknown>) => {
         dbState.updates.push(values);
-        return { where: () => Promise.resolve([]) };
+        // Awaitable directly (cursor/clear writers) AND chainable with .returning()
+        // (markSessionPendingInput reports whether its stop-wins claim updated a row).
+        return {
+          where: () =>
+            Object.assign(Promise.resolve([]), {
+              returning: () => Promise.resolve([{ id: "ps_1" }]),
+            }),
+        };
       },
     }),
     insert: () => ({

@@ -326,20 +326,25 @@ export function streamTurnResponse(input: {
                 // even with no client connected. `openInboxQuestion` dedupes on requestId
                 // (the loader-side reconcile can observe the same eve request). Wrapped so
                 // inbox bookkeeping can never break the drain; it touches neither the
-                // cursor nor `streamIndex`, and the pending writers carry their own
-                // stop-wins guards.
+                // cursor nor `streamIndex`. The park claim reports whether it won its
+                // stop-wins guard — when stop got there first, filing inbox items for the
+                // stopped session would resurrect it into the inbox (issue #221 finding 4).
                 if (isFoh) {
                   try {
-                    await markSessionPendingInput(activeSession.id);
-                    for (const request of event.requests) {
-                      await openInboxQuestion({
-                        projectId,
-                        sessionId: activeSession.id,
-                        agentId: activeSession.agentId,
-                        userId: activeSession.createdBy,
-                        delegationId: activeSession.delegationId,
-                        request,
-                      });
+                    const parked = await markSessionPendingInput(
+                      activeSession.id,
+                    );
+                    if (parked) {
+                      for (const request of event.requests) {
+                        await openInboxQuestion({
+                          projectId,
+                          sessionId: activeSession.id,
+                          agentId: activeSession.agentId,
+                          userId: activeSession.createdBy,
+                          delegationId: activeSession.delegationId,
+                          request,
+                        });
+                      }
                     }
                   } catch (e) {
                     console.error(`${tag} foh needs-you park failed`, e);

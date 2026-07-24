@@ -337,13 +337,15 @@ export async function setPlaygroundSessionModel(input: {
 /**
  * Park the session on a human question (needs-you, D4). Written only at the drain/reconcile/
  * relay chokepoints. Guarded `status <> 'stopped'`: a deliberately stopped session must not be
- * resurrected into the inbox by a late drain write.
+ * resurrected into the inbox by a late drain write. Returns whether the park claim WON (a row
+ * was updated) — callers must skip their inbox inserts on false, or a stop that raced the park
+ * would still file items for a stopped session (issue #221 finding 4).
  */
 export async function markSessionPendingInput(
   sessionId: string,
   at: Date = new Date(),
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const updated = await db
     .update(playgroundSessions)
     .set({ pendingInputAt: at, updatedAt: new Date() })
     .where(
@@ -351,7 +353,9 @@ export async function markSessionPendingInput(
         eq(playgroundSessions.id, sessionId),
         ne(playgroundSessions.status, "stopped"),
       ),
-    );
+    )
+    .returning({ id: playgroundSessions.id });
+  return updated.length > 0;
 }
 
 /** Clear the needs-you park (turn completed/failed, or a continuation send superseded it). */
@@ -765,38 +769,37 @@ export async function reconcilePlaygroundSessionFromEve(input: {
   const nextStreamIndex = input.session.streamIndex + tail.events.length;
   const nextStatus =
     statusFromTail(tail.events) ?? sessionStatus(input.session.status);
-  await savePlaygroundSessionCursor({
-    id: input.session.id,
-    target: input.target,
-    externalSessionId: input.session.externalSessionId,
-    continuationToken: input.session.continuationToken,
-    streamIndex: nextStreamIndex,
-    title: null,
-    status: nextStatus,
-  });
 
   // FOH needs-you chokepoint #2 (D4): a drain that died with the process is recovered here.
   // The tail is scanned for unanswered `input.requested`s on its newest turn — `nextStatus`
-  // alone can't tell parked from finished ('waiting' covers both). Park/settle writes are
-  // idempotent (requestId dedupe; only-forward flag semantics) and exception-swallowed so
-  // inbox bookkeeping never breaks a loader.
+  // alone can't tell parked from finished ('waiting' covers both). This runs BEFORE the
+  // cursor save (issue #221 finding 4): every write here is idempotent (requestId
+  // uniqueness; only-forward flag semantics), so a crash between them leaves the cursor
+  // behind and the next reconcile re-reads the tail and repeats — whereas the old order left
+  // an advanced cursor with the park lost forever. Exception-swallowed so inbox bookkeeping
+  // never breaks a loader.
   let pendingInputAt = input.session.pendingInputAt;
   if (input.session.surface === "foh") {
     try {
       const decision = reconcileNeedsYouFromTail(tail.events);
       if (decision.action === "park") {
-        pendingInputAt = pendingInputAt ?? new Date();
-        await markSessionPendingInput(input.session.id, pendingInputAt);
-        for (const data of decision.requestData) {
-          for (const request of inputRequestsOf(data)) {
-            await openInboxQuestion({
-              projectId: input.session.projectId,
-              sessionId: input.session.id,
-              agentId: input.session.agentId,
-              userId: input.session.createdBy,
-              delegationId: input.session.delegationId,
-              request,
-            });
+        const at = pendingInputAt ?? new Date();
+        // The park claim reports whether it won its stop-wins guard; when stop got there
+        // first, the inbox items must not be filed for the stopped session.
+        const parked = await markSessionPendingInput(input.session.id, at);
+        if (parked) {
+          pendingInputAt = at;
+          for (const data of decision.requestData) {
+            for (const request of inputRequestsOf(data)) {
+              await openInboxQuestion({
+                projectId: input.session.projectId,
+                sessionId: input.session.id,
+                agentId: input.session.agentId,
+                userId: input.session.createdBy,
+                delegationId: input.session.delegationId,
+                request,
+              });
+            }
           }
         }
       } else if (decision.action === "settle") {
@@ -808,6 +811,16 @@ export async function reconcilePlaygroundSessionFromEve(input: {
       console.error("[foh] reconcile needs-you failed", e);
     }
   }
+
+  await savePlaygroundSessionCursor({
+    id: input.session.id,
+    target: input.target,
+    externalSessionId: input.session.externalSessionId,
+    continuationToken: input.session.continuationToken,
+    streamIndex: nextStreamIndex,
+    title: null,
+    status: nextStatus,
+  });
 
   return {
     ...input.session,

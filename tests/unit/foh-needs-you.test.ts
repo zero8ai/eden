@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatInputRequest } from "~/chat/types";
 import {
   reconcileNeedsYouFromTail,
+  repairFohSessionState,
   settleFohTurn,
   type TailEventLike,
 } from "~/foh/needs-you";
@@ -167,5 +168,61 @@ describe("reconcileNeedsYouFromTail (chokepoint #2)", () => {
 
   it("does nothing for an empty tail", () => {
     expect(reconcileNeedsYouFromTail([]).action).toBe("none");
+  });
+});
+
+describe("repairFohSessionState (loader-side durable retry, issue #221 finding 4)", () => {
+  const asked = (over: Partial<{ error: string | null }> = {}) => ({
+    role: "assistant",
+    inputRequests: [ask()],
+    error: null,
+    ...over,
+  });
+  const answered = { role: "assistant", inputRequests: undefined, error: null };
+  const at = new Date("2026-07-01T10:00:00Z");
+
+  it.each([
+    // Park-repair: the drain's park write failed — the transcript proves the ask.
+    ["waiting + pending ask + flag unset", "waiting", null, asked(), "park"],
+    // Settle-repair: the drain's clear write failed — the badge lies.
+    ["waiting + no ask + flag set", "waiting", at, answered, "settle"],
+    ["failed + no ask + flag set", "failed", at, answered, "settle"],
+    ["completed + no ask + flag set", "completed", at, answered, "settle"],
+    // A failed last entry is not a live ask, so a set flag settles.
+    ["failed + errored ask + flag set", "failed", at, asked({ error: "boom" }), "settle"],
+    ["waiting + user last entry + flag set", "waiting", at, { role: "user" }, "settle"],
+    ["waiting + empty transcript + flag set", "waiting", at, null, "settle"],
+    // Consistent rows are untouched.
+    ["consistent park (ask + flag)", "waiting", at, asked(), "none"],
+    ["consistent done (no ask, no flag)", "waiting", null, answered, "none"],
+    ["consistent empty (new)", "new", null, null, "none"],
+    // Indeterminate states are never repaired.
+    ["running with an ask", "running", null, asked(), "none"],
+    ["running with a stale flag", "running", at, answered, "none"],
+    ["stopped with a stale flag", "stopped", at, answered, "none"],
+    ["stopped with an ask", "stopped", null, asked(), "none"],
+  ] as const)(
+    "%s",
+    (_name, status, pendingInputAt, lastEntry, expected) => {
+      expect(
+        repairFohSessionState({
+          status,
+          pendingInputAt,
+          lastEntry: lastEntry as Parameters<
+            typeof repairFohSessionState
+          >[0]["lastEntry"],
+        }).action,
+      ).toBe(expected);
+    },
+  );
+
+  it("returns the transcript's pending requests for the park repair", () => {
+    const requests = [ask("r1"), ask("r2")];
+    const decision = repairFohSessionState({
+      status: "waiting",
+      pendingInputAt: null,
+      lastEntry: { role: "assistant", inputRequests: requests, error: null },
+    });
+    expect(decision).toEqual({ action: "park", requests });
   });
 });
